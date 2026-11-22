@@ -18,6 +18,7 @@ import {
   type HarkAuthSession
 } from './harkClient'
 import { probeHarkSession } from './harkSession'
+import { harkLoginUserAgentFor, harkNativeUserAgent, isGoogleAuthUrl } from './harkUserAgent'
 
 const ALLOWED_HOST =
   /^(?:[\w-]+\.)*(?:hark\.com|google\.com|googleusercontent\.com|gstatic\.com|googleapis\.com|youtube\.com|chromiumapp\.org|apple\.com|icloud\.com|cloudflare\.com)$/i
@@ -102,13 +103,24 @@ export async function openHarkLoginWindow(accountId: string, parent?: BrowserWin
 
   const partition = partitionForAccount(accountId)
   const ses = electronSession.fromPartition(partition)
-  const cleanUa = ses
-    .getUserAgent()
-    .replace(/\s+Electron\/[\d.]+/gi, '')
-    .replace(/\s+(?:BotArk|BotHub)\/[\d.a-z-]+/gi, '')
-    .replace(/\s{2,}/g, ' ')
-    .trim()
-  ses.setUserAgent(cleanUa)
+  // Turnstile on app.hark.com only passes with Electron's native UA (a
+  // hand-edited string no longer matches the engine's own fingerprint). The
+  // partition may have been switched to a cleaned UA by another view, so reset.
+  const nativeUa = harkNativeUserAgent()
+  ses.setUserAgent(nativeUa)
+  // Google OAuth rejects UAs naming Electron: rewrite the header for Google only.
+  ses.webRequest.onBeforeSendHeaders(
+    { urls: ['*://*.google.com/*', '*://accounts.youtube.com/*'] },
+    (details, callback) => {
+      const headers = { ...details.requestHeaders }
+      if (isGoogleAuthUrl(details.url)) {
+        const ua = harkLoginUserAgentFor(details.url, nativeUa)
+        for (const k of Object.keys(headers)) if (k.toLowerCase() === 'user-agent') delete headers[k]
+        headers['User-Agent'] = ua
+      }
+      callback({ requestHeaders: headers })
+    }
+  )
 
   const win = new BrowserWindow({
     width: 1040,
@@ -127,8 +139,16 @@ export async function openHarkLoginWindow(accountId: string, parent?: BrowserWin
       backgroundThrottling: false
     }
   })
-  win.webContents.setUserAgent(cleanUa)
+  win.webContents.setUserAgent(nativeUa)
   loginWindows.set(accountId, win)
+
+  // Keep navigator.userAgent in step with the header: cleaned on Google pages,
+  // native again as soon as the flow returns to hark.com.
+  win.webContents.on('did-start-navigation', (details) => {
+    if (!details.isMainFrame || details.isSameDocument) return
+    const want = harkLoginUserAgentFor(details.url, nativeUa)
+    if (win.webContents.getUserAgent() !== want) win.webContents.setUserAgent(want)
+  })
 
   win.webContents.setWindowOpenHandler(({ url }) => {
     if (hostAllowed(url)) {
@@ -189,6 +209,7 @@ export async function openHarkLoginWindow(accountId: string, parent?: BrowserWin
 
   win.on('closed', () => {
     ses.cookies.off('changed', onCookie)
+    ses.webRequest.onBeforeSendHeaders(null)
     loginWindows.delete(accountId)
     void (async () => {
       if (settling) return

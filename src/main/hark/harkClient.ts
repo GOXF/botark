@@ -12,6 +12,7 @@ import { session as electronSession, type Session } from 'electron'
 import { applyProxyToPartition } from '../muse/accountProxy'
 import { guessMediaMimeFromName, inferMediaMime } from '../mediaMime'
 import { partitionForAccount } from '../webContentsViewManager'
+import { harkNativeUserAgent } from './harkUserAgent'
 import { HarkWatchRegistry } from './watchRegistry'
 
 export const HARK_ORIGIN = 'https://app.hark.com'
@@ -91,19 +92,20 @@ export async function preparedSessionForAccount(accountId: string): Promise<Sess
   return sessionForAccount(accountId)
 }
 
-function harkClientHeaders(extra?: Record<string, string>): Record<string, string> {
+export function harkClientHeaders(extra?: Record<string, string>): Record<string, string> {
   return {
     Accept: 'application/json',
     'Accept-Language': 'zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7',
     Origin: HARK_ORIGIN,
     Referer: `${HARK_ORIGIN}/`,
-    'User-Agent': HARK_USER_AGENT,
+    // Same UA as the login window / Turnstile used on this partition: Cloudflare
+    // binds its cookies to the UA, and a second, forged identity (macOS, Chrome
+    // 134, Electron 35 + hand-written Sec-Ch-Ua) polled every 1.2 s during login
+    // made the session look like two browsers sharing one cookie jar.
+    'User-Agent': harkNativeUserAgent(),
     'X-Hark-Locale': localeHeader(),
     'X-Hark-Timezone': timezoneName(),
     'X-Hark-Client-Version': HARK_CLIENT_VERSION,
-    'Sec-Ch-Ua': '"Chromium";v="134", "Not:A-Brand";v="24"',
-    'Sec-Ch-Ua-Mobile': '?0',
-    'Sec-Ch-Ua-Platform': '"macOS"',
     'Sec-Fetch-Site': 'same-origin',
     'Sec-Fetch-Mode': 'cors',
     'Sec-Fetch-Dest': 'empty',
