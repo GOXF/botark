@@ -8,7 +8,8 @@ name: Release
 #   3. publish  – once every file is there, flip the draft to published
 on:
   push:
-    tags: ['v*']
+    # GOXF fork: v*-goxf.* tags are portable fork builds (goxf-portable.yml).
+    tags: ['v*', '!v*-goxf.*']
 
 permissions:
   contents: write
@@ -22,6 +23,9 @@ env:
 
 jobs:
   prepare:
+    # GOXF fork: only the upstream repo publishes official releases
+    # (build/publish need prepare, so they are skipped too).
+    if: github.repository == 'qybaihe/botark'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7

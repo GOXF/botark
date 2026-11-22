@@ -1,0 +1,74 @@
+name: GOXF Portable
+
+# GOXF fork only. Push a tag v<version>-goxf.<goxfBuild> (both from package.json,
+# e.g. v0.12.0-goxf.1) to build the Windows portable exe and publish it as a
+# fork release. The in-app updater (src/main/goxfUpdater.ts) looks for the
+# newest v*-goxf.* release with a "*Portable*x64*.exe" asset.
+on:
+  push:
+    tags: ['v*-goxf.*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: goxf-portable-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  portable:
+    if: github.repository == 'GOXF/botark'
+    runs-on: windows-latest
+    env:
+      TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+      - name: Tag must match package.json version + goxfBuild
+        if: github.ref_type == 'tag'
+        shell: bash
+        run: |
+          expected="v$(node -p "const p=require('./package.json'); p.version + '-goxf.' + p.goxfBuild")"
+          if [ "$expected" != "$TAG" ]; then
+            echo "::error::tag $TAG does not match package.json $expected"
+            exit 1
+          fi
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+      - name: Build portable exe
+        shell: bash
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: npx electron-builder --config electron-builder.config.cjs --win portable --x64 --publish never
+      - name: Publish fork release
+        if: github.ref_type == 'tag'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          shopt -s nullglob
+          files=(dist/*Portable*.exe)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "::error::no portable exe in dist/"
+            ls dist || true
+            exit 1
+          fi
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG" "${files[@]}" --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            # Not --latest: keeps the fork's "latest" free so nothing confuses it with upstream.
+            gh release create "$TAG" "${files[@]}" --repo "$GITHUB_REPOSITORY" --verify-tag \
+              --title "BotArk Portable $TAG" --generate-notes --latest=false
+          fi
+      - name: Keep the exe as a run artifact (manual runs)
+        if: github.ref_type != 'tag'
+        uses: actions/upload-artifact@v4
+        with:
+          name: botark-portable
+          path: dist/*Portable*.exe

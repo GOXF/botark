@@ -25,6 +25,8 @@ concurrency:
 jobs:
   deploy:
     name: Build & Deploy GitHub Pages
+    # GOXF fork: only the upstream repo deploys the website.
+    if: github.repository == 'qybaihe/botark'
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
