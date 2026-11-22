@@ -44,6 +44,7 @@ import { cancelHarkLogin, onHarkLoginEvent, openHarkLoginWindow } from './harkLo
 import { loadAccountProxyUrl } from '../muse/accountProxy'
 import { guessMediaMimeFromName } from '../mediaMime'
 import { probeHarkSession } from './harkSession'
+import { harkCreateProjectBody } from '@shared/harkProjects'
 
 function mapHarkTools(msg: HarkChatMessage): MuseToolCallView[] | undefined {
   if (!msg.toolCalls || msg.toolCalls.length === 0) return undefined
@@ -207,7 +208,9 @@ async function runHarkRpc(req: HarkRpcRequest): Promise<HarkRpcResponse> {
         return { ok: true, data: await listConversations(req.accountId) }
       case 'createConversation': {
         const result = await callHarkApi(req.accountId, {
-          path: '/conversations', method: 'POST', body: { title: req.title }
+          path: '/conversations',
+          method: 'POST',
+          body: harkCreateProjectBody(req.title, req.timezone ?? timezoneName())
         })
         const conversationId = conversationIdFromPayload(result)
         if (!conversationId) throw new Error('Hark returned no project ID')

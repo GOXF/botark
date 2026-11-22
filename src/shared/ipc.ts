@@ -950,7 +950,7 @@ export type HarkRpcRequest =
   | { accountId: string; op: 'observeProject'; conversationId: string; subscription: string }
   | { accountId: string; op: 'leaveProject'; subscription: string }
   | { accountId: string; op: 'conversationSnapshot'; conversationId: string }
-  | { accountId: string; op: 'createConversation'; title: string }
+  | { accountId: string; op: 'createConversation'; title: string; timezone?: string }
   | { accountId: string; op: 'conversationStatus' }
   | {
       accountId: string
