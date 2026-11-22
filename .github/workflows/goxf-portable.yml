@@ -41,11 +41,21 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - run: npm run build
-      - name: Build portable exe
+      - name: Build portable exe + unpacked folder
         shell: bash
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
-        run: npx electron-builder --config electron-builder.config.cjs --win portable --x64 --publish never
+        run: npx electron-builder --config electron-builder.config.cjs --win portable dir --x64 --publish never
+      - name: Zip the unpacked folder (BotArk-Data inside marks it portable)
+        shell: pwsh
+        run: |
+          $ver = node -p "const p=require('./package.json'); p.version + '-goxf.' + p.goxfBuild"
+          $name = "BotArk-Portable-$ver-win-x64"
+          $root = Join-Path $env:RUNNER_TEMP $name
+          Copy-Item -Recurse release/win-unpacked $root
+          New-Item -ItemType Directory -Path (Join-Path $root 'BotArk-Data') | Out-Null
+          Set-Content -Encoding utf8 -Path (Join-Path $root 'BotArk-Data/README.txt') -Value 'BotArk portable data folder. Keep it next to BotArk.exe; copy the whole folder to move BotArk with your accounts.'
+          Compress-Archive -Path $root -DestinationPath "release/$name.zip"
       - name: Publish fork release
         if: github.ref_type == 'tag'
         shell: bash
@@ -53,10 +63,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           shopt -s nullglob
-          files=(dist/*Portable*.exe)
+          files=(release/*Portable*.exe release/*Portable*.zip)
           if [ ${#files[@]} -eq 0 ]; then
-            echo "::error::no portable exe in dist/"
-            ls dist || true
+            echo "::error::no portable build in release/"
+            ls release || true
             exit 1
           fi
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
@@ -71,4 +81,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: botark-portable
-          path: dist/*Portable*.exe
+          path: |
+            release/*Portable*.exe
+            release/*Portable*.zip
