@@ -1,3 +1,5 @@
+// GOXF fork: must stay the first import (moves userData next to a portable exe before anything reads it).
+import { isPortable } from './goxfPortable'
 import { registerSlackIpc, stopSlack } from './slack/slackIpc'
 import { registerWorkspaceIpc, stopWorkspaces } from './mcp/hub'
 import { existsSync } from 'node:fs'
@@ -5,7 +7,8 @@ import { join } from 'node:path'
 import { app, BrowserWindow, shell } from 'electron'
 import { attachWebViewManager, registerWebViewIpc } from './webViewIpc'
 import { attachMuseSessionManager, disposeAllMuseManagers, registerMuseIpc } from './muse/museIpc'
-import { registerUpdaterIpc, startAutoUpdater } from './updater'
+// GOXF fork: fork-aware updater (upstream + portable prompts) instead of electron-updater.
+import { registerUpdaterIpc, startAutoUpdater } from './goxfUpdater'
 import { registerGrokIpc } from './grok/grokIpc'
 import { stopGrokAccountWatch } from './grok/grokWatchManager'
 import { registerHarkIpc } from './hark/harkIpc'
@@ -31,7 +34,7 @@ try {
   const appData = app.getPath('appData')
   const newUserData = join(appData, 'botark')
   const legacyUserData = join(appData, 'bothub')
-  if (!existsSync(newUserData) && existsSync(legacyUserData)) {
+  if (!isPortable() && !existsSync(newUserData) && existsSync(legacyUserData)) {
     app.setPath('userData', legacyUserData)
   }
 } catch {

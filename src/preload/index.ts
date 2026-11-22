@@ -2,6 +2,7 @@ import { SLACK_CHANNEL, SLACK_INBOUND, type SlackInbound } from '@shared/slack'
 import { WORKSPACE_CHANNEL } from '@shared/workspace'
 import { contextBridge, ipcRenderer } from 'electron'
 import type { BotHubBridge } from '@shared/bridge'
+import { GOXF_UPDATE_CHANNELS, type GoxfUpdateEvent } from '@shared/goxfUpdate'
 import {
   ANTIGRAVITY_CHANNELS,
   DOT_CHANNELS,
@@ -108,6 +109,17 @@ const bridge: BotHubBridge = {
       const handler = (_event: unknown, payload: UpdateStatusEvent) => listener(payload)
       ipcRenderer.on(UPDATE_CHANNELS.event, handler)
       return () => ipcRenderer.removeListener(UPDATE_CHANNELS.event, handler)
+    }
+  },
+  // GOXF fork: fork-specific update prompts.
+  goxfUpdates: {
+    openUpstream: () => ipcRenderer.invoke(GOXF_UPDATE_CHANNELS.openUpstream),
+    installPortable: () => ipcRenderer.invoke(GOXF_UPDATE_CHANNELS.installPortable),
+    state: () => ipcRenderer.invoke(GOXF_UPDATE_CHANNELS.state),
+    onEvent: (listener) => {
+      const handler = (_event: unknown, payload: GoxfUpdateEvent) => listener(payload)
+      ipcRenderer.on(GOXF_UPDATE_CHANNELS.event, handler)
+      return () => ipcRenderer.removeListener(GOXF_UPDATE_CHANNELS.event, handler)
     }
   },
   grok: {

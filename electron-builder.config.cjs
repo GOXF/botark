@@ -16,6 +16,8 @@ const notarizeByApiKey =
 const notarizeByKeychainProfile = has('APPLE_KEYCHAIN_PROFILE')
 const notarize =
   macSigned && (notarizeByAppleId || notarizeByApiKey || notarizeByKeychainProfile)
+// GOXF fork: fork build counter (tag v<version>-goxf.<goxfBuild>), used in the portable exe name.
+const goxfBuild = Number(require('./package.json').goxfBuild) || 0
 const cliArgs = new Set(process.argv.slice(2))
 const macArchs = cliArgs.has('--arm64')
   ? ['arm64']
@@ -61,9 +63,17 @@ module.exports = {
     artifactName: '${productName}-${version}-${arch}.${ext}'
   },
   win: {
-    target: [{ target: 'nsis', arch: ['x64'] }],
+    // GOXF fork: + portable (data lives in <exe dir>/BotArk-Data, see src/main/goxfPortable.ts).
+    target: [
+      { target: 'nsis', arch: ['x64'] },
+      { target: 'portable', arch: ['x64'] }
+    ],
     icon: 'build/icon.png',
     artifactName: '${productName}-Setup-${version}-${arch}.${ext}'
+  },
+  // GOXF fork: e.g. BotArk-Portable-0.12.0-goxf.1-x64.exe
+  portable: {
+    artifactName: `\${productName}-Portable-\${version}-goxf.${goxfBuild}-\${arch}.\${ext}`
   },
   nsis: {
     oneClick: false,

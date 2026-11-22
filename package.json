@@ -1,6 +1,7 @@
 {
   "name": "botark",
   "version": "0.12.0",
+  "goxfBuild": 1,
   "private": false,
   "description": "BotArk — all your personal AI agents in one native desktop workspace",
   "main": "./out/main/index.js",
@@ -26,7 +27,8 @@
     "dist:mac": "npm run build && electron-builder --config electron-builder.config.cjs --mac",
     "dist:win": "npm run build && electron-builder --config electron-builder.config.cjs --win",
     "dist:dir": "npm run build && electron-builder --config electron-builder.config.cjs --mac --arm64 --dir",
-    "release": "npm run build && electron-builder --config electron-builder.config.cjs --publish always"
+    "release": "npm run build && electron-builder --config electron-builder.config.cjs --publish always",
+    "dist:portable": "npm run build && electron-builder --config electron-builder.config.cjs --win portable --x64 --publish never"
   },
   "devDependencies": {
     "@fontsource-variable/inter": "^5.3.0",
