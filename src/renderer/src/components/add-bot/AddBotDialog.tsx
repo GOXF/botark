@@ -637,7 +637,11 @@ export function LoginWaiting({
         rawInput: rawInput.trim(),
         refreshToken: refreshInput.trim() || undefined
       })
+      // Unlike Hark, Dot keeps its session in the account store,
+      // `cancelDotLogin` only clears the partition when no token is stored,
+      // so this just closes the login window and keeps the imported session.
       await window.electron.dot.cancelLogin?.(accountId).catch(() => undefined)
+      onImported?.()
     } catch (e) {
       setErr(errorMessage(e))
     } finally {
