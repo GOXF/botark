@@ -239,6 +239,31 @@ export class WebContentsViewManager {
   }
 
   /**
+   * Reload every live view of `accountId` after its partition session changed
+   * (e.g. credentials were imported). Cached views are otherwise left on
+   * whatever they showed before — typically the platform login page.
+   * `resolveUrl` may return a URL to load instead of a plain reload.
+   */
+  reloadAccount(accountId: string, resolveUrl?: (currentUrl: string) => string | undefined): number {
+    let count = 0
+    for (const managed of this.views.values()) {
+      if (managed.info.accountId !== accountId) continue
+      const wc = managed.view.webContents
+      if (wc.isDestroyed()) continue
+      const current = wc.getURL() || managed.info.url
+      const next = resolveUrl?.(current)
+      if (next && isHttpUrl(next)) {
+        managed.info.url = next
+        void wc.loadURL(next).catch(() => {})
+      } else {
+        wc.reload()
+      }
+      count++
+    }
+    return count
+  }
+
+  /**
    * Open an authenticated in-app child BrowserWindow sharing the account's isolated
    * partition & proxy — used for cloud browser views, credential vault forms, and OAuth popups.
    */

@@ -18,6 +18,16 @@ export function attachWebViewManager(window: BrowserWindow): WebContentsViewMana
   return manager
 }
 
+/** Reload the embedded views of one account in every window (see `WebContentsViewManager.reloadAccount`). */
+export function reloadAccountWebViews(
+  accountId: string,
+  resolveUrl?: (currentUrl: string) => string | undefined
+): number {
+  let count = 0
+  for (const manager of managers.values()) count += manager.reloadAccount(accountId, resolveUrl)
+  return count
+}
+
 function managerFor(event: IpcMainEvent | IpcMainInvokeEvent): WebContentsViewManager {
   const manager = managers.get(event.sender.id)
   if (!manager) throw new Error('Web views are not available for this sender')

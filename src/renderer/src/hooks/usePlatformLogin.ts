@@ -107,6 +107,14 @@ export function usePlatformLogin(botId: string) {
     },
     start,
     reopen: () => phase.kind === 'waiting' && void openWindow(phase.platformId),
+    /**
+     * Credentials were imported into this account's partition by hand
+     * (paste-import). Advance exactly like a window sign-in, in case the
+     * main-process `login` broadcast was missed.
+     */
+    markSignedIn: () => {
+      if (pending.current) signedIn(pending.current)
+    },
     discard,
     keep
   }

@@ -257,6 +257,22 @@ export async function cancelHarkLogin(accountId: string): Promise<void> {
   }
 }
 
+/**
+ * Close the login window (if any) WITHOUT touching the account partition.
+ *
+ * Use this after credentials were imported into the partition: unlike
+ * `cancelHarkLogin`, it must never call `clearStorageData()`, or the freshly
+ * imported session cookies are wiped and the account ends up signed out.
+ * Returns true when a window was closed (its `closed` handler then probes the
+ * partition and emits `signedIn`).
+ */
+export function closeHarkLoginWindow(accountId: string): boolean {
+  const win = loginWindows.get(accountId)
+  if (!win || win.isDestroyed()) return false
+  win.close()
+  return true
+}
+
 export function hasOpenHarkLogin(accountId: string): boolean {
   const win = loginWindows.get(accountId)
   return Boolean(win && !win.isDestroyed())
