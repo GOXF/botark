@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu'
 import {
   Archive,
@@ -9,7 +9,15 @@ import {
   Loader2,
   Plus
 } from 'lucide-react'
-import { harkProjects, type HarkProject } from '@shared/harkProjects'
+import {
+  HARK_PROJECTS_POLL_MS,
+  harkProjects,
+  mergePendingHarkProjects,
+  prunePendingHarkProjects,
+  shouldRefreshHarkProjects,
+  type HarkPendingProject,
+  type HarkProject
+} from '@shared/harkProjects'
 import type { HarkRpcRequest } from '@shared/ipc'
 import { ArkProjectStackSvg } from '@/components/ui/ArkGlyphs'
 import { Button } from '@/components/ui/Button'
@@ -19,6 +27,9 @@ import { getBridge } from '@/lib/bridge'
 import { cn } from '@/lib/cn'
 import { useOverlayLock } from '@/lib/overlay'
 import { useBotStore } from '@/store/botStore'
+
+/** Fired after any local change to the project list; `detail` may carry a just-created project. */
+const PROJECTS_CHANGED = 'bothub:hark-projects'
 
 async function rpc(request: HarkRpcRequest) {
   const result = await getBridge()?.hark.rpc(request)
@@ -32,7 +43,8 @@ export function HarkProjects({ botId, compact }: { botId: string; compact?: bool
   const connected = useBotStore((s) =>
     ['online', 'busy'].includes(s.accounts[accountId]?.status ?? '')
   )
-  const [projects, setProjects] = useState<HarkProject[]>([])
+  const [serverProjects, setServerProjects] = useState<HarkProject[]>([])
+  const [pending, setPending] = useState<HarkPendingProject[]>([])
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
   const [menuOpen, setMenuOpen] = useState(false)
@@ -43,21 +55,59 @@ export function HarkProjects({ botId, compact }: { botId: string; compact?: bool
 
   useOverlayLock(menuOpen)
 
+  const lastFetchAt = useRef(0)
   const invalidate = useCallback(() => setRevision((n) => n + 1), [])
+  // Opportunistic refresh (focus, menu open): skipped if we fetched moments ago.
+  const refreshSoon = useCallback(() => {
+    if (shouldRefreshHarkProjects(lastFetchAt.current, Date.now())) invalidate()
+  }, [invalidate])
 
   useEffect(() => {
-    window.addEventListener('bothub:hark-projects', invalidate)
-    return () => window.removeEventListener('bothub:hark-projects', invalidate)
-  }, [invalidate])
+    const onChanged = (e: Event) => {
+      const created = (e as CustomEvent<{ accountId?: string; project?: HarkPendingProject }>).detail
+      if (created?.project && created.accountId === accountId) {
+        const project = created.project
+        setPending((list) => [...list.filter((p) => p.id !== project.id), project])
+      }
+      invalidate()
+    }
+    window.addEventListener(PROJECTS_CHANGED, onChanged)
+    return () => window.removeEventListener(PROJECTS_CHANGED, onChanged)
+  }, [accountId, invalidate])
+
+  // Projects created / renamed / archived in Hark's web app only reach BotArk
+  // through a re-fetch: refresh on window focus and poll while visible.
+  useEffect(() => {
+    if (!connected) return
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') refreshSoon()
+    }
+    window.addEventListener('focus', refreshSoon)
+    document.addEventListener('visibilitychange', onVisible)
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === 'visible') invalidate()
+    }, HARK_PROJECTS_POLL_MS)
+    return () => {
+      window.removeEventListener('focus', refreshSoon)
+      document.removeEventListener('visibilitychange', onVisible)
+      window.clearInterval(timer)
+    }
+  }, [connected, invalidate, refreshSoon])
+
+  useEffect(() => {
+    if (menuOpen) refreshSoon()
+  }, [menuOpen, refreshSoon])
 
   useEffect(() => {
     let current = true
     if (connected) {
+      lastFetchAt.current = Date.now()
       void rpc({ accountId, op: 'listConversations' })
         .then(harkProjects)
         .then((rows) => {
           if (current) {
-            setProjects(rows)
+            setServerProjects(rows)
+            setPending((list) => prunePendingHarkProjects(rows, list, Date.now()))
             setError('')
           }
         })
@@ -69,6 +119,8 @@ export function HarkProjects({ botId, compact }: { botId: string; compact?: bool
       current = false
     }
   }, [accountId, connected, revision])
+
+  const projects = mergePendingHarkProjects(serverProjects, pending, Date.now())
 
   useEffect(() => {
     const hark = getBridge()?.hark
@@ -107,16 +159,20 @@ export function HarkProjects({ botId, compact }: { botId: string; compact?: bool
       setMenuOpen(false)
     })
 
-  const changed = () => window.dispatchEvent(new Event('bothub:hark-projects'))
+  const changed = (project?: HarkPendingProject) =>
+    window.dispatchEvent(new CustomEvent(PROJECTS_CHANGED, { detail: { accountId, project } }))
 
   const createProject = () =>
     perform(async () => {
-      if (!title.trim()) return
-      await useBotStore.getState().startNewHarkSession(botId, title.trim())
+      const name = title.trim()
+      if (!name) return
+      const id = await useBotStore.getState().startNewHarkSession(botId, name)
       setAdding(false)
       setMenuOpen(false)
       setTitle('')
-      changed()
+      changed(id ? { id, title: name, createdAt: Date.now() } : undefined)
+      // Hark's list can trail the create; check again shortly after.
+      window.setTimeout(() => changed(), 3_000)
     })
 
   const openPreview = (projectId: string) =>
