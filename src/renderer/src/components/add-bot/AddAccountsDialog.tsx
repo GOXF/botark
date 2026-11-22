@@ -52,6 +52,7 @@ function AddAccountFlow({ bot, open, onClose }: { bot: Bot; open: boolean; onClo
           accountId={login.accountId}
           windowClosed={phase.windowClosed}
           onReopen={login.reopen}
+          onImported={login.markSignedIn}
         />
       ) : phase.kind === 'idle' && phase.error ? (
         <div className="flex animate-step-in flex-col items-center gap-4 pt-2 pb-2 text-center">
