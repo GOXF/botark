@@ -10,13 +10,26 @@
  * Imported FIRST in src/main/index.ts so it runs before any module touches
  * userData and before app ready (setPath after ready does not move sessions).
  */
-import { mkdirSync } from 'node:fs'
-import { join } from 'node:path'
+import { existsSync, mkdirSync } from 'node:fs'
+import { dirname, join } from 'node:path'
 import { app } from 'electron'
 
-export const PORTABLE_DIR = (process.env.PORTABLE_EXECUTABLE_DIR || '').trim() || null
+const DATA_DIR_NAME = 'BotArk-Data'
+
+/**
+ * Zip build (unpacked folder): no launcher env, so a `BotArk-Data` folder
+ * shipped next to BotArk.exe is the portable marker.
+ */
+function zipPortableDir(): string | null {
+  if (!app.isPackaged) return null
+  const dir = dirname(process.execPath)
+  return existsSync(join(dir, DATA_DIR_NAME)) ? dir : null
+}
+
+export const PORTABLE_DIR = (process.env.PORTABLE_EXECUTABLE_DIR || '').trim() || zipPortableDir()
+/** Only set for the single-exe build; the zip build cannot self-replace. */
 export const PORTABLE_FILE = (process.env.PORTABLE_EXECUTABLE_FILE || '').trim() || null
-export const PORTABLE_DATA_DIR = PORTABLE_DIR ? join(PORTABLE_DIR, 'BotArk-Data') : null
+export const PORTABLE_DATA_DIR = PORTABLE_DIR ? join(PORTABLE_DIR, DATA_DIR_NAME) : null
 
 export function isPortable(): boolean {
   return PORTABLE_DIR !== null

@@ -28,10 +28,12 @@ import {
 import { checkFailedMessage } from './updateCheck'
 import {
   buildReplaceScript,
+  buildZipReplaceScript,
   decideUpdatePrompts,
   formatGoxfVersion,
   normalizeGoxfBuild,
   type GitHubRelease,
+  type PortableKind,
   type ReleaseAsset
 } from './goxfUpdateLogic'
 import { PORTABLE_DIR, PORTABLE_FILE } from './goxfPortable'
@@ -61,7 +63,9 @@ const baseVersion = (): string => app.getVersion()
 let cachedBuild: number | null = null
 const goxfBuild = (): number => (cachedBuild ??= readGoxfBuild())
 const currentVersion = (): string => formatGoxfVersion(baseVersion(), goxfBuild())
-const portableSelfUpdate = (): boolean => process.platform === 'win32' && Boolean(PORTABLE_DIR && PORTABLE_FILE)
+/** 'exe' = single portable exe (launcher env), 'zip' = unpacked folder with BotArk-Data beside BotArk.exe. */
+const portableKind = (): PortableKind => (PORTABLE_FILE ? 'exe' : PORTABLE_DIR ? 'zip' : null)
+const portableSelfUpdate = (): boolean => process.platform === 'win32' && portableKind() !== null
 
 function sendAll(channel: string, payload: unknown): void {
   for (const win of BrowserWindow.getAllWindows()) {
@@ -103,7 +107,7 @@ async function check(manual: boolean): Promise<void> {
     goxfBuild: goxfBuild(),
     upstreamLatest: up.ok ? up.data : null,
     forkReleases: fork.ok && Array.isArray(fork.data) ? fork.data : null,
-    portable: Boolean(PORTABLE_FILE),
+    portable: portableKind(),
     platform: process.platform,
     upstreamRepo: UPSTREAM_REPO,
     forkRepo: FORK_REPO
@@ -158,10 +162,11 @@ async function installPortable(): Promise<void> {
   }
   if (installing) return
   installing = true
-  const oldExe = PORTABLE_FILE!
-  const dir = dirname(oldExe)
+  const zipMode = portableKind() === 'zip'
+  // exe build: the launcher's exe; zip build: the folder holding BotArk.exe.
+  const dir = zipMode ? PORTABLE_DIR! : dirname(PORTABLE_FILE!)
   const partial = join(dir, `.${basename(prompt.asset.name)}.download`)
-  const ready = join(dir, `.${basename(prompt.asset.name)}.new`)
+  const ready = zipMode ? join(dir, '.botark-update.zip') : join(dir, `.${basename(prompt.asset.name)}.new`)
   try {
     broadcastGoxf({ type: 'portable-downloading', percent: 0 })
     for (const f of [partial, ready]) if (existsSync(f)) unlinkSync(f)
@@ -169,8 +174,17 @@ async function installPortable(): Promise<void> {
     renameSync(partial, ready)
     const script = join(tmpdir(), `botark-portable-update-${Date.now()}.ps1`)
     const logFile = join(dir, 'BotArk-Data', 'portable-update.log')
+    const body = zipMode
+      ? buildZipReplaceScript({
+          appDir: dir,
+          zipFile: ready,
+          exeName: basename(process.execPath),
+          pid: process.pid,
+          logFile
+        })
+      : buildReplaceScript({ oldExe: PORTABLE_FILE!, newExe: ready, pid: process.pid, logFile })
     // UTF-8 BOM so Windows PowerShell 5.1 reads non-ASCII paths correctly.
-    writeFileSync(script, '\uFEFF' + buildReplaceScript({ oldExe, newExe: ready, pid: process.pid, logFile }), 'utf8')
+    writeFileSync(script, '\uFEFF' + body, 'utf8')
     const child = spawn(
       'powershell.exe',
       ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-File', script],

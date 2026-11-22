@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   buildReplaceScript,
+  buildZipReplaceScript,
   decideUpdatePrompts,
   formatGoxfVersion,
   isNewerSemver,
@@ -8,6 +9,7 @@ import {
   parseGoxfVersion,
   pickLatestGoxfRelease,
   pickPortableAsset,
+  pickPortableZipAsset,
   psQuote,
   type GitHubRelease,
   type PromptInput
@@ -25,7 +27,7 @@ const input = (over: Partial<PromptInput> = {}): PromptInput => ({
   goxfBuild: 1,
   upstreamLatest: null,
   forkReleases: null,
-  portable: true,
+  portable: 'exe',
   platform: 'win32',
   ...over
 })
@@ -80,6 +82,18 @@ describe('pickPortableAsset', () => {
   })
 })
 
+describe('pickPortableZipAsset', () => {
+  it('picks the portable zip, not blockmaps or other archives', () => {
+    const assets = [
+      exe('BotArk-0.12.0-x64.zip'),
+      exe('BotArk-Portable-0.12.0-goxf.1-x64.exe'),
+      exe('BotArk-Portable-0.12.0-goxf.1-win-x64.zip')
+    ]
+    expect(pickPortableZipAsset(assets)?.name).toBe('BotArk-Portable-0.12.0-goxf.1-win-x64.zip')
+    expect(pickPortableZipAsset([exe('BotArk-0.12.0-x64.zip')])).toBeNull()
+  })
+})
+
 describe('decideUpdatePrompts', () => {
   it('shows nothing when both sides are current', () => {
     const d = decideUpdatePrompts(
@@ -111,10 +125,23 @@ describe('decideUpdatePrompts', () => {
   })
   it('falls back to opening the page when self-update is impossible', () => {
     const rel = [forkRelease('v0.12.0-goxf.2')]
-    expect(decideUpdatePrompts(input({ portable: false, forkReleases: rel })).portable?.canSelfUpdate).toBe(false)
+    expect(decideUpdatePrompts(input({ portable: null, forkReleases: rel })).portable?.canSelfUpdate).toBe(false)
     expect(decideUpdatePrompts(input({ platform: 'darwin', forkReleases: rel })).portable?.canSelfUpdate).toBe(false)
     const noAsset = [forkRelease('v0.12.0-goxf.2', { assets: [exe('BotArk-Setup-0.12.0-x64.exe')] })]
     expect(decideUpdatePrompts(input({ forkReleases: noAsset })).portable?.canSelfUpdate).toBe(false)
+  })
+  it('a zip build updates itself from the zip asset, an exe build from the exe', () => {
+    const rel = [
+      forkRelease('v0.12.0-goxf.2', {
+        assets: [exe('BotArk-Portable-0.12.0-goxf.2-x64.exe'), exe('BotArk-Portable-0.12.0-goxf.2-win-x64.zip')]
+      })
+    ]
+    const zip = decideUpdatePrompts(input({ portable: 'zip', forkReleases: rel })).portable
+    expect(zip?.canSelfUpdate).toBe(true)
+    expect(zip?.asset?.name).toMatch(/\.zip$/)
+    expect(decideUpdatePrompts(input({ portable: 'exe', forkReleases: rel })).portable?.asset?.name).toMatch(/\.exe$/)
+    const exeOnly = [forkRelease('v0.12.0-goxf.2')]
+    expect(decideUpdatePrompts(input({ portable: 'zip', forkReleases: exeOnly })).portable?.canSelfUpdate).toBe(false)
   })
   it('can show both prompts at once', () => {
     const d = decideUpdatePrompts(
@@ -143,5 +170,29 @@ describe('buildReplaceScript', () => {
     expect(s.indexOf('Move-Item -LiteralPath $old -Destination $backup')).toBeLessThan(
       s.indexOf('Move-Item -LiteralPath $new -Destination $old')
     )
+  })
+})
+
+describe('buildZipReplaceScript', () => {
+  const s = buildZipReplaceScript({
+    appDir: 'D:\\工具\\BotArk',
+    zipFile: 'D:\\工具\\BotArk\\.botark-update.zip',
+    exeName: 'BotArk.exe',
+    pid: 42,
+    logFile: 'D:\\工具\\BotArk\\BotArk-Data\\portable-update.log'
+  })
+  it('never touches the data folder or the downloaded zip', () => {
+    expect(s).toContain("$keep = @('BotArk-Data'")
+    expect(s).toContain('(Split-Path -Leaf $zip)')
+    expect(s).toContain("Where-Object { $_.Name -ne 'BotArk-Data' }")
+  })
+  it('moves old files out before new ones in, and rolls back on failure', () => {
+    expect(s.indexOf("$phase = 'in'")).toBeGreaterThan(s.indexOf('-Destination $backup'))
+    expect(s).toMatch(/rolling back/)
+    expect(s).toContain('$appPid = 42')
+    expect(s).toContain("$app = 'D:\\工具\\BotArk'")
+  })
+  it('refuses a zip without the app exe', () => {
+    expect(s).toContain('zip does not contain the app exe')
   })
 })
