@@ -152,6 +152,9 @@ async function harkFetch(
         method,
         headers,
         body: init.body !== undefined ? JSON.stringify(init.body) : undefined,
+        // API JSON must always be fresh: never let Chromium's HTTP cache
+        // answer a re-fetch (e.g. `GET /conversations` for the project list).
+        cache: 'no-store',
         signal
       })
 

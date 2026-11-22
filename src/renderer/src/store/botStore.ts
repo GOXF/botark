@@ -150,7 +150,8 @@ export interface BotHubState {
   startNewMuseSession: (botId: string) => Promise<void>
   applyHarkHistory: (botId: string, accountId: string, sessionId: string, messages: unknown[]) => void
   switchHarkSession: (botId: string, sessionId: string) => Promise<void>
-  startNewHarkSession: (botId: string, title: string) => Promise<void>
+  /** Resolves to the new Hark conversation id (undefined if the bot is gone). */
+  startNewHarkSession: (botId: string, title: string) => Promise<string | undefined>
   switchHermesSession: (botId: string, sessionId: string) => Promise<void>
   startNewHermesSession: (botId: string) => Promise<boolean>
   switchAntigravitySession: (botId: string, sessionId: string) => Promise<void>
@@ -1424,13 +1425,15 @@ export const useBotStore = create<BotHubState>()(
 
     startNewHarkSession: async (botId, title) => {
       const bot = get().bots.find((b) => b.id === botId)
-      if (!bot) return
+      if (!bot) return undefined
       const selection = markSessionSelection(botId)
       const result = await electronBridge()?.hark.rpc({ accountId: bot.activeAccountId, op: 'createConversation', title })
       if (!result?.ok) throw new Error(result?.message ?? 'Hark unavailable')
+      const conversationId = (result.data as { conversationId: string }).conversationId
       if (getBotForSessionSelection(bot, selection)) {
-        setFreshSession(botId, (result.data as { conversationId: string }).conversationId)
+        setFreshSession(botId, conversationId)
       }
+      return conversationId
     },
 
     switchHermesSession: async (botId, sessionId) => {
