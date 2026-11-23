@@ -3,15 +3,16 @@
  *   - 上游更新（qybaihe）: open the upstream release page, nothing is downloaded.
  *   - 便携版更新（GOXF）: download + self-replace the portable exe, or open the release page.
  */
-import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { Download, GitMerge, RefreshCw, X } from 'lucide-react'
 import type { GoxfPortablePrompt, GoxfUpdateEvent, GoxfUpstreamPrompt } from '@shared/goxfUpdate'
 import { Button } from '@/components/ui/Button'
 import { getBridge } from '@/lib/bridge'
-import { t } from '@/lib/i18n'
 import { setNoticeRect } from '@/lib/noticeRect'
 import { useBotStore } from '@/store/botStore'
+import { Notice } from './Notice'
+import { UpdateBanner } from './UpdateBanner'
 
 type PortableState =
   | { kind: 'hidden' }
@@ -21,44 +22,11 @@ type PortableState =
   | { kind: 'restarting'; version: string }
   | { kind: 'error'; message: string }
 
-// GOXF: every notice is the same card (title + description, action, ×), stacked bottom-right.
-const CARD =
-  'no-drag pointer-events-auto flex w-[340px] max-w-[92vw] items-center gap-3 rounded-3xl border border-line-strong bg-main py-3 pr-2 pl-4 text-[13px] shadow-toast animate-toast-in'
-
-function Notice({ icon, title, desc, action, onDismiss, tip }: {
-  icon: ReactNode; title: string; desc: string; action?: ReactNode; onDismiss?: () => void; tip?: string
-}) {
-  return (
-    <div className={CARD} title={tip}>
-      <span className="shrink-0 text-accent-600">{icon}</span>
-      <div className="min-w-0 flex-1">
-        <p className="truncate font-medium text-ink">{title}</p>
-        <p className="text-ink-secondary">{desc}</p>
-      </div>
-      {action}
-      {onDismiss && <DismissButton onClick={onDismiss} />}
-    </div>
-  )
-}
-
 /** "0.13.1-goxf.dev.413dc40" → "测试版 413dc40"; stable versions unchanged. */
 const shortVersion = (v?: string): string => {
   if (!v) return ''
   const dev = /\.dev\.([0-9a-f]{7,})$/i.exec(v)
   return dev ? `测试版 ${dev[1]}` : `v${v}`
-}
-
-function DismissButton({ onClick }: { onClick: () => void }) {
-  return (
-    <button
-      type="button"
-      className="press-icon grid size-6 shrink-0 place-items-center rounded-full text-ink-muted hover:bg-hover hover:text-ink"
-      aria-label={t('Dismiss')}
-      onClick={onClick}
-    >
-      <X className="size-3.5" />
-    </button>
-  )
 }
 
 export function GoxfUpdateBanner() {
@@ -114,12 +82,12 @@ export function GoxfUpdateBanner() {
   const showUpstream = upstream && dismissedUpstream !== upstream.version
   const showPortable =
     portable.kind !== 'hidden' && !(portable.kind === 'available' && dismissedPortable === portable.prompt.version)
-  const visible = Boolean(showUpstream || showPortable)
   const stackRef = useRef<HTMLDivElement>(null)
   // Report where the stack is, so native web views (which paint over DOM) keep clear of it.
+  // The stack is always mounted (the upstream banner shows its own states); empty = zero height.
   useEffect(() => {
     const el = stackRef.current
-    if (!visible || !el) return setNoticeRect(null)
+    if (!el) return
     const report = () => {
       const r = el.getBoundingClientRect()
       setNoticeRect(r.height ? { x: r.left, y: r.top, width: r.width, height: r.height } : null)
@@ -133,12 +101,12 @@ export function GoxfUpdateBanner() {
       window.removeEventListener('resize', report)
       setNoticeRect(null)
     }
-  }, [visible])
-  if (!visible) return null
+  }, [])
 
   // Portal + top z-index: no panel, select or sidebar may cover an update notice.
   return createPortal(
     <div ref={stackRef} className="pointer-events-none fixed right-3 bottom-3 z-[2147483647] flex flex-col items-end gap-2" role="status">
+      <UpdateBanner />
       {showPortable && portable.kind === 'available' && (
         <Notice
           icon={<Download className="size-4" aria-hidden />}
@@ -187,6 +155,7 @@ export function GoxfUpdateBanner() {
       {showPortable && portable.kind === 'error' && (
         <Notice
           icon={<X className="size-4" aria-hidden />}
+          error
           title="更新失败"
           desc={portable.message}
           onDismiss={() => setPortable({ kind: 'hidden' })}

@@ -4,6 +4,7 @@ import { Download, FileText, Globe, KeyRound, Monitor, ShieldAlert, Terminal } f
 import { EmptyLine, Section } from '@/components/info/Section'
 import { Button } from '@/components/ui/Button'
 import { ConnectorIcon } from '@/components/ui/ConnectorIcon'
+import { SegmentedControl } from '@/components/ui/SegmentedControl'
 import { TextInput } from '@/components/ui/Field'
 import { RefreshButton } from '@/components/muse/RefreshButton'
 import { getBridge } from '@/lib/bridge'
@@ -88,28 +89,7 @@ function fmtCountdown(d: Date, now: Date): string {
 }
 
 function leftColor(pct: number): string {
-  return pct > 50 ? 'bg-[#16a34a]' : pct >= 20 ? 'bg-[#d97706]' : 'bg-[#e5484d]'
-}
-
-function QuotaModeToggle({ mode, onChange }: { mode: QuotaMode; onChange: (m: QuotaMode) => void }) {
-  return (
-    <div className="mr-1 flex rounded-full bg-hover p-0.5 text-[11px]">
-      {(['used', 'left'] as const).map((m) => (
-        <button
-          key={m}
-          type="button"
-          onClick={() => onChange(m)}
-          className={
-            mode === m
-              ? 'rounded-full bg-surface px-2 py-px font-medium text-ink shadow-sm'
-              : 'rounded-full px-2 py-px text-ink-muted hover:text-ink'
-          }
-        >
-          {m === 'used' ? '已用' : '剩余'}
-        </button>
-      ))}
-    </div>
-  )
+  return pct > 50 ? 'bg-status-online' : pct >= 20 ? 'bg-status-attention' : 'bg-status-error'
 }
 
 function QuotaMeter(props: {
@@ -117,7 +97,6 @@ function QuotaMeter(props: {
   used: number
   limit: number
   mode: QuotaMode
-  usedColor: string
   resetAt: Date | null
   now: Date
 }) {
@@ -138,7 +117,7 @@ function QuotaMeter(props: {
       </div>
       <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-hover">
         <div
-          className={`h-full rounded-full ${mode === 'used' ? props.usedColor : leftColor(pct)}`}
+          className={`h-full rounded-full ${leftColor(100 - usedPct)}`}
           style={{ width: `${pct}%` }}
         />
       </div>
@@ -228,7 +207,17 @@ export function HarkBillingSection({ accountId }: { accountId: string }) {
       title="套餐与额度"
       action={
         <>
-          <QuotaModeToggle mode={mode} onChange={setMode} />
+          <SegmentedControl<QuotaMode>
+            size="xs"
+            aria-label="额度显示"
+            className="mr-1"
+            value={mode}
+            onValueChange={setMode}
+            options={[
+              { value: 'used', label: '已用' },
+              { value: 'left', label: '剩余' }
+            ]}
+          />
           <RefreshButton loading={loading} onClick={() => void refresh()} />
         </>
       }
@@ -254,7 +243,6 @@ export function HarkBillingSection({ accountId }: { accountId: string }) {
                 used={dailyUsed}
                 limit={dailyLimit}
                 mode={mode}
-                usedColor="bg-ink/75"
                 resetAt={dailyReset}
                 now={now}
               />
@@ -266,7 +254,6 @@ export function HarkBillingSection({ accountId }: { accountId: string }) {
                 used={poolUsed}
                 limit={poolLimit}
                 mode={mode}
-                usedColor="bg-accent-600"
                 resetAt={poolReset}
                 now={now}
               />

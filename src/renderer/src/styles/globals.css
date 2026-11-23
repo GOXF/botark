@@ -365,6 +365,8 @@
   --color-ink-faint: rgb(245 245 245 / 0.32);
   --color-accent-50: rgb(24 132 252 / 0.12);
   --color-accent-100: rgb(24 132 252 / 0.22);
+  --color-accent-200: rgb(24 132 252 / 0.35);
+  --color-accent-300: rgb(24 132 252 / 0.5);
   --color-status-online-ink: #29cb78;
   --color-status-busy-ink: #4d9bff;
   --color-status-attention-ink: #fb9500;
@@ -377,18 +379,36 @@
   --shadow-dialog: 0 24px 80px rgb(0 0 0 / 0.6), 0 0 0 0.5px rgb(255 255 255 / 0.08);
 }
 
-/* GOXF: settings account lists in grid mode — cards that fill wide windows. */
+/* GOXF: settings account lists in grid mode — cards that fill wide windows.
+   Unlayered: must beat the list's divide-y and its wrapper's card utilities. */
 [data-acc-layout='grid'] .goxf-acc-list {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(380px, 1fr));
   gap: 12px;
-  padding: 12px;
+  padding: 12px 0 0;
 }
 [data-acc-layout='grid'] .goxf-acc-list > li {
   border: 1px solid var(--color-line);
-  border-radius: 14px;
-  background: var(--color-surface);
+  border-radius: var(--radius-2xl);
   flex-direction: column;
   align-items: stretch;
   justify-content: flex-start;
+}
+/* The wrapper card steps aside so the account cards aren't nested in it. */
+[data-acc-layout='grid'] :has(> .goxf-acc-list) {
+  border: 0;
+  border-radius: 0;
+  background: none;
+  box-shadow: none;
+  overflow: visible;
+}
+[data-acc-layout='grid'] :has(> .goxf-acc-list) > :not(.goxf-acc-list) {
+  border: 0;
+  border-radius: var(--radius-xl);
+}
+/* Layered so the cards' hover:bg-* utilities still win. */
+@layer components {
+  [data-acc-layout='grid'] .goxf-acc-list > li {
+    background: var(--color-surface);
+  }
 }

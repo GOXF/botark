@@ -237,7 +237,7 @@ export const BotListItem = memo(function BotListItem({
           <span
             className={cn(
               'block min-w-0 flex-1 truncate text-[12.5px] leading-[17px]',
-              isWorking ? 'shimmer-text font-medium' : done ? 'font-medium text-status-attention' : 'text-ink-secondary'
+              isWorking ? 'shimmer-text font-medium' : done ? 'font-medium text-status-attention-ink' : 'text-ink-secondary'
             )}
           >
             {preview}
@@ -249,11 +249,24 @@ export const BotListItem = memo(function BotListItem({
         )}
         {/* GOXF: a dot under the time for anything new (unread reply or finished task), hard to miss. */}
         {bot.unread > 0 ? (
-          <span className="inline-flex h-4 min-w-4 shrink-0 items-center justify-center rounded-full bg-accent-600 px-1 text-[10.5px] leading-none font-semibold text-white tabular-nums">
+          <span
+            className={cn(
+              'inline-flex h-4 min-w-4 shrink-0 items-center justify-center rounded-full bg-accent-600 px-1 text-[10.5px] leading-none font-semibold text-white tabular-nums transition-opacity duration-100 group-focus-within:opacity-0 group-hover:opacity-0',
+              menuOpen && 'opacity-0'
+            )}
+          >
             {bot.unread > 99 ? '99+' : bot.unread}
           </span>
         ) : (
-          done && <span aria-hidden className="size-2 shrink-0 rounded-full bg-status-attention" />
+          done && (
+            <span
+              aria-hidden
+              className={cn(
+                'size-2 shrink-0 rounded-full bg-status-attention transition-opacity duration-100 group-focus-within:opacity-0 group-hover:opacity-0',
+                menuOpen && 'opacity-0'
+              )}
+            />
+          )
         )}
         </span>
       </span>

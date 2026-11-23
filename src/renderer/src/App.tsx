@@ -10,7 +10,6 @@ import { hasSeenOnboarding, OnboardingDialog } from '@/components/onboarding/Onb
 import { CommandPalette } from '@/components/palette/CommandPalette'
 import { SettingsView } from '@/components/settings/SettingsView'
 import { Sidebar } from '@/components/sidebar/Sidebar'
-import { UpdateBanner } from '@/components/update/UpdateBanner'
 import { GoxfUpdateBanner } from '@/components/update/GoxfUpdateBanner'
 import { useGlobalShortcuts } from '@/lib/shortcuts'
 import { startAdapterBridge } from '@/services/adapterBridge'
@@ -206,7 +205,6 @@ export default function App() {
   return (
     <>
       <div className="relative isolate h-full">
-        <UpdateBanner />
         <GoxfUpdateBanner />
         <AppShell
           asideOpen={infoOpen}

@@ -40,7 +40,7 @@ const PROJECTS_CHANGED = 'bothub:hark-projects'
 
 /** GOXF: Hark-style state per project: spinner "工作中", amber "完成" until opened. */
 function WorkDot({ work, current }: { work?: HarkProjectWork; current: boolean }) {
-  if (work?.working) return <Loader2 aria-hidden className="size-3 shrink-0 animate-spin text-status-online" />
+  if (work?.working) return <Loader2 aria-hidden className="size-3 shrink-0 animate-spin text-status-busy" />
   return (
     <span
       className={cn(
@@ -52,8 +52,8 @@ function WorkDot({ work, current }: { work?: HarkProjectWork; current: boolean }
 }
 
 function WorkLabel({ work }: { work?: HarkProjectWork }) {
-  if (work?.working) return <span className="shrink-0 text-[10.5px] font-medium text-status-online">工作中</span>
-  if (work?.doneAt) return <span className="shrink-0 text-[10.5px] font-medium text-status-attention">完成</span>
+  if (work?.working) return <span className="shrink-0 text-[10.5px] font-medium text-status-busy-ink">工作中</span>
+  if (work?.doneAt) return <span className="shrink-0 text-[10.5px] font-medium text-status-attention-ink">完成</span>
   return null
 }
 
@@ -68,6 +68,7 @@ export function HarkProjects({ botId, compact }: { botId: string; compact?: bool
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
   const [menuOpen, setMenuOpen] = useState(false)
+  const [confirmDelete, setConfirmDelete] = useState<string>()
   const [showArchived, setShowArchived] = useState(false)
   const [revision, setRevision] = useState(0)
   const lastFetchAt = useRef(0)
@@ -247,9 +248,13 @@ export function HarkProjects({ botId, compact }: { botId: string; compact?: bool
       }
     })
 
-  // GOXF: delete a project for good (DELETE /conversations/:id, as Hark web does), after a confirm.
+  // GOXF: delete a project for good (DELETE /conversations/:id, as Hark web does); second click confirms.
   const deleteProject = (p: HarkProject) => {
-    if (!window.confirm(`删除项目「${p.title || '未命名项目'}」？删除后无法恢复。`)) return
+    if (confirmDelete !== p.id) {
+      setConfirmDelete(p.id)
+      return
+    }
+    setConfirmDelete(undefined)
     return perform(async () => {
       await rpc({ accountId, op: 'call', method: 'DELETE', path: `/conversations/${encodeURIComponent(p.id)}` })
       const main = projects.find((row) => row.main)
@@ -443,12 +448,17 @@ export function HarkProjects({ botId, compact }: { botId: string; compact?: bool
                   <button
                     type="button"
                     disabled={busy}
-                    title="删除"
+                    title={confirmDelete === p.id ? '再点一次删除' : '删除'}
                     aria-label={`删除 ${p.title}`}
                     onClick={() => void deleteProject(p)}
-                    className="press-icon grid size-6 place-items-center rounded-full text-ink-secondary hover:bg-active hover:text-status-error disabled:opacity-35"
+                    className={cn(
+                      'press-icon grid h-6 min-w-6 place-items-center rounded-full disabled:opacity-35',
+                      confirmDelete === p.id
+                        ? 'bg-status-error/10 px-2 text-[11px] font-medium text-status-error hover:bg-status-error/15'
+                        : 'text-ink-secondary hover:bg-active hover:text-status-error'
+                    )}
                   >
-                    <Trash2 className="size-3.5" />
+                    {confirmDelete === p.id ? '确认删除' : <Trash2 className="size-3.5" />}
                   </button>
                 </div>
               )}
@@ -488,12 +498,17 @@ export function HarkProjects({ botId, compact }: { botId: string; compact?: bool
                   <button
                     type="button"
                     disabled={busy}
-                    title="删除"
+                    title={confirmDelete === p.id ? '再点一次删除' : '删除'}
                     aria-label={`删除 ${p.title}`}
                     onClick={() => void deleteProject(p)}
-                    className="press-icon grid size-6 shrink-0 place-items-center rounded-full text-ink-muted hover:bg-active hover:text-status-error disabled:opacity-35"
+                    className={cn(
+                      'press-icon grid h-6 min-w-6 shrink-0 place-items-center rounded-full disabled:opacity-35',
+                      confirmDelete === p.id
+                        ? 'bg-status-error/10 px-2 text-[11px] font-medium text-status-error hover:bg-status-error/15'
+                        : 'text-ink-muted hover:bg-active hover:text-status-error'
+                    )}
                   >
-                    <Trash2 className="size-3" />
+                    {confirmDelete === p.id ? '确认删除' : <Trash2 className="size-3" />}
                   </button>
                   </span>
                 </li>

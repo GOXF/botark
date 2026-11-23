@@ -103,6 +103,9 @@ const PLATFORM_LABELS: Record<PlatformId, string> = {
   cue: 'Cue (Manus)'
 }
 
+// Settings tabs that render a .goxf-acc-list (the grid/list toggle only applies there).
+const ACC_LIST_TABS: string[] = ['overview', 'muse-accounts', 'dot-accounts', 'grok-accounts', 'hark-accounts', 'antigravity-accounts']
+
 export function SettingsView() {
   const [accLayout, setAccLayout] = useAccountLayout()
   const tr = useT()
@@ -775,16 +778,18 @@ export function SettingsView() {
           <h1 className="text-[15px] font-semibold tracking-tight text-ink">设置与账号</h1>
         </div>
         <div className="flex items-center gap-2">
-          <SegmentedControl<AccountLayout>
-            size="sm"
-            aria-label="账号布局"
-            value={accLayout}
-            onValueChange={setAccLayout}
-            options={[
-              { value: 'grid', label: '宫格' },
-              { value: 'list', label: '列表' }
-            ]}
-          />
+          {ACC_LIST_TABS.includes(settingsTab) && (
+            <SegmentedControl<AccountLayout>
+              size="sm"
+              aria-label="账号布局"
+              value={accLayout}
+              onValueChange={setAccLayout}
+              options={[
+                { value: 'grid', label: '宫格' },
+                { value: 'list', label: '列表' }
+              ]}
+            />
+          )}
           <Button
             size="sm"
             variant="secondary"

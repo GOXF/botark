@@ -496,10 +496,13 @@ function ImageLightbox({
 
 function WorkspaceImage({
   part,
-  accountId
+  accountId,
+  mine
 }: {
   part: ChatMediaPart
   accountId?: string
+  /** User's own picture: same height cap as a local attachment. */
+  mine?: boolean
 }) {
   const initialDirectSrc =
     /^data:image\//i.test(part.path) || (isHttp(part.path) && !needsAuthProxyHttpUrl(part.path))
@@ -568,7 +571,7 @@ function WorkspaceImage({
             <img
               src={src}
               alt={part.name || part.path}
-              className="max-h-72 max-w-full object-contain"
+              className={cn(mine ? 'max-h-56' : 'max-h-72', 'max-w-full object-contain')}
               onError={() => {
                 if (isHttp(src) && !triedProxy && accountId) {
                   setTriedProxy(true)
@@ -783,11 +786,13 @@ function WorkspaceAV({
 function MediaParts({
   parts,
   accountId,
-  onOpenDoc
+  onOpenDoc,
+  mine
 }: {
   parts: ChatMediaPart[]
   accountId?: string
   onOpenDoc?: (target: NativeDocumentTarget) => void
+  mine?: boolean
 }) {
   const [downloadingKey, setDownloadingKey] = useState<string | null>(null)
   const [downloadError, setDownloadError] = useState<string | null>(null)
@@ -854,7 +859,7 @@ function MediaParts({
             className="overflow-hidden rounded-xl border border-line bg-surface shadow-soft"
           >
             {looksLikeImage(part) ? (
-              <WorkspaceImage part={part} accountId={accountId} />
+              <WorkspaceImage part={part} accountId={accountId} mine={mine} />
             ) : looksLikeAudio(part) ? (
               <WorkspaceAV part={part} accountId={accountId} kind="audio" />
             ) : looksLikeVideo(part) ? (
@@ -2156,9 +2161,7 @@ export const MessageBubble = memo(function MessageBubble({
 
       {/* 2b. Hark's copy of the user's own pictures (history reload): same spot as local attachments */}
       {mine && media.length > 0 && (
-        <div className="mb-1.5 flex w-full max-w-[78%] justify-end self-end">
-          <MediaParts parts={media} accountId={message.accountId} onOpenDoc={openDocument} />
-        </div>
+        <MediaParts parts={media} accountId={message.accountId} onOpenDoc={openDocument} mine />
       )}
 
       {/* 3. Message text or structured inline Article / Document Card */}
