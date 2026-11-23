@@ -1,7 +1,8 @@
-import { useEffect, useState, type RefObject } from 'react'
+import { useEffect, useRef, useState, type RefObject } from 'react'
 import type { WebViewBounds } from '@shared/ipc'
 import { getBridge } from '@/lib/bridge'
 import { useOverlayStore } from '@/lib/overlay'
+import { avoidNotice, useNoticeRect } from '@/lib/noticeRect'
 
 export type WebSessionState =
   | { status: 'unsupported' }
@@ -18,9 +19,10 @@ interface Options {
   containerRef: RefObject<HTMLElement | null>
 }
 
-function measure(el: HTMLElement): WebViewBounds {
+function measure(el: HTMLElement, notice: ReturnType<typeof useNoticeRect>): WebViewBounds {
   const rect = el.getBoundingClientRect()
-  return { x: rect.left, y: rect.top, width: rect.width, height: rect.height }
+  // GOXF: the native view paints over all DOM, so stop short of the update notices.
+  return avoidNotice({ x: rect.left, y: rect.top, width: rect.width, height: rect.height }, notice)
 }
 
 /**
@@ -31,6 +33,10 @@ function measure(el: HTMLElement): WebViewBounds {
 export function useWebSessionView({ botId, accountId, url, label, containerRef }: Options): WebSessionState {
   const webViews = getBridge()?.webViews
   const overlayOpen = useOverlayStore((s) => s.count > 0)
+  const notice = useNoticeRect()
+  const noticeRef = useRef(notice)
+  noticeRef.current = notice
+  const syncRef = useRef<(() => void) | null>(null)
   const [state, setState] = useState<WebSessionState>(() =>
     webViews ? { status: 'loading' } : { status: 'unsupported' }
   )
@@ -42,8 +48,9 @@ export function useWebSessionView({ botId, accountId, url, label, containerRef }
     let disposed = false
     let viewId: string | null = null
     const sync = () => {
-      if (viewId) webViews.resize(viewId, measure(el))
+      if (viewId) webViews.resize(viewId, measure(el, noticeRef.current))
     }
+    syncRef.current = sync
 
     setState((s) => (s.status === 'ready' ? s : { status: 'loading' }))
     webViews
@@ -51,7 +58,7 @@ export function useWebSessionView({ botId, accountId, url, label, containerRef }
       .then(async (info) => {
         if (disposed) return
         viewId = info.viewId
-        await webViews.attach(info.viewId, measure(el))
+        await webViews.attach(info.viewId, measure(el, noticeRef.current))
         // Unmounted while attaching: hide it again.
         if (disposed) void webViews.detach(info.viewId)
         else setState({ status: 'ready', partition: info.partition })
@@ -68,9 +75,12 @@ export function useWebSessionView({ botId, accountId, url, label, containerRef }
       disposed = true
       observer.disconnect()
       window.removeEventListener('resize', sync)
+      syncRef.current = null
       if (viewId) void webViews.detach(viewId)
     }
   }, [webViews, botId, accountId, url, label, containerRef, overlayOpen])
+
+  useEffect(() => syncRef.current?.(), [notice])
 
   return state
 }

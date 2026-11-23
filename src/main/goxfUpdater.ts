@@ -17,6 +17,15 @@
  * Exposes the same registerUpdaterIpc/startAutoUpdater as ./updater so index.ts only swaps one import.
  */
 import { spawn } from 'node:child_process'
+import {
+  HELPER_SOURCE,
+  UPDATE_BACKUP_DIR,
+  UPDATE_HELPER_FILE,
+  UPDATE_JOB_FILE,
+  UPDATE_READY_FILE,
+  UPDATE_STAGE_DIR,
+  type HelperJob
+} from './goxfUpdateHelper'
 import { createHash } from 'node:crypto'
 import {
   appendFileSync,
@@ -46,9 +55,7 @@ import {
 } from '@shared/goxfUpdate'
 import { checkFailedMessage } from './updateCheck'
 import {
-  buildDeltaReplaceScript,
   buildReplaceScript,
-  buildZipReplaceScript,
   decideUpdatePrompts,
   formatGoxfVersion,
   isUpdateLockFresh,
@@ -326,6 +333,57 @@ async function unzip(zip: string, dest: string): Promise<void> {
 }
 
 /** Save session cookies, then quit; exit hard if a before-quit/close handler stalls or vetoes it. */
+/**
+ * Run the update helper with an Electron exe in Node mode and wait until it has really started
+ * (it writes readyFile first). Throws, so the app does not quit, when it cannot start or dies early.
+ */
+async function startHelper(job: HelperJob, exe: string): Promise<void> {
+  const script = join(PORTABLE_DATA_DIR!, UPDATE_HELPER_FILE)
+  const jobFile = join(PORTABLE_DATA_DIR!, UPDATE_JOB_FILE)
+  writeFileSync(script, HELPER_SOURCE, 'utf8')
+  writeFileSync(jobFile, JSON.stringify(job), 'utf8')
+  rmSync(job.readyFile, { force: true })
+  const child = spawn(exe, [script, jobFile], {
+    detached: true,
+    stdio: 'ignore',
+    windowsHide: true,
+    env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' }
+  })
+  let failure: string | null = null
+  child.on('error', (e) => (failure = `cannot start: ${e.message}`))
+  child.on('exit', (code, signal) => (failure ??= `exited early (code ${code}, signal ${signal})`))
+  child.unref()
+  logUpdate(`update helper started: ${exe} pid ${child.pid}`)
+  for (let i = 0; i < 100; i++) {
+    if (existsSync(job.readyFile)) return
+    if (failure) break
+    await new Promise((r) => setTimeout(r, 100))
+  }
+  rmSync(job.lockFile, { force: true })
+  if (pendingFile) rmSync(pendingFile, { force: true })
+  const why = failure ?? 'did not report ready in 10s'
+  logUpdate(`update helper failed: ${why}`)
+  throw new Error(`更新助手没能启动（${why}）`)
+}
+
+/** Next start after an update: the stage, backup and helper files are no longer in use. */
+function cleanupAfterUpdate(): void {
+  if (!PORTABLE_DIR || !PORTABLE_DATA_DIR) return
+  for (const p of [
+    join(PORTABLE_DIR, UPDATE_STAGE_DIR),
+    join(PORTABLE_DIR, UPDATE_BACKUP_DIR),
+    join(PORTABLE_DATA_DIR, UPDATE_HELPER_FILE),
+    join(PORTABLE_DATA_DIR, UPDATE_JOB_FILE),
+    join(PORTABLE_DATA_DIR, UPDATE_READY_FILE)
+  ]) {
+    try {
+      rmSync(p, { recursive: true, force: true, maxRetries: 2 })
+    } catch {
+      /* still in use: next start */
+    }
+  }
+}
+
 async function quitForUpdate(): Promise<void> {
   await Promise.race([flushSessionCookies().catch(() => undefined), new Promise((r) => setTimeout(r, 3_000))])
   logUpdate('quitting for update')
@@ -393,40 +451,53 @@ async function installPortable(): Promise<void> {
     logUpdate(`downloaded ${changed ? `delta (${changed.length} files)` : 'full'}: ${asset.name}`)
     const exeName = basename(process.execPath)
     const logFile = join(dir, 'BotArk-Data', 'update.log')
-    let body: string
     if (zipMode) {
       broadcastGoxf({ type: 'portable-extracting', version: target })
       await unzip(ready, stage)
-      const head = { appDir: dir, exeName, pid: process.pid, logFile, lockFile: lockFile! }
+      let src: string | undefined
       if (changed) {
         for (const f of changed) {
           if ((await sha256File(join(stage, ...f.path.split('/')))) !== f.sha256) throw new Error(`补丁文件校验失败：${f.path}`)
         }
-        body = buildDeltaReplaceScript({ ...head, patchZip: ready, stageDir: stage, files: changed })
       } else {
         // A zip with a single top-level folder: that folder is the new app root.
         const top = readdirSync(stage, { withFileTypes: true })
-        const src = top.length === 1 && top[0].isDirectory() ? join(stage, top[0].name) : stage
+        src = top.length === 1 && top[0].isDirectory() ? join(stage, top[0].name) : stage
         if (!existsSync(join(src, exeName))) throw new Error(`更新包里没有 ${exeName}`)
-        body = buildZipReplaceScript({ ...head, zipFile: ready, stageDir: stage, srcDir: src })
       }
-      logUpdate('staged and verified; handing over to the swap script')
+      logUpdate('staged and verified; starting the update helper')
+      if (pendingFile) writeFileSync(pendingFile, JSON.stringify({ target, from: currentVersion() }))
+      // Before quitting, so a relaunch in the gap before the helper runs is turned away too.
+      writeFileSync(lockFile!, new Date().toISOString())
+      await startHelper({
+        mode: changed ? 'delta' : 'full',
+        appDir: dir,
+        exeName,
+        pid: process.pid,
+        logFile,
+        lockFile: lockFile!,
+        readyFile: join(PORTABLE_DATA_DIR!, UPDATE_READY_FILE),
+        zipFile: ready,
+        stageDir: stage,
+        backupDir: join(dir, UPDATE_BACKUP_DIR),
+        srcDir: src,
+        files: changed?.map((f) => f.path),
+        keep: ['BotArk-Data', UPDATE_STAGE_DIR, UPDATE_BACKUP_DIR, basename(ready)]
+      }, changed ? process.execPath : join(src!, exeName))
     } else {
-      body = buildReplaceScript({ oldExe: PORTABLE_FILE!, newExe: ready, pid: process.pid, logFile })
+      const body = buildReplaceScript({ oldExe: PORTABLE_FILE!, newExe: ready, pid: process.pid, logFile })
+      const script = join(tmpdir(), `botark-portable-update-${Date.now()}.ps1`)
+      // UTF-8 BOM so Windows PowerShell 5.1 reads non-ASCII paths correctly.
+      writeFileSync(script, '\uFEFF' + body, 'utf8')
+      if (pendingFile) writeFileSync(pendingFile, JSON.stringify({ target, from: currentVersion() }))
+      const child = spawn(
+        'powershell.exe',
+        ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-File', script],
+        { detached: true, stdio: 'ignore', windowsHide: true }
+      )
+      child.unref()
+      logUpdate(`swap script started (${script})`)
     }
-    const script = join(tmpdir(), `botark-portable-update-${Date.now()}.ps1`)
-    // UTF-8 BOM so Windows PowerShell 5.1 reads non-ASCII paths correctly.
-    writeFileSync(script, '\uFEFF' + body, 'utf8')
-    if (pendingFile) writeFileSync(pendingFile, JSON.stringify({ target, from: currentVersion() }))
-    // Before quitting, so a relaunch in the gap before the script starts is turned away too.
-    if (zipMode) writeFileSync(lockFile!, new Date().toISOString())
-    const child = spawn(
-      'powershell.exe',
-      ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-File', script],
-      { detached: true, stdio: 'ignore', windowsHide: true }
-    )
-    child.unref()
-    logUpdate(`swap script started (${script})`)
     broadcastGoxf({ type: 'portable-restarting', version: target })
     setTimeout(() => void quitForUpdate(), 600)
   } catch (error) {
@@ -511,6 +582,7 @@ export function startAutoUpdater(): void {
     if (first) {
       first = false
       // After the check so the "available" card cannot hide it.
+      cleanupAfterUpdate()
       const failed = takePendingFailure()
       if (failed) broadcastGoxf({ type: 'portable-error', message: failed })
     }

@@ -1,8 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
-  buildDeltaReplaceScript,
   buildReplaceScript,
-  buildZipReplaceScript,
   isUpdateLockFresh,
   decideUpdatePrompts,
   formatGoxfVersion,
@@ -179,43 +177,6 @@ describe('buildReplaceScript', () => {
   })
 })
 
-describe('buildZipReplaceScript', () => {
-  const s = buildZipReplaceScript({
-    appDir: 'D:\\工具\\BotArk',
-    zipFile: 'D:\\工具\\BotArk\\.botark-update.zip',
-    exeName: 'BotArk.exe',
-    pid: 42,
-    logFile: 'D:\\工具\\BotArk\\BotArk-Data\\update.log',
-    lockFile: 'D:\\工具\\BotArk\\BotArk-Data\\update-in-progress.lock',
-    stageDir: 'D:\\工具\\BotArk\\.botark-update-stage',
-    srcDir: 'D:\\工具\\BotArk\\.botark-update-stage\\BotArk'
-  })
-  it('never touches the data folder or the downloaded zip', () => {
-    expect(s).toContain("$keep = @('BotArk-Data'")
-    expect(s).toContain('(Split-Path -Leaf $zip)')
-    expect(s).toContain("Where-Object { $_.Name -ne 'BotArk-Data' }")
-  })
-  it('moves old files out before new ones in, and rolls back on failure', () => {
-    expect(s.indexOf("$phase = 'in'")).toBeGreaterThan(s.indexOf('-Destination $backup'))
-    expect(s).toMatch(/rolling back/)
-    expect(s).toContain('$appPid = 42')
-    expect(s).toContain("$app = 'D:\\工具\\BotArk'")
-  })
-  it('only renames: no unpacking left in the script', () => {
-    expect(s).not.toContain('Expand-Archive')
-  })
-  it('clears every process running from the app folder before swapping', () => {
-    expect(s).toContain('StartsWith($prefix')
-    expect(s).toContain('Stop-Process -Force')
-  })
-  it('holds the lock and drops it before relaunching', () => {
-    expect(s).toContain('Set-Content -LiteralPath $lock')
-    const relaunch = s.slice(s.indexOf('function Relaunch'))
-    expect(relaunch.indexOf('Unlock')).toBeLessThan(relaunch.indexOf('Start-Process'))
-    expect(s).toContain('-PassThru')
-  })
-})
-
 describe('release readiness and check cadence', () => {
   it('ignores assets GitHub has not finished uploading', () => {
     const url = 'https://x/BotArk-Portable-0.12.1-goxf.2-win-x64.zip'
@@ -290,28 +251,6 @@ describe('planDelta', () => {
   it('falls back to full when nothing would change', () => {
     const local = Object.fromEntries(files.map((f) => [f.path, f.sha256]))
     expect(planDelta(files, local)).toEqual({ mode: 'full', reason: 'patch would change nothing' })
-  })
-})
-
-describe('buildDeltaReplaceScript', () => {
-  const script = buildDeltaReplaceScript({
-    appDir: "C:\\Apps\\Bot'Ark",
-    patchZip: 'C:\\Apps\\BotArk\\.botark-update-patch.zip',
-    stageDir: 'C:\\Apps\\BotArk\\.botark-update-stage',
-    files: [{ path: 'resources/app.asar.unpacked/a.node' }],
-    exeName: 'BotArk.exe',
-    pid: 42,
-    logFile: 'C:\\Apps\\BotArk\\BotArk-Data\\update.log',
-    lockFile: 'C:\\Apps\\BotArk\\BotArk-Data\\update-in-progress.lock'
-  })
-  it('swaps the pre-checked files, backs up, rolls back and relaunches', () => {
-    expect(script).toContain("$app = 'C:\\Apps\\Bot''Ark'")
-    expect(script).toContain("'resources\\app.asar.unpacked\\a.node'")
-    expect(script).not.toContain('Expand-Archive')
-    expect(script).toContain('Stop-Process -Force')
-    expect(script).toContain('rolling back')
-    expect(script).toContain('Wait-Process -Id $appPid')
-    expect(script.split('\r\n').length).toBeGreaterThan(20)
   })
 })
 

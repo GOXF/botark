@@ -3,12 +3,14 @@
  *   - 上游更新（qybaihe）: open the upstream release page, nothing is downloaded.
  *   - 便携版更新（GOXF）: download + self-replace the portable exe, or open the release page.
  */
-import { useEffect, useState, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { createPortal } from 'react-dom'
 import { Download, GitMerge, RefreshCw, X } from 'lucide-react'
 import type { GoxfPortablePrompt, GoxfUpdateEvent, GoxfUpstreamPrompt } from '@shared/goxfUpdate'
 import { Button } from '@/components/ui/Button'
 import { getBridge } from '@/lib/bridge'
 import { t } from '@/lib/i18n'
+import { setNoticeRect } from '@/lib/noticeRect'
 import { useBotStore } from '@/store/botStore'
 
 type PortableState =
@@ -112,10 +114,31 @@ export function GoxfUpdateBanner() {
   const showUpstream = upstream && dismissedUpstream !== upstream.version
   const showPortable =
     portable.kind !== 'hidden' && !(portable.kind === 'available' && dismissedPortable === portable.prompt.version)
-  if (!showUpstream && !showPortable) return null
+  const visible = Boolean(showUpstream || showPortable)
+  const stackRef = useRef<HTMLDivElement>(null)
+  // Report where the stack is, so native web views (which paint over DOM) keep clear of it.
+  useEffect(() => {
+    const el = stackRef.current
+    if (!visible || !el) return setNoticeRect(null)
+    const report = () => {
+      const r = el.getBoundingClientRect()
+      setNoticeRect(r.height ? { x: r.left, y: r.top, width: r.width, height: r.height } : null)
+    }
+    report()
+    const observer = new ResizeObserver(report)
+    observer.observe(el)
+    window.addEventListener('resize', report)
+    return () => {
+      observer.disconnect()
+      window.removeEventListener('resize', report)
+      setNoticeRect(null)
+    }
+  }, [visible])
+  if (!visible) return null
 
-  return (
-    <div className="pointer-events-none absolute right-3 bottom-3 z-50 flex flex-col items-end gap-2" role="status">
+  // Portal + top z-index: no panel, select or sidebar may cover an update notice.
+  return createPortal(
+    <div ref={stackRef} className="pointer-events-none fixed right-3 bottom-3 z-[2147483647] flex flex-col items-end gap-2" role="status">
       {showPortable && portable.kind === 'available' && (
         <Notice
           icon={<Download className="size-4" aria-hidden />}
@@ -182,6 +205,7 @@ export function GoxfUpdateBanner() {
           onDismiss={() => setDismissedUpstream(upstream.version)}
         />
       )}
-    </div>
+    </div>,
+    document.body
   )
 }
