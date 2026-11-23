@@ -1,12 +1,20 @@
 name: GOXF Portable
 
-# GOXF fork only. Push a tag v<version>-goxf.<goxfBuild> (both from package.json,
-# e.g. v0.12.0-goxf.1) to build the Windows portable exe and publish it as a
-# fork release. The in-app updater (src/main/goxfUpdater.ts) looks for the
-# newest v*-goxf.* release with a "*Portable*x64*.exe" asset.
+# GOXF fork only. Builds the Windows portable exe + unpacked-folder zip.
+#   tag v<version>-goxf.<goxfBuild> (both from package.json)  → stable release (正式通道)
+#   every push to branch goxf/portable                       → prerelease v<version>-goxf.dev.<sha7> (测试通道),
+#                                                              only the newest 5 dev prereleases (and tags) are kept
+#   manual dispatch                                          → run artifact only
+# Assets per release (read by src/main/goxfUpdater.ts):
+#   BotArk-Portable-<v>-win-x64.zip                full program folder (+ empty BotArk-Data)
+#   manifest-BotArk-Portable-<v>-win-x64.json      every program file: path, sha256, size (BotArk-Data excluded)
+#   patch-BotArk-Portable-<v>-win-x64.zip          the whole resources/ folder; applied file-by-file when the
+#                                                  runtime (everything outside resources/) matches the manifest
+#   *Portable*.exe                                 single-exe build
 on:
   push:
     tags: ['v*-goxf.*']
+    branches: ['goxf/portable']
   workflow_dispatch:
 
 permissions:
@@ -37,50 +45,71 @@ jobs:
             echo "::error::tag $TAG does not match package.json $expected"
             exit 1
           fi
+      - name: Release tag for this build
+        shell: bash
+        run: |
+          if [ "${{ github.ref_type }}" = tag ]; then t="$TAG"
+          else t="v$(node -p "require('./package.json').version")-goxf.dev.${GITHUB_SHA::7}"; fi
+          echo "GOXF_TAG=$t" >> "$GITHUB_ENV"
       - run: npm ci
       - run: npm run typecheck
       - run: npm test
+      - name: Stamp build identity into package.json (the updater compares it with releases)
+        shell: bash
+        run: npm pkg set "goxfTag=$GOXF_TAG" "goxfBuiltAt=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
       - run: npm run build
       - name: Build portable exe + unpacked folder
         shell: bash
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
         run: npx electron-builder --config electron-builder.config.cjs --win portable dir --x64 --publish never
-      - name: Zip the unpacked folder (BotArk-Data inside marks it portable)
+      - name: Zip the unpacked folder (BotArk-Data inside marks it portable) + delta manifest and patch
         shell: pwsh
         run: |
-          $ver = node -p "const p=require('./package.json'); p.version + '-goxf.' + p.goxfBuild"
+          $ver = $env:GOXF_TAG.Substring(1)
           $name = "BotArk-Portable-$ver-win-x64"
+          node scripts/goxf-manifest.mjs release/win-unpacked $ver "release/manifest-$name.json"
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          # Patch = resources/ only (app.asar etc.); entries are "resources/…", matching manifest paths.
+          Compress-Archive -Path release/win-unpacked/resources -DestinationPath "release/patch-$name.zip"
           $root = Join-Path $env:RUNNER_TEMP $name
           Copy-Item -Recurse release/win-unpacked $root
           New-Item -ItemType Directory -Path (Join-Path $root 'BotArk-Data') | Out-Null
           Set-Content -Encoding utf8 -Path (Join-Path $root 'BotArk-Data/README.txt') -Value 'BotArk portable data folder. Keep it next to BotArk.exe; copy the whole folder to move BotArk with your accounts.'
           Compress-Archive -Path $root -DestinationPath "release/$name.zip"
       - name: Publish fork release
-        if: github.ref_type == 'tag'
+        if: github.event_name == 'push'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           shopt -s nullglob
-          files=(release/*Portable*.exe release/*Portable*.zip)
+          files=(release/*Portable*.exe release/*Portable*.zip release/manifest-*.json)
           if [ ${#files[@]} -eq 0 ]; then
             echo "::error::no portable build in release/"
             ls release || true
             exit 1
           fi
-          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+          if [ "${{ github.ref_type }}" != tag ]; then
+            # Created with GITHUB_TOKEN, so this tag does not re-trigger the tag build.
+            gh release create "$GOXF_TAG" "${files[@]}" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+              --prerelease --latest=false --title "BotArk Portable $GOXF_TAG (测试)" --notes "Dev build of $GITHUB_SHA"
+            gh release list --repo "$GITHUB_REPOSITORY" --limit 100 --json tagName,isPrerelease,createdAt \
+              --jq '[.[] | select(.isPrerelease and (.tagName | test("-goxf\\.dev\\.")))] | sort_by(.createdAt) | reverse | .[5:] | .[].tagName' |
+              while read -r old; do gh release delete "$old" --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag; done
+          elif gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release upload "$TAG" "${files[@]}" --repo "$GITHUB_REPOSITORY" --clobber
           else
             # Not --latest: keeps the fork's "latest" free so nothing confuses it with upstream.
             gh release create "$TAG" "${files[@]}" --repo "$GITHUB_REPOSITORY" --verify-tag \
               --title "BotArk Portable $TAG" --generate-notes --latest=false
           fi
-      - name: Keep the exe as a run artifact (manual runs)
-        if: github.ref_type != 'tag'
+      - name: Keep the build as a run artifact (manual runs)
+        if: github.event_name == 'workflow_dispatch'
         uses: actions/upload-artifact@v4
         with:
           name: botark-portable
           path: |
             release/*Portable*.exe
             release/*Portable*.zip
+            release/manifest-*.json

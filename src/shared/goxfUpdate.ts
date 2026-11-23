@@ -9,8 +9,12 @@ export const GOXF_UPDATE_CHANNELS = {
   event: 'goxf:update:event',
   openUpstream: 'goxf:update:open-upstream',
   installPortable: 'goxf:update:install-portable',
-  state: 'goxf:update:state'
+  state: 'goxf:update:state',
+  setChannel: 'goxf:update:set-channel'
 } as const
+
+/** stable = v*-goxf.N releases; test = also dev prereleases from every push to goxf/portable. */
+export type GoxfUpdateChannel = 'stable' | 'test'
 
 export interface GoxfUpstreamPrompt {
   /** Upstream version, without leading v, e.g. "0.13.0". */
@@ -37,6 +41,7 @@ export interface GoxfUpdateState {
   currentVersion: string
   upstreamBaseVersion: string
   portable: boolean
+  channel: GoxfUpdateChannel
   upstream: GoxfUpstreamPrompt | null
   portableUpdate: GoxfPortablePrompt | null
 }
@@ -45,5 +50,6 @@ export interface GoxfUpdateBridge {
   openUpstream(): Promise<{ ok: true }>
   installPortable(): Promise<{ ok: true }>
   state(): Promise<GoxfUpdateState>
+  setChannel(channel: GoxfUpdateChannel): Promise<GoxfUpdateState>
   onEvent(listener: (event: GoxfUpdateEvent) => void): () => void
 }

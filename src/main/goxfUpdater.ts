@@ -7,11 +7,24 @@
  *   a) upstream  qybaihe/botark releases/latest  > package.json version → "merge into your fork" (open page only)
  *   b) fork      GOXF/botark newest v*-goxf.*     > version+goxfBuild    → "your portable build has an update"
  *                portable on Windows: download exe next to the old one, swap via PowerShell after exit, relaunch
+ *                zip build: delta first (manifest + patch zip, only changed resources/ files), else full zip
  *                otherwise: open the release page
+ * Channel stable/test (see goxfUpdateLogic) is persisted in <userData>/goxf-update.json.
+ * Every update writes BotArk-Data/update.log; update-pending.json lets the next start tell a failed swap.
  * Exposes the same registerUpdaterIpc/startAutoUpdater as ./updater so index.ts only swaps one import.
  */
 import { spawn } from 'node:child_process'
-import { createWriteStream, existsSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import {
+  appendFileSync,
+  createReadStream,
+  createWriteStream,
+  existsSync,
+  readFileSync,
+  renameSync,
+  unlinkSync,
+  writeFileSync
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import { Readable } from 'node:stream'
@@ -20,24 +33,29 @@ import { app, BrowserWindow, ipcMain, shell } from 'electron'
 import { UPDATE_CHANNELS, type UpdateStatusEvent } from '@shared/ipc'
 import {
   GOXF_UPDATE_CHANNELS,
-  type GoxfPortablePrompt,
   type GoxfUpdateEvent,
   type GoxfUpdateState,
   type GoxfUpstreamPrompt
 } from '@shared/goxfUpdate'
 import { checkFailedMessage } from './updateCheck'
 import {
+  buildDeltaReplaceScript,
   buildReplaceScript,
   buildZipReplaceScript,
   decideUpdatePrompts,
   formatGoxfVersion,
   nextCheckDelayMs,
+  normalizeChannel,
   normalizeGoxfBuild,
+  parseManifest,
+  planDelta,
+  type GoxfChannel,
   type GitHubRelease,
   type PortableKind,
-  type ReleaseAsset
+  type PromptDecision
 } from './goxfUpdateLogic'
-import { PORTABLE_DIR, PORTABLE_FILE } from './goxfPortable'
+import { writeJsonAtomic } from './jsonFile'
+import { PORTABLE_DATA_DIR, PORTABLE_DIR, PORTABLE_FILE } from './goxfPortable'
 
 const UPSTREAM_REPO = 'qybaihe/botark'
 const FORK_REPO = 'GOXF/botark'
@@ -48,21 +66,64 @@ const FORK_RELEASES_PAGE = `https://github.com/${FORK_REPO}/releases`
 let started = false
 let installing = false
 let upstreamPrompt: GoxfUpstreamPrompt | null = null
-let portablePrompt: (GoxfPortablePrompt & { asset: ReleaseAsset | null }) | null = null
+let portablePrompt: PromptDecision['portable'] = null
 
-function readGoxfBuild(): number {
+/** package.json fork fields; goxfTag/goxfBuiltAt are stamped by CI (absent in local builds). */
+function readPkg(): { goxfBuild: number; goxfTag: string | null; goxfBuiltAt: string | null } {
   try {
-    const pkg = JSON.parse(readFileSync(join(app.getAppPath(), 'package.json'), 'utf8')) as { goxfBuild?: unknown }
-    return normalizeGoxfBuild(pkg.goxfBuild)
+    const pkg = JSON.parse(readFileSync(join(app.getAppPath(), 'package.json'), 'utf8')) as Record<string, unknown>
+    const str = (v: unknown): string | null => (typeof v === 'string' && v.trim() ? v.trim() : null)
+    return { goxfBuild: normalizeGoxfBuild(pkg.goxfBuild), goxfTag: str(pkg.goxfTag), goxfBuiltAt: str(pkg.goxfBuiltAt) }
   } catch {
-    return 0
+    return { goxfBuild: 0, goxfTag: null, goxfBuiltAt: null }
   }
 }
 
 const baseVersion = (): string => app.getVersion()
-let cachedBuild: number | null = null
-const goxfBuild = (): number => (cachedBuild ??= readGoxfBuild())
-const currentVersion = (): string => formatGoxfVersion(baseVersion(), goxfBuild())
+let cachedPkg: ReturnType<typeof readPkg> | null = null
+const pkg = (): ReturnType<typeof readPkg> => (cachedPkg ??= readPkg())
+const goxfBuild = (): number => pkg().goxfBuild
+/** Our release tag without "v": CI stamp (also covers dev builds), else version-goxf.build. */
+const currentVersion = (): string => pkg().goxfTag?.replace(/^v/i, '') || formatGoxfVersion(baseVersion(), goxfBuild())
+
+const settingsFile = (): string => join(app.getPath('userData'), 'goxf-update.json')
+function readChannel(): GoxfChannel {
+  try {
+    return normalizeChannel((JSON.parse(readFileSync(settingsFile(), 'utf8')) as { channel?: unknown }).channel)
+  } catch {
+    return 'stable'
+  }
+}
+let channel: GoxfChannel | null = null
+const currentChannel = (): GoxfChannel => (channel ??= readChannel())
+
+const updateLog = PORTABLE_DATA_DIR ? join(PORTABLE_DATA_DIR, 'update.log') : null
+const pendingFile = PORTABLE_DATA_DIR ? join(PORTABLE_DATA_DIR, 'update-pending.json') : null
+function logUpdate(message: string): void {
+  if (!updateLog) return
+  try {
+    appendFileSync(updateLog, `[${new Date().toISOString()}] ${message}\r\n`)
+  } catch {
+    /* ignore */
+  }
+}
+
+/** Once per start: if the last self-update was meant to bring another version, it did not take. */
+function takePendingFailure(): string | null {
+  if (!pendingFile || !existsSync(pendingFile)) return null
+  try {
+    const { target } = JSON.parse(readFileSync(pendingFile, 'utf8')) as { target?: string }
+    unlinkSync(pendingFile)
+    if (!target || target === currentVersion()) {
+      logUpdate(`now running ${currentVersion()}`)
+      return null
+    }
+    logUpdate(`update to ${target} did not take; still ${currentVersion()}`)
+    return `上次更新到 v${target} 没有成功，已保留 v${currentVersion()}。详情见 BotArk-Data/update.log`
+  } catch {
+    return null
+  }
+}
 /** 'exe' = single portable exe (launcher env), 'zip' = unpacked folder with BotArk-Data beside BotArk.exe. */
 const portableKind = (): PortableKind => (PORTABLE_FILE ? 'exe' : PORTABLE_DIR ? 'zip' : null)
 const portableSelfUpdate = (): boolean => process.platform === 'win32' && portableKind() !== null
@@ -109,6 +170,9 @@ async function check(manual: boolean): Promise<boolean> {
     upstreamLatest: up.ok ? up.data : null,
     forkReleases: fork.ok && Array.isArray(fork.data) ? fork.data : null,
     portable: portableKind(),
+    channel: currentChannel(),
+    buildTag: `v${currentVersion()}`,
+    builtAt: pkg().goxfBuiltAt,
     platform: process.platform,
     upstreamRepo: UPSTREAM_REPO,
     forkRepo: FORK_REPO
@@ -117,7 +181,7 @@ async function check(manual: boolean): Promise<boolean> {
   portablePrompt = decision.portable
   if (decision.upstream) broadcastGoxf({ type: 'upstream-available', prompt: decision.upstream })
   if (decision.portable && !installing) {
-    const { asset: _asset, ...prompt } = decision.portable
+    const { asset: _asset, delta: _delta, ...prompt } = decision.portable
     broadcastGoxf({ type: 'portable-available', prompt })
   }
   const reachable = up.ok || fork.ok
@@ -156,6 +220,42 @@ async function downloadTo(url: string, dest: string, expected?: number): Promise
   if (total && received !== total) throw new Error(`下载不完整（${received}/${total} 字节）`)
 }
 
+function sha256File(path: string): Promise<string | null> {
+  if (!existsSync(path)) return Promise.resolve(null)
+  return new Promise((resolve) => {
+    const hash = createHash('sha256')
+    createReadStream(path)
+      .on('data', (chunk) => hash.update(chunk))
+      .on('end', () => resolve(hash.digest('hex')))
+      .on('error', () => resolve(null))
+  })
+}
+
+/** Files to replace when a delta fits this install, else null (→ full zip). Never throws. */
+async function planDeltaFor(dir: string, manifestUrl: string): Promise<Array<{ path: string; sha256: string }> | null> {
+  try {
+    const res = await fetch(manifestUrl, {
+      headers: { 'User-Agent': `BotArk/${currentVersion()}` },
+      redirect: 'follow',
+      signal: AbortSignal.timeout(30_000)
+    })
+    if (!res.ok) throw new Error(`manifest HTTP ${res.status}`)
+    const files = parseManifest(await res.json())
+    if (!files) throw new Error('manifest invalid')
+    const local: Record<string, string | null> = {}
+    for (const f of files) local[f.path] = await sha256File(join(dir, ...f.path.split('/')))
+    const plan = planDelta(files, local)
+    if (plan.mode === 'full') {
+      logUpdate(`delta not possible (${plan.reason}); using full zip`)
+      return null
+    }
+    return plan.changed
+  } catch (error) {
+    logUpdate(`delta check failed (${error instanceof Error ? error.message : String(error)}); using full zip`)
+    return null
+  }
+}
+
 async function installPortable(): Promise<void> {
   const prompt = portablePrompt
   if (!prompt) return
@@ -168,26 +268,32 @@ async function installPortable(): Promise<void> {
   const zipMode = portableKind() === 'zip'
   // exe build: the launcher's exe; zip build: the folder holding BotArk.exe.
   const dir = zipMode ? PORTABLE_DIR! : dirname(PORTABLE_FILE!)
-  const partial = join(dir, `.${basename(prompt.asset.name)}.download`)
-  const ready = zipMode ? join(dir, '.botark-update.zip') : join(dir, `.${basename(prompt.asset.name)}.new`)
+  broadcastGoxf({ type: 'portable-downloading', percent: 0 })
+  logUpdate(`update ${currentVersion()} → ${prompt.version} (${currentChannel()} channel)`)
+  const changed = zipMode && prompt.delta ? await planDeltaFor(dir, prompt.delta.manifest.browser_download_url) : null
+  const asset = changed ? prompt.delta!.patch : prompt.asset
+  const partial = join(dir, `.${basename(asset.name)}.download`)
+  const ready = changed
+    ? join(dir, '.botark-update-patch.zip')
+    : zipMode
+      ? join(dir, '.botark-update.zip')
+      : join(dir, `.${basename(asset.name)}.new`)
   try {
-    broadcastGoxf({ type: 'portable-downloading', percent: 0 })
     for (const f of [partial, ready]) if (existsSync(f)) unlinkSync(f)
-    await downloadTo(prompt.asset.browser_download_url, partial, prompt.asset.size)
+    await downloadTo(asset.browser_download_url, partial, asset.size)
     renameSync(partial, ready)
     const script = join(tmpdir(), `botark-portable-update-${Date.now()}.ps1`)
-    const logFile = join(dir, 'BotArk-Data', 'portable-update.log')
-    const body = zipMode
-      ? buildZipReplaceScript({
-          appDir: dir,
-          zipFile: ready,
-          exeName: basename(process.execPath),
-          pid: process.pid,
-          logFile
-        })
-      : buildReplaceScript({ oldExe: PORTABLE_FILE!, newExe: ready, pid: process.pid, logFile })
+    const logFile = join(dir, 'BotArk-Data', 'update.log')
+    const exeName = basename(process.execPath)
+    const body = changed
+      ? buildDeltaReplaceScript({ appDir: dir, patchZip: ready, files: changed, exeName, pid: process.pid, logFile })
+      : zipMode
+        ? buildZipReplaceScript({ appDir: dir, zipFile: ready, exeName, pid: process.pid, logFile })
+        : buildReplaceScript({ oldExe: PORTABLE_FILE!, newExe: ready, pid: process.pid, logFile })
+    logUpdate(changed ? `delta: ${changed.length} files from ${asset.name}` : `full: ${asset.name}`)
     // UTF-8 BOM so Windows PowerShell 5.1 reads non-ASCII paths correctly.
     writeFileSync(script, '\uFEFF' + body, 'utf8')
+    if (pendingFile) writeFileSync(pendingFile, JSON.stringify({ target: prompt.version, from: currentVersion() }))
     const child = spawn(
       'powershell.exe',
       ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-File', script],
@@ -206,6 +312,7 @@ async function installPortable(): Promise<void> {
       }
     }
     const raw = error instanceof Error ? error.message : String(error)
+    logUpdate(`failed before swap: ${raw}`)
     broadcastGoxf({ type: 'portable-error', message: `便携版更新失败：${raw}。已为你打开发布页，可手动下载替换。` })
     void shell.openExternal(prompt.url || FORK_RELEASES_PAGE)
   }
@@ -216,6 +323,7 @@ function state(): GoxfUpdateState {
     currentVersion: currentVersion(),
     upstreamBaseVersion: baseVersion(),
     portable: Boolean(PORTABLE_DIR),
+    channel: currentChannel(),
     upstream: upstreamPrompt,
     portableUpdate: portablePrompt
       ? { version: portablePrompt.version, url: portablePrompt.url, canSelfUpdate: portablePrompt.canSelfUpdate }
@@ -244,14 +352,28 @@ export function registerUpdaterIpc(): void {
     return { ok: true as const }
   })
   ipcMain.handle(GOXF_UPDATE_CHANNELS.state, () => state())
+  ipcMain.handle(GOXF_UPDATE_CHANNELS.setChannel, async (_event, raw: unknown) => {
+    channel = normalizeChannel(raw)
+    writeJsonAtomic(settingsFile(), { channel })
+    portablePrompt = null
+    await check(false).catch(() => false)
+    return state()
+  })
 }
 
 export function startAutoUpdater(): void {
   if (started) return
   started = true
   let failures = 0
+  let first = true
   const run = async (): Promise<void> => {
     failures = (await check(false).catch(() => false)) ? 0 : failures + 1
+    if (first) {
+      first = false
+      // After the check so the "available" card cannot hide it.
+      const failed = takePendingFailure()
+      if (failed) broadcastGoxf({ type: 'portable-error', message: failed })
+    }
     setTimeout(() => void run(), nextCheckDelayMs(failures)).unref()
   }
   setTimeout(() => void run(), 8_000)

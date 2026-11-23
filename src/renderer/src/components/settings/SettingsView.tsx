@@ -38,6 +38,7 @@ import { SwitchPill } from '@/components/ui/Controls'
 import { Dialog } from '@/components/ui/Dialog'
 import { Menu, MenuContent, MenuItem, MenuSeparator, MenuTrigger } from '@/components/ui/Menu'
 import { SegmentedControl } from '@/components/ui/SegmentedControl'
+import { GoxfChannelRow } from '@/components/update/GoxfChannelRow'
 import { Select } from '@/components/ui/Select'
 import { StatusBadge } from '@/components/ui/Status'
 import { getBridge } from '@/lib/bridge'
@@ -2253,6 +2254,7 @@ export function SettingsView() {
                       {tr('Check for updates')}
                     </Button>
                   </div>
+                  <GoxfChannelRow />
 
                   <div className="flex items-center justify-between px-4 py-3.5">
                     <div>

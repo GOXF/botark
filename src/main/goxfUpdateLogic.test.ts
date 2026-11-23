@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  buildDeltaReplaceScript,
   buildReplaceScript,
   buildZipReplaceScript,
   decideUpdatePrompts,
@@ -8,7 +9,10 @@ import {
   nextCheckDelayMs,
   normalizeGoxfBuild,
   parseGoxfVersion,
+  parseManifest,
+  pickDeltaAssets,
   pickLatestGoxfRelease,
+  planDelta,
   pickPortableAsset,
   pickPortableZipAsset,
   psQuote,
@@ -210,3 +214,110 @@ describe('release readiness and check cadence', () => {
   })
 })
 
+
+const sha = (c: string) => c.repeat(64)
+const zipAssets = (v: string) =>
+  ['', 'manifest-', 'patch-'].map((p) => {
+    const name = `${p}BotArk-Portable-${v}-win-x64.${p === 'manifest-' ? 'json' : 'zip'}`
+    return { name, browser_download_url: `https://dl/${name}`, size: 10, state: 'uploaded' }
+  })
+
+describe('delta assets', () => {
+  it('pairs manifest + patch with the full zip, never takes the patch as the full zip', () => {
+    const assets = zipAssets('0.12.1-goxf.4').reverse()
+    const zip = pickPortableZipAsset(assets)
+    expect(zip?.name).toBe('BotArk-Portable-0.12.1-goxf.4-win-x64.zip')
+    expect(pickDeltaAssets(assets, zip)?.patch.name).toBe('patch-BotArk-Portable-0.12.1-goxf.4-win-x64.zip')
+    expect(pickDeltaAssets(assets.filter((a) => !a.name.startsWith('manifest-')), zip)).toBeNull()
+  })
+})
+
+describe('parseManifest', () => {
+  it('accepts relative forward-slash paths with sha256', () => {
+    expect(parseManifest({ files: [{ path: 'resources/app.asar', sha256: sha('A'), size: 3 }] })).toEqual([
+      { path: 'resources/app.asar', sha256: sha('a'), size: 3 }
+    ])
+  })
+  it('rejects traversal, absolute, backslash paths and bad hashes', () => {
+    for (const path of ['../x', 'a/../b', '/etc/x', 'C:/x', 'a\\b', './x', ''])
+      expect(parseManifest({ files: [{ path, sha256: sha('a'), size: 1 }] }), path).toBeNull()
+    expect(parseManifest({ files: [{ path: 'x', sha256: 'abc', size: 1 }] })).toBeNull()
+    expect(parseManifest({ files: [] })).toBeNull()
+    expect(parseManifest(null)).toBeNull()
+  })
+})
+
+describe('planDelta', () => {
+  const files = [
+    { path: 'BotArk.exe', sha256: sha('1'), size: 1 },
+    { path: 'resources/app.asar', sha256: sha('2'), size: 1 },
+    { path: 'resources/app.asar.unpacked/x.node', sha256: sha('3'), size: 1 },
+    { path: 'resources/new.txt', sha256: sha('4'), size: 1 }
+  ]
+  it('patches only changed or missing resources/ files when the runtime matches', () => {
+    const plan = planDelta(files, {
+      'BotArk.exe': sha('1'),
+      'resources/app.asar': sha('9'),
+      'resources/app.asar.unpacked/x.node': sha('3').toUpperCase(),
+      'resources/new.txt': null
+    })
+    expect(plan).toEqual({ mode: 'patch', changed: [files[1], files[3]] })
+  })
+  it('falls back to full when a runtime file differs or is missing', () => {
+    expect(planDelta(files, { 'BotArk.exe': sha('0') }).mode).toBe('full')
+    expect(planDelta(files, {}).mode).toBe('full')
+  })
+  it('falls back to full when nothing would change', () => {
+    const local = Object.fromEntries(files.map((f) => [f.path, f.sha256]))
+    expect(planDelta(files, local)).toEqual({ mode: 'full', reason: 'patch would change nothing' })
+  })
+})
+
+describe('buildDeltaReplaceScript', () => {
+  const script = buildDeltaReplaceScript({
+    appDir: "C:\\Apps\\Bot'Ark",
+    patchZip: 'C:\\Apps\\BotArk\\.botark-update-patch.zip',
+    files: [{ path: 'resources/app.asar.unpacked/a.node', sha256: sha('b') }],
+    exeName: 'BotArk.exe',
+    pid: 42,
+    logFile: 'C:\\Apps\\BotArk\\BotArk-Data\\update.log'
+  })
+  it('verifies hashes before swapping, backs up, rolls back and relaunches', () => {
+    expect(script).toContain("$app = 'C:\\Apps\\Bot''Ark'")
+    expect(script).toContain(`@{ p = 'resources\\app.asar.unpacked\\a.node'; h = '${sha('b')}' }`)
+    expect(script.indexOf('Get-FileHash')).toBeLessThan(script.indexOf('$done = @()'))
+    expect(script).toContain('rolling back')
+    expect(script).toContain('Wait-Process -Id $appPid')
+    expect(script.split('\r\n').length).toBeGreaterThan(20)
+  })
+})
+
+describe('update channels', () => {
+  const dev = (sha7: string, at: string, extra: Partial<GitHubRelease> = {}) =>
+    forkRelease(`v0.12.1-goxf.dev.${sha7}`, { prerelease: true, published_at: at, ...extra })
+  const stable = (n: number, at: string) => forkRelease(`v0.12.1-goxf.${n}`, { published_at: at })
+  const releases = [stable(4, '2026-11-20T00:00:00Z'), dev('abc1234', '2026-11-22T00:00:00Z'), dev('def5678', '2026-11-21T00:00:00Z')]
+  const base = { version: '0.12.1', goxfBuild: 4, portable: 'zip' as const, forkReleases: releases }
+
+  it('stable ignores dev prereleases', () => {
+    expect(decideUpdatePrompts(input({ ...base, builtAt: '2026-11-19T00:00:00Z' })).portable).toBeNull()
+    expect(decideUpdatePrompts(input({ ...base, goxfBuild: 3 })).portable?.version).toBe('0.12.1-goxf.4')
+  })
+  it('test picks the newest by published date when it is another build published after ours', () => {
+    const d = decideUpdatePrompts(input({ ...base, channel: 'test', buildTag: 'v0.12.1-goxf.4', builtAt: '2026-11-19T00:00:00Z' }))
+    expect(d.portable?.version).toBe('0.12.1-goxf.dev.abc1234')
+  })
+  it('test offers nothing when the newest is our own build or older than us', () => {
+    expect(
+      decideUpdatePrompts(input({ ...base, channel: 'test', buildTag: 'v0.12.1-goxf.dev.abc1234', builtAt: '2026-11-21T23:00:00Z' })).portable
+    ).toBeNull()
+    expect(
+      decideUpdatePrompts(input({ ...base, channel: 'test', buildTag: 'v0.12.1-goxf.dev.zzz', builtAt: '2026-11-23T00:00:00Z' })).portable
+    ).toBeNull()
+  })
+  it('test skips drafts; without a build time only a newer stable tag counts', () => {
+    const rs = [dev('abc1234', '2026-11-22T00:00:00Z', { draft: true }), stable(5, '2026-11-21T00:00:00Z')]
+    expect(decideUpdatePrompts(input({ ...base, forkReleases: rs, channel: 'test' })).portable?.version).toBe('0.12.1-goxf.5')
+    expect(decideUpdatePrompts(input({ ...base, channel: 'test' })).portable).toBeNull()
+  })
+})
