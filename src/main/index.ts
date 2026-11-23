@@ -9,6 +9,7 @@ import { attachWebViewManager, registerWebViewIpc } from './webViewIpc'
 import { attachMuseSessionManager, disposeAllMuseManagers, registerMuseIpc } from './muse/museIpc'
 // GOXF fork: fork-aware updater (upstream + portable prompts) instead of electron-updater.
 import { registerUpdaterIpc, startAutoUpdater } from './goxfUpdater'
+import { startPerfLog } from './goxfPerf'
 import { registerGrokIpc } from './grok/grokIpc'
 import { stopGrokAccountWatch } from './grok/grokWatchManager'
 import { registerHarkIpc } from './hark/harkIpc'
@@ -185,6 +186,7 @@ app.whenReady().then(async () => {
   registerWorkspaceIpc(() => mainWindow)
   registerSlackIpc(() => mainWindow)
   mainWindow = createMainWindow()
+  startPerfLog(mainWindow)
   startAutoUpdater()
 
   app.on('activate', () => {

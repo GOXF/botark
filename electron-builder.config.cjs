@@ -36,6 +36,8 @@ module.exports = {
   },
   files: ['out/**/*', 'package.json'],
   asar: true,
+  // GOXF: ship only Chinese + English Chromium locale packs (~47MB of 55 languages otherwise).
+  electronLanguages: ['zh-CN', 'en-US'],
   mac: {
     category: 'public.app-category.productivity',
     icon: 'build/icon.icns',
