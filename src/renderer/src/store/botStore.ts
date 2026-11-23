@@ -8,6 +8,7 @@ import type { MobileSendCommand, MobileSendResult } from '@shared/mobileSync'
 import { createSeed } from '@/data/seed'
 import { t } from '@/lib/i18n'
 import type { AccountDraft, Bot, BotAccount, BotGroup, ChatMessage, ChatReplyTarget, NewBotInput } from '@/types'
+import { keepActivity } from './goxfActivity'
 import { clearNoReplyFlag, createSafeStorage, sanitizePersisted, SEND_HARD_TIMEOUT_MS, SendTimeoutError, toPersistedMessages, withTimeout, deliveryAfterError, createInFlightSet, hasLostAttachments, ATTACHMENTS_LOST_TEXT } from './delivery'
 
 let warnedStorage = false
@@ -1584,7 +1585,7 @@ export const useBotStore = create<BotHubState>()(
 
     setActivity: (accountId, activity) =>
       set((state) => {
-        if (!activity || !activity.busy || activity.code === 'idle') {
+        if (!keepActivity(activity)) {
           const hadActivity = accountId in state.activity
           let nextActivity = state.activity
           if (hadActivity) {
@@ -1616,7 +1617,9 @@ export const useBotStore = create<BotHubState>()(
         const nextActivity = activityUnchanged
           ? state.activity
           : { ...state.activity, [accountId]: activity }
-        const nextAccounts = applyAccountLive(state.accounts, accountId, 'busy', ['offline', 'error'])
+        const nextAccounts = activity.busy
+          ? applyAccountLive(state.accounts, accountId, 'busy', ['offline', 'error'])
+          : state.accounts
         if (activityUnchanged && nextAccounts === state.accounts) return state
         return {
           ...(activityUnchanged ? {} : { activity: nextActivity }),

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  captureLine,
   historyAssistants,
   historyAssistantsAfterTurn,
   parseHistoryTranscript,
@@ -259,5 +260,15 @@ describe('parseRichWidgets session_card (#34)', () => {
       status: '待填写',
       url: 'https://muse.ai/vault/163'
     })
+  })
+})
+
+describe('captureLine', () => {
+  it('keeps field names and cuts long strings', () => {
+    const line = captureLine({ event: 'tool_call.started', payload: { name: 'browser', frame: 'A'.repeat(5000) } })
+    const parsed = JSON.parse(line)
+    expect(parsed.payload.name).toBe('browser')
+    expect(parsed.payload.frame).toMatch(/…\[5000 chars\]$/)
+    expect(parsed.payload.frame.length).toBeLessThan(300)
   })
 })
