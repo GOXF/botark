@@ -131,8 +131,9 @@ function RoomDndNotice() {
     <div
       role="status"
       className={cn(
-        'pointer-events-none fixed bottom-4 left-4 z-50 max-w-72 rounded-xl px-3 py-2 text-[12px] font-medium shadow-lg',
-        notice.ok ? 'bg-ink text-canvas' : 'bg-status-error text-white'
+        // Same surface as the update notices; bottom-left so it never stacks with them (bottom-right).
+        'pointer-events-none fixed bottom-4 left-4 z-50 max-w-72 animate-toast-in rounded-xl border border-line-strong bg-main px-3 py-2 text-[12px] font-medium shadow-toast',
+        notice.ok ? 'text-ink' : 'text-status-error-ink'
       )}
     >
       {notice.message}
