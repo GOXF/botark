@@ -1,4 +1,5 @@
 import type { HarkBrowserPreview } from './harkBrowserPreview'
+import type { HarkAskView } from './harkAsks'
 /**
  * IPC contract between the renderer (via preload) and the main process.
  * Shared so channel names and payload shapes cannot drift apart.
@@ -925,6 +926,8 @@ export type HarkMainEvent =
       /** GOXF: Hark's live status line for the conversation (narration / active activity). */
       live?: { busy: boolean; text: string }
       browserPreview?: HarkBrowserPreview | null
+      /** GOXF: Hark's pending asks (code / sign-in / approval) for this conversation. */
+      asks?: HarkAskView[]
     }
   | {
       type: 'login'

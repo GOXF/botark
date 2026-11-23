@@ -190,8 +190,12 @@ export function HarkProjects({
       if (e.type === 'projectHistory' && e.subscription === subscription) {
         const store = useBotStore.getState()
         store.applyHarkHistory(botId, accountId, conversationId, e.messages)
-        // GOXF: show Hark's live status line even for replies BotArk did not send.
-        if (e.live?.busy) {
+        // GOXF: a pending ask (code / sign-in / approval) wins over the live line: 「需要你：…」.
+        const ask = e.asks?.[0]
+        if (ask) {
+          liveBusy = true
+          store.setActivity(accountId, { code: 'waiting', text: `需要你：${ask.prompt}`.slice(0, 120), emoji: null, busy: true })
+        } else if (e.live?.busy) {
           noteHarkRun(accountId, conversationId)
           liveBusy = true
           store.setTyping(botId, true)

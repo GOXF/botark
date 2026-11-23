@@ -1,4 +1,5 @@
 import { HarkBrowserCard } from '../hark/HarkBrowserCard'
+import { HarkAskCards, useHarkAsks } from '../hark/HarkAskCard'
 import { useCallback, useMemo } from 'react'
 import type { AttachmentMeta, PlatformId } from '@adapters/types'
 import { ArkDrawerToggleSvg } from '@/components/ui/ArkGlyphs'
@@ -190,6 +191,7 @@ export function ChatArea() {
     activeAccount?.status === 'online' ||
     activeAccount?.status === 'busy' ||
     activeAccount?.status === 'attention'
+  const harkAsks = useHarkAsks(activeAccount?.id ?? '', bot.platformId === 'hark' ? bot.activeSessionId : undefined)
   const showWebSession =
     webSessionOpen && !!activeAccount && getPlatformInspector(bot.platformId).supportsWebSession
 
@@ -208,7 +210,7 @@ export function ChatArea() {
           <>
             {bot.platformId === 'hark' && activeAccount && canSend && (
               <HarkBrowserCard key={JSON.stringify([activeAccount.id, bot.activeSessionId])}
-                accountId={activeAccount.id} sessionId={bot.activeSessionId} />
+                accountId={activeAccount.id} sessionId={bot.activeSessionId} attention={harkAsks.length > 0} />
             )}
             {messages.length === 0 && !typing ? (
               <ConversationIntro
@@ -230,6 +232,9 @@ export function ChatArea() {
                 platformId={bot.platformId}
                 agentId={bot.selectedAgentId}
               />
+            )}
+            {bot.platformId === 'hark' && activeAccount && (
+              <HarkAskCards accountId={activeAccount.id} sessionId={bot.activeSessionId} asks={harkAsks} />
             )}
             <Composer
               key={bot.id}

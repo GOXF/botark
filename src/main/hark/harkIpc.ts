@@ -1,4 +1,5 @@
 import { currentHarkBrowser } from '@shared/harkBrowserPreview'
+import { pendingHarkAsks } from '@shared/harkAsks'
 import { randomUUID } from 'node:crypto'
 import { setTimeout as delay } from 'node:timers/promises'
 import { BrowserWindow, ipcMain, type IpcMainInvokeEvent } from 'electron'
@@ -40,6 +41,7 @@ import {
   readHarkStream,
   registerHarkViewStop,
   type HarkActivityPanel,
+  type HarkPendingAsk,
   type HarkChatMessage,
   type HarkUploadedAttachment
 } from './harkClient'
@@ -145,10 +147,10 @@ function observeProject(event: IpcMainInvokeEvent, req: Extract<HarkRpcRequest, 
   visibleProjects.set(senderId, { accountId: req.accountId, subscription: req.subscription, stop })
   sender.once('destroyed', stop)
   sender.once('did-navigate', stop)
-  const update = (messages: HarkChatMessage[], panels: HarkActivityPanel[], live?: { busy: boolean; text: string }) => {
+  const update = (messages: HarkChatMessage[], panels: HarkActivityPanel[], live: { busy: boolean; text: string } | undefined, asks: HarkPendingAsk[]) => {
     if (!signal.aborted && !sender.isDestroyed()) sender.send(HARK_CHANNELS.event, {
       type: 'projectHistory', accountId: req.accountId, conversationId: req.conversationId,
-      subscription: req.subscription, messages: historyView(messages), browserPreview: currentHarkBrowser(panels), live
+      subscription: req.subscription, messages: historyView(messages), browserPreview: currentHarkBrowser(panels), live, asks: pendingHarkAsks(asks)
     })
   }
   void (async () => {
@@ -161,7 +163,7 @@ function observeProject(event: IpcMainInvokeEvent, req: Extract<HarkRpcRequest, 
         await readHarkStream(session, req.conversationId, manager, dial, signal, (frame) => {
           if (state.applyFrame(frame) && !timer) timer = setTimeout(() => {
             timer = undefined
-            update(state.orderedMessages(), state.extractPanels(), state.liveStatus())
+            update(state.orderedMessages(), state.extractPanels(), state.liveStatus(), state.extractAsks())
           }, 150)
         })
       } catch {
@@ -169,7 +171,7 @@ function observeProject(event: IpcMainInvokeEvent, req: Extract<HarkRpcRequest, 
           const snapshot = await fetchConversationSnapshotSummary(req.accountId, req.conversationId).catch(() => null)
           if (snapshot) {
             const text = (snapshot.narration || snapshot.activeActivity || '').trim()
-            update(snapshot.messages, snapshot.panels, text ? { busy: true, text: text.slice(0, 120) } : state.liveStatus())
+            update(snapshot.messages, snapshot.panels, text ? { busy: true, text: text.slice(0, 120) } : state.liveStatus(), snapshot.asks)
           }
         }
       }
