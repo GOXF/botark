@@ -206,13 +206,13 @@ export function HarkProjects({ botId, compact }: { botId: string; compact?: bool
 
   const createProject = () =>
     perform(async () => {
+      // Empty title: Hark names the project itself (autoTitle) after the first message; the list poll picks it up.
       const name = title.trim()
-      if (!name) return
       const id = await useBotStore.getState().startNewHarkSession(botId, name)
       setAdding(false)
       setMenuOpen(false)
       setTitle('')
-      changed(id ? { id, title: name, createdAt: Date.now() } : undefined)
+      changed(id ? { id, title: name || '新项目', createdAt: Date.now() } : undefined)
       // Hark's list can trail the create; check again shortly after.
       window.setTimeout(() => changed(), 3_000)
     })
@@ -319,7 +319,7 @@ export function HarkProjects({ botId, compact }: { botId: string; compact?: bool
                   <TextInput
                     autoFocus
                     aria-label="项目名称"
-                    placeholder="输入新项目名称…"
+                    placeholder="项目名称（留空由 Hark 自动命名）"
                     value={title}
                     onChange={(e) => setTitle(e.target.value)}
                     className="h-7 flex-1 text-[12px]"
@@ -328,7 +328,7 @@ export function HarkProjects({ botId, compact }: { botId: string; compact?: bool
                     type="submit"
                     size="sm"
                     variant="primary"
-                    disabled={busy || !title.trim()}
+                    disabled={busy}
                     className="h-7 px-2.5 text-[11.5px]"
                   >
                     创建
@@ -409,12 +409,12 @@ export function HarkProjects({ botId, compact }: { botId: string; compact?: bool
           <TextInput
             autoFocus
             aria-label="项目名称"
-            placeholder="输入项目名称…"
+            placeholder="项目名称（留空由 Hark 自动命名）"
             value={title}
             onChange={(e) => setTitle(e.target.value)}
             className="h-8 flex-1 text-[12px]"
           />
-          <Button type="submit" size="sm" variant="primary" disabled={busy || !title.trim()}>
+          <Button type="submit" size="sm" variant="primary" disabled={busy}>
             创建
           </Button>
         </form>
