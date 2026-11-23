@@ -182,3 +182,4 @@ git clone <GOXF/botark> && cd botark && git checkout fix/hark-login-sync && npm 
 - 22:50 v8（work/mock/v8.py）用户定稿方向：顶部 任务 · [当前胶囊] · 协作（「群聊」改名「协作」）。会话页侧栏只有 bot，不出现群组、不显示任务状态；协作页侧栏只有群组，展开=组内各成员会话；任务页=正在工作（进行中+等你）的会话，中间 2×2 并排集中显示各自的工作（任务、最近几步、当前一步、用时、补一句、打开）。等「开工」。v6/v7 的侧栏状态点/筛选作废。
 - 22:40 新 bug（用户截图）：BotArk 原生 Hark 对话丢内容——浏览器实时卡片（GitHub 2FA 画面 +「需要采取行动」）和「输入你的 Github 验证码」表单按钮在原生聊天里都不显示，只剩「等待任务完成…」，只有「项目」网页视图里看得到。之前 request_secret 表单渲染差也是同一类。修法方向：HarkAdapter/harkStream 识别这类卡片事件，原生里至少渲染成一张「需要你处理 → 打开网页视图」卡片。先出示意图，等「开工」。
 - 22:45 PAT 已建（hark-botark-push-2，到 2026-12-23，仅 GOXF/botark + hark-hub-go，Contents/Workflows 读写）。已推送 goxf/portable 到 9c91e49，测试版构建 run 45196785605 进行中（含图片预览左右切换）。
+- 22:55 本地已合并上游 v0.14.1（冲突：package.json、HarkAdapter.ts/test — 保留草稿项目 + 上游 Stop/abort 检查），version 0.14.1、goxfBuild 10；typecheck + 455 测试通过。未推送、未打 tag，等用户确认后打 v0.14.1-goxf.10 完整包。用户机器显示 0.13.2-goxf.0（自更新没生效），要求直接给完整包。
