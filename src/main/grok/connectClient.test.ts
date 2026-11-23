@@ -79,6 +79,7 @@ describe('GrokConnectClient (Sand 0.79.3 wire protocol)', () => {
     expect(body['initiator']).not.toBe('composer')
     expect(body['attachment_paths']).toEqual(['att://alias-1'])
     expect(body['renders_mcp_elicitation_forms']).toBe(true)
+    expect(body['rendered_card_kinds']).not.toEqual([1, 2, 3, 4, 5])
   })
 
   it('routes SandBoxService and AgentStoreService calls to their respective service paths', async () => {

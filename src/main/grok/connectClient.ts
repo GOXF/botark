@@ -327,7 +327,13 @@ export class GrokConnectClient {
       source: GROK_MESSAGE_SOURCE.DESKTOP,
       send_source: GROK_SEND_SOURCE.CHAT,
       renders_mcp_elicitation_forms: true,
-      rendered_card_kinds: [1, 2, 3, 4, 5]
+      rendered_card_kinds: [
+        'GROK_BOT_MESSAGING_CARD_KIND_APPROVAL',
+        'GROK_BOT_MESSAGING_CARD_KIND_CHOICE',
+        'GROK_BOT_MESSAGING_CARD_KIND_FORM',
+        'GROK_BOT_MESSAGING_CARD_KIND_PAGE',
+        'GROK_BOT_MESSAGING_CARD_KIND_PAYMENT'
+      ]
     })
   }
 

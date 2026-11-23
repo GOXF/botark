@@ -1,5 +1,6 @@
 import { registerSlackIpc, stopSlack } from './slack/slackIpc'
 import { registerWorkspaceIpc, stopWorkspaces } from './mcp/hub'
+import { registerWorkspacePortalIpc, stopWorkspacePortals } from './mcp/workspacePortal'
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { app, BrowserWindow, shell } from 'electron'
@@ -210,6 +211,7 @@ app.on('before-quit', () => {
   quitting = true
   void stopSlack()
   stopWorkspaces()
+  void stopWorkspacePortals()
   stopGrokAccountWatch('*')
   closeCelsiusWatcher('*')
   cancelHarkWatch('*')
@@ -238,6 +240,7 @@ app.whenReady().then(async () => {
   registerMobileSyncIpc()
   registerVaultIpc()
   registerWorkspaceIpc(() => mainWindow)
+  registerWorkspacePortalIpc(() => mainWindow)
   registerSlackIpc(() => mainWindow)
   mainWindow = createMainWindow()
   readyForDeepLinks = true
