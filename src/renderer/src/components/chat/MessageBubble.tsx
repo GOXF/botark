@@ -506,7 +506,7 @@ function WorkspaceImage({
 }: {
   part: ChatMediaPart
   accountId?: string
-  /** User's own picture: same height cap as a local attachment. */
+  /** User's own picture: same size cap as a local attachment. */
   mine?: boolean
 }) {
   const initialDirectSrc =
@@ -576,7 +576,7 @@ function WorkspaceImage({
             <img
               src={src}
               alt={part.name || part.path}
-              className={cn(mine ? 'max-h-56' : 'max-h-72', 'max-w-full object-contain')}
+              className={cn(mine ? 'max-h-56 max-w-64' : 'max-h-72 max-w-full', 'object-contain')}
               onError={() => {
                 if (isHttp(src) && !triedProxy && accountId) {
                   setTriedProxy(true)
