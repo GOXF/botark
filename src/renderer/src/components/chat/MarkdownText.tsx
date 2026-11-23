@@ -1,7 +1,7 @@
 import { type ReactNode, memo, useState } from 'react'
 import { Check, Copy, Download, Image as ImageIcon, ZoomIn } from 'lucide-react'
 import { cn } from '@/lib/cn'
-import { ImageLightbox, ImageOverlayButton } from './ImageLightbox'
+import { ImageLightbox, ImageOverlayButton, LIGHTBOX_ATTR } from './ImageLightbox'
 import { t } from '@/lib/i18n'
 
 /**
@@ -57,6 +57,7 @@ function InlineMarkdownImage({ src, alt }: { src: string; alt: string }) {
           <img
             src={src}
             alt={alt}
+            {...{ [LIGHTBOX_ATTR]: filename }}
             onError={() => setFailed(true)}
             className="max-h-72 max-w-full object-contain"
           />

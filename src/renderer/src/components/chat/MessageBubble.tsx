@@ -11,7 +11,7 @@ import { Button } from '@/components/ui/Button'
 import { ConnectorIcon } from '@/components/ui/ConnectorIcon'
 import { SwitchPill } from '@/components/ui/Controls'
 import { Select } from '@/components/ui/Select'
-import { ImageLightbox, ImageOverlayButton } from './ImageLightbox'
+import { ImageLightbox, ImageOverlayButton, LIGHTBOX_ATTR } from './ImageLightbox'
 import { MarkdownText } from './MarkdownText'
 import { NativeDocumentDialog, type NativeDocumentTarget } from './NativeDocumentDialog'
 import { triggerShareConversation } from './ShareConversationDialog'
@@ -449,6 +449,7 @@ function WorkspaceImage({
             <img
               src={src}
               alt={part.name || part.path}
+              {...{ [LIGHTBOX_ATTR]: filename }}
               className={cn(mine ? 'max-h-56 max-w-64' : 'max-h-72 max-w-full', 'object-contain')}
               onError={() => {
                 if (isHttp(src) && !triedProxy && accountId) {
@@ -1722,7 +1723,7 @@ function UserAttachmentItem({
             className="block cursor-zoom-in"
             title={file.name}
           >
-            <img src={dataSrc} alt={file.name} className="max-h-56 max-w-64 object-contain" />
+            <img src={dataSrc} alt={file.name} {...{ [LIGHTBOX_ATTR]: file.name }} className="max-h-56 max-w-64 object-contain" />
           </button>
         </li>
         {lightboxOpen && (
