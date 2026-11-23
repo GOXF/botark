@@ -2050,6 +2050,13 @@ export const MessageBubble = memo(function MessageBubble({
         </ul>
       )}
 
+      {/* 2b. Hark's copy of the user's own pictures (history reload): same spot as local attachments */}
+      {mine && media.length > 0 && (
+        <div className="mb-1.5 flex w-full max-w-[78%] justify-end self-end">
+          <MediaParts parts={media} accountId={message.accountId} onOpenDoc={openDocument} />
+        </div>
+      )}
+
       {/* 3. Message text or structured inline Article / Document Card */}
       {message.text &&
         (isLongMarkdownReport ? (
@@ -2205,7 +2212,7 @@ export const MessageBubble = memo(function MessageBubble({
       )}
 
       {/* 4. Media / File / Artifact cards below message text */}
-      {media.length > 0 && (
+      {!mine && media.length > 0 && (
         <div className={cn('w-full', message.text && 'mt-2')}>
           <MediaParts parts={media} accountId={message.accountId} onOpenDoc={openDocument} />
         </div>
