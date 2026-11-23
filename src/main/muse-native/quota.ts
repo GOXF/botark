@@ -6,8 +6,8 @@ import type { FetchFn } from './controlPlane'
 
 const ORIGIN = 'https://muse.ai'
 
-/** Known id from docs/museai/QUOTA.md — may change on deploy; we rediscover. */
-const FALLBACK_ACTION_ID = '409b972cbb33d3e372f4ca9d3c8332677217064f62'
+/** Known id (GOXF: captured from muse.ai 2026-11-23) — may change on deploy; we rediscover. */
+const FALLBACK_ACTION_ID = '40e0249eeae158685b6a8d0c3b203f53dd4f2c7d63'
 
 export interface MuseQuotaTier {
   tierId: string
@@ -230,7 +230,8 @@ async function postAction(
 ): Promise<{ status: number; text: string }> {
   const body = JSON.stringify([{ includeAgreement }])
   let last = { status: 0, text: '' }
-  for (const actionPath of ['/settings', '/']) {
+  // GOXF: muse.ai web posts this action to `/` (captured 2026-11-23); try it first.
+  for (const actionPath of ['/', '/settings']) {
     const res = await fetchFn(ORIGIN + actionPath, {
       method: 'POST',
       headers: {
@@ -244,9 +245,8 @@ async function postAction(
     })
     const text = await res.text()
     last = { status: res.status, text }
-    if (res.status !== 409 && res.status !== 404) {
-      return last
-    }
+    if (res.status === 401 || res.status === 403 || (res.ok && looksLikeSubscription(text))) return last
+    if (res.status !== 409 && res.status !== 404 && !res.ok) return last
   }
   return last
 }
