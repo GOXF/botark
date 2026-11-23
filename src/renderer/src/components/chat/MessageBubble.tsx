@@ -99,30 +99,34 @@ function ToolChips({ tools }: { tools: ChatToolCall[] }) {
       {tools.map((tool) => (
         <li
           key={tool.id}
-          className="flex flex-wrap items-center gap-x-2 gap-y-0.5 rounded-xl border border-line bg-surface px-2.5 py-1.5 text-[12px] text-ink-secondary shadow-soft"
+          className="flex items-start gap-2 rounded-xl border border-line bg-surface px-2.5 py-1.5 text-[12px] leading-4 text-ink-secondary shadow-soft"
         >
           {tool.status === 'running' ? (
-            <Loader2 className="size-3.5 shrink-0 animate-spin text-accent-600" aria-hidden />
+            <Loader2 className="mt-px size-3.5 shrink-0 animate-spin text-accent-600" aria-hidden />
           ) : (
-            <Wrench className="size-3.5 shrink-0 text-ink-muted" aria-hidden />
+            <Wrench className="mt-px size-3.5 shrink-0 text-ink-muted" aria-hidden />
           )}
-          <span className="min-w-0 flex-1 truncate font-medium text-ink">{tool.name}</span>
-          {tool.toolType && tool.toolType !== tool.name && (
-            <span className="shrink-0 text-ink-muted">{tool.toolType}</span>
-          )}
-          <span className="shrink-0 tabular-nums text-ink-muted">
-            {tool.status === 'running'
-              ? t('Running')
-              : tool.status === 'errored'
-                ? t('Failed')
-                : t('Done')}
-          </span>
-          {/* GOXF: each call says what it is doing, so parallel calls are told apart. */}
-          {tool.summary && (
-            <span className="line-clamp-2 basis-full pl-5.5 text-[11.5px] leading-4 text-ink-muted" title={tool.summary}>
-              {tool.summary}
-            </span>
-          )}
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2">
+              <span className="min-w-0 flex-1 truncate font-medium text-ink">{tool.name}</span>
+              {tool.toolType && tool.toolType !== tool.name && (
+                <span className="shrink-0 text-ink-muted">{tool.toolType}</span>
+              )}
+              <span className="shrink-0 tabular-nums text-ink-muted">
+                {tool.status === 'running'
+                  ? t('Running')
+                  : tool.status === 'errored'
+                    ? t('Failed')
+                    : t('Done')}
+              </span>
+            </div>
+            {/* GOXF: each call says what it is doing, so parallel calls are told apart. */}
+            {tool.summary && (
+              <p className="mt-0.5 line-clamp-2 text-[11.5px] text-ink-muted" title={tool.summary}>
+                {tool.summary}
+              </p>
+            )}
+          </div>
         </li>
       ))}
     </ul>
