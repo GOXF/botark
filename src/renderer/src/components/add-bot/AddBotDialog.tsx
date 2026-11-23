@@ -114,15 +114,12 @@ function AddBotFlow({ open, onClose }: { open: boolean; onClose: () => void }) {
     })
   }, [phase, login, syncGrokAccountBots, onClose])
 
-  const confirmLeaveBatch = () =>
-    !batch ||
-    !batchBusy ||
-    window.confirm(
-      t('Batch import is still running. Leaving cancels the unfinished accounts. Leave anyway?')
-    )
+  // GOXF: in-app confirm instead of window.confirm while a batch import is running.
+  const [pendingLeave, setPendingLeave] = useState<(() => void) | null>(null)
+  const guardLeaveBatch = (leave: () => void) => (batch && batchBusy ? setPendingLeave(() => leave) : leave())
 
-  const close = () => {
-    if (!confirmLeaveBatch()) return
+  const close = () => guardLeaveBatch(discardAndClose)
+  const discardAndClose = () => {
     if (hermesReady && !created.current) {
       void window.electron?.hermes?.clearAuth?.(login.accountId).catch(() => undefined)
     }
@@ -200,6 +197,7 @@ function AddBotFlow({ open, onClose }: { open: boolean; onClose: () => void }) {
                 : t('Set up your bot')
 
   return (
+    <>
     <Dialog
       open={open}
       onOpenChange={(next) => !next && close()}
@@ -210,7 +208,7 @@ function AddBotFlow({ open, onClose }: { open: boolean; onClose: () => void }) {
           <IconButton
             label={t('Back')}
             size="sm"
-            onClick={() => confirmLeaveBatch() && setBatch(false)}
+            onClick={() => guardLeaveBatch(() => setBatch(false))}
             className="-ml-1"
           >
             <ChevronLeft />
@@ -353,6 +351,35 @@ function AddBotFlow({ open, onClose }: { open: boolean; onClose: () => void }) {
         </div>
       </div>
     </Dialog>
+    <Dialog
+      open={pendingLeave !== null}
+      onOpenChange={(next) => !next && setPendingLeave(null)}
+      title="批量导入未完成"
+      className="w-[min(92vw,380px)]"
+      footer={
+        <>
+          <Button size="sm" variant="secondary" onClick={() => setPendingLeave(null)}>
+            继续导入
+          </Button>
+          <Button
+            size="sm"
+            variant="danger-confirm"
+            onClick={() => {
+              const leave = pendingLeave
+              setPendingLeave(null)
+              leave?.()
+            }}
+          >
+            离开
+          </Button>
+        </>
+      }
+    >
+      <p className="text-[13px] text-ink-secondary">
+        {t('Batch import is still running. Leaving cancels the unfinished accounts. Leave anyway?')}
+      </p>
+    </Dialog>
+    </>
   )
 }
 
