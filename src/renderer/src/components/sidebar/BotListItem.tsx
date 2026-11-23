@@ -232,20 +232,26 @@ export const BotListItem = memo(function BotListItem({
             )}
           </span>
         )}
+        <span className="flex items-center gap-1.5">
         {preview ? (
           <span
             className={cn(
-              'block truncate text-[12.5px] leading-[17px]',
+              'block min-w-0 flex-1 truncate text-[12.5px] leading-[17px]',
               isWorking ? 'shimmer-text font-medium' : done ? 'font-medium text-status-attention' : 'text-ink-secondary'
             )}
           >
             {preview}
           </span>
         ) : (
-          <span className="block truncate text-[12px] leading-[17px] text-ink-faint">
+          <span className="block min-w-0 flex-1 truncate text-[12px] leading-[17px] text-ink-faint">
             {status === 'offline' ? t('Offline') : t('Idle')}
           </span>
         )}
+        {/* GOXF: a dot under the time for anything new (unread reply or finished task), hard to miss. */}
+        {(bot.unread > 0 || done) && (
+          <span aria-hidden className={cn('size-2 shrink-0 rounded-full', bot.unread > 0 ? 'bg-accent-600' : 'bg-status-attention')} />
+        )}
+        </span>
       </span>
       {bot.unread > 0 && (
         <span
@@ -256,9 +262,6 @@ export const BotListItem = memo(function BotListItem({
         >
           {bot.unread > 99 ? '99+' : bot.unread}
         </span>
-      )}
-      {done && bot.unread === 0 && (
-        <span aria-hidden className="size-2 shrink-0 rounded-full bg-status-attention transition-opacity duration-100 group-hover:opacity-0" />
       )}
     </>
   )
