@@ -11,6 +11,7 @@ import { getBridge } from '@/lib/bridge'
 import { cleanSidebarError } from '@/lib/sidebarCompat'
 import { useBotStore } from '@/store/botStore'
 import { t } from '@/lib/i18n'
+import { inviteProgress, parseHarkInvite } from '@/lib/harkInvite'
 
 async function callHark(
   accountId: string,
@@ -1490,7 +1491,11 @@ export function HarkInviteAndSessionsSection({ accountId }: { accountId: string 
     }
   }
 
-  const code = str(inviteInfo?.['code'] ?? inviteInfo?.['inviteCode'])
+  const invite = parseHarkInvite(inviteInfo)
+  const code = invite?.code ?? ''
+  const progress = invite ? inviteProgress(invite) : null
+  const endsAt = invite?.rewardEnds ? new Date(invite.rewardEnds) : null
+  const rewardEnds = endsAt && !isNaN(endsAt.getTime()) ? endsAt.toLocaleDateString('sv-SE') : ''
 
   return (
     <Section
@@ -1503,15 +1508,43 @@ export function HarkInviteAndSessionsSection({ accountId }: { accountId: string 
         {hint && <p className="text-ink-secondary">{hint}</p>}
 
         {code && (
-          <div className="flex items-center justify-between rounded-lg bg-hover/60 px-2.5 py-1.5">
-            <span className="font-mono text-ink">{code}</span>
-            <Button
-              size="sm"
-              variant="secondary"
-              onClick={() => void navigator.clipboard.writeText(code)}
-            >
-              {t('Copy')}
-            </Button>
+          <div className="flex flex-col gap-2 rounded-lg bg-hover/60 px-2.5 py-1.5">
+            <div className="flex items-center justify-between">
+              <span className="font-mono text-ink">{code}</span>
+              <Button
+                size="sm"
+                variant="secondary"
+                onClick={() => void navigator.clipboard.writeText(code)}
+              >
+                {t('Copy')}
+              </Button>
+            </div>
+            {progress && (
+              <div className="flex flex-col gap-1.5">
+                <span className="text-ink-secondary">
+                  已计入 {progress.filled} / {progress.total} 位朋友
+                </span>
+                <div className="flex gap-1">
+                  {Array.from({ length: progress.total }, (_, i) => (
+                    <span
+                      key={i}
+                      className={`h-1 flex-1 rounded-full ${i < progress.filled ? 'bg-status-online' : 'bg-line-strong'}`}
+                    />
+                  ))}
+                </div>
+              </div>
+            )}
+            <div className="flex items-center justify-between gap-2">
+              <span className="truncate text-ink">{invite!.link.replace(/^https:\/\//, '')}</span>
+              <Button
+                size="sm"
+                variant="secondary"
+                onClick={() => void navigator.clipboard.writeText(invite!.link)}
+              >
+                复制链接
+              </Button>
+            </div>
+            {rewardEnds && <span className="text-[11px] text-ink-muted">奖励有效至 {rewardEnds}</span>}
           </div>
         )}
 
