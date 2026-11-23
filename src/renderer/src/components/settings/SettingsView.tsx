@@ -757,14 +757,10 @@ export function SettingsView() {
     <div className="flex min-h-0 flex-1 flex-col bg-main">
       <PaneHeader className="justify-between px-4">
         <div className="flex items-center gap-2.5">
-          <button
-            type="button"
-            onClick={() => setSettingsOpen(false)}
-            className="no-drag press inline-flex h-8 items-center gap-1.5 rounded-full border border-line bg-surface px-3 text-[13px] font-medium text-ink shadow-soft hover:bg-hover"
-          >
-            <ArrowLeft className="size-3.5" aria-hidden />
+          <Button size="sm" variant="secondary" onClick={() => setSettingsOpen(false)}>
+            <ArrowLeft aria-hidden />
             返回
-          </button>
+          </Button>
           <h1 className="text-[15px] font-semibold tracking-tight text-ink">设置与账号</h1>
         </div>
         <div className="flex items-center gap-2">
