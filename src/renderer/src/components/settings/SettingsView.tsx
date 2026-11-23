@@ -845,7 +845,7 @@ export function SettingsView() {
 
         {/* Right Content Area */}
         <div className="min-h-0 flex-1 overflow-y-auto px-8 py-6" data-acc-layout={accLayout}>
-          <div className={cn('mx-auto', accLayout === 'grid' ? 'max-w-[1680px]' : 'max-w-[820px]')}>
+          <div className={cn('mx-auto', accLayout === 'grid' ? 'max-w-none' : 'max-w-[820px]')}>
             {error && (
               <div className="mb-4 rounded-xl border border-status-error/25 bg-status-error/8 px-3.5 py-2.5 text-[13px] text-status-error">
                 {error}
