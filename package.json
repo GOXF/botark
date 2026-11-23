@@ -1,7 +1,7 @@
 {
   "name": "botark",
-  "version": "0.14.0",
-  "goxfBuild": 9,
+  "version": "0.14.1",
+  "goxfBuild": 10,
   "private": false,
   "description": "BotArk — all your personal AI agents in one native desktop workspace",
   "main": "./out/main/index.js",
