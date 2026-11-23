@@ -17,3 +17,10 @@ it('decodes split SSE records for the selected conversation and ignores heartbea
   const url = new URL((fetch.mock.calls as unknown as [string][])[0]![0])
   expect(url.searchParams.get('conversationId')).toBe('fixture/thread')
 })
+
+it('keeps the live status when joining a run whose snapshot carries an object activity', async () => {
+  const { HarkConversationSyncState } = await import('./harkClient')
+  const state = new HarkConversationSyncState()
+  state.applyFrame(JSON.stringify({ type: 'snapshot', data: { messages: [], activeActivity: { label: '正在处理文件。' } } }))
+  expect(state.liveStatus()).toEqual({ busy: true, text: '正在处理文件。' })
+})

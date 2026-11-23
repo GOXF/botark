@@ -805,8 +805,9 @@ export class HarkConversationSyncState {
       this.windows.clear()
       this.asks.clear()
       this.order.length = 0
-      this.activeActivity = typeof data['activeActivity'] === 'string' ? data['activeActivity'] : null
-      this.narration = typeof data['narration'] === 'string' ? data['narration'] : null
+      // Joining mid-run: the snapshot carries the same shapes the patches do (string or {label/type}).
+      this.activeActivity = harkActivityLabel(data['activeActivity'])
+      this.narration = harkActivityLabel(data['narration'])
 
       if (data['windows'] && typeof data['windows'] === 'object') {
         for (const [wid, wval] of Object.entries(data['windows'] as Record<string, unknown>)) {
@@ -1037,16 +1038,10 @@ export class HarkConversationSyncState {
           }
         }
       } else if (op === 'narration_update') {
-        this.narration = typeof p['value'] === 'string' ? p['value'] : null
+        this.narration = harkActivityLabel(p['value'])
         changed = true
       } else if (op === 'active_activity_set') {
-        const v = p['value']
-        this.activeActivity =
-          typeof v === 'string'
-            ? v
-            : v && typeof v === 'object'
-              ? String((v as Record<string, unknown>)['label'] ?? (v as Record<string, unknown>)['type'] ?? '')
-              : null
+        this.activeActivity = harkActivityLabel(p['value'])
         changed = true
       }
     }
@@ -1504,6 +1499,15 @@ export function isHarkReplyDone(msg: HarkChatMessage): boolean {
         msg.toolCalls.every((tc) => !/^(running|pending|active|started|waiting_for_input|awaiting_input)$/i.test(tc.status))
     )
   return hasPayload
+}
+
+/** Hark sends activity / narration as a plain string or as `{ label | text | type }`. */
+export function harkActivityLabel(v: unknown): string | null {
+  if (typeof v === 'string') return v || null
+  if (!v || typeof v !== 'object') return null
+  const o = v as Record<string, unknown>
+  const s = o['label'] ?? o['text'] ?? o['value'] ?? o['type']
+  return typeof s === 'string' && s ? s : null
 }
 
 export async function readHarkStream(

@@ -154,7 +154,10 @@ function observeProject(event: IpcMainInvokeEvent, req: Extract<HarkRpcRequest, 
       } catch {
         if (!signal.aborted) {
           const snapshot = await fetchConversationSnapshotSummary(req.accountId, req.conversationId).catch(() => null)
-          if (snapshot) update(snapshot.messages)
+          if (snapshot) {
+            const text = (snapshot.narration || snapshot.activeActivity || '').trim()
+            update(snapshot.messages, text ? { busy: true, text: text.slice(0, 120) } : state.liveStatus())
+          }
         }
       }
       dial = 'reconnect'
