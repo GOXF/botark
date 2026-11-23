@@ -229,6 +229,8 @@ export interface ChatMessage {
   replyToId?: string
   /** Quoted text snippet displayed above the user's reply. */
   replyQuote?: string
+  /** Picture of the quoted message (Hark replies to an image). */
+  replyThumb?: string
   attachments?: AttachmentMeta[]
   /** Muse option chips (onboarding name picker, etc.). */
   widgets?: ChatOptionWidget[]

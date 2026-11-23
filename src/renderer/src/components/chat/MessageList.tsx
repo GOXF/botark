@@ -102,7 +102,7 @@ export function MessageList({ bot, messages, accounts, typing, onRetry }: Messag
                   {formatDayLabel(message.createdAt)}
                 </li>
               )}
-              <li className={cn('group/msg', isFirstInRun && !newDay ? 'mt-3' : 'mt-1')}>
+              <li data-message-id={message.id} className={cn('group/msg rounded-xl', isFirstInRun && !newDay ? 'mt-3' : 'mt-1')}>
                 <div className="flex items-start gap-2.5">
                   {isBot && (
                     <span className="mt-0.5 w-7 shrink-0">

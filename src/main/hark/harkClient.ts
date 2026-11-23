@@ -697,6 +697,8 @@ export type HarkChatMessage = {
   thought?: string
   narration?: string
   createdAt?: string | number | null
+  /** The message this reply answers: its id, and/or a quoted copy Hark embedded. */
+  replyTo?: { id?: string; text?: string }
   toolCalls?: Array<{
     dispatchId: string
     name: string
@@ -1381,7 +1383,41 @@ function extractHarkArtifactsFromRaw(raw: Record<string, unknown>): HarkArtifact
   return out
 }
 
+// The real key name is unverified; accept every spelling seen across chat APIs.
+const REPLY_KEYS = ['replyTo', 'reply_to', 'replyToId', 'reply_to_id', 'inReplyTo', 'in_reply_to', 'replyToMessageId', 'parentMessageId']
+
+export function harkReplyRef(raw: Record<string, unknown>): HarkChatMessage['replyTo'] {
+  for (const key of REPLY_KEYS) {
+    const v = raw[key]
+    if (typeof v === 'string' && v) return { id: v }
+    if (!v || typeof v !== 'object') continue
+    const o = v as Record<string, unknown>
+    const id = [o['id'], o['messageId'], o['_id']].find((x) => typeof x === 'string' && x) as string | undefined
+    const text = [o['text'], o['content']].find((x) => typeof x === 'string' && x.trim()) as string | undefined
+    if (id || text) return { ...(id ? { id } : {}), ...(text ? { text } : {}) }
+  }
+  return undefined
+}
+
+/** One-line quote of a reply target: its text, else what it carried. */
+export function harkReplySnippet(text: string, media?: Array<{ kind: string; name?: string }>): string {
+  const flat = text.replace(/\s+/g, ' ').trim()
+  if (flat) return flat.length > 140 ? `${flat.slice(0, 140)}…` : flat
+  const part = media?.[0]
+  if (!part) return ''
+  return part.kind === 'image' ? '[图片]' : `[文件] ${part.name ?? ''}`.trim()
+}
+
+let loggedMessageKeys = false
+
 function normalizeSyncMessage(id: string, raw: Record<string, unknown>): HarkChatMessage {
+  const role = String(raw['role'] ?? raw['author'] ?? 'assistant')
+  // Patches carry no role, so this logs the first full assistant message (lets the user confirm the reply key).
+  if (!loggedMessageKeys && (raw['role'] ?? raw['author']) && !/^user$/i.test(role)) {
+    loggedMessageKeys = true
+    console.log('[hark] message keys:', Object.keys(raw).sort().join(','))
+  }
+  const replyTo = harkReplyRef(raw)
   const rawContent =
     (typeof raw['content'] === 'string' && raw['content']) ||
     (typeof raw['text'] === 'string' && raw['text']) ||
@@ -1453,7 +1489,7 @@ function normalizeSyncMessage(id: string, raw: Record<string, unknown>): HarkCha
 
   return {
     id,
-    role: String(raw['role'] ?? raw['author'] ?? 'assistant'),
+    role,
     content: content || (errorText ? `⚠️ ${errorText}` : ''),
     isStreaming: typeof raw['isStreaming'] === 'boolean' ? raw['isStreaming'] : undefined,
     ...(jobStatus ? { jobStatus } : {}),
@@ -1464,6 +1500,7 @@ function normalizeSyncMessage(id: string, raw: Record<string, unknown>): HarkCha
       | string
       | number
       | null,
+    ...(replyTo ? { replyTo } : {}),
     ...(toolCalls.length ? { toolCalls } : {}),
     ...(actions.length ? { actions } : {}),
     ...(artifacts.length ? { artifacts } : {})

@@ -1909,6 +1909,14 @@ function UserAttachmentItem({
   )
 }
 
+// Scroll the chat to a quoted message and flash it briefly.
+function jumpToMessage(id: string): void {
+  const el = document.querySelector<HTMLElement>(`[data-message-id="${CSS.escape(id)}"]`)
+  if (!el) return
+  el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+  el.animate([{ backgroundColor: 'var(--color-accent-100)' }, { backgroundColor: 'transparent' }], { duration: 1400, easing: 'ease-out' })
+}
+
 export const MessageBubble = memo(function MessageBubble({
   message,
   isFirstInRun: _isFirstInRun,
@@ -2066,6 +2074,9 @@ export const MessageBubble = memo(function MessageBubble({
     a.click()
   }
   const senderName = mine ? '我' : botMeta?.name || ''
+  // Only Hark history resolves replyToId to a bubble id here; other platforms keep their own platform id in it.
+  const jumpId = message.replyToId?.startsWith('hark_') ? message.replyToId : undefined
+  const QuoteTag = jumpId ? 'button' : 'div'
 
   return (
     <div className={cn('flex flex-col', mine ? 'items-end' : 'items-start')} onContextMenu={onBubbleContextMenu}>
@@ -2136,15 +2147,19 @@ export const MessageBubble = memo(function MessageBubble({
       )}
       {/* 0. Quoted message snippet when user replied to a bubble */}
       {message.replyQuote && (
-        <div
+        <QuoteTag
+          {...(jumpId ? { type: 'button' as const, onClick: () => jumpToMessage(jumpId), title: '跳到原消息' } : {})}
           className={cn(
-            'mb-1 flex max-w-[72%] items-center gap-1.5 rounded-xl border border-line bg-sunken/45 px-2.5 py-1 text-[11.5px] text-ink-secondary',
+            'mb-1 flex max-w-[72%] items-center gap-1.5 rounded-xl border border-line bg-sunken/45 px-2.5 py-1 text-left text-[11.5px] text-ink-secondary',
             mine && 'self-end'
           )}
         >
           <CornerDownRight className="size-3 shrink-0 text-accent-600" aria-hidden />
+          {message.replyThumb && (
+            <img src={message.replyThumb} alt="" onError={(e) => (e.currentTarget.hidden = true)} className="size-8 shrink-0 rounded-md object-cover" />
+          )}
           <span className="truncate">{message.replyQuote}</span>
-        </div>
+        </QuoteTag>
       )}
 
       {/* 1. Tool execution trace / thinking status above the assistant reply */}

@@ -24,6 +24,7 @@ import {
   getConversationStatuses,
   getMainConversation,
   getProfile,
+  harkReplySnippet,
   importHarkCredentials,
   isHarkReplyDone,
   listConversations,
@@ -102,10 +103,21 @@ function mapHarkRichWidgets(msg: HarkChatMessage): MuseRichWidgetView[] | undefi
   ]
 }
 
+// The message a reply answers, resolved within this conversation: quote, its id, and a picture when it has a web URL.
+function replyView(m: HarkChatMessage, byId: Map<string, HarkChatMessage>) {
+  const target = m.replyTo?.id ? byId.get(m.replyTo.id) : undefined
+  const media = target && mapHarkMedia(target)
+  const replyQuote = harkReplySnippet(target?.content ?? m.replyTo?.text ?? '', media)
+  if (!replyQuote) return {}
+  const replyThumb = media?.find((p) => p.kind === 'image' && /^(https?:|data:image\/)/i.test(p.path))?.path
+  return { replyQuote, ...(target ? { replyToId: target.id } : {}), ...(replyThumb ? { replyThumb } : {}) }
+}
+
 function historyView(messages: HarkChatMessage[]) {
+  const byId = new Map(messages.map((m) => [m.id, m]))
   return messages.map((m) => ({
     // User messages keep their pictures too: Hark's history carries what the user attached.
-    ...m, media: mapHarkMedia(m),
+    ...m, media: mapHarkMedia(m), ...replyView(m, byId),
     richWidgets: !/^user$/i.test(m.role) ? mapHarkRichWidgets(m) : undefined
   }))
 }

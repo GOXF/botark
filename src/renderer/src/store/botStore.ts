@@ -514,8 +514,13 @@ function harkHistory(data: unknown, botId: string, accountId: string): ChatMessa
       actions?: Array<{ kind: string; connector?: string; label: string }>
       media?: ChatMessage['media']
       richWidgets?: ChatMessage['richWidgets']
+      replyToId?: string
+      replyQuote?: string
+      replyThumb?: string
     }>
   }
+  const uiId = (m: { id: string; role: string }) => (/^user$/i.test(m.role) ? `hark_u_${m.id}` : `hark_${m.id}`)
+  const byId = new Map((d.messages ?? []).map((m) => [m.id, m]))
   return (d.messages ?? [])
       .filter(
         (m) =>
@@ -524,8 +529,11 @@ function harkHistory(data: unknown, botId: string, accountId: string): ChatMessa
           (m.media && m.media.length > 0) ||
           (m.richWidgets && m.richWidgets.length > 0)
       )
-      .map((m) => {
+      .map((m, i, shown) => {
         const isUser = /^user$/i.test(m.role)
+        const target = m.replyToId ? byId.get(m.replyToId) : undefined
+        // Answering the message right above is the obvious case: quoting it is noise.
+        const quoted = m.replyQuote && !(target && shown[i - 1]?.id === target.id)
         const ts =
           typeof m.createdAt === 'number'
             ? m.createdAt
@@ -556,7 +564,7 @@ function harkHistory(data: unknown, botId: string, accountId: string): ChatMessa
                 ]
               : undefined
         return {
-          id: isUser ? `hark_u_${m.id}` : `hark_${m.id}`,
+          id: uiId(m),
           botId,
           accountId,
           role: isUser ? 'user' : 'bot',
@@ -565,7 +573,10 @@ function harkHistory(data: unknown, botId: string, accountId: string): ChatMessa
           delivery: isUser ? 'sent' : undefined,
           richWidgets: m.richWidgets,
           tools,
-          ...(m.media && m.media.length > 0 ? { media: m.media } : {})
+          ...(m.media && m.media.length > 0 ? { media: m.media } : {}),
+          ...(quoted
+            ? { replyQuote: m.replyQuote, ...(target ? { replyToId: uiId(target) } : {}), ...(m.replyThumb ? { replyThumb: m.replyThumb } : {}) }
+            : {})
         }
       })
 }
