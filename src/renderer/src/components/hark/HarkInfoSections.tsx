@@ -194,6 +194,12 @@ export function HarkBillingSection({ accountId }: { accountId: string }) {
   const poolUsed = Number(harkTokens?.['poolUsed'] ?? 0)
   const poolLimit = Number(harkTokens?.['poolLimit'] ?? 0)
   const tokens = asObj(summary?.['tokens'])
+  const exhausted =
+    str(summary?.['state']) === 'exhausted' ||
+    (poolLimit > 0 && poolUsed >= poolLimit) ||
+    (dailyLimit > 0 && dailyUsed >= dailyLimit)
+  const planEnds = str(plan?.['source']) === 'gift' ? pickTime([plan], ['endsAt']) : null
+  const nextPlan = str(asObj(plan?.['next'])?.['planId'])
   const dailyReset = pickTime(
     [harkTokens, meters, summary, asObj(tokens?.['daily']), asObj(harkTokens?.['daily'])],
     ['dailyResetsAt', 'dailyResetAt', 'daily_resets_at', 'dailyReset', 'dailyWindowEnd', 'resets_at', 'resetsAt']
@@ -237,6 +243,22 @@ export function HarkBillingSection({ accountId }: { accountId: string }) {
                 </span>
               )}
             </div>
+
+            {(exhausted || planEnds) && (
+              <div className="flex flex-col items-start gap-1">
+                {exhausted && (
+                  <span className="rounded-full bg-status-error/10 px-2 py-0.5 text-[11px] text-status-error-ink">
+                    额度已用完
+                  </span>
+                )}
+                {planEnds && (
+                  <span className="text-[11px] text-ink-muted tabular-nums">
+                    赠送至 {fmtResetAt(planEnds, now).replace(/\s*重置$/, '')}
+                    {nextPlan === 'free' ? '，之后转免费版' : nextPlan ? `，之后转 ${nextPlan}` : ''}
+                  </span>
+                )}
+              </div>
+            )}
 
             {dailyLimit > 0 && (
               <QuotaMeter

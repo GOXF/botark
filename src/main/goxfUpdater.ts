@@ -323,6 +323,8 @@ function run(cmd: string, args: string[], signal?: AbortSignal): Promise<void> {
   })
 }
 
+const UNZIP_TIMEOUT_MS = 5 * 60_000
+
 /** Unpack into a fresh dest: Windows' bsdtar (seconds; Win10 1803+), else the slow Expand-Archive. */
 async function unzip(zip: string, dest: string, signal?: AbortSignal): Promise<void> {
   const fresh = (): void => {
@@ -330,8 +332,12 @@ async function unzip(zip: string, dest: string, signal?: AbortSignal): Promise<v
     mkdirSync(dest, { recursive: true })
   }
   fresh()
+  // A hung tar/PowerShell (AV scan, locked file) must not leave "正在解压" up forever.
+  const limited = (): AbortSignal =>
+    signal ? AbortSignal.any([signal, AbortSignal.timeout(UNZIP_TIMEOUT_MS)]) : AbortSignal.timeout(UNZIP_TIMEOUT_MS)
+  logUpdate(`unpacking ${basename(zip)} (${Math.round(statSync(zip).size / 1048576)} MB)`)
   try {
-    await run(join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'tar.exe'), ['-xf', zip, '-C', dest], signal)
+    await run(join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'tar.exe'), ['-xf', zip, '-C', dest], limited())
     logUpdate(`unpacked ${basename(zip)} with tar.exe`)
   } catch (error) {
     if (signal?.aborted) throw error
@@ -342,7 +348,10 @@ async function unzip(zip: string, dest: string, signal?: AbortSignal): Promise<v
       '-NonInteractive',
       '-Command',
       `Expand-Archive -LiteralPath ${psQuote(zip)} -DestinationPath ${psQuote(dest)} -Force`
-    ], signal)
+    ], limited()).catch((e) => {
+      if (signal?.aborted) throw e
+      throw new Error(`解压失败或超时（${UNZIP_TIMEOUT_MS / 60000} 分钟）：${e instanceof Error ? e.message : String(e)}`)
+    })
     logUpdate(`unpacked ${basename(zip)} with Expand-Archive`)
   }
 }
