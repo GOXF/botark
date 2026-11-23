@@ -1,0 +1,173 @@
+# BotArk 交接单（2026-11-22 用户提供）
+
+Fork: GOXF/botark；上游: qybaihe/botark（main = 0644b8c）
+
+| 分支 | 状态 | 用途 |
+|---|---|---|
+| fix/hark-login-sync | 完成，vitest 235 通过，typecheck 通过，未真机验证 | 提 PR 的干净分支，4 个修复 |
+| fix/hark-project-autotitle | 已并入上面 | 可删 |
+| goxf/portable | 未完成、未测试 | 自用便携版 + 双更新提示，不进 PR |
+| main | 等于上游 0644b8c | 没动 |
+
+## 开 PR（用户自己点）
+https://github.com/GOXF/botark/pull/new/fix/hark-login-sync ，base = qybaihe/botark main，Create draft pull request，标题和说明见 pr-description.md。
+
+## 本地试用
+git clone <GOXF/botark> && cd botark && git checkout fix/hark-login-sync && npm ci && npm run dev
+真机检查：邮箱登录过 Turnstile、Google 登录、新建 Bot 粘贴导入后重启仍在线、网页端新建项目切回后出现、新建项目不报错。
+
+## 便携版（goxf/portable）
+已写：portable 打包配置、数据放 exe 同目录（goxfPortable.ts）、双更新逻辑（goxfUpdateLogic.ts / goxfUpdater.ts）、更新横幅（GoxfUpdateBanner.tsx）。
+2026-11-22 已做：typecheck 通过、vitest 54 文件 251 测试通过、electron-vite build 通过；新增 goxfUpdateLogic.test.ts（16 测）、goxf-portable.yml（仅 GOXF/botark，v*-goxf.* tag → windows 出 portable exe → 发 fork release，--latest=false；手动触发只出 artifact）；release.yml 排除 v*-goxf.* tag 且 prepare 仅 qybaihe/botark 跑；pages.yml 仅 qybaihe/botark。
+决定（2026-11-22）：main 保持镜像上游不改；自用版只在 goxf/portable，同步上游 = 把 main 合进 goxf/portable；给上游的 PR 从 main 开分支。
+未做：Windows 真机验证便携数据目录和自替换更新。
+发版：确认 package.json version + goxfBuild，打 tag v0.12.0-goxf.1 推上去。
+手动出包（Windows）：npx electron-vite build && npx electron-builder --config electron-builder.config.cjs --win portable --publish never
+触发词：「接着做 botark 便携版」→ 从 goxf/portable 接上。
+
+## 进度（2026-11-22 19:01）
+- Draft PR 已开：https://github.com/qybaihe/botark/pull/38
+- Dot 跟进已推到 fix/hark-login-sync（22169f3）：查明 cancelDotLogin 只在未存 token 时清分区，非同一 bug；只补 onImported。PR 说明已更新。
+
+## 遗留
+- webContentsViewManager.ts 聊天视图仍改写 UA，登录后再遇验证改这里。
+- 挂代理时出口 IP 与系统时区不一致未处理。
+
+## 2026-11-22 20:45 zip 便携版
+- 用户要的是"解压即用"的 zip（不要求单 exe），并且要一键替换式更新（参照其 harkhubgo 版，细节未知，按标准做法实现）。
+- goxfPortable.ts：打包后 BotArk.exe 同目录有 BotArk-Data 文件夹 = zip 便携模式，数据放那里。
+- 更新：zip 模式下载最新 v*-goxf.* release 的 *Portable*x64*.zip → 退出后 PowerShell 替换除 BotArk-Data 外的所有文件 → 重启，失败回滚（buildZipReplaceScript）。
+- workflow 同时产出 exe 和 zip（输出目录是 release/ 不是 dist/，已修）。
+- 已发给用户：BotArk-Portable-0.12.0-goxf.1-win-x64.zip（Linux 交叉打包、未签名、无 rcedit 图标）。
+- 本地构建：npx electron-vite build && npx electron-builder --config electron-builder.config.cjs --win dir --x64 --publish never -c.directories.output=/tmp/ebout，再把 win-unpacked 拷成文件夹+BotArk-Data/README.txt 后 zip。
+- 注意：别在仓库根目录运行 asar extract-file package.json（会覆盖 package.json）。
+- 未验证：Windows 真机运行、zip 自更新脚本。
+- 已推送：92ad443（zip 自更新代码）+ d56900d（workflow 产出 zip），远端与本地测试过的树一致。下一步：Windows 真机测；可考虑仿 Orca：有会话在跑时推迟替换。
+
+## Orca (stablyai/orca @15407c88) 可借鉴点（2026-11-23 调研）
+1. 会话 cookie 持久化：Electron 不把无过期时间的 session cookie 写盘，重启即登出。Orca 每 30s 把 session cookie 快照成 JSON，启动时先恢复再加载页面（src/main/browser/cookies/session-restore/）。BotArk 登录窗拿到的 cookie 若无 expiry 会同样丢失——优先排查。
+2. 自动安装前检查：有在跑的会话就不自动装（updater-install-support.ts canProceedWithInstall / hasInProcessTerminalSessions）。zip 替换脚本前应检查是否有 bot 正在生成回复。
+3. 发布就绪检查：提示更新前 HEAD 请求 release 资产，未上传完不提示（updater-release-readiness.ts）。我们 CI 先建 release 再传 zip，存在窗口期。
+4. 更新节奏：每天检查一次，失败 1h 起指数退避到 6h；可选“延迟 N 天”，发布时间未知时视为不可装。
+5. UA：Cloudflare 需要保留 Electron token，Google 拒绝带其他浏览器标识 —— 与 PR #38 的按 URL 切换 UA 结论一致。
+
+## 2026-11-23 上游同步（已推送 goxf/portable 9f2832b；fork main 快进到上游 fb25d6b）
+- 本地 goxf/portable：37e44cc（只留中英语言包 + perf.log）→ 7e823eb 合并 upstream fb25d6b（v0.12.1，#39 #40 #46 #47）→ chore SettingsView。
+- 上游 #47 已吸收 PR #38 的大部分 Hark 修复，但 UA 用了它自己的方案；合并时 Hark 文件全取上游，删了我们的 harkUserAgent.ts / harkLogin.test.ts。PR #38 可能需关闭或缩小。
+- 与上游差异仅 17 个文件，全是 goxf 专属（便携、更新、perf、workflow、builder 配置）。
+- 推送：正在建 fine-grained PAT（仅 GOXF/botark，Contents+Workflows 写，30 天）以便 git push。
+- zip：dist/BotArk-Portable-0.12.1-goxf.1-win-x64.zip 151MB，已发给用户。
+
+- 推送方式：shell 加 credentials [{provider: github-goxf-push}] 直接 git push（PAT hark-botark-push，30 天，2026-12-23 到期）。不必再走网页上传。
+- 上游 dfcc20a 明确写了 Hark (#38) 并 co-author GOXF：PR #38 已被吸收。
+
+## 2026-11-23 Orca 借鉴已落地（goxf/portable 39de007，goxfBuild=2）
+- F12 切换 DevTools（index.ts before-input-event）。
+- goxfSessionCookies.ts + goxfSessionCookieLogic.ts(+test)：账号分区的会话 cookie 变更 5s 后用 safeStorage 加密存到 userData/goxf-session-cookies/<分区>.bin；启动时在主窗口前恢复。safeStorage 不可用就不存。
+- GoxfUpdateBanner：有 bot 在回复（store.typing）时禁用“更新并重启”。
+- goxfUpdateLogic：只认 state=uploaded 的资产；nextCheckDelayMs：成功 24h，失败 1h→2h→4h→6h。
+- 未做：“发布 N 天后再装”延迟设置（单人自用，暂不需要）。
+- 测试：typecheck 过，vitest 70 文件/340 过。未在 Windows 真机验证。
+
+## 2026-11-23 12:30 goxf.3（goxf/portable fd1d78f）
+- Hark 实时状态：observeProject 的会话流把 narration/activeActivity（HarkConversationSyncState.liveStatus）随 projectHistory 一起发给前端，驱动 TypingIndicator；pollReply 改为优先用会话级 narration。
+- 输入草稿：goxfComposerDrafts.ts 按 bot 缓存未发出的文字和附件（内存里，重启后不保留），发送后清空。
+- 右侧「项目」加刷新按钮（派发 bothub:hark-projects 事件）。
+- 参考仓库 GOXF/hark-hub-go（私有，PAT 已加读写）：它直接套 Hark 网页，状态和草稿都是网页原生的，没有可直接照搬的代码。
+- 未在 Windows 真机验证。
+
+## goxf.4（2026-11-23 13:12 推送，tag v0.12.1-goxf.4，goxf/portable 19d5887）
+- 增量自更新：CI 上传 zip + manifest-*.json（每文件 sha256）+ patch-*.zip（resources/）；resources 外文件全对上才走补丁，只换哈希不同的文件，校验失败不动，失败回滚；日志 BotArk-Data/update.log，update-pending.json 失败横幅。
+- 更新通道：正式=tag v*-goxf.N；测试=每次推 goxf/portable 发预发布 v<ver>-goxf.dev.<sha7>，保留 5 个；设置 BotArk-Data/goxf-update.json，默认正式。
+- Hark：回复后仍持续监听到空闲（10s）或 30 分钟；项目列表 工作中/完成；侧边栏 工作中·N 个项目、完成黄点、流式回复未读角标。/conversations/status 内层结构未确认，F12 有 `[hark] /conversations/status sample`。
+- Muse：activity_text 非空即显示（Waiting for cooldown · N subagents）。浏览器卡片未做：缺真实数据，等用户用 BOTARK_MUSE_CAPTURE=C:\temp\muse.ndjson 抓包。
+- 测试 75 文件 / 368 用例通过。PowerShell 换文件脚本、CI dev 发布与清理、真机均未验证。
+- 工作树：/workspace/work/botark-{delta,status,muse}（已合并，可删）。
+
+## goxf.5 自更新修复（2026-11-23 14:05 已提交 061fec7，tag v0.13.0-goxf.5 已推）
+- 上游 v0.13.0 仅版本号；fork main 已快进 0dc49b8；goxf/portable 合并为 4a8ce2b（0.13.0, goxfBuild 4）已推。
+- 用户卡在 0.12.1-goxf.1：更新后不重启、版本不变。疑因：退出后 Expand-Archive 慢无提示→用户重开旧版占锁→回滚。
+- 工作树 /workspace/work/botark-upfix（goxf/w-upfix）：goxfUpdateLogic.ts、goxfUpdater.ts 已改（app 内 tar.exe 解压、杀 app 目录残留进程、update-in-progress.lock、强制退出、update.log）。
+- 剩余：goxfUpdate.ts 加 portable-extracting 事件；GoxfUpdateBanner 解压中卡片；goxfSessionCookies 导出 async flushSessionCookies；index.ts 在 requestSingleInstanceLock 前调 exitIfUpdating；goxfBuild→5；更新测试；typecheck+vitest；提交→合并 goxf/portable→打 tag v0.13.0-goxf.5。
+- 用户需手动下载一次 goxf.5 覆盖。
+- 14:05 完成：剩余项全部做完，typecheck 过，vitest 371 全过（mcp hub 偶发超时，单跑通过）。合并进 goxf/portable 061fec7 并推送 tag。未在 Windows 实测。
+
+## 14:40 进展
+- goxf.6（1f413cb）：Hark 新建项目可留空名，Hark autoTitle。
+- bee4269：侧边栏双击 bot 名/分组名重命名。
+- 1ea4805：CI 快速通道（scripts/goxf-fast.mts）：分支推送且依赖/lock/electron-builder 配置/build/ 未变 → 只 electron-vite build + 重打 app.asar，发只含 manifest+patch 的 dev 预发布，实测 49 秒；否则全量。客户端测试通道接受只有补丁的 dev 版，补丁不适用时回退到最新全量 zip。未在 Windows 实测补丁应用。
+- 已删除 worktree botark-upfix、botark-fast。
+- 15:06 同步上游 v0.13.1（Muse Sentinel 审批修复），goxf/portable 6da9c2b（0.13.1, goxfBuild 7），fork main=66c50c2。
+- ae8586a：Hark「新建」一键创建空名项目并打开（autoTitle），去掉输入框。项目重命名未做（需查 Hark 改名接口）。
+- 15:12 47a06ae：新建改为草稿（activeSessionId 'hark:draft'，首条消息时 createConversation 空名 autoTitle）。
+- 15:19 27bfdbc：Hark 会话续期（get-session needsRefresh→POST；/auth 外 401 先续期再重试；在线账号每 20 分钟续期）；用户图文消息保留图片。未实测。
+- 15:20 a087c27：侧栏时间下小圆点（蓝=未读，橙=任务完成）。
+- 15:30 000a6f3：工具卡片保持一张一张（用户要求不合并），每张下面显示在干什么（input.task/description/query… → detail）。未实测 Hark 是否在 tool_add 里给 input.task。
+- 15:38 dc0f6ab：项目删除按钮（DELETE /conversations/:id，探测返回 401 非 404 说明路由存在；带确认框；归档列表也可删）。未实测。
+- 15:38 626ee59：未读数字圆移到时间下方并居中（替代右侧徽标），完成=橙点。用户已在 goxf.7，日常走测试通道。
+- 15:50 测试通道每 10 分钟检查更新（正式仍每天；启动 8 秒后查一次；切换通道立即查）。
+- 15:58 设置页账号列表宫格模式（默认，最宽 1680px，卡片 ≥380px 自适应列数）+ 宫格/列表切换（localStorage goxf.accountLayout）。
+- 16:00 adbd97b：宫格模式下整个设置内容区铺满（max-w-none），列表模式保留 820px。
+- 16:08 bed42d9：更新下载改用 electron net.fetch（走系统代理，此前 Node fetch 直连 GitHub 很慢）；update.log 记录下载文件和 MB；更新提示改为右下角小胶囊（测试版 xxxx · 更新）。dev 补丁约 6.0MB。
+- 16:15 11fa765：下载中可「取消」（AbortController，删半成品，恢复更新提示）；点「更新」前先重新检查，总是装最新版。未做暂停/续传。
+- 16:12 额度重置时间：给了效果图（A 进度条下小字 / B 标题旁+快用完变橙），等用户选；Hark 今日额度按账号固定时刻 24h 重置、周期按订阅日；需确认 /billing/summary 是否含 resets 字段（可能要 F12 样本）；拟加每 5 分钟自动刷新。
+- 16:40 018d4e9：额度已用/剩余切换（同格式只换色，剩余按 >50 绿/20–50 橙/<20 红）、重置时刻+倒计时（字段名猜测，无则不显示）、5 分钟自动刷新；上游提示关闭后记住。已发 dev。用户仍显示上游提示 → 说明还在 0.13.0（goxf.7）。
+- 16:42 发现：goxf.7 与 6da9c2b 的 BotArk.exe 哈希不同（大概只是版本戳），增量规划因此拒绝补丁→退回下 155MB 完整包＝更新慢的真正原因。待办：增量规划忽略 BotArk.exe 版本戳差异或 CI 固定 exe。用户本次手动覆盖 018d4e9 补丁的 resources。
+- 17:08 设置账号宫格留白：给了 grid-mock2（A 5×2 卡片/B 两列紧凑横条悬停出操作，我倾向 B），等用户选+开工。
+
+## 2026-11-23 17:20
+- e800986 推送：历史重载后用户图片靠右、在文字上方。
+- Hark 重启离线排查完成（work/hark-offline-diagnosis-2026-11-23.md）；7 项修复方案待用户「开工」。疑似 24h 不续期会话，长期需自动重登。
+- 账号卡片网格：Untitled UI 效果图 /workspace/work/mock/untitled-mock.png 待确认（右上开关要不要）。
+- a8e211c：中途加入项目时快照里对象形式的 activeActivity/narration 被丢 → 状态行缺失，已修。
+- 3255c99：离线修复（get-session 为准、20 分钟全账号重查+广播、去 POST 续期、.hark.com、退出 flush、取消登录不误删、调试日志）。未真机验证。用户说会话寿命很长，不做自动重登。
+- 已通知用户 dev.3255c99 可更新（含 e800986、a8e211c）。
+- Hark session_token 为持久 Cookie，Domain .hark.com，有效期约 30 天（用户 17:54 截图确认）；带 better-auth multi-session cookies。24h 假设已排除。
+- 4fa5686：合并上游 v0.13.2（Muse session.start/网关自愈/rooms），version 0.13.2 goxfBuild 7；fork main 已快进。mcp hub.test 并发下偶发失败，单跑通过。
+- 更新提示统一成上游底部居中 toast：效果图 /workspace/work/mock/toast-mock.png，待「开工」。字体备份 /workspace/work/mock/NotoSansSC.ttf（/tmp 会丢）。
+- 用户 18:00：不用上游 toast，保留我们自己的大卡片样式；把便携版更新提示统一成「上游有更新」大卡片（效果图 /workspace/work/mock/big-mock.png），待「开工」。
+- 07a6bf0：便携版更新提示统一成大卡片（Notice 组件）。已通知用户更新测试版 07a6bf0（含 e800986、a8e211c、3255c99、4fa5686）。仍待：账号卡片网格 Untitled 效果图确认。
+- 18:25 用户自动更新失败：4fa5686 为完整构建（package-lock 变），07a6bf0 补丁基于新运行时 → 回退整包 4fa5686 → 替换失败，仍 0.13.1。已给手动整包链接，等 update.log 查整包替换失败原因（未解决 bug）。
+- 18:28 update.log 诊断：16:19 与 18:21 两次整包更新都停在 "swap script started"+"quitting"，%TEMP% 里的 PS 脚本一行日志都没写（连 waiting for app pid 都没有）→ 脚本没跑起来/被杀（疑似杀软拦隐藏 powershell -ExecutionPolicy Bypass）。非文件占用。拟修：去掉 PowerShell，由新版 BotArk.exe 带 --goxf-finish-update 参数自己等旧 pid、替换、重启；并记录 spawn error/早退。约 40 分钟，等用户「开工」+ 是否装 360/火绒。
+- 18:55 f3d5961：zip 自更新改为 Node 模式助手（goxfUpdateHelper.ts，ELECTRON_RUN_AS_NODE；整包用新暂存 exe、增量用当前 exe；写 ready 握手，助手起不来 app 不退出；下次启动清理 stage/backup）；删除 PS zip/delta 脚本（exe 单文件模式仍用 PS）。更新提示 portal 到 body 顶层 z，Muse 等原生网页视图自动让位（lib/noticeRect.ts）。4c835ad 发正式 v0.13.2-goxf.8 整包（用户需手动装一次）。6a0d965 聊天气泡右键菜单（复用 Menu，虚拟锚点）。均未 Windows 实测。
+- 待开工：代理改造（proxy-mock2.png：代理池可勾平台、每代理账号上限默认不限、手动绑定不受限；账号侧栏 真直连/跟随系统/代理；现 direct 实为 mode system）；Hark 邀请好友（invite-mock.png，用 /api/invite 字段 counted/friendsPerReward/claims/landedReward，参考 hark-hub-go internal/invite）；设计审计 38 条 work/design-audit-2026-11-23.md，问用户是否先修 Top10。
+- 18:58 邀请改版：官网邀请码 NKW9NC ≠ app.hark.com /api/invite 的 3MXZGT（那是兑换侧的码）。邀请数据改走 GET https://hark.com/api/invite（参考 hark-hub-go internal/invite）；「兑换」单独一节保留。效果图 invite-mock.png 已发，等「开工」。
+- 19:03 已推 goxf/portable 68e7ae3（52c6571 设计规范 Top10 + 邀请进度/链接/有效期 lib/harkInvite.ts + 设置页宽度只在账号页撑宽），CI 成功。用户已在 0.13.2（goxf.8）。perf.log 正常。
+- 代理改造进行中：worktree /workspace/work/botark-proxy 分支 goxf/proxy（子代理 proxy-rework），完成后合并进 goxf/portable 再推。
+- 待用户：网格右上开关去掉还是做成启用/暂停账号；/billing/summary 用浏览器 Hark 网页 F12 取；Muse 抓包用 set BOTARK_MUSE_CAPTURE。
+- 19:12 已推 goxf/portable dcab0e4：8709cd6 更新暂停/续传/解压取消/×隐藏；6d87f47 解压 5 分钟超时+日志、额度「已用完」+赠送到期行；合并 goxf/proxy cbd4890（全平台网络代理三选一、池按平台自动分配、上限默认不限、删池代理自动解绑、启动清孤儿绑定）。用户需手动把 Muse 号 70.39.201.51 改跟随系统。
+- 进行中：hark-reply-quote 子代理（Hark 回复显示被回复消息，字段名未验证，会打 '[hark] message keys:' 日志）。
+- 待用户：是否加「后台 10 分钟未看网页自动卸载」省内存；update.log（解压卡住）。
+- 19:13 已推 8ccedff Hark 回复引用（字段名未验证，看 '[hark] message keys:' 日志补 REPLY_KEYS）。
+- 19:17 87c697a：delta 卡在解压后=Electron fs 把 staged app.asar 当目录，sha256 挂起；改用 original-fs（src/main/fsNoAsar.ts），helper 加 ELECTRON_NO_ASAR。muse capture 启动即建文件。打 tag v0.13.2-goxf.9 整包，用户需手动下载覆盖一次（旧版自更新代码本身有 bug）。
+- 19:28 推 f5ef033 goxf(perf)：手机同步未开时不建快照+图片缓存 48MB 上限；localStorage 每秒最多写一次；闲置 10 分钟且不忙的 bot 裁到 50 条，打开时重载。Dot/无会话ID 不裁；当前 bot 无虚拟滚动。未真机测。
+- 20:31 tag 构建因 goxfBuild 未改失败；bb42cf8 改 goxfBuild 9 重打 v0.13.2-goxf.9（含 f5ef033）。定时任务 43a5e74c 20:45 起查 zip。规则：打正式 tag 前必须同步改 package.json goxfBuild。
+- 20:40 任务面板效果图 work/mock/tasks-mock.png（参考 Xircth/VibeX 看板：进行中/等你处理/已完成，卡片=会话，含需求+状态+停止/批准/重试），等「开工」。设计审查实际剩 21 项（清单已发用户），等用户选。perf.log 提醒任务 4b70f8b1 改到 2026-11-24 18:00。
+- 20:42 任务面板效果图 v2 基于用户真实截图：work/mock/tasks-mock2.png（tasks2.py），侧栏「工作区」上方加「任务」行，中间三列看板，右栏收起。等「开工」。
+- 20:45 任务面板 v3：tasks-mock3.png，保留右栏，StatusBadge/Button sm/SegmentedControl xs，等「开工」。
+- 20:55 任务面板 v4（用户否了独立看板页，要参考 Orca/T3 Code）：tasks-mock4.png（tasks4.py），只改侧栏——顶部「需要你」分组带批准/重试，工作中/刚完成的 bot 第二行显示状态+当前步骤，聊天窗不动。等「开工」。
+- 20:55 设计审计修复已推 goxf/portable bb42cf8..f5e8789（13 提交）：d1afd2c #14#15 UnreadBadge/StatusDot；01d9652 #3#5#11 Notice×用IconButton、描述 caption+2行截断、更新通道行加载时禁用占位；77ee1f1 #27 群聊拖放提示改 toast 外观（仍左下）；8fa7808 #28 RoomInspector 原生 select→Select；8e56c11 #29 AddBot 批量导入离开确认改 App 内 Dialog；c3b2558 #30 聊天主按钮→Button primary sm（6 处；选项 chip 未改；授权链接 <a> 仅对齐 h-7 样式）；9d9a480 #26 工具调用两列；f2f8113 #25 重载用户图片 max-w-64；486871e #31#32 共享 ImageLightbox(portal, shadow-dialog)+ImageOverlayButton；e598505 #33；7f84cf7 #34；e5d7bbd #19；f5e8789 #23#35#36。#2 早已修（Notice error 属性）。跳过 #8 剩余（悬停已在 52c6571 修好；剩余未分层规则是故意压过 li 的 items-center 和外层卡片 utilities，挪进 @layer components 会把宫格和 #6 弄坏，改 Tailwind 变体需 6 列表+6 外层大改且无法本地目测）。#4/#38 按要求未动。typecheck 过，vitest 430/433（hub.test.ts 全量下超时，单跑 7/7 过）。均未 Windows 实测。
+- 21:12 修 goxf.0 显示 bug（87c697a 改 original-fs 后读不到 asar 内 package.json → goxfBuild 0，更新判断也错）：6cc379a 用 node:fs 读，已推测试通道。审计第二批 f5e8789 已推。
+- 21:15 用户确认 #4（更新卡片置顶最高层级）按其要求保留，审计清单划掉。
+
+## 搁置待办（用户说需要时再做）
+- #38 字号收敛（2026-11-23 搁置）：渲染层约 1000 处硬编码 text-[Npx]，12 种小字号（9–14.5px）；方案收敛为 11/12/13/14 四档 token。改动面最大、优先级最低。详见 work/design-audit-2026-11-23.md #38。
+- 21:20 Muse 额度显示「用量不可用」：QuotaSection 经 cleanSidebarError 静默隐藏兼容类错误（action 轮换/未登录 hatch_sess）。提议：灰字显示原因+原始错误写 perf.log（~15 分钟），等用户回复是否出效果图。上游已发 v0.14.0（a3c3ce7），未合。
+- 21:23 Muse 额度原因提示效果图 work/mock/musequota-crop.png（musequota.py）：A 灰字「额度接口已变」，B「网页登录已失效」+重新登录；等「开工」。已请用户从 muse.ai/settings 抓 Next-Action 值+响应。
+- 21:35 91878a1 Muse 额度原因提示（errorCode: action_not_found/parse→「额度接口已变」，signed_out→「网页登录已失效」+重新登录 Button ghost sm 调 openMuseLogin；perf.log 记 `muse-quota <id> <code>: msg`）。
+- 21:35 62f0092 合上游 v0.14.0（version 0.14.0，goxfBuild 仍 9）：冲突 package.json/harkIpc/harkStream.test/ipc.ts，projectHistory 同时带 live 和 browserPreview。typecheck ok，vitest 444/444。已推，CI 测试通道构建中。
+- 结论：侧栏「在线」需要 partition 里有 hatch_sess（museSessionManager ~325），所以 cookie 没丢；若出现「网页登录已失效」是 muse.ai 拒绝了该 cookie（401/403）。更可能是 Server Action id 轮换。
+- 21:39 dev 版 v0.14.0-goxf.dev.62f0092 已发布（21:37，zip 155MB + patch 6MB）；不需整包，应用内补丁更新即可。
+- 21:48 96857a8 Muse 额度 Server Action 新 id 40e0249eeae158685b6a8d0c3b203f53dd4f2c7d63（用户抓包，POST /），postAction 先试 / 且 200 非额度内容时继续试 /settings。
+- 21:52 任务面板参考图已发：Orca agent-statuses（onorca.dev）、T3 Code 新侧栏（Theo X 2079892861689254129）、Vibex（linux.do/t/topic/3150023，用户说的 VibeX 是这个 GPUI 多智能体工作台）。v4 接近 T3 Code 做法，仍等用户定方向+「开工」。
+- 21:57 用户发 Vibex 截图（files/uploads/image-170ea6d01844.png）：顶部 看板/工作区/协作空间 切换，看板模式左侧会话列表按状态分组带计数，聊天不动。提议 v5：顶部「会话/任务」切换，任务模式分 等你处理/进行中/已完成；等用户同意出图（约 20 分钟）。
+- 21:59 用户：Vibex 协作空间比我们群组方式好多了，要群组也能多组干活。我方差异：CollabRoom 单群聊轮流发言；Vibex Task Team=总管拆派、成员各开子会话并行、侧栏组下挂子任务状态、中间分屏。提议群组改「任务组」（组内并行+多组同时跑），等用户确认范围后出效果图（约 30 分钟），「开工」才写代码。
+
+## 交接 2026-11-23 22:00（额度剩 10%，16 小时后重置）
+- 用户确认「任务组」范围：多个群组同时干活 + 群组内 bot 同时跑（并行，不再轮流发言）。
+- 下一步：出效果图 v5（约 30 分钟），基于用户最新截图，参考 Vibex Task Team（/tmp/g.jpg 已失效时重下 https://cdn3.ldstatic.com/original/4X/5/7/8/5784c3982f625d103e1839dd1cef29104b2fc988.jpeg）：
+  1. 侧栏群组可展开，下挂每个成员子任务 + 状态（进行中/等你/完成）+ 用时，组标题带「N 运行中」。
+  2. 中间 群聊 / 分屏 切换，分屏同时看多个成员。
+  3. 顶部「会话 / 任务」切换（Vibex 看板式按状态分组）。
+- 代码落点：src/renderer/src/rooms/（model.ts CollabRoom: mode manual|auto, cursor 顺序轮流 → 改并发派发）、RoomView.tsx、roomStore.ts、sidebar/BotList.tsx。等「开工」才写。
+- 继续命令：cd /workspace/work/botark && git checkout goxf/portable && git pull && python3 /workspace/work/mock/tasks4.py（以 v4 脚本为底改 v5）
