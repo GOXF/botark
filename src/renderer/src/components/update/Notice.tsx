@@ -1,6 +1,7 @@
 /** GOXF: every update notice is the same card (icon, title + description, action, ×), stacked bottom-right. */
 import type { ReactNode } from 'react'
 import { X } from 'lucide-react'
+import { IconButton } from '@/components/ui/IconButton'
 import { cn } from '@/lib/cn'
 import { t } from '@/lib/i18n'
 
@@ -16,18 +17,17 @@ export function Notice({ icon, title, desc, action, onDismiss, tip, error, leavi
       {icon && <span className={cn('shrink-0', error ? 'text-status-error' : 'text-accent-600')}>{icon}</span>}
       <div className="min-w-0 flex-1">
         <p className="truncate font-medium text-ink">{title}</p>
-        {desc && <p className="text-ink-secondary">{desc}</p>}
+        {desc && (
+          <p className="line-clamp-2 text-caption text-ink-muted" title={desc}>
+            {desc}
+          </p>
+        )}
       </div>
       {action}
       {onDismiss && (
-        <button
-          type="button"
-          className="press-icon grid size-6 shrink-0 place-items-center rounded-full text-ink-muted hover:bg-hover hover:text-ink"
-          aria-label={t('Dismiss')}
-          onClick={onDismiss}
-        >
-          <X className="size-3.5" />
-        </button>
+        <IconButton size="sm" label={t('Dismiss')} className="text-ink-muted" onClick={onDismiss}>
+          <X />
+        </IconButton>
       )}
     </div>
   )

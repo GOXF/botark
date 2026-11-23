@@ -9,7 +9,9 @@ export function GoxfChannelRow() {
   useEffect(() => {
     void getBridge()?.goxfUpdates?.state().then((s) => setChannel(s.channel)).catch(() => undefined)
   }, [])
-  if (!channel) return null
+  if (!getBridge()?.goxfUpdates) return null
+  // Disabled until the main process answers, so the row doesn't pop in late.
+  const loading = channel === null
   return (
     <div className="flex items-center justify-between px-4 py-3.5">
       <div>
@@ -18,14 +20,14 @@ export function GoxfChannelRow() {
       </div>
       <SegmentedControl<GoxfUpdateChannel>
         size="sm"
-        value={channel}
+        value={channel ?? 'stable'}
         onValueChange={(id) => {
           setChannel(id)
           void getBridge()?.goxfUpdates?.setChannel(id).catch(() => undefined)
         }}
         options={[
-          { value: 'stable', label: '正式' },
-          { value: 'test', label: '测试' }
+          { value: 'stable', label: '正式', disabled: loading },
+          { value: 'test', label: '测试', disabled: loading }
         ]}
       />
     </div>
