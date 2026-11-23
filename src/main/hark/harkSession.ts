@@ -1,4 +1,11 @@
-import { extractHandle, getAuthSession, getProfile, HarkApiError, type HarkAuthSession } from './harkClient'
+import {
+  extractHandle,
+  getAuthSession,
+  getProfile,
+  HarkApiError,
+  preparedSessionForAccount,
+  type HarkAuthSession
+} from './harkClient'
 
 export type HarkSessionProbe =
   | {
@@ -9,30 +16,14 @@ export type HarkSessionProbe =
     }
   | { signedIn: false }
 
+/** GET /api/auth/get-session decides signed-in; /profile only supplies the display name. */
 export async function probeHarkSession(
   accountId: string,
   options?: { reportConnectionErrors?: boolean }
 ): Promise<HarkSessionProbe> {
-  let profileFailed = false
+  let session: HarkAuthSession
   try {
-    const profile = await getProfile(accountId, true) as { email?: unknown; name?: unknown; nickname?: unknown } | null
-    if (typeof profile?.email === 'string' && profile.email.trim()) {
-      const name = typeof profile.nickname === 'string' && profile.nickname.trim()
-        ? profile.nickname
-        : typeof profile.name === 'string' ? profile.name : undefined
-      const session = { user: { email: profile.email, name } }
-      return { session, ...extractHandle(session) }
-    }
-  } catch (error) {
-    if (error instanceof HarkApiError && error.status === 401) return { signedIn: false }
-    profileFailed = true
-  }
-  try {
-    const session = await getAuthSession(accountId)
-    if (session && (session.user || session.session)) {
-      return { session, ...extractHandle(session) }
-    }
-    if (profileFailed && options?.reportConnectionErrors) throw new Error('Hark profile lookup failed')
+    session = await getAuthSession(accountId)
   } catch (error) {
     if (options?.reportConnectionErrors && !(error instanceof HarkApiError && error.status === 401)) {
       throw new Error('无法验证 Hark 会话，请检查网络或代理后再刷新')
@@ -41,6 +32,27 @@ export async function probeHarkSession(
     if (process.env['BOTHUB_HARK_DEBUG'] === '1') {
       console.warn('[hark] get-session probe failed')
     }
+    return { signedIn: false }
   }
-  return { signedIn: false }
+  if (!session || !(session.user || session.session)) return { signedIn: false }
+
+  const profile = await getProfile(accountId, true).catch(() => null) as
+    { email?: unknown; name?: unknown; nickname?: unknown } | null
+  const handle = extractHandle(session)
+  const nickname = typeof profile?.nickname === 'string' && profile.nickname.trim() ? profile.nickname : undefined
+  const name = nickname ?? (typeof profile?.name === 'string' && profile.name.trim() ? profile.name : undefined)
+  return { session, ...handle, ...(name ? { displayName: name } : {}) }
+}
+
+/** BOTHUB_HARK_DEBUG=1 only: what the account's partition holds at startup. Never logs cookie values. */
+export async function logHarkSessionDebug(accountId: string): Promise<void> {
+  const ses = await preparedSessionForAccount(accountId)
+  const cookies = (await ses.cookies.get({})).filter((c) => /(^|\.)hark\.com$/i.test(c.domain ?? ''))
+  const status = (p: Promise<unknown>) =>
+    p.then((data) => (data == null ? '200 (null)' : '200'), (e: unknown) =>
+      e instanceof HarkApiError ? String(e.status) : `error: ${e instanceof Error ? e.message : String(e)}`)
+  const [getSession, profile] = await Promise.all([status(getAuthSession(accountId)), status(getProfile(accountId, true))])
+  console.info(`[hark] startup ${accountId}: get-session=${getSession} profile=${profile} cookies=${JSON.stringify(
+    cookies.map((c) => ({ name: c.name, domain: c.domain, session: c.session, expirationDate: c.expirationDate }))
+  )}`)
 }

@@ -10,7 +10,7 @@ import { attachMuseSessionManager, disposeAllMuseManagers, registerMuseIpc } fro
 // GOXF fork: fork-aware updater (upstream + portable prompts) instead of electron-updater.
 import { exitIfUpdating, registerUpdaterIpc, startAutoUpdater } from './goxfUpdater'
 import { startPerfLog } from './goxfPerf'
-import { startSessionCookiePersistence } from './goxfSessionCookies'
+import { flushSessionCookies, startSessionCookiePersistence } from './goxfSessionCookies'
 import { registerGrokIpc } from './grok/grokIpc'
 import { stopGrokAccountWatch } from './grok/grokWatchManager'
 import { registerHarkIpc } from './hark/harkIpc'
@@ -219,8 +219,16 @@ function createMainWindow(): BrowserWindow {
   return win
 }
 
-app.on('before-quit', () => {
+let cookiesFlushed = false
+app.on('before-quit', (event) => {
   quitting = true
+  // GOXF: write session cookies (Hark login) before quitting; never hold the quit longer than 1.5s.
+  if (!cookiesFlushed) {
+    event.preventDefault()
+    void Promise.race([flushSessionCookies().catch(() => undefined), new Promise((r) => setTimeout(r, 1_500))])
+      .finally(() => { cookiesFlushed = true; app.quit() })
+    return
+  }
   void stopSlack()
   stopWorkspaces()
   stopGrokAccountWatch('*')

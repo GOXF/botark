@@ -21,7 +21,6 @@ import {
   extractMessages,
   fetchConversationSnapshotSummary,
   getAuthSession,
-  renewHarkSession,
   getConversationStatuses,
   getMainConversation,
   getProfile,
@@ -45,7 +44,7 @@ import { harkTurnBusy } from './harkBusy'
 import { cancelHarkLogin, closeHarkLoginWindow, onHarkLoginEvent, openHarkLoginWindow } from './harkLogin'
 import { loadAccountProxyUrl } from '../muse/accountProxy'
 import { guessMediaMimeFromName } from '../mediaMime'
-import { probeHarkSession } from './harkSession'
+import { logHarkSessionDebug, probeHarkSession } from './harkSession'
 import { harkWebViewUrlAfterSignIn } from './harkWebView'
 import { reloadAccountWebViews } from '../webViewIpc'
 import { harkCreateProjectBody } from '@shared/harkProjects'
@@ -177,21 +176,36 @@ function broadcast(payload: unknown): void {
   }
 }
 
-// Signed-in accounts get their Hark session renewed in the background, like an open Hark tab.
-const signedInAccounts = new Set<string>()
+// Every Hark account seen since startup with its last known sign-in state (undefined: never verified).
+// The startup probe (GET get-session) is itself the first renewal; the timer keeps renewing like an
+// open Hark tab, retries accounts that failed at startup and pushes any change to the UI.
+const knownAccounts = new Map<string, boolean | undefined>()
 const RENEW_EVERY_MS = 20 * 60_000
 setInterval(() => {
-  for (const id of signedInAccounts) void renewHarkSession(id).catch(() => undefined)
+  for (const id of knownAccounts.keys()) void recheck(id)
 }, RENEW_EVERY_MS).unref()
 
+async function recheck(accountId: string): Promise<void> {
+  const before = knownAccounts.get(accountId)
+  const st = await statusFor(accountId).catch(() => null)
+  if (!st || st.signedIn === before) return
+  broadcast(st.signedIn
+    ? { type: 'login', accountId, signedIn: true as const, handle: st.handle, displayName: st.displayName }
+    : { type: 'login', accountId, signedIn: false as const })
+}
+
 async function statusFor(accountId: string): Promise<HarkAuthStatus> {
+  if (!knownAccounts.has(accountId)) {
+    knownAccounts.set(accountId, undefined)
+    if (process.env['BOTHUB_HARK_DEBUG'] === '1') void logHarkSessionDebug(accountId).catch(() => undefined)
+  }
   const hasProxy = Boolean(await loadAccountProxyUrl(accountId).catch(() => true))
   const probe = await probeHarkSession(accountId, { reportConnectionErrors: true })
   if ('signedIn' in probe) {
-    signedInAccounts.delete(accountId)
+    knownAccounts.set(accountId, false)
     return { accountId, signedIn: false, hasProxy }
   }
-  signedInAccounts.add(accountId)
+  knownAccounts.set(accountId, true)
   return {
     accountId,
     signedIn: true,
@@ -551,6 +565,7 @@ export function registerHarkIpc(): void {
     if (typeof accountId !== 'string' || !accountId.trim()) throw new TypeError('Invalid accountId')
     for (const watch of visibleProjects.values()) if (watch.accountId === accountId.trim()) watch.stop()
     await clearHarkAccount(accountId.trim())
+    knownAccounts.delete(accountId.trim())
     broadcast({
       type: 'login',
       accountId: accountId.trim(),

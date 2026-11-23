@@ -276,21 +276,9 @@ export async function callHarkApi(
   })
 }
 
-/**
- * Like Hark's web app (better-auth deferred refresh): GET only reads the session; when it
- * answers `needsRefresh`, a POST renews it. Without the POST the session simply lapses and
- * every account drops offline at once.
- */
+/** GET get-session reads the session and lets the server renew it (Hark answers POST with 404). */
 async function readAndRenewSession(ses: Session): Promise<unknown> {
-  const data = await harkFetch(ses, '/auth/get-session', { interactive: true })
-  if (!(data as { needsRefresh?: unknown } | null)?.needsRefresh) return data
-  return harkFetch(ses, '/auth/get-session', { method: 'POST', interactive: true }).catch(() => data)
-}
-
-/** Renew the account's Hark session if it is due; false when there is no session left to renew. */
-export async function renewHarkSession(accountId: string): Promise<boolean> {
-  const data = await readAndRenewSession(await preparedSessionForAccount(accountId)) as Record<string, unknown> | null
-  return Boolean(data && (data['session'] || data['user']))
+  return harkFetch(ses, '/auth/get-session', { interactive: true })
 }
 
 export async function getAuthSession(accountId: string): Promise<HarkAuthSession> {
@@ -367,7 +355,7 @@ export async function importHarkCredentials(accountId: string, rawInput: string)
           pairs.push({
             name: rec.name,
             value: rec.value,
-            domain: typeof rec.domain === 'string' ? rec.domain : 'app.hark.com',
+            domain: typeof rec.domain === 'string' ? rec.domain : '.hark.com',
             path: typeof rec.path === 'string' ? rec.path : '/'
           })
         } else if (typeof rec.token === 'string' && rec.token.trim()) {
@@ -400,7 +388,8 @@ export async function importHarkCredentials(accountId: string, rawInput: string)
     try {
       await ses.cookies.set({
         url: HARK_ORIGIN + (c.path?.startsWith('/') ? c.path : '/'),
-        domain: c.domain || 'app.hark.com',
+        // Hark sets its auth cookies with Domain=hark.com.
+        domain: c.domain || '.hark.com',
         name: c.name,
         value: c.value,
         path: c.path || '/',

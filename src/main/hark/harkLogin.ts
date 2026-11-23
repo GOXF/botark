@@ -383,9 +383,8 @@ export async function cancelHarkLogin(accountId: string): Promise<void> {
   }
   if (win && !win.isDestroyed()) win.destroy()
   try {
-    const existingCookies = await listSessionCookieNames(accountId)
-    const alreadyValid = existingCookies.length > 0 && Boolean(await probeSignedIn(accountId))
-    if (!alreadyValid) {
+    // Only an explicit "no session" wipes the partition; a network error throws and keeps it.
+    if ('signedIn' in await probeHarkSession(accountId, { reportConnectionErrors: true })) {
       const ses = electronSession.fromPartition(partitionForAccount(accountId))
       await ses.clearStorageData()
     }
