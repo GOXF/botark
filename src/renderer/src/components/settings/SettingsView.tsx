@@ -44,6 +44,7 @@ import { StatusBadge } from '@/components/ui/Status'
 import { getBridge } from '@/lib/bridge'
 import { cn } from '@/lib/cn'
 import { useT, t } from '@/lib/i18n'
+import { useAccountLayout, type AccountLayout } from '@/lib/goxfAccountLayout'
 import { importHarkCredentialsForAccount } from '@/lib/harkCredentialImport'
 import { platformIcon } from '@/lib/platformIcons'
 import { HermesAccountsSettingsPanel } from '@/components/hermes/HermesAccountsSettingsPanel'
@@ -103,6 +104,7 @@ const PLATFORM_LABELS: Record<PlatformId, string> = {
 }
 
 export function SettingsView() {
+  const [accLayout, setAccLayout] = useAccountLayout()
   const tr = useT()
   const settingsTab = useBotStore((s) => s.settingsTab)
   const setSettingsOpen = useBotStore((s) => s.setSettingsOpen)
@@ -773,6 +775,16 @@ export function SettingsView() {
           <h1 className="text-[15px] font-semibold tracking-tight text-ink">设置与账号</h1>
         </div>
         <div className="flex items-center gap-2">
+          <SegmentedControl<AccountLayout>
+            size="sm"
+            aria-label="账号布局"
+            value={accLayout}
+            onValueChange={setAccLayout}
+            options={[
+              { value: 'grid', label: '宫格' },
+              { value: 'list', label: '列表' }
+            ]}
+          />
           <Button
             size="sm"
             variant="secondary"
@@ -832,8 +844,8 @@ export function SettingsView() {
         </aside>
 
         {/* Right Content Area */}
-        <div className="min-h-0 flex-1 overflow-y-auto px-8 py-6">
-          <div className="mx-auto max-w-[820px]">
+        <div className="min-h-0 flex-1 overflow-y-auto px-8 py-6" data-acc-layout={accLayout}>
+          <div className={cn('mx-auto', accLayout === 'grid' ? 'max-w-[1680px]' : 'max-w-[820px]')}>
             {error && (
               <div className="mb-4 rounded-xl border border-status-error/25 bg-status-error/8 px-3.5 py-2.5 text-[13px] text-status-error">
                 {error}
@@ -1022,7 +1034,7 @@ export function SettingsView() {
                       </p>
                     </div>
                   ) : (
-                    <ul className="divide-y divide-line">
+                    <ul className="goxf-acc-list divide-y divide-line">
                       {filteredBots.map((bot) => {
                         const acc = accounts[bot.activeAccountId]
                         const dotMeta = bot.platformId === 'dot' ? dotMetaMap[bot.activeAccountId] : undefined
@@ -1260,7 +1272,7 @@ export function SettingsView() {
                         </Button>
                       </div>
                     </div>
-                    <ul className="divide-y divide-line">
+                    <ul className="goxf-acc-list divide-y divide-line">
                       {museAccounts.map((acc) => {
                         const ownerBot = bots.find((b) => b.accountIds.includes(acc.id))
                         const px = accountProxies[acc.id]
@@ -1488,7 +1500,7 @@ export function SettingsView() {
                         <RefreshCw className="size-3.5" /> 全部重连检验
                       </Button>
                     </div>
-                    <ul className="divide-y divide-line">
+                    <ul className="goxf-acc-list divide-y divide-line">
                       {dotAccounts.map((acc) => {
                         const ownerBot = bots.find((b) => b.accountIds.includes(acc.id))
                         const meta = dotMetaMap[acc.id]
@@ -1682,7 +1694,7 @@ export function SettingsView() {
                   </div>
                 ) : (
                   <div className="overflow-hidden rounded-2xl border border-line bg-surface shadow-soft">
-                    <ul className="divide-y divide-line">
+                    <ul className="goxf-acc-list divide-y divide-line">
                       {grokAccounts.map((acc) => {
                         const accountBots = bots.filter(
                           (b) => b.platformId === 'grok' && b.accountIds.includes(acc.id)
@@ -1875,7 +1887,7 @@ export function SettingsView() {
                   </div>
                 ) : (
                   <div className="overflow-hidden rounded-2xl border border-line bg-surface shadow-soft">
-                    <ul className="divide-y divide-line">
+                    <ul className="goxf-acc-list divide-y divide-line">
                       {harkAccounts.map((acc) => {
                         const ownerBot = bots.find((b) => b.accountIds.includes(acc.id))
                         return (
@@ -1983,7 +1995,7 @@ export function SettingsView() {
                   </div>
                 ) : (
                   <div className="overflow-hidden rounded-2xl border border-line bg-surface shadow-soft">
-                    <ul className="divide-y divide-line">
+                    <ul className="goxf-acc-list divide-y divide-line">
                       {antigravityAccounts.map((acc) => {
                         const bot = antigravityBots.find((b) => b.accountIds.includes(acc.id))
                         const online =
