@@ -36,7 +36,7 @@ import { tmpdir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import { Readable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
-import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, net, shell } from 'electron'
 import { UPDATE_CHANNELS, type UpdateStatusEvent } from '@shared/ipc'
 import {
   GOXF_UPDATE_CHANNELS,
@@ -173,7 +173,7 @@ type Fetched<T> = { ok: true; data: T | null } | { ok: false; message: string }
 
 async function getJson<T>(url: string): Promise<Fetched<T>> {
   try {
-    const res = await fetch(url, {
+    const res = await net.fetch(url, {
       headers: { Accept: 'application/vnd.github+json', 'User-Agent': `BotArk/${currentVersion()}` },
       signal: AbortSignal.timeout(12_000)
     })
@@ -230,12 +230,14 @@ async function check(manual: boolean): Promise<boolean> {
 }
 
 async function downloadTo(url: string, dest: string, expected?: number): Promise<void> {
-  const res = await fetch(url, {
+  const res = await net.fetch(url, {
     headers: { 'User-Agent': `BotArk/${currentVersion()}`, Accept: 'application/octet-stream' },
     redirect: 'follow'
   })
   if (!res.ok || !res.body) throw new Error(`下载失败（HTTP ${res.status}）`)
   const total = Number(res.headers.get('content-length')) || expected || 0
+  const totalMb = total ? Math.round((total / 1048576) * 10) / 10 : undefined
+  logUpdate(`download ${basename(url)} ${totalMb ?? '?'} MB via system network`)
   let received = 0
   let lastPct = -1
   const body = Readable.fromWeb(res.body as unknown as import('node:stream/web').ReadableStream<Uint8Array>)
@@ -245,7 +247,7 @@ async function downloadTo(url: string, dest: string, expected?: number): Promise
     const pct = Math.floor((received / total) * 100)
     if (pct !== lastPct) {
       lastPct = pct
-      broadcastGoxf({ type: 'portable-downloading', percent: pct })
+      broadcastGoxf({ type: 'portable-downloading', percent: pct, totalMb })
     }
   })
   await pipeline(body, createWriteStream(dest))
@@ -266,7 +268,7 @@ function sha256File(path: string): Promise<string | null> {
 /** Files to replace when a delta fits this install, else null (→ full zip). Never throws. */
 async function planDeltaFor(dir: string, manifestUrl: string): Promise<Array<{ path: string; sha256: string }> | null> {
   try {
-    const res = await fetch(manifestUrl, {
+    const res = await net.fetch(manifestUrl, {
       headers: { 'User-Agent': `BotArk/${currentVersion()}` },
       redirect: 'follow',
       signal: AbortSignal.timeout(30_000)

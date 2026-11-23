@@ -8,25 +8,34 @@ import { Download, GitMerge, RefreshCw, X } from 'lucide-react'
 import type { GoxfPortablePrompt, GoxfUpdateEvent, GoxfUpstreamPrompt } from '@shared/goxfUpdate'
 import { Button } from '@/components/ui/Button'
 import { getBridge } from '@/lib/bridge'
+import { cn } from '@/lib/cn'
 import { t } from '@/lib/i18n'
 import { useBotStore } from '@/store/botStore'
 
 type PortableState =
   | { kind: 'hidden' }
   | { kind: 'available'; prompt: GoxfPortablePrompt }
-  | { kind: 'downloading'; percent: number; version?: string }
+  | { kind: 'downloading'; percent: number; totalMb?: number; version?: string }
   | { kind: 'extracting'; version: string }
   | { kind: 'restarting'; version: string }
   | { kind: 'error'; message: string }
 
+// GOXF: a small pill in the bottom-right corner so it never covers the header or content.
 const CARD =
-  'no-drag pointer-events-auto flex w-[min(360px,92vw)] items-start gap-2.5 rounded-xl border border-line-strong bg-main py-2 pr-1.5 pl-3 text-[13px] shadow-toast animate-toast-in'
+  'no-drag pointer-events-auto flex max-w-[min(320px,92vw)] items-center gap-2 rounded-full border border-line-strong bg-main py-1 pr-1 pl-3 text-[12px] shadow-toast animate-toast-in'
+
+/** "0.13.1-goxf.dev.413dc40" → "测试版 413dc40"; stable versions unchanged. */
+const shortVersion = (v?: string): string => {
+  if (!v) return ''
+  const dev = /\.dev\.([0-9a-f]{7,})$/i.exec(v)
+  return dev ? `测试版 ${dev[1]}` : `v${v}`
+}
 
 function DismissButton({ onClick }: { onClick: () => void }) {
   return (
     <button
       type="button"
-      className="press-icon grid size-7 shrink-0 place-items-center rounded-full text-ink-muted hover:bg-hover hover:text-ink"
+      className="press-icon grid size-6 shrink-0 place-items-center rounded-full text-ink-muted hover:bg-hover hover:text-ink"
       aria-label={t('Dismiss')}
       onClick={onClick}
     >
@@ -63,7 +72,7 @@ export function GoxfUpdateBanner() {
           setPortable((p) => (p.kind === 'downloading' || p.kind === 'extracting' || p.kind === 'restarting' ? p : { kind: 'available', prompt: event.prompt }))
           break
         case 'portable-downloading':
-          setPortable((p) => ({ kind: 'downloading', percent: event.percent, version: p.kind === 'available' || p.kind === 'downloading' ? (p.kind === 'available' ? p.prompt.version : p.version) : undefined }))
+          setPortable((p) => ({ kind: 'downloading', percent: event.percent, totalMb: event.totalMb, version: p.kind === 'available' || p.kind === 'downloading' ? (p.kind === 'available' ? p.prompt.version : p.version) : undefined }))
           break
         case 'portable-extracting':
           setPortable({ kind: 'extracting', version: event.version })
@@ -84,52 +93,49 @@ export function GoxfUpdateBanner() {
   if (!showUpstream && !showPortable) return null
 
   return (
-    <div className="pointer-events-none absolute top-3 right-3 z-50 flex flex-col items-end gap-2" role="status">
+    <div className="pointer-events-none absolute right-3 bottom-3 z-50 flex flex-col items-end gap-2" role="status">
       {showPortable && portable.kind === 'available' && (
-        <div className={CARD}>
-          <Download className="mt-0.5 size-4 shrink-0 text-accent-600" aria-hidden />
-          <div className="min-w-0 flex-1">
-            <p className="font-medium text-ink">你的便携版有新版本</p>
-            <p className="text-ink-secondary">
-              GOXF 自用版 v{portable.prompt.version} 已发布
-              {portable.prompt.canSelfUpdate ? '，下载后会自动替换并重启' : '，请到发布页下载'}
-            </p>
-            {botBusy && portable.prompt.canSelfUpdate && <p className="text-ink-muted">有 bot 正在回复，回复完再更新</p>}
-          </div>
+        <div className={CARD} title={`GOXF 自用版 v${portable.prompt.version}`}>
+          <Download className="size-3.5 shrink-0 text-accent-600" aria-hidden />
+          <span className="min-w-0 truncate text-ink">
+            {botBusy && portable.prompt.canSelfUpdate ? '回复完再更新 · ' : '新版本 · '}
+            {shortVersion(portable.prompt.version)}
+          </span>
           <Button
             size="sm"
             variant="primary"
+            className="h-6 rounded-full px-2.5 text-[12px]"
             disabled={botBusy && portable.prompt.canSelfUpdate}
             onClick={() => void getBridge()?.goxfUpdates?.installPortable()}
           >
-            {portable.prompt.canSelfUpdate ? '更新并重启' : '打开发布页'}
+            {portable.prompt.canSelfUpdate ? '更新' : '下载'}
           </Button>
           <DismissButton onClick={() => setDismissedPortable(portable.prompt.version)} />
         </div>
       )}
       {showPortable && portable.kind === 'downloading' && (
-        <div className={CARD}>
-          <RefreshCw className="mt-0.5 size-4 shrink-0 animate-spin text-accent-600" aria-hidden />
-          <p className="flex-1 text-ink">
-            正在下载便携版{portable.version ? ` v${portable.version}` : ''}… {Math.round(portable.percent)}%
-          </p>
+        <div className={cn(CARD, 'pr-3')}>
+          <RefreshCw className="size-3.5 shrink-0 animate-spin text-accent-600" aria-hidden />
+          <span className="truncate text-ink tabular-nums">
+            下载中 {Math.round(portable.percent)}%{portable.totalMb ? ` · ${portable.totalMb} MB` : ''}
+          </span>
         </div>
       )}
       {showPortable && portable.kind === 'extracting' && (
-        <div className={CARD}>
-          <RefreshCw className="mt-0.5 size-4 shrink-0 animate-spin text-accent-600" aria-hidden />
-          <p className="flex-1 text-ink">正在解压 v{portable.version}，请勿关闭…</p>
+        <div className={cn(CARD, 'pr-3')}>
+          <RefreshCw className="size-3.5 shrink-0 animate-spin text-accent-600" aria-hidden />
+          <span className="truncate text-ink">解压中，请勿关闭…</span>
         </div>
       )}
       {showPortable && portable.kind === 'restarting' && (
-        <div className={CARD}>
-          <RefreshCw className="mt-0.5 size-4 shrink-0 animate-spin text-accent-600" aria-hidden />
-          <p className="flex-1 text-ink">已下载 v{portable.version}，正在退出并替换，几秒后自动重新打开，请勿手动打开…</p>
+        <div className={cn(CARD, 'pr-3')}>
+          <RefreshCw className="size-3.5 shrink-0 animate-spin text-accent-600" aria-hidden />
+          <span className="truncate text-ink">正在重启，几秒后自动打开…</span>
         </div>
       )}
       {showPortable && portable.kind === 'error' && (
-        <div className={CARD}>
-          <p className="flex-1 text-ink-secondary">{portable.message}</p>
+        <div className={CARD} title={portable.message}>
+          <span className="min-w-0 truncate text-ink-secondary">{portable.message}</span>
           <DismissButton onClick={() => setPortable({ kind: 'hidden' })} />
         </div>
       )}
