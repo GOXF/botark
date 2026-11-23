@@ -17,6 +17,7 @@ import { NumberStepper } from '@/components/ui/Controls'
 import { IconButton } from '@/components/ui/IconButton'
 import { InlineEdit } from '@/components/ui/InlineEdit'
 import { SegmentedControl } from '@/components/ui/SegmentedControl'
+import { Select } from '@/components/ui/Select'
 import { cn } from '@/lib/cn'
 import { shortcutLabel } from '@/lib/shortcuts'
 import { useBotStore } from '@/store/botStore'
@@ -314,13 +315,12 @@ export function RoomInspectorPanel({ room }: { room: CollabRoom }) {
                               <span className="text-ink-muted">暂无其他群聊可转移</span>
                             ) : (
                               <>
-                                <select
+                                <Select
+                                  size="xs"
                                   aria-label={`选择 ${m.name} 的目标群聊`}
                                   value={targetRoomId}
-                                  onChange={(e) => setTargetRoomId(e.target.value)}
-                                  className="h-7 w-full rounded-md border border-line bg-main px-2 text-[11.5px] text-ink outline-none focus:border-ink/30"
-                                >
-                                  {otherRooms.map((r) => {
+                                  onValueChange={setTargetRoomId}
+                                  options={otherRooms.map((r) => {
                                     const full = r.members.length >= 6
                                     const dup = r.members.some(
                                       (tm) =>
@@ -328,14 +328,9 @@ export function RoomInspectorPanel({ room }: { room: CollabRoom }) {
                                         tm.name.toLowerCase() === m.name.toLowerCase()
                                     )
                                     const reason = full ? '已满 6 人' : dup ? '已存在' : ''
-                                    return (
-                                      <option key={r.id} value={r.id} disabled={Boolean(reason)}>
-                                        {r.title}
-                                        {reason ? `（${reason}）` : ''}
-                                      </option>
-                                    )
+                                    return { value: r.id, label: r.title, description: reason || undefined, disabled: Boolean(reason) }
                                   })}
-                                </select>
+                                />
                                 <div className="flex items-center justify-end gap-1.5">
                                   <Button
                                     size="sm"
