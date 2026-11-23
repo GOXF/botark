@@ -13,6 +13,7 @@ import { MarkdownText } from './MarkdownText'
 import { NativeDocumentDialog, type NativeDocumentTarget } from './NativeDocumentDialog'
 import { triggerShareConversation } from './ShareConversationDialog'
 import { t } from '@/lib/i18n'
+import { Menu, MenuContent, MenuItem, MenuLabel, MenuSeparator, MenuTrigger } from '@/components/ui/Menu'
 
 interface MessageBubbleProps {
   message: ChatMessage
@@ -23,6 +24,16 @@ interface MessageBubbleProps {
   /** Shown in the meta line when a bot has several accounts. */
   accountLabel?: string
   onRetry?: (messageId: string) => void
+}
+
+/** Clipboard only takes PNG: re-encode other image types through a canvas. */
+async function toPng(blob: Blob): Promise<Blob> {
+  const bmp = await createImageBitmap(blob)
+  const canvas = document.createElement('canvas')
+  canvas.width = bmp.width
+  canvas.height = bmp.height
+  canvas.getContext('2d')!.drawImage(bmp, 0, 0)
+  return new Promise((resolve, reject) => canvas.toBlob((b) => (b ? resolve(b) : reject(new Error('encode failed'))), 'image/png'))
 }
 
 function DeliveryState({ message, onRetry }: Pick<MessageBubbleProps, 'message' | 'onRetry'>) {
@@ -2023,8 +2034,101 @@ export const MessageBubble = memo(function MessageBubble({
     window.dispatchEvent(new CustomEvent('bothub:focus-composer'))
   }
 
+  // GOXF: right-click menu on a bubble, the same actions as the hover row (Menu component, spec styling).
+  const [ctx, setCtx] = useState<{ x: number; y: number; selection: string; img: string | null } | null>(null)
+  const onBubbleContextMenu = (e: React.MouseEvent) => {
+    const target = e.target as HTMLElement
+    if (target.closest('input, textarea, [contenteditable="true"]')) return
+    const img = target instanceof HTMLImageElement ? target.currentSrc || target.src : null
+    const selection = window.getSelection()?.toString().trim() ?? ''
+    if (!message.text && !img) return
+    e.preventDefault()
+    setCtx({ x: e.clientX, y: e.clientY, selection, img })
+  }
+  const copyImage = async (src: string) => {
+    try {
+      const blob = await (await fetch(src)).blob()
+      const png = blob.type === 'image/png' ? blob : await toPng(blob)
+      await navigator.clipboard.write([new ClipboardItem({ 'image/png': png })])
+    } catch {
+      /* clipboard refused: nothing to do */
+    }
+  }
+  const saveImage = (src: string) => {
+    const a = document.createElement('a')
+    a.href = src
+    a.download = src.split('/').pop()?.split('?')[0] || 'image.png'
+    a.click()
+  }
+  const senderName = mine ? '我' : botMeta?.name || ''
+
   return (
-    <div className={cn('flex flex-col', mine ? 'items-end' : 'items-start')}>
+    <div className={cn('flex flex-col', mine ? 'items-end' : 'items-start')} onContextMenu={onBubbleContextMenu}>
+      {ctx && (
+        <Menu open onOpenChange={(open) => !open && setCtx(null)}>
+          <MenuTrigger asChild>
+            <span aria-hidden className="pointer-events-none fixed size-0" style={{ left: ctx.x, top: ctx.y }} />
+          </MenuTrigger>
+          <MenuContent align="start" side="bottom" sideOffset={2} className="min-w-52">
+            <MenuLabel>
+              {formatClock(message.createdAt)}
+              {senderName ? ` · ${senderName}` : ''}
+            </MenuLabel>
+            {ctx.img ? (
+              <>
+                <MenuItem onSelect={() => void copyImage(ctx.img!)}>
+                  <Copy aria-hidden />
+                  复制图片
+                </MenuItem>
+                <MenuItem onSelect={() => saveImage(ctx.img!)}>
+                  <Download aria-hidden />
+                  图片另存为
+                </MenuItem>
+              </>
+            ) : (
+              <>
+                <MenuItem onSelect={quoteReplyMessage}>
+                  <CornerDownRight aria-hidden />
+                  引用回复
+                </MenuItem>
+                <MenuItem onSelect={copyMessageText}>
+                  <Copy aria-hidden />
+                  {t('Copy')}
+                </MenuItem>
+                {ctx.selection && (
+                  <MenuItem onSelect={() => void navigator.clipboard.writeText(ctx.selection)}>
+                    <Copy aria-hidden />
+                    复制选中的文字
+                  </MenuItem>
+                )}
+                {mine && message.delivery === 'failed' && onRetry && (
+                  <MenuItem onSelect={() => onRetry(message.id)}>
+                    <RotateCw aria-hidden />
+                    重试
+                  </MenuItem>
+                )}
+                {!mine && (
+                  <>
+                    <MenuSeparator />
+                    <MenuItem onSelect={() => triggerShareConversation({ botId: message.botId, messageId: message.id })}>
+                      <ArkExportDocSvg aria-hidden />
+                      生成共享页面
+                    </MenuItem>
+                    <MenuItem
+                      onSelect={() =>
+                        openDocument({ accountId: message.accountId, title: reportTitle, markdown: message.text, mimeType: 'text/markdown' })
+                      }
+                    >
+                      <Maximize2 aria-hidden />
+                      在右侧画布打开
+                    </MenuItem>
+                  </>
+                )}
+              </>
+            )}
+          </MenuContent>
+        </Menu>
+      )}
       {/* 0. Quoted message snippet when user replied to a bubble */}
       {message.replyQuote && (
         <div
