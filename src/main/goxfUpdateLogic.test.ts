@@ -224,7 +224,9 @@ describe('release readiness and check cadence', () => {
   })
   it('checks daily, backs off 1h→2h→4h→6h after failures', () => {
     const h = 60 * 60 * 1000
-    expect([0, 1, 2, 3, 4, 9].map(nextCheckDelayMs)).toEqual([24 * h, h, 2 * h, 4 * h, 6 * h, 6 * h])
+    expect([0, 1, 2, 3, 4, 9].map((n) => nextCheckDelayMs(n))).toEqual([24 * h, h, 2 * h, 4 * h, 6 * h, 6 * h])
+    const m = 60 * 1000
+    expect([0, 1, 2, 3, 9].map((n) => nextCheckDelayMs(n, 'test'))).toEqual([10 * m, 10 * m, 20 * m, 40 * m, h])
   })
 })
 

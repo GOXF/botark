@@ -43,8 +43,12 @@ const isUploaded = (a: ReleaseAsset): boolean => (a.state === undefined || a.sta
 const DAY_MS = 24 * 60 * 60 * 1000
 const HOUR_MS = 60 * 60 * 1000
 
-/** Next check delay: daily after a success; after failures 1h, 2h, 4h, then capped at 6h. */
-export function nextCheckDelayMs(consecutiveFailures: number): number {
+/**
+ * Next check delay. Stable: daily after a success; after failures 1h, 2h, 4h, then capped at 6h.
+ * Test: every 10 min after a success (dev builds land minutes apart); failures back off 10m → 1h.
+ */
+export function nextCheckDelayMs(consecutiveFailures: number, channel: 'stable' | 'test' = 'stable'): number {
+  if (channel === 'test') return Math.min(10 * 60 * 1000 * 2 ** Math.max(0, consecutiveFailures - 1), HOUR_MS)
   if (consecutiveFailures <= 0) return DAY_MS
   return Math.min(HOUR_MS * 2 ** (consecutiveFailures - 1), 6 * HOUR_MS)
 }

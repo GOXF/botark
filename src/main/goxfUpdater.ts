@@ -487,7 +487,7 @@ export function startAutoUpdater(): void {
       const failed = takePendingFailure()
       if (failed) broadcastGoxf({ type: 'portable-error', message: failed })
     }
-    setTimeout(() => void run(), nextCheckDelayMs(failures)).unref()
+    setTimeout(() => void run(), nextCheckDelayMs(failures, currentChannel())).unref()
   }
   setTimeout(() => void run(), 8_000)
 }
