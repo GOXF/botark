@@ -34,6 +34,7 @@ export type GoxfUpdateEvent =
   | { type: 'upstream-available'; prompt: GoxfUpstreamPrompt }
   | { type: 'portable-available'; prompt: GoxfPortablePrompt }
   | { type: 'portable-downloading'; percent: number }
+  | { type: 'portable-extracting'; version: string }
   | { type: 'portable-restarting'; version: string }
   | { type: 'portable-error'; message: string }
 

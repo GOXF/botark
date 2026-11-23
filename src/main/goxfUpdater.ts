@@ -7,7 +7,10 @@
  *   a) upstream  qybaihe/botark releases/latest  > package.json version → "merge into your fork" (open page only)
  *   b) fork      GOXF/botark newest v*-goxf.*     > version+goxfBuild    → "your portable build has an update"
  *                portable on Windows: download exe next to the old one, swap via PowerShell after exit, relaunch
- *                zip build: delta first (manifest + patch zip, only changed resources/ files), else full zip
+ *                zip build: delta first (manifest + patch zip, only changed resources/ files), else full zip;
+ *                  unpacked and checked in-app (tar.exe, Expand-Archive fallback) BEFORE quitting, so the
+ *                  script only kills leftover BotArk processes and renames; update-in-progress.lock keeps a
+ *                  manual relaunch from grabbing the files mid-swap (see exitIfUpdating)
  *                otherwise: open the release page
  * Channel stable/test (see goxfUpdateLogic) is persisted in <userData>/goxf-update.json.
  * Every update writes BotArk-Data/update.log; update-pending.json lets the next start tell a failed swap.
@@ -20,8 +23,12 @@ import {
   createReadStream,
   createWriteStream,
   existsSync,
+  mkdirSync,
+  readdirSync,
   readFileSync,
   renameSync,
+  rmSync,
+  statSync,
   unlinkSync,
   writeFileSync
 } from 'node:fs'
@@ -29,7 +36,7 @@ import { tmpdir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import { Readable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
-import { app, BrowserWindow, ipcMain, shell } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
 import { UPDATE_CHANNELS, type UpdateStatusEvent } from '@shared/ipc'
 import {
   GOXF_UPDATE_CHANNELS,
@@ -44,11 +51,13 @@ import {
   buildZipReplaceScript,
   decideUpdatePrompts,
   formatGoxfVersion,
+  isUpdateLockFresh,
   nextCheckDelayMs,
   normalizeChannel,
   normalizeGoxfBuild,
   parseManifest,
   planDelta,
+  psQuote,
   type GoxfChannel,
   type GitHubRelease,
   type PortableKind,
@@ -56,6 +65,7 @@ import {
 } from './goxfUpdateLogic'
 import { writeJsonAtomic } from './jsonFile'
 import { PORTABLE_DATA_DIR, PORTABLE_DIR, PORTABLE_FILE } from './goxfPortable'
+import { flushSessionCookies } from './goxfSessionCookies'
 
 const UPSTREAM_REPO = 'qybaihe/botark'
 const FORK_REPO = 'GOXF/botark'
@@ -99,6 +109,7 @@ const currentChannel = (): GoxfChannel => (channel ??= readChannel())
 
 const updateLog = PORTABLE_DATA_DIR ? join(PORTABLE_DATA_DIR, 'update.log') : null
 const pendingFile = PORTABLE_DATA_DIR ? join(PORTABLE_DATA_DIR, 'update-pending.json') : null
+const lockFile = PORTABLE_DATA_DIR ? join(PORTABLE_DATA_DIR, 'update-in-progress.lock') : null
 function logUpdate(message: string): void {
   if (!updateLog) return
   try {
@@ -124,6 +135,27 @@ function takePendingFailure(): string | null {
     return null
   }
 }
+/**
+ * Call before requestSingleInstanceLock: while a zip self-update swaps files, a copy the user starts
+ * by hand would lock them (and then block the relaunch), so tell them to wait and exit.
+ * A lock older than 3 min is left over from a crash: delete it and start normally.
+ */
+export function exitIfUpdating(): void {
+  if (!lockFile) return
+  try {
+    if (!isUpdateLockFresh(statSync(lockFile).mtimeMs, Date.now())) {
+      unlinkSync(lockFile)
+      logUpdate('removed stale update lock')
+      return
+    }
+  } catch {
+    return
+  }
+  logUpdate('start refused: update in progress')
+  dialog.showErrorBox('BotArk', 'BotArk 正在更新，请稍候…\n更新完成后会自动重新打开，不需要手动启动。')
+  process.exit(0)
+}
+
 /** 'exe' = single portable exe (launcher env), 'zip' = unpacked folder with BotArk-Data beside BotArk.exe. */
 const portableKind = (): PortableKind => (PORTABLE_FILE ? 'exe' : PORTABLE_DIR ? 'zip' : null)
 const portableSelfUpdate = (): boolean => process.platform === 'win32' && portableKind() !== null
@@ -256,6 +288,51 @@ async function planDeltaFor(dir: string, manifestUrl: string): Promise<Array<{ p
   }
 }
 
+/** Run a hidden child process; rejects with its stderr on a non-zero exit. */
+function run(cmd: string, args: string[]): Promise<void> {
+  return new Promise((resolve, reject) => {
+    let stderr = ''
+    const child = spawn(cmd, args, { windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'] })
+    child.stderr.on('data', (d: Buffer) => (stderr += d.toString()).length > 4000 && (stderr = stderr.slice(-2000)))
+    child.on('error', reject)
+    child.on('exit', (code) => (code === 0 ? resolve() : reject(new Error(`${basename(cmd)} exit ${code}: ${stderr.trim().slice(-300)}`))))
+  })
+}
+
+/** Unpack into a fresh dest: Windows' bsdtar (seconds; Win10 1803+), else the slow Expand-Archive. */
+async function unzip(zip: string, dest: string): Promise<void> {
+  const fresh = (): void => {
+    rmSync(dest, { recursive: true, force: true })
+    mkdirSync(dest, { recursive: true })
+  }
+  fresh()
+  try {
+    await run(join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'tar.exe'), ['-xf', zip, '-C', dest])
+    logUpdate(`unpacked ${basename(zip)} with tar.exe`)
+  } catch (error) {
+    logUpdate(`tar.exe failed (${error instanceof Error ? error.message : String(error)}); trying Expand-Archive`)
+    fresh()
+    await run('powershell.exe', [
+      '-NoProfile',
+      '-NonInteractive',
+      '-Command',
+      `Expand-Archive -LiteralPath ${psQuote(zip)} -DestinationPath ${psQuote(dest)} -Force`
+    ])
+    logUpdate(`unpacked ${basename(zip)} with Expand-Archive`)
+  }
+}
+
+/** Save session cookies, then quit; exit hard if a before-quit/close handler stalls or vetoes it. */
+async function quitForUpdate(): Promise<void> {
+  await Promise.race([flushSessionCookies().catch(() => undefined), new Promise((r) => setTimeout(r, 3_000))])
+  logUpdate('quitting for update')
+  setTimeout(() => {
+    logUpdate('quit did not finish in 3s; forcing exit')
+    app.exit(0)
+  }, 3_000)
+  app.quit()
+}
+
 async function installPortable(): Promise<void> {
   const prompt = portablePrompt
   if (!prompt) return
@@ -278,39 +355,60 @@ async function installPortable(): Promise<void> {
     : zipMode
       ? join(dir, '.botark-update.zip')
       : join(dir, `.${basename(asset.name)}.new`)
+  const stage = join(dir, '.botark-update-stage')
   try {
     for (const f of [partial, ready]) if (existsSync(f)) unlinkSync(f)
     await downloadTo(asset.browser_download_url, partial, asset.size)
     renameSync(partial, ready)
-    const script = join(tmpdir(), `botark-portable-update-${Date.now()}.ps1`)
-    const logFile = join(dir, 'BotArk-Data', 'update.log')
+    logUpdate(`downloaded ${changed ? `delta (${changed.length} files)` : 'full'}: ${asset.name}`)
     const exeName = basename(process.execPath)
-    const body = changed
-      ? buildDeltaReplaceScript({ appDir: dir, patchZip: ready, files: changed, exeName, pid: process.pid, logFile })
-      : zipMode
-        ? buildZipReplaceScript({ appDir: dir, zipFile: ready, exeName, pid: process.pid, logFile })
-        : buildReplaceScript({ oldExe: PORTABLE_FILE!, newExe: ready, pid: process.pid, logFile })
-    logUpdate(changed ? `delta: ${changed.length} files from ${asset.name}` : `full: ${asset.name}`)
+    const logFile = join(dir, 'BotArk-Data', 'update.log')
+    let body: string
+    if (zipMode) {
+      broadcastGoxf({ type: 'portable-extracting', version: prompt.version })
+      await unzip(ready, stage)
+      const head = { appDir: dir, exeName, pid: process.pid, logFile, lockFile: lockFile! }
+      if (changed) {
+        for (const f of changed) {
+          if ((await sha256File(join(stage, ...f.path.split('/')))) !== f.sha256) throw new Error(`补丁文件校验失败：${f.path}`)
+        }
+        body = buildDeltaReplaceScript({ ...head, patchZip: ready, stageDir: stage, files: changed })
+      } else {
+        // A zip with a single top-level folder: that folder is the new app root.
+        const top = readdirSync(stage, { withFileTypes: true })
+        const src = top.length === 1 && top[0].isDirectory() ? join(stage, top[0].name) : stage
+        if (!existsSync(join(src, exeName))) throw new Error(`更新包里没有 ${exeName}`)
+        body = buildZipReplaceScript({ ...head, zipFile: ready, stageDir: stage, srcDir: src })
+      }
+      logUpdate('staged and verified; handing over to the swap script')
+    } else {
+      body = buildReplaceScript({ oldExe: PORTABLE_FILE!, newExe: ready, pid: process.pid, logFile })
+    }
+    const script = join(tmpdir(), `botark-portable-update-${Date.now()}.ps1`)
     // UTF-8 BOM so Windows PowerShell 5.1 reads non-ASCII paths correctly.
     writeFileSync(script, '\uFEFF' + body, 'utf8')
     if (pendingFile) writeFileSync(pendingFile, JSON.stringify({ target: prompt.version, from: currentVersion() }))
+    // Before quitting, so a relaunch in the gap before the script starts is turned away too.
+    if (zipMode) writeFileSync(lockFile!, new Date().toISOString())
     const child = spawn(
       'powershell.exe',
       ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-File', script],
       { detached: true, stdio: 'ignore', windowsHide: true }
     )
     child.unref()
+    logUpdate(`swap script started (${script})`)
     broadcastGoxf({ type: 'portable-restarting', version: prompt.version })
-    setTimeout(() => app.quit(), 600)
+    setTimeout(() => void quitForUpdate(), 600)
   } catch (error) {
     installing = false
-    for (const f of [partial, ready]) {
+    for (const f of [partial, ready, ...(zipMode && lockFile ? [lockFile] : [])]) {
       try {
         if (existsSync(f)) unlinkSync(f)
       } catch {
         /* ignore */
       }
     }
+    rmSync(stage, { recursive: true, force: true, maxRetries: 2 })
     const raw = error instanceof Error ? error.message : String(error)
     logUpdate(`failed before swap: ${raw}`)
     broadcastGoxf({ type: 'portable-error', message: `便携版更新失败：${raw}。已为你打开发布页，可手动下载替换。` })

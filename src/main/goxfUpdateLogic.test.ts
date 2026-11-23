@@ -3,6 +3,7 @@ import {
   buildDeltaReplaceScript,
   buildReplaceScript,
   buildZipReplaceScript,
+  isUpdateLockFresh,
   decideUpdatePrompts,
   formatGoxfVersion,
   isNewerSemver,
@@ -184,7 +185,10 @@ describe('buildZipReplaceScript', () => {
     zipFile: 'D:\\工具\\BotArk\\.botark-update.zip',
     exeName: 'BotArk.exe',
     pid: 42,
-    logFile: 'D:\\工具\\BotArk\\BotArk-Data\\portable-update.log'
+    logFile: 'D:\\工具\\BotArk\\BotArk-Data\\update.log',
+    lockFile: 'D:\\工具\\BotArk\\BotArk-Data\\update-in-progress.lock',
+    stageDir: 'D:\\工具\\BotArk\\.botark-update-stage',
+    srcDir: 'D:\\工具\\BotArk\\.botark-update-stage\\BotArk'
   })
   it('never touches the data folder or the downloaded zip', () => {
     expect(s).toContain("$keep = @('BotArk-Data'")
@@ -197,8 +201,18 @@ describe('buildZipReplaceScript', () => {
     expect(s).toContain('$appPid = 42')
     expect(s).toContain("$app = 'D:\\工具\\BotArk'")
   })
-  it('refuses a zip without the app exe', () => {
-    expect(s).toContain('zip does not contain the app exe')
+  it('only renames: no unpacking left in the script', () => {
+    expect(s).not.toContain('Expand-Archive')
+  })
+  it('clears every process running from the app folder before swapping', () => {
+    expect(s).toContain('StartsWith($prefix')
+    expect(s).toContain('Stop-Process -Force')
+  })
+  it('holds the lock and drops it before relaunching', () => {
+    expect(s).toContain('Set-Content -LiteralPath $lock')
+    const relaunch = s.slice(s.indexOf('function Relaunch'))
+    expect(relaunch.indexOf('Unlock')).toBeLessThan(relaunch.indexOf('Start-Process'))
+    expect(s).toContain('-PassThru')
   })
 })
 
@@ -277,15 +291,18 @@ describe('buildDeltaReplaceScript', () => {
   const script = buildDeltaReplaceScript({
     appDir: "C:\\Apps\\Bot'Ark",
     patchZip: 'C:\\Apps\\BotArk\\.botark-update-patch.zip',
-    files: [{ path: 'resources/app.asar.unpacked/a.node', sha256: sha('b') }],
+    stageDir: 'C:\\Apps\\BotArk\\.botark-update-stage',
+    files: [{ path: 'resources/app.asar.unpacked/a.node' }],
     exeName: 'BotArk.exe',
     pid: 42,
-    logFile: 'C:\\Apps\\BotArk\\BotArk-Data\\update.log'
+    logFile: 'C:\\Apps\\BotArk\\BotArk-Data\\update.log',
+    lockFile: 'C:\\Apps\\BotArk\\BotArk-Data\\update-in-progress.lock'
   })
-  it('verifies hashes before swapping, backs up, rolls back and relaunches', () => {
+  it('swaps the pre-checked files, backs up, rolls back and relaunches', () => {
     expect(script).toContain("$app = 'C:\\Apps\\Bot''Ark'")
-    expect(script).toContain(`@{ p = 'resources\\app.asar.unpacked\\a.node'; h = '${sha('b')}' }`)
-    expect(script.indexOf('Get-FileHash')).toBeLessThan(script.indexOf('$done = @()'))
+    expect(script).toContain("'resources\\app.asar.unpacked\\a.node'")
+    expect(script).not.toContain('Expand-Archive')
+    expect(script).toContain('Stop-Process -Force')
     expect(script).toContain('rolling back')
     expect(script).toContain('Wait-Process -Id $appPid')
     expect(script.split('\r\n').length).toBeGreaterThan(20)
@@ -319,5 +336,12 @@ describe('update channels', () => {
     const rs = [dev('abc1234', '2026-11-22T00:00:00Z', { draft: true }), stable(5, '2026-11-21T00:00:00Z')]
     expect(decideUpdatePrompts(input({ ...base, forkReleases: rs, channel: 'test' })).portable?.version).toBe('0.12.1-goxf.5')
     expect(decideUpdatePrompts(input({ ...base, channel: 'test' })).portable).toBeNull()
+  })
+})
+
+describe('update lock', () => {
+  it('is fresh for under 3 minutes', () => {
+    expect(isUpdateLockFresh(0, 179_000)).toBe(true)
+    expect(isUpdateLockFresh(0, 180_000)).toBe(false)
   })
 })

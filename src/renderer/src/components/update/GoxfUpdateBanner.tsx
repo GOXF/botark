@@ -15,6 +15,7 @@ type PortableState =
   | { kind: 'hidden' }
   | { kind: 'available'; prompt: GoxfPortablePrompt }
   | { kind: 'downloading'; percent: number; version?: string }
+  | { kind: 'extracting'; version: string }
   | { kind: 'restarting'; version: string }
   | { kind: 'error'; message: string }
 
@@ -59,10 +60,13 @@ export function GoxfUpdateBanner() {
           setUpstream(event.prompt)
           break
         case 'portable-available':
-          setPortable((p) => (p.kind === 'downloading' || p.kind === 'restarting' ? p : { kind: 'available', prompt: event.prompt }))
+          setPortable((p) => (p.kind === 'downloading' || p.kind === 'extracting' || p.kind === 'restarting' ? p : { kind: 'available', prompt: event.prompt }))
           break
         case 'portable-downloading':
           setPortable((p) => ({ kind: 'downloading', percent: event.percent, version: p.kind === 'available' || p.kind === 'downloading' ? (p.kind === 'available' ? p.prompt.version : p.version) : undefined }))
+          break
+        case 'portable-extracting':
+          setPortable({ kind: 'extracting', version: event.version })
           break
         case 'portable-restarting':
           setPortable({ kind: 'restarting', version: event.version })
@@ -111,10 +115,16 @@ export function GoxfUpdateBanner() {
           </p>
         </div>
       )}
+      {showPortable && portable.kind === 'extracting' && (
+        <div className={CARD}>
+          <RefreshCw className="mt-0.5 size-4 shrink-0 animate-spin text-accent-600" aria-hidden />
+          <p className="flex-1 text-ink">正在解压 v{portable.version}，请勿关闭…</p>
+        </div>
+      )}
       {showPortable && portable.kind === 'restarting' && (
         <div className={CARD}>
           <RefreshCw className="mt-0.5 size-4 shrink-0 animate-spin text-accent-600" aria-hidden />
-          <p className="flex-1 text-ink">已下载 v{portable.version}，正在退出并替换，稍后自动重新打开…</p>
+          <p className="flex-1 text-ink">已下载 v{portable.version}，正在退出并替换，几秒后自动重新打开，请勿手动打开…</p>
         </div>
       )}
       {showPortable && portable.kind === 'error' && (

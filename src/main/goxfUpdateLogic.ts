@@ -312,63 +312,112 @@ export function buildReplaceScript(opts: { oldExe: string; newExe: string; pid: 
   ].join('\r\n')
 }
 
-/**
- * PowerShell script that updates an unpacked (zip) portable folder once BotArk has exited:
- *   1. wait for the app process (pid) to exit, unpack the zip into a staging folder
- *   2. move every old top-level entry except BotArk-Data aside (retry while files are still locked)
- *   3. move the new entries in (the zip's own BotArk-Data, if any, is ignored), relaunch the exe
- *   4. on any failure put the old entries back and relaunch; finally clean up staging, backup, zip, itself
- */
-export function buildZipReplaceScript(opts: {
+/** A fresh lock means a self-update is swapping files; a lock older than this is left over from a crash. */
+export const UPDATE_LOCK_MAX_AGE_MS = 3 * 60 * 1000
+export const isUpdateLockFresh = (lockMtimeMs: number, nowMs: number): boolean =>
+  nowMs - lockMtimeMs < UPDATE_LOCK_MAX_AGE_MS
+
+interface SwapScriptOpts {
   appDir: string
-  zipFile: string
   exeName: string
   pid: number
   logFile: string
-}): string {
+  /** BotArk-Data/update-in-progress.lock: the app refuses to start while it is fresh. */
+  lockFile: string
+}
+
+/**
+ * Shared start of the zip/delta swap scripts. The app has already unpacked and checked everything,
+ * so the script only has to get every BotArk process out of the folder and rename files:
+ *   1. hold the lock (re-stamped on every log line, so a long swap never looks stale)
+ *   2. wait for the main pid, then for every process running from the app folder (GPU/renderer/
+ *      utility/bot helpers); force-kill what is still there after 10s
+ * Relaunch always drops the lock first, so the new exe is not turned away by it.
+ */
+function swapScriptHead(opts: SwapScriptOpts, title: string): string[] {
   return [
     "$ErrorActionPreference = 'Stop'",
     `$app = ${psQuote(opts.appDir)}`,
-    `$zip = ${psQuote(opts.zipFile)}`,
     `$exe = Join-Path $app ${psQuote(opts.exeName)}`,
     `$log = ${psQuote(opts.logFile)}`,
-    "$keep = @('BotArk-Data', '.botark-update-stage', '.botark-update-old', (Split-Path -Leaf $zip))",
-    "$stage = Join-Path $app '.botark-update-stage'",
+    `$lock = ${psQuote(opts.lockFile)}`,
     "$backup = Join-Path $app '.botark-update-old'",
     `$appPid = ${Math.trunc(opts.pid)}`,
-    'function Log($m) { try { Add-Content -LiteralPath $log -Value ("[{0}] {1}" -f (Get-Date -Format s), $m) } catch {} }',
-    'function Relaunch { Start-Process -FilePath $exe -WorkingDirectory $app }',
-    "Log 'BotArk zip update: waiting for app to exit'",
-    'try { Wait-Process -Id $appPid -Timeout 90 -ErrorAction SilentlyContinue } catch {}',
-    'try {',
-    '  foreach ($d in @($stage, $backup)) { if (Test-Path -LiteralPath $d) { Remove-Item -LiteralPath $d -Recurse -Force } }',
-    '  Expand-Archive -LiteralPath $zip -DestinationPath $stage -Force',
-    '} catch {',
-    '  Log ("unpack failed: " + $_.Exception.Message)',
-    '  Relaunch; exit 1',
+    '$locked = $true',
+    'function Log($m) {',
+    '  try { Add-Content -LiteralPath $log -Value ("[{0}] {1}" -f (Get-Date -Format o), $m) } catch {}',
+    '  if ($locked) { try { Set-Content -LiteralPath $lock -Value (Get-Date -Format o) } catch {} }',
     '}',
-    '# A zip with a single top-level folder: use that folder as the new app root.',
-    '$src = $stage',
-    '$top = @(Get-ChildItem -LiteralPath $stage -Force)',
-    'if ($top.Count -eq 1 -and $top[0].PSIsContainer) { $src = $top[0].FullName }',
-    "if (-not (Test-Path -LiteralPath (Join-Path $src (Split-Path -Leaf $exe)))) {",
-    "  Log 'zip does not contain the app exe; aborting'",
-    '  Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue',
-    '  Relaunch; exit 1',
+    'function Unlock { $script:locked = $false; try { Remove-Item -LiteralPath $lock -Force -ErrorAction SilentlyContinue } catch {} }',
+    'function Relaunch {',
+    '  Unlock',
+    '  try { $p = Start-Process -FilePath $exe -WorkingDirectory $app -PassThru; Log ("relaunched " + $exe + " pid " + $p.Id) }',
+    '  catch { Log ("relaunch failed: " + $_.Exception.Message) }',
     '}',
+    "$prefix = $app.TrimEnd('\\') + '\\'",
+    'function AppProcs {',
+    '  @(Get-Process -ErrorAction SilentlyContinue | Where-Object {',
+    '    $p = $null; try { $p = $_.Path } catch {}',
+    '    $_.Id -ne $PID -and $p -and $p.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)',
+    '  })',
+    '}',
+    `Log 'BotArk ${title}: waiting for app pid ${Math.trunc(opts.pid)} to exit'`,
+    'try { Wait-Process -Id $appPid -Timeout 30 -ErrorAction SilentlyContinue } catch {}',
+    'if (Get-Process -Id $appPid -ErrorAction SilentlyContinue) { Log \'app still running after 30s\' } else { Log \'app exited\' }',
+    'for ($i = 0; $i -lt 20 -and (AppProcs).Count -gt 0; $i++) { Start-Sleep -Milliseconds 500 }',
+    '$left = AppProcs',
+    'if ($left.Count -gt 0) {',
+    '  Log ("killing leftover processes: " + (($left | ForEach-Object { "$($_.Name)#$($_.Id)" }) -join \', \'))',
+    '  $left | Stop-Process -Force -ErrorAction SilentlyContinue',
+    '  Start-Sleep -Seconds 1',
+    '}',
+    'if (Test-Path -LiteralPath $backup) { try { Remove-Item -LiteralPath $backup -Recurse -Force } catch { Log ("old backup not removable: " + $_.Exception.Message) } }',
+    '# Retry a move while a file is still locked (antivirus, indexer).',
+    'function MoveRetry($from, $to) {',
+    '  for ($i = 0; $i -lt 40; $i++) {',
+    '    try { Move-Item -LiteralPath $from -Destination $to -Force; return } catch { Start-Sleep -Milliseconds 500 }',
+    '  }',
+    '  throw ("still locked: " + $from)',
+    '}'
+  ]
+}
+
+/** End of a swap script: relaunch, then remove staging, backup, the zip and the script itself. */
+function swapScriptTail(okMessage: string): string[] {
+  return [
+    `Log '${okMessage}'`,
+    'Relaunch',
+    'Start-Sleep -Seconds 8',
+    'foreach ($d in @($stage, $backup)) { try { Remove-Item -LiteralPath $d -Recurse -Force } catch { Log ("cleanup: " + $_.Exception.Message) } }',
+    'try { Remove-Item -LiteralPath $zip -Force } catch {}',
+    "Log 'done'",
+    'try { Remove-Item -LiteralPath $MyInvocation.MyCommand.Path -Force } catch {}',
+    ''
+  ]
+}
+
+/**
+ * Full update of an unpacked (zip) portable folder. The app already unpacked the zip into
+ * stageDir and found the new app root (srcDir, holding the exe) before it quit. The script:
+ *   1. head (lock, wait for / kill every process under the app folder)
+ *   2. move every old top-level entry except BotArk-Data aside
+ *   3. move the new entries in (the zip's own BotArk-Data, if any, is ignored), relaunch
+ *   4. on any failure put the old entries back and relaunch; finally clean up
+ */
+export function buildZipReplaceScript(opts: SwapScriptOpts & { zipFile: string; stageDir: string; srcDir: string }): string {
+  return [
+    ...swapScriptHead(opts, 'zip update'),
+    `$zip = ${psQuote(opts.zipFile)}`,
+    `$stage = ${psQuote(opts.stageDir)}`,
+    `$src = ${psQuote(opts.srcDir)}`,
+    "$keep = @('BotArk-Data', (Split-Path -Leaf $stage), (Split-Path -Leaf $backup), (Split-Path -Leaf $zip))",
     'New-Item -ItemType Directory -Path $backup -Force | Out-Null',
-    '$old = @(Get-ChildItem -LiteralPath $app -Force | Where-Object { $keep -notcontains $_.Name -and $_.FullName -ne $zip })',
+    '$old = @(Get-ChildItem -LiteralPath $app -Force | Where-Object { $keep -notcontains $_.Name })',
     '$movedOut = @()',
     "$phase = 'out'",
     'try {',
-    '  foreach ($item in $old) {',
-    '    $ok = $false',
-    '    for ($i = 0; $i -lt 120; $i++) {',
-    '      try { Move-Item -LiteralPath $item.FullName -Destination $backup -Force; $ok = $true; break } catch { Start-Sleep -Milliseconds 500 }',
-    '    }',
-    '    if (-not $ok) { throw ("still locked: " + $item.Name) }',
-    '    $movedOut += $item.Name',
-    '  }',
+    '  foreach ($item in $old) { MoveRetry $item.FullName $backup; $movedOut += $item.Name }',
+    "  Log ('moved ' + $movedOut.Count + ' old entries aside')",
     "  $phase = 'in'",
     "  foreach ($item in @(Get-ChildItem -LiteralPath $src -Force | Where-Object { $_.Name -ne 'BotArk-Data' })) {",
     '    Move-Item -LiteralPath $item.FullName -Destination $app -Force',
@@ -377,20 +426,14 @@ export function buildZipReplaceScript(opts: {
     '  Log ("swap failed: " + $_.Exception.Message + "; rolling back")',
     '  # Only once every old entry was out did new ones come in; drop those before restoring.',
     "  if ($phase -eq 'in') {",
-    '    foreach ($item in @(Get-ChildItem -LiteralPath $app -Force | Where-Object { $keep -notcontains $_.Name -and $_.FullName -ne $zip })) {',
+    '    foreach ($item in @(Get-ChildItem -LiteralPath $app -Force | Where-Object { $keep -notcontains $_.Name })) {',
     '      try { Remove-Item -LiteralPath $item.FullName -Recurse -Force } catch {}',
     '    }',
     '  }',
-    '  foreach ($name in $movedOut) { try { Move-Item -LiteralPath (Join-Path $backup $name) -Destination $app -Force } catch {} }',
+    '  foreach ($name in $movedOut) { try { Move-Item -LiteralPath (Join-Path $backup $name) -Destination $app -Force } catch { Log ("restore failed: " + $name) } }',
     '  Relaunch; exit 1',
     '}',
-    "Log 'swapped; relaunching'",
-    'Relaunch',
-    'Start-Sleep -Seconds 8',
-    'foreach ($d in @($stage, $backup)) { try { Remove-Item -LiteralPath $d -Recurse -Force } catch { Log ("cleanup: " + $_.Exception.Message) } }',
-    'try { Remove-Item -LiteralPath $zip -Force } catch {}',
-    'try { Remove-Item -LiteralPath $MyInvocation.MyCommand.Path -Force } catch {}',
-    ''
+    ...swapScriptTail('swapped; relaunching')
   ].join('\r\n')
 }
 
@@ -442,68 +485,34 @@ export function planDelta(files: ManifestFile[], local: Record<string, string | 
 }
 
 /**
- * PowerShell script that applies a delta once BotArk has exited:
- *   1. wait for the app (pid), unpack the patch zip into a staging folder
- *   2. check every file to replace against its manifest sha256 (abort before touching anything on mismatch)
- *   3. per file: move the old one into a backup folder (retry while locked), move the new one in
- *   4. on any failure restore the backed-up files, drop the added ones, relaunch; finally clean up
+ * Delta update. The app already unpacked the patch into stageDir and checked every file's sha256
+ * before it quit. The script:
+ *   1. head (lock, wait for / kill every process under the app folder)
+ *   2. per file: move the old one into a backup folder (retry while locked), move the new one in
+ *   3. on any failure restore the backed-up files, drop the added ones, relaunch; finally clean up
  */
-export function buildDeltaReplaceScript(opts: {
-  appDir: string
-  patchZip: string
-  files: Array<{ path: string; sha256: string }>
-  exeName: string
-  pid: number
-  logFile: string
-}): string {
-  const list = opts.files.map((f) => `  @{ p = ${psQuote(f.path.replace(/\//g, '\\'))}; h = ${psQuote(f.sha256)} }`)
+export function buildDeltaReplaceScript(
+  opts: SwapScriptOpts & { patchZip: string; stageDir: string; files: Array<{ path: string }> }
+): string {
+  const list = opts.files.map((f) => `  ${psQuote(f.path.replace(/\//g, '\\'))}`)
   return [
-    "$ErrorActionPreference = 'Stop'",
-    `$app = ${psQuote(opts.appDir)}`,
+    ...swapScriptHead(opts, `delta update (${opts.files.length} files)`),
     `$zip = ${psQuote(opts.patchZip)}`,
-    `$exe = Join-Path $app ${psQuote(opts.exeName)}`,
-    `$log = ${psQuote(opts.logFile)}`,
-    "$stage = Join-Path $app '.botark-update-stage'",
-    "$backup = Join-Path $app '.botark-update-old'",
-    `$appPid = ${Math.trunc(opts.pid)}`,
+    `$stage = ${psQuote(opts.stageDir)}`,
     '$files = @(',
     list.join(',\r\n'),
     ')',
-    'function Log($m) { try { Add-Content -LiteralPath $log -Value ("[{0}] {1}" -f (Get-Date -Format s), $m) } catch {} }',
-    'function Relaunch { Start-Process -FilePath $exe -WorkingDirectory $app }',
     'function Parent($p) { New-Item -ItemType Directory -Path (Split-Path -Parent $p) -Force | Out-Null }',
-    `Log 'BotArk delta update (${opts.files.length} files): waiting for app to exit'`,
-    'try { Wait-Process -Id $appPid -Timeout 90 -ErrorAction SilentlyContinue } catch {}',
-    'try {',
-    '  foreach ($d in @($stage, $backup)) { if (Test-Path -LiteralPath $d) { Remove-Item -LiteralPath $d -Recurse -Force } }',
-    '  Expand-Archive -LiteralPath $zip -DestinationPath $stage -Force',
-    '  foreach ($f in $files) {',
-    '    $s = Join-Path $stage $f.p',
-    '    if (-not (Test-Path -LiteralPath $s)) { throw ("missing in patch: " + $f.p) }',
-    '    if ((Get-FileHash -Algorithm SHA256 -LiteralPath $s).Hash -ne $f.h) { throw ("sha256 mismatch: " + $f.p) }',
-    '  }',
-    '} catch {',
-    '  Log ("patch rejected: " + $_.Exception.Message)',
-    '  Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue',
-    '  Relaunch; exit 1',
-    '}',
     '$done = @()',
     'try {',
     '  foreach ($f in $files) {',
-    '    $dst = Join-Path $app $f.p',
-    '    $bak = Join-Path $backup $f.p',
+    '    $dst = Join-Path $app $f',
+    '    $bak = Join-Path $backup $f',
     '    $hadOld = Test-Path -LiteralPath $dst',
-    '    if ($hadOld) {',
-    '      Parent $bak',
-    '      $ok = $false',
-    '      for ($i = 0; $i -lt 120; $i++) {',
-    '        try { Move-Item -LiteralPath $dst -Destination $bak -Force; $ok = $true; break } catch { Start-Sleep -Milliseconds 500 }',
-    '      }',
-    '      if (-not $ok) { throw ("still locked: " + $f.p) }',
-    '    }',
+    '    if ($hadOld) { Parent $bak; MoveRetry $dst $bak }',
     '    $done += @{ dst = $dst; bak = $bak; hadOld = $hadOld }',
     '    Parent $dst',
-    '    Move-Item -LiteralPath (Join-Path $stage $f.p) -Destination $dst -Force',
+    '    Move-Item -LiteralPath (Join-Path $stage $f) -Destination $dst -Force',
     '  }',
     '} catch {',
     '  Log ("swap failed: " + $_.Exception.Message + "; rolling back")',
@@ -513,12 +522,6 @@ export function buildDeltaReplaceScript(opts: {
     '  }',
     '  Relaunch; exit 1',
     '}',
-    "Log 'delta applied; relaunching'",
-    'Relaunch',
-    'Start-Sleep -Seconds 8',
-    'foreach ($d in @($stage, $backup)) { try { Remove-Item -LiteralPath $d -Recurse -Force } catch { Log ("cleanup: " + $_.Exception.Message) } }',
-    'try { Remove-Item -LiteralPath $zip -Force } catch {}',
-    'try { Remove-Item -LiteralPath $MyInvocation.MyCommand.Path -Force } catch {}',
-    ''
+    ...swapScriptTail('delta applied; relaunching')
   ].join('\r\n')
 }

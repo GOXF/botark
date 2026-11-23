@@ -8,7 +8,7 @@ import { app, BrowserWindow, shell } from 'electron'
 import { attachWebViewManager, registerWebViewIpc } from './webViewIpc'
 import { attachMuseSessionManager, disposeAllMuseManagers, registerMuseIpc } from './muse/museIpc'
 // GOXF fork: fork-aware updater (upstream + portable prompts) instead of electron-updater.
-import { registerUpdaterIpc, startAutoUpdater } from './goxfUpdater'
+import { exitIfUpdating, registerUpdaterIpc, startAutoUpdater } from './goxfUpdater'
 import { startPerfLog } from './goxfPerf'
 import { startSessionCookiePersistence } from './goxfSessionCookies'
 import { registerGrokIpc } from './grok/grokIpc'
@@ -87,6 +87,7 @@ try {
 
 // Two instances share userData and race on every JSON store and on
 // Chromium's profile; hand the second launch over to the first.
+exitIfUpdating()
 const gotLock = app.requestSingleInstanceLock()
 if (!gotLock) {
   app.quit()

@@ -13,6 +13,7 @@ import { accountPartitionName, sessionOnly, toSetDetails, type SavedCookie } fro
 
 const SAVE_DELAY_MS = 5_000
 const tracked = new WeakMap<Session, Promise<void>>()
+const live = new Map<string, Session>()
 
 const storeDir = (): string => join(app.getPath('userData'), 'goxf-session-cookies')
 const storeFile = (name: string): string => join(storeDir(), `${name}.bin`)
@@ -56,6 +57,7 @@ function track(ses: Session): Promise<void> {
 }
 
 async function begin(ses: Session, name: string): Promise<void> {
+  live.set(name, ses)
   await restore(ses, name).catch(() => undefined)
   let timer: NodeJS.Timeout | null = null
   ses.cookies.on('changed', (_event, cookie) => {
@@ -73,4 +75,14 @@ export async function startSessionCookiePersistence(): Promise<void> {
   await Promise.all(
     names.filter((n) => accountPartitionName(n)).map((n) => track(session.fromPartition(`persist:${n}`)))
   )
+}
+
+/** Before quitting for an update: write pending session cookies and flush every cookie store. */
+export async function flushSessionCookies(): Promise<void> {
+  await Promise.all(
+    [...live].map(([name, ses]) =>
+      Promise.all([save(ses, name), ses.cookies.flushStore()]).catch(() => undefined)
+    )
+  )
+  await session.defaultSession.cookies.flushStore().catch(() => undefined)
 }
