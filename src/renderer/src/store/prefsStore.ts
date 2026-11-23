@@ -7,8 +7,14 @@ export type Locale = 'zh' | 'en'
 interface PrefsState {
   theme: ThemePref
   locale: Locale
+  /** Platforms whose (new) accounts get a pool proxy automatically. */
+  proxyAssignPlatforms: string[]
+  /** Accounts per pool proxy for auto-assignment; 0 = unlimited. Manual binding ignores it. */
+  proxyPerProxyLimit: number
   setTheme: (theme: ThemePref) => void
   setLocale: (locale: Locale) => void
+  setProxyAssignPlatforms: (platforms: string[]) => void
+  setProxyPerProxyLimit: (limit: number) => void
 }
 
 /** UI preferences (local only). Light theme + Chinese by default. */
@@ -17,8 +23,13 @@ export const usePrefsStore = create<PrefsState>()(
     (set) => ({
       theme: 'light',
       locale: 'zh',
+      // The platforms new accounts were auto-assigned for before this was configurable.
+      proxyAssignPlatforms: ['meta-muse', 'grok', 'dot', 'hark', 'antigravity', 'cue'],
+      proxyPerProxyLimit: 0,
       setTheme: (theme) => set({ theme }),
-      setLocale: (locale) => set({ locale })
+      setLocale: (locale) => set({ locale }),
+      setProxyAssignPlatforms: (proxyAssignPlatforms) => set({ proxyAssignPlatforms }),
+      setProxyPerProxyLimit: (proxyPerProxyLimit) => set({ proxyPerProxyLimit })
     }),
     { name: 'bothub-prefs-v1' }
   )

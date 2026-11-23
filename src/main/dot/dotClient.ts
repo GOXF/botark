@@ -3,11 +3,11 @@ import { chmodSync, existsSync, mkdirSync, renameSync, writeFileSync } from 'nod
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import WebSocket from 'ws'
-import { proxyFetch, proxyWsAgent } from '../proxyTransport'
+import { DIRECT_PROXY_URL, proxyFetch, proxyWsAgent } from '../proxyTransport'
 import { guessMediaMimeFromName, inferMediaMime } from '../mediaMime'
 import { readJsonFile } from '../jsonFile'
 import { requireValidProxyUrl } from '../proxyUrl'
-import { applyProxyToPartition, loadAccountProxyUrl, ProxyConfigUnreadableError } from '../muse/accountProxy'
+import { applyProxyToPartition, loadAccountProxyUrl, loadAccountTransportProxyUrl, ProxyConfigUnreadableError } from '../muse/accountProxy'
 import type {
   DotAuthStatus,
   MuseMediaPartView,
@@ -201,9 +201,9 @@ async function resolveDotProxyUrl(
   const explicit = explicitProxyUrl?.trim()
   if (explicit) return explicit
   // Throws ProxyConfigUnreadableError if a proxy is stored in accountProxy but unreadable
-  const globalProxy = await loadAccountProxyUrl(accountId)
-  if (globalProxy) return globalProxy
-  return getStoredDotAccount(accountId)?.proxyUrl
+  const globalProxy = await loadAccountTransportProxyUrl(accountId)
+  if (globalProxy && globalProxy !== DIRECT_PROXY_URL) return globalProxy
+  return getStoredDotAccount(accountId)?.proxyUrl ?? globalProxy
 }
 
 const activeTurnBotIds = new Map<string, string>()

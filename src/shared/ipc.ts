@@ -101,7 +101,9 @@ export const MUSE_CHANNELS = {
   importProxyPool: 'bothub:muse:proxy-pool:import',
   removeProxyPoolItem: 'bothub:muse:proxy-pool:remove',
   clearProxyPool: 'bothub:muse:proxy-pool:clear',
-  assignProxyPool: 'bothub:muse:proxy-pool:assign'
+  assignProxyPool: 'bothub:muse:proxy-pool:assign',
+  testProxy: 'bothub:muse:proxy:test',
+  getSystemProxy: 'bothub:muse:proxy:system'
 } as const
 
 export interface MuseEnsureRequest {
@@ -281,7 +283,9 @@ export interface MuseOptionWidgetView {
 }
 
 
-export type MuseProxyMode = 'direct' | 'http' | 'https' | 'socks5' | 'socks5h'
+export type MuseProxyScheme = 'http' | 'https' | 'socks5' | 'socks5h'
+/** `direct` = no proxy at all; `system` = follow the OS proxy (the default, and what old "direct" meant). */
+export type MuseProxyMode = 'direct' | 'system' | MuseProxyScheme
 
 /** Renderer-safe proxy view (password never returned). */
 export interface MuseProxyView {
@@ -299,16 +303,27 @@ export interface MuseProxyConfigInput {
   username?: string
   /** Empty string keeps previous password when hasPassword. */
   password?: string
+  /** Bind to this pool proxy (manual, never limited); host/port/auth come from the pool. */
+  poolId?: string
+}
+
+/** Connectivity from a session: latency and the exit IP the target sees. */
+export interface ProxyTestResult {
+  ok: boolean
+  ms?: number
+  ip?: string
+  error?: string
 }
 
 export interface MuseProxyPoolItemView {
   id: string
-  mode: Exclude<MuseProxyMode, 'direct'>
+  mode: MuseProxyScheme
   host: string
   port: number
   username?: string
   hasPassword: boolean
-  assignedAccountId?: string
+  assignedAccountIds: string[]
+  lastTest?: ProxyTestResult
 }
 
 export interface MuseIdentityView {

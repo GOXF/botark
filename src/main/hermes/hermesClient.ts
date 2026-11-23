@@ -21,7 +21,7 @@ import type {
   MuseMediaPartView,
   MuseToolCallView
 } from '@shared/ipc'
-import { loadAccountProxyUrl } from '../muse/accountProxy'
+import { loadAccountTransportProxyUrl } from '../muse/accountProxy'
 import { proxyFetch } from '../proxyTransport'
 import { getHermesAccount, normalizeHermesBaseUrl } from './hermesStore'
 
@@ -87,7 +87,7 @@ async function fetchForAccount(
   if (explicitFetch) return explicitFetch(url, init)
   let proxyUrl: string | undefined
   if (accountId) {
-    proxyUrl = await loadAccountProxyUrl(accountId)
+    proxyUrl = await loadAccountTransportProxyUrl(accountId)
   }
   // Never route localhost / 127.0.0.1 through the OS system proxy when no explicit per-account proxy is configured.
   if (!proxyUrl && isLoopbackUrl(url)) {

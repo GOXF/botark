@@ -33,6 +33,8 @@ function writeOpen(title: string, open: boolean) {
 interface SectionProps {
   title: string
   count?: number
+  /** Short status chip beside the title (e.g. the current network mode). */
+  tag?: string
   action?: ReactNode
   children: ReactNode
   /** Rows inside run edge to edge (they pad themselves). */
@@ -43,7 +45,7 @@ interface SectionProps {
 }
 
 /** Collapsible titled card — the details panel's only building block. Open state persists per title. */
-export function Section({ title, count, action, children, flush = false, className, defaultOpen }: SectionProps) {
+export function Section({ title, count, tag, action, children, flush = false, className, defaultOpen }: SectionProps) {
   const inherited = useContext(DefaultOpen)
   const [open, setOpen] = useState(() => readOpen(title, defaultOpen ?? inherited))
   return (
@@ -67,6 +69,9 @@ export function Section({ title, count, action, children, flush = false, classNa
             <span className="rounded-full bg-hover px-1.5 text-[10.5px] leading-4 font-medium text-ink-muted tabular-nums">
               {count}
             </span>
+          )}
+          {tag && (
+            <span className="shrink-0 rounded-full bg-hover px-1.5 text-[10.5px] leading-4 font-medium text-ink-muted">{tag}</span>
           )}
         </button>
         {action && open && <div className="flex shrink-0 items-center">{action}</div>}

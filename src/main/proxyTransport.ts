@@ -13,6 +13,9 @@ import { normalizeProxyUrl, proxyKind, remoteDnsProxyUrl, undiciProxyUrl, type P
  */
 const dispatchers = new Map<string, Dispatcher>()
 
+/** Account chose 真直连: plain Node networking, neither a proxy nor the OS system proxy. */
+export const DIRECT_PROXY_URL = 'direct://'
+
 export interface ProxyTlsOptions {
   ca?: string | Buffer | Array<string | Buffer>
   rejectUnauthorized?: boolean
@@ -75,6 +78,7 @@ export function proxyFetch(
   tlsOpts?: { proxyTls?: ProxyTlsOptions; requestTls?: ProxyTlsOptions }
 ): Promise<Response> {
   if (!proxyUrl?.trim()) return systemAwareFetch(input, init)
+  if (proxyUrl === DIRECT_PROXY_URL) return undiciFetch(input, init as never) as unknown as Promise<Response>
   const dispatcher = tlsOpts
     ? (() => {
         const { url, kind } = requireProxy(proxyUrl)
@@ -85,7 +89,7 @@ export function proxyFetch(
 }
 
 export function proxyWsAgent(proxyUrl: string | undefined, tlsOpts?: ProxyTlsOptions): Agent | undefined {
-  if (!proxyUrl?.trim()) return undefined
+  if (!proxyUrl?.trim() || proxyUrl === DIRECT_PROXY_URL) return undefined
   const { url, kind } = requireProxy(proxyUrl)
   if (kind === 'http' || kind === 'https') {
     return new HttpsProxyAgent(url, tlsOpts) as unknown as Agent

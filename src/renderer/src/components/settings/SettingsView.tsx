@@ -26,7 +26,8 @@ import {
   Users
 } from 'lucide-react'
 import type { PlatformId } from '@adapters/types'
-import type { MuseProxyMode, MuseProxyPoolItemView, MuseProxyView } from '@shared/ipc'
+import type { MuseProxyPoolItemView, MuseProxyScheme, MuseProxyView } from '@shared/ipc'
+import { getPlatform } from '@adapters/platforms'
 import { createId } from '@shared/id'
 import { SecurityVaultCenter } from '@/components/info/SecurityVaultCard'
 import { PaneHeader } from '@/components/layout/PaneHeader'
@@ -34,7 +35,7 @@ import { MuseBatchImport } from '@/components/add-bot/MuseBatchImport'
 import { ArkMobileLinkSvg, ArkRelayOrbSvg } from '@/components/ui/ArkGlyphs'
 import { BotAvatar } from '@/components/ui/Avatar'
 import { Button } from '@/components/ui/Button'
-import { SwitchPill } from '@/components/ui/Controls'
+import { NumberStepper, SwitchPill } from '@/components/ui/Controls'
 import { Dialog } from '@/components/ui/Dialog'
 import { Menu, MenuContent, MenuItem, MenuSeparator, MenuTrigger } from '@/components/ui/Menu'
 import { SegmentedControl } from '@/components/ui/SegmentedControl'
@@ -52,7 +53,7 @@ import { MobileSyncSettingsPanel } from '@/components/mobile-sync/MobileSyncSett
 import { McpSettingsSection } from '@/components/settings/McpSettingsSection'
 import { NEW_ROOM_ID } from '@/rooms/RoomView'
 import { useRooms } from '@/rooms/roomStore'
-import { useBotStore } from '@/store/botStore'
+import { autoAssignProxyPool, useBotStore } from '@/store/botStore'
 import { usePrefsStore, type Locale, type ThemePref } from '@/store/prefsStore'
 
 type SettingsTab =
@@ -146,11 +147,16 @@ export function SettingsView() {
   const [accountProxies, setAccountProxies] = useState<Record<string, MuseProxyView>>({})
   const [dotMetaMap, setDotMetaMap] = useState<Record<string, DotStoredMeta>>({})
   const [rawProxyText, setRawProxyText] = useState('')
-  const [defaultMode, setDefaultMode] = useState<Exclude<MuseProxyMode, 'direct'>>('socks5')
+  const [defaultMode, setDefaultMode] = useState<MuseProxyScheme>('socks5')
   const [busy, setBusy] = useState(false)
   const [hint, setHint] = useState<string>()
   const [error, setError] = useState<string>()
   const [batchOpen, setBatchOpen] = useState(false)
+  const [testingIds, setTestingIds] = useState<ReadonlySet<string>>(new Set())
+  const proxyAssignPlatforms = usePrefsStore((s) => s.proxyAssignPlatforms)
+  const setProxyAssignPlatforms = usePrefsStore((s) => s.setProxyAssignPlatforms)
+  const proxyPerProxyLimit = usePrefsStore((s) => s.proxyPerProxyLimit)
+  const setProxyPerProxyLimit = usePrefsStore((s) => s.setProxyPerProxyLimit)
 
   // Overview filters & inline editing
   const [searchQuery, setSearchQuery] = useState('')
@@ -212,6 +218,13 @@ export function SettingsView() {
   const [cueCredentialInput, setCueCredentialInput] = useState('')
   const [cueTargetAccountId, setCueTargetAccountId] = useState('__new__')
 
+  const accountPlatformIds = useMemo(
+    () => [...new Set(allAccounts.map((a) => a.platformId))] as PlatformId[],
+    [allAccounts]
+  )
+  const accountLabel = (accId: string) =>
+    bots.find((b) => b.accountIds.includes(accId))?.name || accounts[accId]?.displayName || accId
+
   const onlineAccountsCount = useMemo(
     () => allAccounts.filter((a) => a.status === 'online' || a.status === 'busy' || a.status === 'attention').length,
     [allAccounts]
@@ -265,7 +278,7 @@ export function SettingsView() {
 
   useEffect(() => {
     void refreshProxiesAndPool()
-  }, [refreshProxiesAndPool, museAccounts.length])
+  }, [refreshProxiesAndPool, allAccounts.length])
 
   useEffect(() => {
     void refreshDotStoredMeta()
@@ -316,21 +329,12 @@ export function SettingsView() {
       const res = await muse.importProxyPool(rawProxyText, defaultMode)
       setRawProxyText('')
       setPool(res.items)
-      const ids = museAccounts.map((a) => a.id)
-      const keepIds = [
-        ...harkAccounts,
-        ...grokAccounts,
-        ...dotAccounts,
-        ...antigravityAccounts,
-        ...hermesAccounts
-      ].map((a) => a.id)
-      if (ids.length > 0 && muse.assignProxyPool) {
-        const assigned = await muse.assignProxyPool(ids, keepIds)
-        setPool(assigned.items)
-        setHint(`已导入 ${res.added} 个代理（池共 ${res.total} 个），并已自动为 ${assigned.assignedCount} 个 Muse 账号一对一绑定代理`)
-      } else {
-        setHint(`已导入 ${res.added} 个代理（池共 ${res.total} 个）；新建或导入 Muse 账号时将自动一对一分配`)
-      }
+      const assigned = await autoAssignProxyPool()
+      if (assigned) setPool(assigned.items)
+      setHint(
+        `已导入 ${res.added} 个代理（池共 ${res.total} 个）` +
+          (assigned ? `，已为勾选平台的 ${assigned.assignedCount} 个账号分配代理` : '；勾选平台的新账号会自动分配')
+      )
       await refreshProxiesAndPool()
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
@@ -340,23 +344,13 @@ export function SettingsView() {
   }
 
   const handleAutoAssignAll = async () => {
-    const muse = getBridge()?.muse
-    if (!muse?.assignProxyPool) return
     setBusy(true)
     setError(undefined)
     setHint(undefined)
     try {
-      const ids = museAccounts.map((a) => a.id)
-      const keepIds = [
-        ...harkAccounts,
-        ...grokAccounts,
-        ...dotAccounts,
-        ...antigravityAccounts,
-        ...hermesAccounts
-      ].map((a) => a.id)
-      const res = await muse.assignProxyPool(ids, keepIds)
-      setPool(res.items)
-      setHint(`已为 ${res.assignedCount} / ${ids.length} 个 Muse 账号完成一对一代理匹配`)
+      const res = await autoAssignProxyPool()
+      if (res) setPool(res.items)
+      setHint(`已为勾选平台的 ${res?.assignedCount ?? 0} 个账号分配代理`)
       await refreshProxiesAndPool()
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
@@ -365,11 +359,27 @@ export function SettingsView() {
     }
   }
 
+  const handleTestPool = async (ids: string[]) => {
+    const muse = getBridge()?.muse
+    if (!muse?.testProxy) return
+    setTestingIds((prev) => new Set([...prev, ...ids]))
+    await Promise.all(
+      ids.map((poolId) =>
+        muse
+          .testProxy({ poolId })
+          .catch(() => undefined)
+          .finally(() => setTestingIds((prev) => new Set([...prev].filter((x) => x !== poolId))))
+      )
+    )
+    setPool(await muse.listProxyPool())
+  }
+
   const handleRemovePoolItem = async (id: string) => {
     const muse = getBridge()?.muse
     if (!muse?.removeProxyPoolItem) return
     const next = await muse.removeProxyPoolItem(id)
     setPool(next)
+    await refreshProxiesAndPool()
   }
 
   const handleClearPool = async () => {
@@ -377,25 +387,15 @@ export function SettingsView() {
     if (!muse?.clearProxyPool) return
     const next = await muse.clearProxyPool()
     setPool(next)
-    setHint('已清空代理池')
+    setHint('已清空代理池，用过池中代理的账号已改回跟随系统')
+    await refreshProxiesAndPool()
   }
 
   const handleQuickAddMuseAccount = async () => {
     const accountId = createId('acc')
     const botId = createId('bot')
     const index = museBots.length + 1
-    const muse = getBridge()?.muse
-    if (muse?.assignProxyPool) {
-      const ids = [...museAccounts.map((a) => a.id), accountId]
-      const keepIds = [
-        ...harkAccounts,
-        ...grokAccounts,
-        ...dotAccounts,
-        ...antigravityAccounts,
-        ...hermesAccounts
-      ].map((a) => a.id)
-      await muse.assignProxyPool(ids, keepIds).catch(() => undefined)
-    }
+    await autoAssignProxyPool([accountId], [{ id: accountId, platformId: 'meta-muse' }]).catch(() => undefined)
     addBot({
       id: botId,
       platformId: 'meta-muse',
@@ -459,12 +459,7 @@ export function SettingsView() {
     const accountId = createId('acc')
     const botId = createId('bot')
     const index = harkBots.length + 1
-    const muse = getBridge()?.muse
-    if (muse?.assignProxyPool) {
-      const ids = [...museAccounts.map((a) => a.id), ...harkAccounts.map((a) => a.id), accountId]
-      const keepIds = [...grokAccounts, ...dotAccounts, ...antigravityAccounts, ...hermesAccounts].map((a) => a.id)
-      await muse.assignProxyPool(ids, keepIds).catch(() => undefined)
-    }
+    await autoAssignProxyPool([accountId], [{ id: accountId, platformId: 'hark' }]).catch(() => undefined)
     addBot({
       id: botId,
       platformId: 'hark',
@@ -529,12 +524,7 @@ export function SettingsView() {
     const accountId = createId('acc_cue')
     const botId = createId('bot')
     const index = cueBots.length + 1
-    const muse = getBridge()?.muse
-    if (muse?.assignProxyPool) {
-      const ids = [...museAccounts.map((a) => a.id), ...harkAccounts.map((a) => a.id), ...cueAccounts.map((a) => a.id), accountId]
-      const keepIds = [...grokAccounts, ...dotAccounts, ...antigravityAccounts, ...hermesAccounts].map((a) => a.id)
-      await muse.assignProxyPool(ids, keepIds).catch(() => undefined)
-    }
+    await autoAssignProxyPool([accountId], [{ id: accountId, platformId: 'cue' }]).catch(() => undefined)
     addBot({
       id: botId,
       platformId: 'cue',
@@ -1233,7 +1223,7 @@ export function SettingsView() {
                     <p className="text-[12px] text-ink-muted">已绑定独立代理</p>
                     <p className="mt-1 flex items-baseline justify-between">
                       <span className="text-[22px] font-semibold tabular-nums text-ink">
-                        {Object.values(accountProxies).filter((p) => p && p.mode !== 'direct').length}
+                        {Object.values(accountProxies).filter((p) => p?.host).length}
                       </span>
                       <button
                         type="button"
@@ -1281,7 +1271,7 @@ export function SettingsView() {
                       {museAccounts.map((acc) => {
                         const ownerBot = bots.find((b) => b.accountIds.includes(acc.id))
                         const px = accountProxies[acc.id]
-                        const hasProxy = px && px.mode !== 'direct' && px.host && px.port
+                        const hasProxy = px?.host && px.port
                         return (
                           <li key={acc.id} className="flex flex-wrap items-center justify-between gap-3 px-4 py-3 hover:bg-hover/30">
                             <div className="flex min-w-0 items-center gap-3">
@@ -1311,7 +1301,7 @@ export function SettingsView() {
                                     </span>
                                   ) : (
                                     <span className="rounded-md bg-sunken px-1.5 py-0.5 text-[11px] text-ink-muted">
-                                      直连 (无代理)
+                                      {px?.mode === 'direct' ? '真直连' : '跟随系统'}
                                     </span>
                                   )}
                                 </div>
@@ -2068,20 +2058,19 @@ export function SettingsView() {
                   <div>
                     <h2 className="text-[17px] font-semibold tracking-tight text-ink">代理池</h2>
                     <p className="mt-1 text-[13px] text-ink-secondary">
-                      批量导入代理并按「一号一代理」自动分配，本地钥匙串加密保存。
+                      批量导入代理，按勾选的平台和每个代理的账号上限自动分配；密码用系统钥匙串加密。
                     </p>
                   </div>
-                  {pool.length > 0 && museAccounts.length > 0 && (
-                    <Button variant="primary" size="sm" disabled={busy} onClick={() => void handleAutoAssignAll()}>
-                      <Shuffle className="size-3.5" /> 一键匹配给全部 Muse 账号 ({museAccounts.length})
+                  {pool.length > 0 && (
+                    <Button variant="secondary" size="sm" disabled={busy} onClick={() => void handleAutoAssignAll()}>
+                      <Shuffle className="size-3.5" /> 按设置分配给现有账号
                     </Button>
                   )}
                 </div>
 
-                {/* Proxy Pool Importer Card */}
                 <div className="rounded-2xl border border-line bg-surface p-4 shadow-soft">
                   <div className="mb-2 flex items-center justify-between">
-                    <span className="text-[13px] font-medium text-ink">批量粘贴或导入代理</span>
+                    <span className="text-[13px] font-medium text-ink">导入代理</span>
                     <div className="flex items-center gap-2">
                       <div className="flex items-center gap-1.5 text-[12px] text-ink-secondary">
                         <span>无协议前缀时默认：</span>
@@ -2131,77 +2120,139 @@ export function SettingsView() {
                     spellCheck={false}
                     className="block w-full resize-none rounded-xl border border-line bg-canvas p-3 font-mono text-[12px] leading-5 text-ink outline-none placeholder:text-ink-muted focus:border-accent-600"
                   />
-                  <div className="mt-3 flex items-center justify-between">
-                    <span className="text-[12px] text-ink-muted">
-                      导入后会自动为尚未绑定代理的账号一对一分配
-                    </span>
+
+                  <div className="mt-3 flex flex-wrap items-center gap-1.5 text-[12.5px]">
+                    <span className="mr-1 text-ink-secondary">分配给</span>
+                    {accountPlatformIds.length === 0 && <span className="text-ink-muted">还没有账号</span>}
+                    {accountPlatformIds.map((pid) => {
+                      const on = proxyAssignPlatforms.includes(pid)
+                      return (
+                        <button
+                          key={pid}
+                          type="button"
+                          aria-pressed={on}
+                          onClick={() =>
+                            setProxyAssignPlatforms(
+                              on ? proxyAssignPlatforms.filter((x) => x !== pid) : [...proxyAssignPlatforms, pid]
+                            )
+                          }
+                          className={cn(
+                            'press h-7 rounded-full border px-3 text-[12px] transition-colors',
+                            on
+                              ? 'border-accent-300 bg-accent-50 text-accent-600'
+                              : 'border-line text-ink-secondary hover:bg-hover hover:text-ink'
+                          )}
+                        >
+                          {getPlatform(pid).name}
+                        </button>
+                      )
+                    })}
+                  </div>
+                  <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
+                    <div className="flex items-center gap-2 text-[12.5px] text-ink-secondary">
+                      <span>每个代理最多</span>
+                      <NumberStepper
+                        value={proxyPerProxyLimit}
+                        onChange={setProxyPerProxyLimit}
+                        min={0}
+                        max={99}
+                        aria-label="每个代理最多账号数"
+                      />
+                      <span className="text-ink-muted">
+                        {proxyPerProxyLimit === 0 ? '0 = 不限，平均分摊' : '个账号 · 1 就是一号一代理'}
+                      </span>
+                    </div>
                     <Button
                       variant="primary"
                       size="sm"
                       disabled={busy || !rawProxyText.trim()}
                       onClick={() => void handleImportPool()}
                     >
-                      导入代理池并自动匹配
+                      导入并分配
                     </Button>
                   </div>
                 </div>
 
-                {/* Current Pool List */}
                 <div className="overflow-hidden rounded-2xl border border-line bg-surface shadow-soft">
-                  <div className="flex items-center justify-between border-b border-line bg-sunken/40 px-4 py-2.5 text-[12px] font-medium text-ink-secondary">
-                    <span>代理池列表 ({pool.length})</span>
-                    {pool.length > 0 && (
-                      <Button size="sm" variant="ghost" onClick={() => void handleClearPool()}>
-                        清空代理池
-                      </Button>
-                    )}
+                  <div className="grid grid-cols-[minmax(0,1.3fr)_64px_minmax(0,2fr)_88px_72px] items-center gap-3 border-b border-line bg-sunken/40 px-4 py-2.5 text-[12px] font-medium text-ink-secondary">
+                    <span>代理 ({pool.length})</span>
+                    <span>协议</span>
+                    <span>账号</span>
+                    <span>连通</span>
+                    <span />
                   </div>
                   {pool.length === 0 ? (
                     <p className="py-8 text-center text-[13px] text-ink-muted">代理池为空，请在上方粘贴导入代理</p>
                   ) : (
                     <ul className="divide-y divide-line">
-                      {pool.map((item, idx) => {
-                        const assignedAcc = item.assignedAccountId ? accounts[item.assignedAccountId] : undefined
-                        const ownerBot = item.assignedAccountId
-                          ? bots.find((b) => b.accountIds.includes(item.assignedAccountId!))
-                          : undefined
+                      {pool.map((item) => {
+                        const test = item.lastTest
+                        const n = item.assignedAccountIds.length
                         return (
-                          <li key={item.id} className="flex items-center justify-between gap-3 px-4 py-2.5 text-[13px]">
-                            <div className="flex min-w-0 items-center gap-2.5">
-                              <span className="w-6 font-mono text-[11px] text-ink-muted">#{idx + 1}</span>
-                              <span className="rounded bg-sunken px-1.5 py-0.5 font-mono text-[11px] uppercase text-ink-secondary">
-                                {item.mode}
-                              </span>
-                              <span className="truncate font-mono text-[13px] text-ink">
-                                {item.username ? `${item.username}${item.hasPassword ? ':***' : ''}@` : ''}
-                                {item.host}:{item.port}
-                              </span>
-                            </div>
-                            <div className="flex shrink-0 items-center gap-2">
-                              {assignedAcc || ownerBot ? (
-                                <span className="inline-flex items-center gap-1.5 rounded-full bg-status-online/10 px-2.5 py-0.5 text-[11.5px] font-medium text-status-online-ink">
-                                  已绑定 → {ownerBot?.name || assignedAcc?.displayName || item.assignedAccountId}
+                          <li
+                            key={item.id}
+                            className="group grid grid-cols-[minmax(0,1.3fr)_64px_minmax(0,2fr)_88px_72px] items-center gap-3 px-4 py-2.5 text-[13px]"
+                          >
+                            <span className="truncate font-mono text-[12.5px] text-ink" title={item.username ? `${item.username}@${item.host}:${item.port}` : undefined}>
+                              {item.host}:{item.port}
+                            </span>
+                            <span className="text-[11.5px] uppercase text-ink-secondary">{item.mode}</span>
+                            <span className="flex min-w-0 flex-wrap items-center gap-1">
+                              {item.assignedAccountIds.map((accId) => (
+                                <span key={accId} className="max-w-[120px] truncate rounded-full bg-hover px-2 py-0.5 text-[11.5px] text-ink-secondary">
+                                  {accountLabel(accId)}
                                 </span>
+                              ))}
+                              <span className="text-[11.5px] text-ink-muted tabular-nums">
+                                {n === 0 ? '未分配 ' : ''}
+                                {proxyPerProxyLimit > 0 ? `${n}/${proxyPerProxyLimit}` : n || ''}
+                              </span>
+                            </span>
+                            <span className="flex items-center gap-1.5 text-[12px] text-ink-secondary tabular-nums">
+                              {testingIds.has(item.id) ? (
+                                <span className="text-ink-muted">测速中…</span>
+                              ) : test ? (
+                                <>
+                                  <span className={cn('size-2 rounded-full', test.ok ? 'bg-status-online' : 'bg-status-error')} />
+                                  {test.ok ? `${test.ms} ms` : test.error || '失败'}
+                                </>
                               ) : (
-                                <span className="rounded-full bg-sunken px-2.5 py-0.5 text-[11.5px] text-ink-muted">
-                                  空闲待分配
-                                </span>
+                                <span className="text-ink-muted">—</span>
                               )}
+                            </span>
+                            <span className="flex items-center justify-end gap-1">
+                              <Button size="sm" variant="ghost" disabled={testingIds.has(item.id)} onClick={() => void handleTestPool([item.id])}>
+                                测速
+                              </Button>
                               <button
                                 type="button"
                                 onClick={() => void handleRemovePoolItem(item.id)}
-                                className="rounded p-1 text-ink-muted hover:bg-hover hover:text-status-error"
-                                title="移除代理"
+                                className="rounded p-1 text-ink-muted opacity-0 group-hover:opacity-100 hover:bg-hover hover:text-status-error focus-visible:opacity-100"
+                                title="移除代理（用它的账号改回跟随系统）"
+                                aria-label="移除代理"
                               >
                                 <Trash2 className="size-3.5" />
                               </button>
-                            </div>
+                            </span>
                           </li>
                         )
                       })}
                     </ul>
                   )}
+                  {pool.length > 0 && (
+                    <div className="flex items-center justify-between border-t border-line px-4 py-2.5">
+                      <Button size="sm" variant="secondary" disabled={testingIds.size > 0} onClick={() => void handleTestPool(pool.map((p) => p.id))}>
+                        全部测速
+                      </Button>
+                      <Button size="sm" variant="ghost" onClick={() => void handleClearPool()}>
+                        清空代理池
+                      </Button>
+                    </div>
+                  )}
                 </div>
+                <p className="text-[12px] text-ink-muted">
+                  超时的代理不参与自动分配；勾选的平台会记住，之后新加的账号自动分配。手动在账号侧栏「网络代理」里选的代理不受上限限制。
+                </p>
               </div>
             )}
 
