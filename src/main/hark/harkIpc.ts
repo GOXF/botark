@@ -21,6 +21,7 @@ import {
   extractMessages,
   fetchConversationSnapshotSummary,
   getAuthSession,
+  renewHarkSession,
   getConversationStatuses,
   getMainConversation,
   getProfile,
@@ -104,7 +105,8 @@ function mapHarkRichWidgets(msg: HarkChatMessage): MuseRichWidgetView[] | undefi
 
 function historyView(messages: HarkChatMessage[]) {
   return messages.map((m) => ({
-    ...m, media: !/^user$/i.test(m.role) ? mapHarkMedia(m) : undefined,
+    // User messages keep their pictures too: Hark's history carries what the user attached.
+    ...m, media: mapHarkMedia(m),
     richWidgets: !/^user$/i.test(m.role) ? mapHarkRichWidgets(m) : undefined
   }))
 }
@@ -172,10 +174,21 @@ function broadcast(payload: unknown): void {
   }
 }
 
+// Signed-in accounts get their Hark session renewed in the background, like an open Hark tab.
+const signedInAccounts = new Set<string>()
+const RENEW_EVERY_MS = 20 * 60_000
+setInterval(() => {
+  for (const id of signedInAccounts) void renewHarkSession(id).catch(() => undefined)
+}, RENEW_EVERY_MS).unref()
+
 async function statusFor(accountId: string): Promise<HarkAuthStatus> {
   const hasProxy = Boolean(await loadAccountProxyUrl(accountId).catch(() => true))
   const probe = await probeHarkSession(accountId, { reportConnectionErrors: true })
-  if ('signedIn' in probe) return { accountId, signedIn: false, hasProxy }
+  if ('signedIn' in probe) {
+    signedInAccounts.delete(accountId)
+    return { accountId, signedIn: false, hasProxy }
+  }
+  signedInAccounts.add(accountId)
   return {
     accountId,
     signedIn: true,

@@ -1905,7 +1905,8 @@ export const MessageBubble = memo(function MessageBubble({
   const mine = message.role === 'user'
   const optionWidgets = (!mine && message.widgets?.filter((w) => w.kind === 'option')) || []
   const tools = (!mine && message.tools) || []
-  const baseMedia = (!mine && message.media) || []
+  // A user message shows Hark's copy of its pictures only when the local attachments are gone (history reload).
+  const baseMedia = ((!mine || !message.attachments?.length) && message.media) || []
   const inlineWorkspaceImgs = !mine ? extractWorkspaceMarkdownImages(message.text) : []
   const media =
     inlineWorkspaceImgs.length === 0
@@ -2206,7 +2207,7 @@ export const MessageBubble = memo(function MessageBubble({
       )}
 
       {/* 4. Media / File / Artifact cards below message text */}
-      {!mine && media.length > 0 && (
+      {media.length > 0 && (
         <div className={cn('w-full', message.text && 'mt-2')}>
           <MediaParts parts={media} accountId={message.accountId} onOpenDoc={openDocument} />
         </div>

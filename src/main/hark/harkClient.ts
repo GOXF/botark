@@ -169,7 +169,19 @@ function harkClientHeaders(extra?: Record<string, string>): Record<string, strin
 
 const HARK_REQUEST_TIMEOUT_MS = 30_000
 
-async function harkFetch(
+/** A 401 outside /auth: renew the session once (as Hark's web app does) and try again. */
+async function harkFetch(ses: Session, path: string, init: Parameters<typeof harkFetchOnce>[2] = {}): Promise<unknown> {
+  try {
+    return await harkFetchOnce(ses, path, init)
+  } catch (err) {
+    if (!(err instanceof HarkApiError && err.status === 401) || path.startsWith('/auth/')) throw err
+    const renewed = await readAndRenewSession(ses).catch(() => null) as Record<string, unknown> | null
+    if (!renewed || !(renewed['session'] || renewed['user'])) throw err
+    return harkFetchOnce(ses, path, init)
+  }
+}
+
+async function harkFetchOnce(
   ses: Session,
   path: string,
   init: {
@@ -264,9 +276,26 @@ export async function callHarkApi(
   })
 }
 
+/**
+ * Like Hark's web app (better-auth deferred refresh): GET only reads the session; when it
+ * answers `needsRefresh`, a POST renews it. Without the POST the session simply lapses and
+ * every account drops offline at once.
+ */
+async function readAndRenewSession(ses: Session): Promise<unknown> {
+  const data = await harkFetch(ses, '/auth/get-session', { interactive: true })
+  if (!(data as { needsRefresh?: unknown } | null)?.needsRefresh) return data
+  return harkFetch(ses, '/auth/get-session', { method: 'POST', interactive: true }).catch(() => data)
+}
+
+/** Renew the account's Hark session if it is due; false when there is no session left to renew. */
+export async function renewHarkSession(accountId: string): Promise<boolean> {
+  const data = await readAndRenewSession(await preparedSessionForAccount(accountId)) as Record<string, unknown> | null
+  return Boolean(data && (data['session'] || data['user']))
+}
+
 export async function getAuthSession(accountId: string): Promise<HarkAuthSession> {
   const ses = await preparedSessionForAccount(accountId)
-  const data = await harkFetch(ses, '/auth/get-session', { interactive: true })
+  const data = await readAndRenewSession(ses)
   if (data == null) return null
   if (typeof data !== 'object' || Array.isArray(data)) {
     throw new Error('Hark returned an invalid session response')

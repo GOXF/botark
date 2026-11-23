@@ -350,6 +350,14 @@ function isOmittedPlaceholderText(text: string): boolean {
   return text.startsWith('[消息内容较大') || text.startsWith('[Message body omitted')
 }
 
+/** The local `msg_` user message that `h` (server history) is the copy of, if any. */
+function sentTwin(existing: ChatMessage[], h: ChatMessage): ChatMessage | undefined {
+  if (h.role !== 'user') return undefined
+  return existing.find((m) =>
+    m.role === 'user' && m.id.startsWith('msg_') &&
+    m.text.trim() === h.text.trim() && Math.abs(h.createdAt - m.createdAt) < 120_000)
+}
+
 function mergeHydratedMessages(existing: ChatMessage[], hydrated: ChatMessage[]): ChatMessage[] {
   if (hydrated.length === 0) return existing
   const targetAgentId = hydrated.find((m) => m.agentId)?.agentId
@@ -361,8 +369,10 @@ function mergeHydratedMessages(existing: ChatMessage[], hydrated: ChatMessage[])
   const hydratedById = new Map(hydrated.map((m) => [m.id, m]))
   const existingById = new Map(normalizedExisting.map((m) => [m.id, m]))
   const mergedHydrated = hydrated.map((h) => {
-    const local = existingById.get(h.id)
+    const local = existingById.get(h.id) ?? sentTwin(normalizedExisting, h)
     if (!local) return h
+    // The server copy of a message just sent: keep the pictures it was sent with.
+    if (local.id !== h.id) return local.attachments?.length && !h.attachments?.length ? { ...h, attachments: local.attachments } : h
     const media = prevMediaMerge(local.media, h.media)
     if (media === h.media) return h
     return { ...h, media }
