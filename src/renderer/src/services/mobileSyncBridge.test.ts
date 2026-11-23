@@ -188,4 +188,34 @@ describe('mobile snapshots', () => {
     await vi.advanceTimersByTimeAsync(250)
     expect(previewWorkspaceFile).not.toHaveBeenCalled()
   })
+
+  it('builds no snapshots and resolves no media while the sync server is off', async () => {
+    stop?.()
+    snapshots.mockClear()
+    const previewWorkspaceFile = vi.fn().mockResolvedValue({})
+    let onState: (st: { running: boolean }) => void = () => undefined
+    const unsubscribe = () => undefined
+    vi.stubGlobal('window', {
+      electron: {
+        muse: { previewWorkspaceFile },
+        mobileSync: {
+          getState: () => Promise.resolve({ running: false }),
+          pushSnapshot: snapshots,
+          pushEvent: publishEvent,
+          onStateChanged: (listener: typeof onState) => { onState = listener; return unsubscribe },
+          onSendCommand: () => unsubscribe,
+          onCommand: () => unsubscribe
+        }
+      }
+    })
+    stop = startMobileSyncBridge()
+    await vi.advanceTimersByTimeAsync(0)
+    useBotStore.getState().toggleGroup('group')
+    await vi.advanceTimersByTimeAsync(250)
+    expect(snapshots).not.toHaveBeenCalled()
+    expect(previewWorkspaceFile).not.toHaveBeenCalled()
+
+    onState({ running: true })
+    expect(snapshots).toHaveBeenCalledTimes(1)
+  })
 })

@@ -324,10 +324,13 @@ export function startAdapterBridge(): () => void {
   }
 
   const watchdogTimer = setInterval(checkStalledReplies, 15_000)
+  // GOXF perf: drop display copies of idle bots so the UI renderer does not grow for hours.
+  const trimTimer = setInterval(() => useBotStore.getState().trimIdleBots(), 60_000)
   const stopHarkWork = startHarkWork()
 
   return () => {
     clearInterval(watchdogTimer)
+    clearInterval(trimTimer)
     stopHarkWork()
     for (const unsubscribe of unsubscribers) unsubscribe()
   }

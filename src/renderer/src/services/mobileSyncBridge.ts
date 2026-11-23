@@ -13,11 +13,14 @@ import { useBotStore } from '@/store/botStore'
 
 const MAX_MESSAGES_PER_BOT = 60
 const MAX_MEDIA_CACHE_ENTRIES = 512
+/** Inline data: URLs are kept as strings; cap their total size, not just the count (512 × 6 MB was possible). */
+const MAX_MEDIA_CACHE_CHARS = 48 * 1024 * 1024
 const MAX_MOBILE_IMAGE_BYTES = 6 * 1024 * 1024
 const MAX_MOBILE_VIDEO_BYTES = 8 * 1024 * 1024
 
 const latestApprovals: Record<string, HermesApprovalView[]> = {}
 const resolvedMediaCache = new Map<string, MuseMediaPartView>()
+let resolvedMediaChars = 0
 const pendingMediaResolves = new Set<string>()
 const failedMediaResolves = new Set<string>()
 
@@ -29,11 +32,17 @@ function clearFailedMediaForAccount(accountId: string): void {
 }
 
 function rememberResolvedMedia(key: string, part: MuseMediaPartView): void {
-  if (resolvedMediaCache.has(key)) resolvedMediaCache.delete(key)
+  const prev = resolvedMediaCache.get(key)
+  if (prev) {
+    resolvedMediaCache.delete(key)
+    resolvedMediaChars -= prev.path.length
+  }
   resolvedMediaCache.set(key, part)
-  while (resolvedMediaCache.size > MAX_MEDIA_CACHE_ENTRIES) {
+  resolvedMediaChars += part.path.length
+  while (resolvedMediaCache.size > MAX_MEDIA_CACHE_ENTRIES || resolvedMediaChars > MAX_MEDIA_CACHE_CHARS) {
     const oldest = resolvedMediaCache.keys().next().value
     if (!oldest) break
+    resolvedMediaChars -= resolvedMediaCache.get(oldest)?.path.length ?? 0
     resolvedMediaCache.delete(oldest)
     failedMediaResolves.add(oldest)
   }
@@ -231,8 +240,14 @@ export function startMobileSyncBridge(): () => void {
   const mobileSync = getBridge()?.mobileSync
   if (!mobileSync) return () => undefined
 
+  // GOXF perf: with the sync server off nobody reads snapshots, yet each one re-encoded
+  // every attachment as a data: URL and filled the media cache. Unknown (no getState) = old behaviour.
+  let serverRunning: boolean | undefined
+  const idle = () => serverRunning === false
+
   let timer: ReturnType<typeof setTimeout> | null = null
   const scheduleSnapshotPush = () => {
+    if (idle()) return
     if (timer) clearTimeout(timer)
     timer = setTimeout(() => {
       timer = null
@@ -242,12 +257,27 @@ export function startMobileSyncBridge(): () => void {
 
   const publishApprovals = (accountId: string, pending: HermesApprovalView[]) => {
     latestApprovals[accountId] = pending
+    if (idle()) return
     mobileSync.pushEvent({ type: 'approvals', accountId, pending })
     scheduleSnapshotPush()
   }
 
   // Push initial snapshot right away so pairing immediately has fresh state
-  mobileSync.pushSnapshot(buildWorkspaceSnapshot(scheduleSnapshotPush))
+  if (mobileSync.getState) {
+    serverRunning = false
+    void mobileSync
+      .getState()
+      .then((st) => {
+        serverRunning = st.running
+        if (st.running) mobileSync.pushSnapshot(buildWorkspaceSnapshot(scheduleSnapshotPush))
+      })
+      .catch(() => {
+        serverRunning = undefined
+        mobileSync.pushSnapshot(buildWorkspaceSnapshot(scheduleSnapshotPush))
+      })
+  } else {
+    mobileSync.pushSnapshot(buildWorkspaceSnapshot(scheduleSnapshotPush))
+  }
 
   // Push whenever bots, groups, accounts, or messages change
   const unsubStore = useBotStore.subscribe((state, prev) => {
@@ -265,6 +295,8 @@ export function startMobileSyncBridge(): () => void {
 
   // Forward real-time streaming deltas, typing, status, and approvals immediately
   const handleAdapterEvent = (platformId: PlatformId, event: AdapterEvent) => {
+    // Approvals are tiny and must be there when the server starts; everything else waits for it.
+    if (idle() && event.type !== 'approvals') return
     const store = useBotStore.getState()
     const accountId = event.type === 'message' ? event.message.accountId : event.accountId
     const account = store.accounts[accountId]
@@ -397,6 +429,11 @@ export function startMobileSyncBridge(): () => void {
 
   // Refresh snapshot whenever sync server starts or a device pairs
   const unsubState = mobileSync.onStateChanged((st) => {
+    serverRunning = st.running
+    if (!st.running && timer) {
+      clearTimeout(timer)
+      timer = null
+    }
     if (st.running) {
       mobileSync.pushSnapshot(buildWorkspaceSnapshot(scheduleSnapshotPush))
     }

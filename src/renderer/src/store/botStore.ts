@@ -11,11 +11,12 @@ import { t } from '@/lib/i18n'
 import type { AccountDraft, Bot, BotAccount, BotGroup, ChatMessage, ChatReplyTarget, NewBotInput } from '@/types'
 import type { MuseProxyPoolItemView } from '@shared/ipc'
 import { keepActivity } from './goxfActivity'
+import { canReloadHistory, hasUnsettledDelivery, trimMessages, TRIM_IDLE_AFTER_MS } from './messageTrim'
 import { usePrefsStore } from './prefsStore'
-import { clearNoReplyFlag, createSafeStorage, sanitizePersisted, SEND_HARD_TIMEOUT_MS, SendTimeoutError, toPersistedMessages, withTimeout, deliveryAfterError, createInFlightSet, hasLostAttachments, ATTACHMENTS_LOST_TEXT } from './delivery'
+import { clearNoReplyFlag, createSafeStorage, sanitizePersisted, SEND_HARD_TIMEOUT_MS, SendTimeoutError, toPersistedMessages, withTimeout, deliveryAfterError, createInFlightSet, hasLostAttachments, ATTACHMENTS_LOST_TEXT, deferWrites } from './delivery'
 
 let warnedStorage = false
-const workspaceStorage = createJSONStorage(() =>
+const workspaceStorage = deferWrites(createJSONStorage<Partial<BotHubState>>(() =>
   createSafeStorage(
     () => (typeof localStorage === 'undefined' ? undefined : localStorage),
     (error) => {
@@ -24,7 +25,11 @@ const workspaceStorage = createJSONStorage(() =>
       console.warn('[bothub] could not save workspace:', error instanceof Error ? error.name : 'error')
     }
   )
-)
+)!, 1000)
+if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+  window.addEventListener('pagehide', workspaceStorage.flush)
+  window.addEventListener('beforeunload', workspaceStorage.flush)
+}
 
 const NO_REPLY_TEXT = '已送达，但没有收到回复'
 /** Replies that appeared through stream deltas and have not had their final message yet (unread counts there). */
@@ -91,6 +96,8 @@ export interface BotHubState {
   hermesSessionErrors: Record<string, string | undefined>
   /** Per-account Grok agentIds explicitly removed from sidebar so auto-sync respects user deletion until manual sync. */
   dismissedGrokAgents: Record<string, string[]>
+  /** Bots whose displayed list was cut while idle; their history reloads on next open. */
+  trimmedBots: Record<string, true>
 
   // Navigation & layout
   selectBot: (botId: string) => void
@@ -215,6 +222,8 @@ export interface BotHubState {
   ) => Promise<number>
   /** Hydrate full Cue session history (older turns + latest messages) for a Cue bot. */
   hydrateCueBotHistory: (botId: string) => Promise<number>
+  /** Drop old display copies of bots not viewed for a while and not working (renderer memory only). */
+  trimIdleBots: (now?: number) => void
   /** Inject Grok accessToken (or mark main-captured PKCE session active) in adapter. */
   setGrokAccessToken: (
     accountId: string,
@@ -902,6 +911,39 @@ export const useBotStore = create<BotHubState>()(
     return message.id
   }
 
+  // When each bot was last on screen (this run only); bots never opened count from app start.
+  const startedAt = Date.now()
+  const lastSeenAt = new Map<string, number>()
+
+  const isBotBusy = (state: BotHubState, bot: Bot): boolean => {
+    if (state.typing[bot.id]) return true
+    if (bot.accountIds.some((id) => {
+      const acc = state.accounts[id]
+      return acc?.status === 'busy' || acc?.pending || state.activity[id]?.busy
+    })) return true
+    const list = state.messages[bot.id] ?? []
+    return hasUnsettledDelivery(list) || list.some((m) => streamedReplies.has(m.id))
+  }
+
+  /** Fetch the full current conversation again through the platform's existing history path. */
+  const reloadTrimmedBot = (botId: string) => {
+    const state = get()
+    const bot = state.bots.find((b) => b.id === botId)
+    if (!state.trimmedBots[botId] || !bot) return
+    const acc = state.accounts[bot.activeAccountId]
+    // Not now: an offline account cannot answer, and a working bot must not be touched. Retry on next open.
+    if (!acc || (acc.status !== 'online' && acc.status !== 'busy') || isBotBusy(state, bot)) return
+    const { [botId]: _done, ...rest } = state.trimmedBots
+    set({ trimmedBots: rest })
+    const sid = bot.activeSessionId
+    if (bot.platformId === 'meta-muse' && sid) void get().switchMuseSession(botId, sid).catch(() => undefined)
+    else if (bot.platformId === 'hermes' && sid) void get().switchHermesSession(botId, sid).catch(() => undefined)
+    else if (bot.platformId === 'antigravity' && sid) void get().switchAntigravitySession(botId, sid).catch(() => undefined)
+    else if (bot.platformId === 'hark' && sid) void get().switchHarkSession(botId, sid).catch(() => undefined)
+    else if (bot.platformId === 'grok' && bot.selectedAgentId) get().setSelectedAgent(botId, bot.selectedAgentId)
+    // cue: selectBot already re-hydrates (limit 300) whenever its account is live.
+  }
+
   return {
     ...seed,
     typing: {},
@@ -927,6 +969,7 @@ export const useBotStore = create<BotHubState>()(
     replyingTo: {},
     hermesSessionErrors: {},
     dismissedGrokAgents: {},
+    trimmedBots: {},
 
     setActiveDocument: (doc) => set({ activeDocument: doc }),
 
@@ -952,6 +995,7 @@ export const useBotStore = create<BotHubState>()(
 
     selectBot: (botId) => {
       const prevBotId = get().selectedBotId
+      if (prevBotId && prevBotId !== botId) lastSeenAt.set(prevBotId, Date.now())
       const prevWebOpen = get().webSessionOpen
       set((state) => {
         const targetBot = state.bots.find((b) => b.id === botId)
@@ -1005,6 +1049,7 @@ export const useBotStore = create<BotHubState>()(
         if (nextBot?.platformId === 'cue' && nextAcc && (nextAcc.status === 'online' || nextAcc.status === 'busy')) {
           void hydrateCueHistoryForBot(nextAcc.id, nextBot)
         }
+        reloadTrimmedBot(botId)
       }
     },
 
@@ -2960,6 +3005,25 @@ export const useBotStore = create<BotHubState>()(
       return accountBots.length
     },
 
+    trimIdleBots: (now = Date.now()) => {
+      // The open bot may still carry a mark from an earlier run or an offline moment.
+      const selected = get().selectedBotId
+      if (selected) reloadTrimmedBot(selected)
+      const state = get()
+      const candidates = state.bots
+        .filter((b) =>
+          b.id !== state.selectedBotId &&
+          now - (lastSeenAt.get(b.id) ?? startedAt) >= TRIM_IDLE_AFTER_MS &&
+          canReloadHistory(b) &&
+          !isBotBusy(state, b))
+        .map((b) => b.id)
+      const { messages, trimmed } = trimMessages(state.messages, candidates)
+      if (trimmed.length === 0) return
+      const trimmedBots = { ...state.trimmedBots }
+      for (const id of trimmed) trimmedBots[id] = true
+      set({ messages, trimmedBots })
+    },
+
     hydrateCueBotHistory: async (botId) => {
       const bot = get().bots.find((b) => b.id === botId)
       if (!bot || bot.platformId !== 'cue' || !bot.activeAccountId) return 0
@@ -3081,7 +3145,8 @@ export const useBotStore = create<BotHubState>()(
         activity: {},
         hermesSessionErrors: {},
         selectedBotId: null,
-        collapsedGroups: {}
+        collapsedGroups: {},
+        trimmedBots: {}
       })
     }
   }
@@ -3105,6 +3170,7 @@ export const useBotStore = create<BotHubState>()(
       selectedBotId: state.selectedBotId,
       collapsedGroups: state.collapsedGroups,
       dismissedGrokAgents: state.dismissedGrokAgents,
+      trimmedBots: state.trimmedBots,
       webSessionByBot: state.webSessionByBot,
       infoPanelOpen: state.infoPanelOpen,
       sidebarCollapsed: state.sidebarCollapsed,

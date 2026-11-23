@@ -1,3 +1,4 @@
+import type { PersistStorage, StorageValue } from "zustand/middleware"
 import type { BotAccount, ChatMessage } from "@/types"
 
 /**
@@ -248,4 +249,34 @@ export function clearNoReplyFlag(list: ChatMessage[]): ChatMessage[] {
     return next
   }
   return list
+}
+
+/**
+ * Coalesce persist writes. zustand serialises the whole workspace on every
+ * `set()`, i.e. once per streamed delta; only the newest value is written,
+ * at most once per `ms`. Call `flush` before the page goes away.
+ */
+export function deferWrites<S>(storage: PersistStorage<S>, ms: number): PersistStorage<S> & { flush(): void } {
+  let pending: { name: string; value: StorageValue<S> } | null = null
+  let timer: ReturnType<typeof setTimeout> | null = null
+  const flush = () => {
+    if (timer) clearTimeout(timer)
+    timer = null
+    const next = pending
+    pending = null
+    if (next) storage.setItem(next.name, next.value)
+  }
+  return {
+    getItem: (name) => storage.getItem(name),
+    setItem: (name, value) => {
+      if (pending && pending.name !== name) flush()
+      pending = { name, value }
+      if (!timer) timer = setTimeout(flush, ms)
+    },
+    removeItem: (name) => {
+      if (pending?.name === name) pending = null
+      return storage.removeItem(name)
+    },
+    flush
+  }
 }

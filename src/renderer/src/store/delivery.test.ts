@@ -7,6 +7,7 @@ import {
   deliveryAfterError,
   INTERRUPTED_REPLY_TEXT,
   createSafeStorage,
+  deferWrites,
   INTERRUPTED_SEND_TEXT,
   sanitizePersisted,
   SendTimeoutError,
@@ -230,5 +231,27 @@ describe('hasLostAttachments', () => {
     expect(hasLostAttachments({ attachments: [{ name: 'a.png', mimeType: 'image/png' } as never] })).toBe(true)
     expect(hasLostAttachments({ attachments: [{ name: 'a.png', mimeType: 'image/png', dataBase64: 'AA==' } as never] })).toBe(false)
     expect(hasLostAttachments({})).toBe(false)
+  })
+})
+
+describe('deferWrites', () => {
+  beforeEach(() => vi.useFakeTimers())
+  afterEach(() => vi.useRealTimers())
+
+  it('writes only the newest value, once per window, and on flush', () => {
+    const setItem = vi.fn()
+    const storage = deferWrites<{ n: number }>({ getItem: () => null, setItem, removeItem: vi.fn() }, 1000)
+    storage.setItem('k', { state: { n: 1 } })
+    storage.setItem('k', { state: { n: 2 } })
+    expect(setItem).not.toHaveBeenCalled()
+    vi.advanceTimersByTime(1000)
+    expect(setItem).toHaveBeenCalledTimes(1)
+    expect(setItem).toHaveBeenLastCalledWith('k', { state: { n: 2 } })
+
+    storage.setItem('k', { state: { n: 3 } })
+    storage.flush()
+    expect(setItem).toHaveBeenLastCalledWith('k', { state: { n: 3 } })
+    vi.advanceTimersByTime(1000)
+    expect(setItem).toHaveBeenCalledTimes(2)
   })
 })
