@@ -87,7 +87,7 @@ function ToolChips({ tools }: { tools: ChatToolCall[] }) {
       {tools.map((tool) => (
         <li
           key={tool.id}
-          className="flex items-center gap-2 rounded-xl border border-line bg-surface px-2.5 py-1.5 text-[12px] text-ink-secondary shadow-soft"
+          className="flex flex-wrap items-center gap-x-2 gap-y-0.5 rounded-xl border border-line bg-surface px-2.5 py-1.5 text-[12px] text-ink-secondary shadow-soft"
         >
           {tool.status === 'running' ? (
             <Loader2 className="size-3.5 shrink-0 animate-spin text-accent-600" aria-hidden />
@@ -105,16 +105,14 @@ function ToolChips({ tools }: { tools: ChatToolCall[] }) {
                 ? t('Failed')
                 : t('Done')}
           </span>
+          {/* GOXF: each call says what it is doing, so parallel calls are told apart. */}
+          {tool.summary && (
+            <span className="line-clamp-2 basis-full pl-5.5 text-[11.5px] leading-4 text-ink-muted" title={tool.summary}>
+              {tool.summary}
+            </span>
+          )}
         </li>
       ))}
-      {tools.some((t) => t.summary) && (
-        <li className="px-1 text-[11px] text-ink-muted">
-          {tools
-            .filter((t) => t.summary)
-            .map((tool) => tool.summary)
-            .join(' · ')}
-        </li>
-      )}
     </ul>
   )
 }

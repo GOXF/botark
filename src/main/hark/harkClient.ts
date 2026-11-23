@@ -717,6 +717,8 @@ export type HarkChatMessage = {
     screenshotUrl?: string
     command?: string
     result?: string
+    /** GOXF: what this call is doing (subagent task, browser task, search query), so parallel calls tell apart. */
+    detail?: string
   }>
   actions?: Array<{
     kind: string
@@ -983,7 +985,8 @@ export class HarkConversationSyncState {
                   url: String(input['url'] ?? progressMeta['url'] ?? '') || undefined,
                   screenshotKey: String(val['screenshotKey'] ?? progressMeta['screenshot_key'] ?? '') || undefined,
                   screenshotUrl: String(val['screenshotUrl'] ?? progressMeta['screenshot_url'] ?? '') || undefined,
-                  command: String(input['command'] ?? progressMeta['command'] ?? '') || undefined
+                  command: String(input['command'] ?? progressMeta['command'] ?? '') || undefined,
+                  detail: harkToolDetail(input, progressMeta, val['progress'] as Record<string, unknown> | undefined)
                 }
               ]
             })
@@ -1014,7 +1017,16 @@ export class HarkConversationSyncState {
                             ...tc,
                             status: String(fields['status'] ?? tc.status),
                             screenshotKey: String(fields['screenshotKey'] ?? tc.screenshotKey ?? '') || undefined,
-                            screenshotUrl: String(fields['screenshotUrl'] ?? tc.screenshotUrl ?? '') || undefined
+                            screenshotUrl: String(fields['screenshotUrl'] ?? tc.screenshotUrl ?? '') || undefined,
+                            detail:
+                              tc.detail ??
+                              harkToolDetail(
+                                fields['input'] as Record<string, unknown> | undefined,
+                                ((fields['progress'] as Record<string, unknown> | undefined)?.['metadata'] ?? undefined) as
+                                  | Record<string, unknown>
+                                  | undefined,
+                                fields['progress'] as Record<string, unknown> | undefined
+                              )
                           }
                         : tc
                     )
@@ -1426,7 +1438,8 @@ function normalizeSyncMessage(id: string, raw: Record<string, unknown>): HarkCha
       screenshotKey: String(tc['screenshotKey'] ?? progressMeta['screenshot_key'] ?? '') || undefined,
       screenshotUrl: String(tc['screenshotUrl'] ?? progressMeta['screenshot_url'] ?? '') || undefined,
       command: String(input['command'] ?? progressMeta['command'] ?? '') || undefined,
-      result: typeof tc['result'] === 'string' ? tc['result'].slice(0, 500) : undefined
+      result: typeof tc['result'] === 'string' ? tc['result'].slice(0, 500) : undefined,
+      detail: harkToolDetail(input, progressMeta, tc['progress'] as Record<string, unknown> | undefined)
     })
 
     artifacts = mergeHarkArtifacts(artifacts, extractHarkArtifactsFromRaw(tc)) ?? artifacts
@@ -1446,7 +1459,8 @@ function normalizeSyncMessage(id: string, raw: Record<string, unknown>): HarkCha
       url: typeof p['url'] === 'string' ? p['url'] : typeof p['liveViewUrl'] === 'string' ? p['liveViewUrl'] : undefined,
       screenshotKey: typeof screenshot['key'] === 'string' ? screenshot['key'] : undefined,
       screenshotUrl: typeof screenshot['downloadUrl'] === 'string' ? screenshot['downloadUrl'] : undefined,
-      command: typeof p['command'] === 'string' ? p['command'] : undefined
+      command: typeof p['command'] === 'string' ? p['command'] : undefined,
+      detail: harkToolDetail(p)
     })
   }
 
@@ -1770,4 +1784,17 @@ export function extractMessages(payload: unknown): HarkChatMessage[] {
     out.push(normalizeSyncMessage(id, raw))
   }
   return out
+}
+
+/** GOXF: a one-line "what is it doing" for a tool call, read from its input or progress. */
+export function harkToolDetail(...sources: Array<Record<string, unknown> | undefined>): string | undefined {
+  const keys = ['task', 'description', 'objective', 'query', 'prompt', 'title', 'message', 'step', 'handle', 'path', 'file_path']
+  for (const src of sources) {
+    if (!src || typeof src !== 'object') continue
+    for (const k of keys) {
+      const v = src[k]
+      if (typeof v === 'string' && v.trim()) return v.trim().replace(/\s+/g, ' ').slice(0, 160)
+    }
+  }
+  return undefined
 }

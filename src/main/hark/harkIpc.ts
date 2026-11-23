@@ -61,7 +61,7 @@ function mapHarkTools(msg: HarkChatMessage): MuseToolCallView[] | undefined {
         : /^(failed|errored|error)$/i.test(tc.status)
           ? 'errored'
           : 'completed',
-    summary: tc.url || tc.command || tc.result
+    summary: tc.detail || tc.url || tc.command || tc.result
   }))
 }
 
