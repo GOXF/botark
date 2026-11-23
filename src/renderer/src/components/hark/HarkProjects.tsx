@@ -20,8 +20,6 @@ import {
 } from '@shared/harkProjects'
 import type { HarkRpcRequest } from '@shared/ipc'
 import { ArkProjectStackSvg } from '@/components/ui/ArkGlyphs'
-import { Button } from '@/components/ui/Button'
-import { TextInput } from '@/components/ui/Field'
 import { MENU_SURFACE } from '@/components/ui/Menu'
 import { getBridge } from '@/lib/bridge'
 import { cn } from '@/lib/cn'
@@ -68,8 +66,6 @@ export function HarkProjects({ botId, compact }: { botId: string; compact?: bool
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
   const [menuOpen, setMenuOpen] = useState(false)
-  const [adding, setAdding] = useState(false)
-  const [title, setTitle] = useState('')
   const [showArchived, setShowArchived] = useState(false)
   const [revision, setRevision] = useState(0)
   const lastFetchAt = useRef(0)
@@ -206,13 +202,11 @@ export function HarkProjects({ botId, compact }: { botId: string; compact?: bool
 
   const createProject = () =>
     perform(async () => {
-      // Empty title: Hark names the project itself (autoTitle) after the first message; the list poll picks it up.
-      const name = title.trim()
-      const id = await useBotStore.getState().startNewHarkSession(botId, name)
-      setAdding(false)
+      // Like Hark: one click creates an untitled project and opens it; Hark names it (autoTitle)
+      // from the first message and the list poll picks the name up. Rename it any time from its row.
+      const id = await useBotStore.getState().startNewHarkSession(botId, '')
       setMenuOpen(false)
-      setTitle('')
-      changed(id ? { id, title: name || '新项目', createdAt: Date.now() } : undefined)
+      changed(id ? { id, title: '新项目', createdAt: Date.now() } : undefined)
       // Hark's list can trail the create; check again shortly after.
       window.setTimeout(() => changed(), 3_000)
     })
@@ -255,10 +249,7 @@ export function HarkProjects({ botId, compact }: { botId: string; compact?: bool
       <div className="no-drag flex min-w-0 items-center gap-1.5">
         <DropdownMenu.Root
           open={menuOpen}
-          onOpenChange={(next) => {
-            setMenuOpen(next)
-            if (!next) setAdding(false)
-          }}
+          onOpenChange={setMenuOpen}
         >
           <DropdownMenu.Trigger
             type="button"
@@ -299,42 +290,14 @@ export function HarkProjects({ botId, compact }: { botId: string; compact?: bool
                 </span>
                 <button
                   type="button"
-                  onClick={() => setAdding((v) => !v)}
+                  disabled={busy}
+                  onClick={() => void createProject()}
                   className="press inline-flex items-center gap-1 rounded-full bg-accent-50 px-2 py-0.5 text-[11px] font-semibold text-accent-600 hover:bg-accent-100"
                 >
                   <Plus className="size-3" />
                   新建项目
                 </button>
               </div>
-
-              {adding && (
-                <form
-                  onKeyDown={(e) => e.stopPropagation()}
-                  onSubmit={(e) => {
-                    e.preventDefault()
-                    void createProject()
-                  }}
-                  className="mb-1.5 flex items-center gap-1.5 rounded-xl border border-line bg-sunken/50 p-1.5"
-                >
-                  <TextInput
-                    autoFocus
-                    aria-label="项目名称"
-                    placeholder="项目名称（留空由 Hark 自动命名）"
-                    value={title}
-                    onChange={(e) => setTitle(e.target.value)}
-                    className="h-7 flex-1 text-[12px]"
-                  />
-                  <Button
-                    type="submit"
-                    size="sm"
-                    variant="primary"
-                    disabled={busy}
-                    className="h-7 px-2.5 text-[11.5px]"
-                  >
-                    创建
-                  </Button>
-                </form>
-              )}
 
               <div className="flex max-h-64 flex-col gap-0.5 overflow-y-auto py-0.5">
                 {visibleProjects.map((p) => {
@@ -390,35 +353,14 @@ export function HarkProjects({ botId, compact }: { botId: string; compact?: bool
         </span>
         <button
           type="button"
-          onClick={() => setAdding((v) => !v)}
+          disabled={busy}
+                  onClick={() => void createProject()}
           className="press inline-flex items-center gap-1 rounded-full bg-hover px-2 py-0.5 text-[11px] font-medium text-ink hover:bg-active"
         >
           <Plus className="size-3 text-accent-600" />
-          {adding ? '取消' : '新建'}
+          新建
         </button>
       </div>
-
-      {adding && (
-        <form
-          onSubmit={(e) => {
-            e.preventDefault()
-            void createProject()
-          }}
-          className="flex items-center gap-1.5 animate-veil-in"
-        >
-          <TextInput
-            autoFocus
-            aria-label="项目名称"
-            placeholder="项目名称（留空由 Hark 自动命名）"
-            value={title}
-            onChange={(e) => setTitle(e.target.value)}
-            className="h-8 flex-1 text-[12px]"
-          />
-          <Button type="submit" size="sm" variant="primary" disabled={busy}>
-            创建
-          </Button>
-        </form>
-      )}
 
       {/* Active Projects List */}
       <ul className="flex flex-col gap-0.5">
