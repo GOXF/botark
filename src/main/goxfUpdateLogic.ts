@@ -391,3 +391,25 @@ export function planDelta(files: ManifestFile[], local: Record<string, string | 
  *   2. per file: move the old one into a backup folder (retry while locked), move the new one in
  *   3. on any failure restore the backed-up files, drop the added ones, relaunch; finally clean up
  */
+
+/** Paused download: resume from this byte, or 0 = start over (nothing kept, or the partial is already full size). */
+export const resumeOffset = (partialSize: number, expected?: number): number =>
+  partialSize > 0 && (!expected || partialSize < expected) ? partialSize : 0
+
+/**
+ * Answer to a Range request from `offset`: append only on a 206 whose Content-Range starts exactly there
+ * (and whose total matches the asset size when known); a 200 or anything else = rewrite from byte 0.
+ */
+export function decideResume(
+  offset: number,
+  status: number,
+  contentRange: string | null,
+  expected?: number
+): { append: true; total: number } | { append: false } {
+  if (offset <= 0 || status !== 206) return { append: false }
+  const m = /^bytes (\d+)-\d+\/(\d+)$/.exec(contentRange?.trim() ?? '')
+  if (!m || Number(m[1]) !== offset) return { append: false }
+  const total = Number(m[2])
+  if (expected && total !== expected) return { append: false }
+  return { append: true, total }
+}

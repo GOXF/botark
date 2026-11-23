@@ -9,6 +9,8 @@ export const GOXF_UPDATE_CHANNELS = {
   event: 'goxf:update:event',
   openUpstream: 'goxf:update:open-upstream',
   installPortable: 'goxf:update:install-portable',
+  pausePortable: 'goxf:update:pause-portable',
+  resumePortable: 'goxf:update:resume-portable',
   cancelPortable: 'goxf:update:cancel-portable',
   state: 'goxf:update:state',
   setChannel: 'goxf:update:set-channel'
@@ -35,6 +37,7 @@ export type GoxfUpdateEvent =
   | { type: 'upstream-available'; prompt: GoxfUpstreamPrompt }
   | { type: 'portable-available'; prompt: GoxfPortablePrompt }
   | { type: 'portable-downloading'; percent: number; totalMb?: number }
+  | { type: 'portable-paused'; percent: number; totalMb?: number }
   | { type: 'portable-extracting'; version: string }
   | { type: 'portable-restarting'; version: string }
   | { type: 'portable-error'; message: string }
@@ -51,6 +54,8 @@ export interface GoxfUpdateState {
 export interface GoxfUpdateBridge {
   openUpstream(): Promise<{ ok: true }>
   installPortable(): Promise<{ ok: true }>
+  pausePortable(): Promise<{ ok: true }>
+  resumePortable(): Promise<{ ok: true }>
   cancelPortable(): Promise<{ ok: true }>
   state(): Promise<GoxfUpdateState>
   setChannel(channel: GoxfUpdateChannel): Promise<GoxfUpdateState>

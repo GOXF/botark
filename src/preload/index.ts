@@ -118,6 +118,8 @@ const bridge: BotHubBridge = {
   goxfUpdates: {
     openUpstream: () => ipcRenderer.invoke(GOXF_UPDATE_CHANNELS.openUpstream),
     installPortable: () => ipcRenderer.invoke(GOXF_UPDATE_CHANNELS.installPortable),
+    pausePortable: () => ipcRenderer.invoke(GOXF_UPDATE_CHANNELS.pausePortable),
+    resumePortable: () => ipcRenderer.invoke(GOXF_UPDATE_CHANNELS.resumePortable),
     cancelPortable: () => ipcRenderer.invoke(GOXF_UPDATE_CHANNELS.cancelPortable),
     state: () => ipcRenderer.invoke(GOXF_UPDATE_CHANNELS.state),
     setChannel: (channel) => ipcRenderer.invoke(GOXF_UPDATE_CHANNELS.setChannel, channel),

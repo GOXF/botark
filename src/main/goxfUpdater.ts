@@ -56,6 +56,7 @@ import {
 import { checkFailedMessage } from './updateCheck'
 import {
   buildReplaceScript,
+  decideResume,
   decideUpdatePrompts,
   formatGoxfVersion,
   isUpdateLockFresh,
@@ -65,6 +66,7 @@ import {
   parseManifest,
   planDelta,
   psQuote,
+  resumeOffset,
   type GoxfChannel,
   type GitHubRelease,
   type PortableKind,
@@ -219,7 +221,7 @@ async function check(manual: boolean): Promise<boolean> {
   upstreamPrompt = decision.upstream
   portablePrompt = decision.portable
   if (decision.upstream) broadcastGoxf({ type: 'upstream-available', prompt: decision.upstream })
-  if (decision.portable && !installing) {
+  if (decision.portable && !installing && !paused) {
     const { asset: _asset, delta: _delta, fallback: _fallback, ...prompt } = decision.portable
     broadcastGoxf({ type: 'portable-available', prompt })
   }
@@ -236,17 +238,27 @@ async function check(manual: boolean): Promise<boolean> {
   return reachable
 }
 
-async function downloadTo(url: string, dest: string, expected?: number, signal?: AbortSignal): Promise<void> {
+/** Last progress sent, so a pause can show where it stopped. */
+let lastProgress: { percent: number; totalMb?: number } = { percent: 0 }
+
+/** offset > 0: ask for the rest of a paused partial (Range); a server that ignores it rewrites dest from 0. */
+async function downloadTo(url: string, dest: string, expected?: number, signal?: AbortSignal, offset = 0): Promise<void> {
   const res = await net.fetch(url, {
-    headers: { 'User-Agent': `BotArk/${currentVersion()}`, Accept: 'application/octet-stream' },
+    headers: {
+      'User-Agent': `BotArk/${currentVersion()}`,
+      Accept: 'application/octet-stream',
+      ...(offset ? { Range: `bytes=${offset}-` } : {})
+    },
     redirect: 'follow',
     signal
   })
   if (!res.ok || !res.body) throw new Error(`下载失败（HTTP ${res.status}）`)
-  const total = Number(res.headers.get('content-length')) || expected || 0
+  const resume = decideResume(offset, res.status, res.headers.get('content-range'), expected)
+  const total = resume.append ? resume.total : Number(res.headers.get('content-length')) || expected || 0
   const totalMb = total ? Math.round((total / 1048576) * 10) / 10 : undefined
+  if (offset) logUpdate(resume.append ? `resuming at ${offset} bytes` : `server did not resume (HTTP ${res.status}); restarting`)
   logUpdate(`download ${basename(url)} ${totalMb ?? '?'} MB via system network`)
-  let received = 0
+  let received = resume.append ? offset : 0
   let lastPct = -1
   const body = Readable.fromWeb(res.body as unknown as import('node:stream/web').ReadableStream<Uint8Array>)
   body.on('data', (chunk: Buffer) => {
@@ -255,10 +267,11 @@ async function downloadTo(url: string, dest: string, expected?: number, signal?:
     const pct = Math.floor((received / total) * 100)
     if (pct !== lastPct) {
       lastPct = pct
+      lastProgress = { percent: pct, totalMb }
       broadcastGoxf({ type: 'portable-downloading', percent: pct, totalMb })
     }
   })
-  await pipeline(body, createWriteStream(dest), { signal })
+  await pipeline(body, createWriteStream(dest, { flags: resume.append ? 'a' : 'w' }), { signal })
   if (total && received !== total) throw new Error(`下载不完整（${received}/${total} 字节）`)
 }
 
@@ -299,10 +312,11 @@ async function planDeltaFor(dir: string, manifestUrl: string): Promise<Array<{ p
 }
 
 /** Run a hidden child process; rejects with its stderr on a non-zero exit. */
-function run(cmd: string, args: string[]): Promise<void> {
+function run(cmd: string, args: string[], signal?: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
     let stderr = ''
-    const child = spawn(cmd, args, { windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'] })
+    // signal: abort kills the child and rejects with an AbortError.
+    const child = spawn(cmd, args, { windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'], signal })
     child.stderr.on('data', (d: Buffer) => (stderr += d.toString()).length > 4000 && (stderr = stderr.slice(-2000)))
     child.on('error', reject)
     child.on('exit', (code) => (code === 0 ? resolve() : reject(new Error(`${basename(cmd)} exit ${code}: ${stderr.trim().slice(-300)}`))))
@@ -310,16 +324,17 @@ function run(cmd: string, args: string[]): Promise<void> {
 }
 
 /** Unpack into a fresh dest: Windows' bsdtar (seconds; Win10 1803+), else the slow Expand-Archive. */
-async function unzip(zip: string, dest: string): Promise<void> {
+async function unzip(zip: string, dest: string, signal?: AbortSignal): Promise<void> {
   const fresh = (): void => {
     rmSync(dest, { recursive: true, force: true })
     mkdirSync(dest, { recursive: true })
   }
   fresh()
   try {
-    await run(join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'tar.exe'), ['-xf', zip, '-C', dest])
+    await run(join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'tar.exe'), ['-xf', zip, '-C', dest], signal)
     logUpdate(`unpacked ${basename(zip)} with tar.exe`)
   } catch (error) {
+    if (signal?.aborted) throw error
     logUpdate(`tar.exe failed (${error instanceof Error ? error.message : String(error)}); trying Expand-Archive`)
     fresh()
     await run('powershell.exe', [
@@ -327,7 +342,7 @@ async function unzip(zip: string, dest: string): Promise<void> {
       '-NonInteractive',
       '-Command',
       `Expand-Archive -LiteralPath ${psQuote(zip)} -DestinationPath ${psQuote(dest)} -Force`
-    ])
+    ], signal)
     logUpdate(`unpacked ${basename(zip)} with Expand-Archive`)
   }
 }
@@ -394,11 +409,31 @@ async function quitForUpdate(): Promise<void> {
   app.quit()
 }
 
-/** GOXF: the running download, so the user can cancel it (and then take a newer build). */
+/**
+ * GOXF: the running download/unpack, so the user can pause (download only) or cancel it.
+ * Null once the helper is being started: from there the update can no longer be stopped.
+ */
 let downloadAbort: AbortController | null = null
+let downloading = false
+/** A paused download: its partial file is kept and resumed by the next installPortable if the asset is the same. */
+let paused: { partial: string; url: string } | null = null
+
+function pausePortable(): void {
+  if (downloading) downloadAbort?.abort('pause')
+}
 
 function cancelPortable(): void {
-  downloadAbort?.abort()
+  if (paused) {
+    rmSync(paused.partial, { force: true })
+    paused = null
+    logUpdate('paused download cancelled by the user')
+    if (portablePrompt) {
+      const { asset: _a, delta: _d, fallback: _f, ...again } = portablePrompt
+      broadcastGoxf({ type: 'portable-available', prompt: again })
+    }
+    return
+  }
+  downloadAbort?.abort('cancel')
 }
 
 async function installPortable(): Promise<void> {
@@ -416,7 +451,7 @@ async function installPortable(): Promise<void> {
   const zipMode = portableKind() === 'zip'
   // exe build: the launcher's exe; zip build: the folder holding BotArk.exe.
   const dir = zipMode ? PORTABLE_DIR! : dirname(PORTABLE_FILE!)
-  broadcastGoxf({ type: 'portable-downloading', percent: 0 })
+  broadcastGoxf({ type: 'portable-downloading', percent: paused ? lastProgress.percent : 0, totalMb: paused ? lastProgress.totalMb : undefined })
   logUpdate(`update ${currentVersion()} → ${prompt.version} (${currentChannel()} channel)`)
   const changed = zipMode && prompt.delta ? await planDeltaFor(dir, prompt.delta.manifest.browser_download_url) : null
   // A patch-only (fast CI) release that does not fit this install: take the newest full zip instead.
@@ -425,6 +460,8 @@ async function installPortable(): Promise<void> {
   if (!changed && !full) {
     if (!prompt.fallback) {
       installing = false
+      if (paused) rmSync(paused.partial, { force: true })
+      paused = null
       logUpdate(`${prompt.version} has only a delta patch, it does not fit this install, and no newer full build exists`)
       broadcastGoxf({ type: 'portable-error', message: `v${prompt.version} 只有增量补丁，且不适用于当前程序；暂无可用的完整包。已为你打开发布页。` })
       void shell.openExternal(prompt.url || FORK_RELEASES_PAGE)
@@ -442,18 +479,26 @@ async function installPortable(): Promise<void> {
       ? join(dir, '.botark-update.zip')
       : join(dir, `.${basename(asset.name)}.new`)
   const stage = join(dir, '.botark-update-stage')
+  // Resume only the same file of the same asset; a newer build or another asset starts over.
+  const same = paused?.partial === partial && paused.url === asset.browser_download_url && existsSync(partial)
+  if (paused && !same) rmSync(paused.partial, { force: true })
+  paused = null
+  const offset = same ? resumeOffset(statSync(partial).size, asset.size) : 0
+  if (!offset) lastProgress = { percent: 0 }
+  const abort = new AbortController()
+  downloadAbort = abort
   try {
-    for (const f of [partial, ready]) if (existsSync(f)) unlinkSync(f)
-    downloadAbort = new AbortController()
-    await downloadTo(asset.browser_download_url, partial, asset.size, downloadAbort.signal)
-    downloadAbort = null
+    for (const f of offset ? [ready] : [partial, ready]) if (existsSync(f)) unlinkSync(f)
+    downloading = true
+    await downloadTo(asset.browser_download_url, partial, asset.size, abort.signal, offset)
+    downloading = false
     renameSync(partial, ready)
     logUpdate(`downloaded ${changed ? `delta (${changed.length} files)` : 'full'}: ${asset.name}`)
     const exeName = basename(process.execPath)
     const logFile = join(dir, 'BotArk-Data', 'update.log')
     if (zipMode) {
       broadcastGoxf({ type: 'portable-extracting', version: target })
-      await unzip(ready, stage)
+      await unzip(ready, stage, abort.signal)
       let src: string | undefined
       if (changed) {
         for (const f of changed) {
@@ -465,6 +510,8 @@ async function installPortable(): Promise<void> {
         src = top.length === 1 && top[0].isDirectory() ? join(stage, top[0].name) : stage
         if (!existsSync(join(src, exeName))) throw new Error(`更新包里没有 ${exeName}`)
       }
+      abort.signal.throwIfAborted()
+      downloadAbort = null
       logUpdate('staged and verified; starting the update helper')
       if (pendingFile) writeFileSync(pendingFile, JSON.stringify({ target, from: currentVersion() }))
       // Before quitting, so a relaunch in the gap before the helper runs is turned away too.
@@ -490,6 +537,7 @@ async function installPortable(): Promise<void> {
       // UTF-8 BOM so Windows PowerShell 5.1 reads non-ASCII paths correctly.
       writeFileSync(script, '\uFEFF' + body, 'utf8')
       if (pendingFile) writeFileSync(pendingFile, JSON.stringify({ target, from: currentVersion() }))
+      downloadAbort = null
       const child = spawn(
         'powershell.exe',
         ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-File', script],
@@ -502,6 +550,14 @@ async function installPortable(): Promise<void> {
     setTimeout(() => void quitForUpdate(), 600)
   } catch (error) {
     installing = false
+    downloading = false
+    downloadAbort = null
+    if (abort.signal.reason === 'pause' && existsSync(partial)) {
+      paused = { partial, url: asset.browser_download_url }
+      logUpdate(`download paused at ${statSync(partial).size} bytes`)
+      broadcastGoxf({ type: 'portable-paused', ...lastProgress })
+      return
+    }
     for (const f of [partial, ready, ...(zipMode && lockFile ? [lockFile] : [])]) {
       try {
         if (existsSync(f)) unlinkSync(f)
@@ -510,14 +566,12 @@ async function installPortable(): Promise<void> {
       }
     }
     rmSync(stage, { recursive: true, force: true, maxRetries: 2 })
-    if (downloadAbort?.signal.aborted) {
-      downloadAbort = null
-      logUpdate('download cancelled by the user')
+    if (abort.signal.aborted) {
+      logUpdate('update cancelled by the user')
       const { asset: _a, delta: _d, fallback: _f, ...again } = portablePrompt ?? prompt
       broadcastGoxf({ type: 'portable-available', prompt: again })
       return
     }
-    downloadAbort = null
     const raw = error instanceof Error ? error.message : String(error)
     logUpdate(`failed before swap: ${raw}`)
     broadcastGoxf({ type: 'portable-error', message: `便携版更新失败：${raw}。已为你打开发布页，可手动下载替换。` })
@@ -555,6 +609,15 @@ export function registerUpdaterIpc(): void {
     return { ok: true as const }
   })
   ipcMain.handle(GOXF_UPDATE_CHANNELS.installPortable, async () => {
+    await installPortable()
+    return { ok: true as const }
+  })
+  ipcMain.handle(GOXF_UPDATE_CHANNELS.pausePortable, () => {
+    pausePortable()
+    return { ok: true as const }
+  })
+  // Resume = install again: it re-checks and continues the kept partial when the asset is unchanged.
+  ipcMain.handle(GOXF_UPDATE_CHANNELS.resumePortable, async () => {
     await installPortable()
     return { ok: true as const }
   })

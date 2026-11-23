@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import {
   buildReplaceScript,
+  decideResume,
+  resumeOffset,
   isUpdateLockFresh,
   decideUpdatePrompts,
   formatGoxfVersion,
@@ -328,5 +330,25 @@ describe('update lock', () => {
   it('is fresh for under 3 minutes', () => {
     expect(isUpdateLockFresh(0, 179_000)).toBe(true)
     expect(isUpdateLockFresh(0, 180_000)).toBe(false)
+  })
+})
+
+describe('download resume', () => {
+  it('resumes only from a non-empty, not yet full partial', () => {
+    expect(resumeOffset(0, 100)).toBe(0)
+    expect(resumeOffset(40, 100)).toBe(40)
+    expect(resumeOffset(100, 100)).toBe(0)
+    expect(resumeOffset(40)).toBe(40)
+  })
+  it('appends on a matching 206', () => {
+    expect(decideResume(40, 206, 'bytes 40-99/100', 100)).toEqual({ append: true, total: 100 })
+    expect(decideResume(40, 206, 'bytes 40-99/100')).toEqual({ append: true, total: 100 })
+  })
+  it('starts over on 200, a wrong start, a size change or a missing range', () => {
+    expect(decideResume(40, 200, null, 100)).toEqual({ append: false })
+    expect(decideResume(40, 206, 'bytes 0-99/100', 100)).toEqual({ append: false })
+    expect(decideResume(40, 206, 'bytes 40-119/120', 100)).toEqual({ append: false })
+    expect(decideResume(40, 206, null, 100)).toEqual({ append: false })
+    expect(decideResume(0, 206, 'bytes 0-99/100', 100)).toEqual({ append: false })
   })
 })
