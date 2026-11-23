@@ -7,7 +7,8 @@ import {
   ChevronDown,
   ExternalLink,
   Loader2,
-  Plus
+  Plus,
+  Trash2
 } from 'lucide-react'
 import {
   HARK_PROJECTS_POLL_MS,
@@ -246,6 +247,19 @@ export function HarkProjects({ botId, compact }: { botId: string; compact?: bool
       }
     })
 
+  // GOXF: delete a project for good (DELETE /conversations/:id, as Hark web does), after a confirm.
+  const deleteProject = (p: HarkProject) => {
+    if (!window.confirm(`删除项目「${p.title || '未命名项目'}」？删除后无法恢复。`)) return
+    return perform(async () => {
+      await rpc({ accountId, op: 'call', method: 'DELETE', path: `/conversations/${encodeURIComponent(p.id)}` })
+      const main = projects.find((row) => row.main)
+      if (bot.activeSessionId === p.id && main) {
+        await useBotStore.getState().switchHarkSession(botId, main.id)
+      }
+      changed()
+    })
+  }
+
   if (!connected) return null
 
   const activeProject = projects.find((p) => p.id === bot.activeSessionId)
@@ -426,6 +440,16 @@ export function HarkProjects({ botId, compact }: { botId: string; compact?: bool
                   >
                     <Archive className="size-3.5" />
                   </button>
+                  <button
+                    type="button"
+                    disabled={busy}
+                    title="删除"
+                    aria-label={`删除 ${p.title}`}
+                    onClick={() => void deleteProject(p)}
+                    className="press-icon grid size-6 place-items-center rounded-full text-ink-secondary hover:bg-active hover:text-status-error disabled:opacity-35"
+                  >
+                    <Trash2 className="size-3.5" />
+                  </button>
                 </div>
               )}
             </li>
@@ -451,6 +475,7 @@ export function HarkProjects({ botId, compact }: { botId: string; compact?: bool
                   className="flex items-center justify-between gap-2 rounded-xl border border-line/70 bg-sunken/40 px-2.5 py-1.5 text-ink-muted"
                 >
                   <span className="truncate text-[12px]">{p.title}</span>
+                  <span className="flex shrink-0 items-center gap-1">
                   <button
                     type="button"
                     disabled={busy}
@@ -460,6 +485,17 @@ export function HarkProjects({ botId, compact }: { botId: string; compact?: bool
                     <ArchiveRestore className="size-3" />
                     恢复
                   </button>
+                  <button
+                    type="button"
+                    disabled={busy}
+                    title="删除"
+                    aria-label={`删除 ${p.title}`}
+                    onClick={() => void deleteProject(p)}
+                    className="press-icon grid size-6 shrink-0 place-items-center rounded-full text-ink-muted hover:bg-active hover:text-status-error disabled:opacity-35"
+                  >
+                    <Trash2 className="size-3" />
+                  </button>
+                  </span>
                 </li>
               ))}
             </ul>
