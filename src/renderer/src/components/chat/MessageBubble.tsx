@@ -1174,7 +1174,7 @@ function RichWidgets({
           return (
             <li
               key={w.widgetId}
-              className="overflow-hidden rounded-2xl border border-line bg-surface shadow-soft transition-shadow hover:shadow-md"
+              className="overflow-hidden rounded-2xl border border-line bg-surface shadow-soft transition-shadow hover:shadow-card"
             >
               <div className="flex items-center justify-between gap-3 border-b border-line bg-sunken/40 px-3.5 py-2.5">
                 <button
