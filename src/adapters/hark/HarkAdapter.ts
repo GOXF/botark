@@ -307,6 +307,8 @@ export class HarkAdapter implements PlatformAdapter {
         afterMessageIds: afterIds,
         timeoutMs: 90_000
       })) as {
+        /** The reply is done but Hark's turn goes on; main clears the status when it ends. */
+        tailing?: boolean
         reply?: {
           id: string
           content: string
@@ -317,26 +319,28 @@ export class HarkAdapter implements PlatformAdapter {
         } | null
       }
 
-      this.emit({
-        type: 'typing',
-        sessionId: conversationId,
-        conversationId: message.conversationId,
-        accountId: message.accountId,
-        isTyping: false
-      })
-      this.emit({
-        type: 'activity',
-        sessionId: conversationId,
-        accountId: message.accountId,
-        activity: {
-          code: 'idle',
-          text: null,
-          emoji: null,
-          agentId: null,
-          subagents: 0,
-          busy: false
-        }
-      })
+      if (!polled?.tailing) {
+        this.emit({
+          type: 'typing',
+          sessionId: conversationId,
+          conversationId: message.conversationId,
+          accountId: message.accountId,
+          isTyping: false
+        })
+        this.emit({
+          type: 'activity',
+          sessionId: conversationId,
+          accountId: message.accountId,
+          activity: {
+            code: 'idle',
+            text: null,
+            emoji: null,
+            agentId: null,
+            subagents: 0,
+            busy: false
+          }
+        })
+      }
 
       const replyText = polled?.reply?.content?.trim() ?? ''
       const replyTools = polled?.reply?.tools

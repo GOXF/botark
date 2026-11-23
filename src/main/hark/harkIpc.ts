@@ -40,6 +40,7 @@ import {
   type HarkChatMessage,
   type HarkUploadedAttachment
 } from './harkClient'
+import { harkTurnBusy } from './harkBusy'
 import { cancelHarkLogin, closeHarkLoginWindow, onHarkLoginEvent, openHarkLoginWindow } from './harkLogin'
 import { loadAccountProxyUrl } from '../muse/accountProxy'
 import { guessMediaMimeFromName } from '../mediaMime'
@@ -280,59 +281,80 @@ async function runHarkRpc(req: HarkRpcRequest): Promise<HarkRpcResponse> {
           return { ok: false, status: 400, message: 'conversationId required' }
         }
         const afterIds = new Set(req.afterMessageIds ?? [])
+        const streamOf = (msg: HarkChatMessage, done: boolean) => {
+          const tools = mapHarkTools(msg)
+          const media = mapHarkMedia(msg)
+          const richWidgets = mapHarkRichWidgets(msg)
+          broadcast({
+            type: 'stream',
+            accountId: req.accountId,
+            sessionId: req.conversationId,
+            conversationId: req.botId,
+            messageId: `hark_${msg.id}`,
+            text: msg.content.trim(),
+            done,
+            ...(tools ? { tools } : {}),
+            ...(media ? { media } : {}),
+            ...(richWidgets ? { richWidgets } : {})
+          })
+          return { tools, media, richWidgets }
+        }
+        const activity = (text: string) =>
+          broadcast({
+            type: 'activity',
+            accountId: req.accountId,
+            sessionId: req.conversationId,
+            activityCode: text ? 'thinking' : 'idle',
+            ...(text ? { activityText: text.slice(0, 120) } : {}),
+            busy: Boolean(text)
+          })
+        // GOXF: the conversation-level line is the live one; a message's own narration goes stale.
+        const livePhrase = (syncState: HarkConversationSyncState, msg?: HarkChatMessage) =>
+          syncState.narration?.trim() ||
+          syncState.activeActivity?.trim() ||
+          msg?.narration?.trim() ||
+          msg?.thought?.trim() ||
+          ''
+        // Turn messages as last shown (by object: sync state replaces a message on change).
+        const shown = new Map<string, HarkChatMessage>()
+        // The tail showed Hark as busy, so it must close the turn (done + idle) when it ends.
+        let tailOpen = false
         const watched = await watchHarkConversationSync(req.accountId, req.conversationId, {
           responseMessageId: req.responseMessageId,
           afterMessageIds: afterIds,
           timeoutMs: req.timeoutMs ?? 90_000,
           onUpdate: (msg, syncState) => {
-            const done = isHarkReplyDone(msg)
-            const text = msg.content.trim()
-            const tools = mapHarkTools(msg)
-            const media = mapHarkMedia(msg)
-            const richWidgets = mapHarkRichWidgets(msg)
-            // GOXF: the conversation-level line is the live one; a message's own narration goes stale.
-            const activePhrase =
-              syncState.narration?.trim() ||
-              syncState.activeActivity?.trim() ||
-              msg.narration?.trim() ||
-              msg.thought?.trim() ||
-              ''
-
-            if (!done && activePhrase) {
-              broadcast({
-                type: 'activity',
-                accountId: req.accountId,
-                sessionId: req.conversationId,
-                activityCode: 'thinking',
-                activityText: activePhrase.slice(0, 120),
-                busy: true
-              })
+            const replyDone = isHarkReplyDone(msg)
+            const busy = harkTurnBusy(syncState, afterIds)
+            // A finished reply is only "done" once Hark's turn is idle too.
+            const done = replyDone && !busy
+            const activePhrase = livePhrase(syncState, msg) || (replyDone && busy ? '等待任务完成…' : '')
+            if (!done && activePhrase) activity(activePhrase)
+            const hasPayload =
+              msg.content.trim() || msg.toolCalls?.length || msg.artifacts?.length || msg.actions?.length
+            if (!hasPayload && !done) return
+            shown.set(msg.id, msg)
+            streamOf(msg, done)
+          },
+          onTail: (syncState, ended) => {
+            const busy = !ended && harkTurnBusy(syncState, afterIds)
+            if (busy) {
+              tailOpen = true
+              activity(livePhrase(syncState) || '等待任务完成…')
+            } else if (!ended) return
+            for (const m of syncState.orderedMessages()) {
+              if (/^user$/i.test(m.role) || afterIds.has(m.id)) continue
+              if (shown.get(m.id) === m && !(ended && tailOpen)) continue
+              shown.set(m.id, m)
+              if (m.content.trim() || m.toolCalls?.length || m.artifacts?.length || m.actions?.length) streamOf(m, ended)
             }
-
-            if (!text && !tools?.length && !media?.length && !richWidgets?.length && !done) return
-            broadcast({
-              type: 'stream',
-              accountId: req.accountId,
-              sessionId: req.conversationId,
-              conversationId: req.botId,
-              messageId: `hark_${msg.id}`,
-              text,
-              done,
-              ...(tools ? { tools } : {}),
-              ...(media ? { media } : {}),
-              ...(richWidgets ? { richWidgets } : {})
-            })
+            if (ended && tailOpen) activity('')
           }
         })
-
-        // Always clear activity when pollReply finishes
-        broadcast({
-          type: 'activity',
-          accountId: req.accountId,
-          sessionId: req.conversationId,
-          activityCode: 'idle',
-          busy: false
-        })
+        // Hark still works on this turn: the tail keeps the status line and clears it at the end.
+        const tailing = watched.tailing
+        if (tailing) tailOpen = true
+        else activity('')
 
         const finalReply = watched.reply
         if (
@@ -342,30 +364,16 @@ async function runHarkRpc(req: HarkRpcRequest): Promise<HarkRpcResponse> {
             finalReply.actions?.length ||
             finalReply.artifacts?.length)
         ) {
-          const msgId = `hark_${finalReply.id}`
-          const tools = mapHarkTools(finalReply)
-          const media = mapHarkMedia(finalReply)
-          const richWidgets = mapHarkRichWidgets(finalReply)
-          broadcast({
-            type: 'stream',
-            accountId: req.accountId,
-            sessionId: req.conversationId,
-            conversationId: req.botId,
-            messageId: msgId,
-            text: finalReply.content.trim(),
-            done: true,
-            ...(tools ? { tools } : {}),
-            ...(media ? { media } : {}),
-            ...(richWidgets ? { richWidgets } : {})
-          })
+          const { tools, media, richWidgets } = streamOf(finalReply, !tailing)
           return {
             ok: true,
             data: {
               conversationId: req.conversationId,
               messages: watched.messages,
+              tailing,
               reply: {
                 ...finalReply,
-                id: msgId,
+                id: `hark_${finalReply.id}`,
                 tools,
                 media,
                 richWidgets

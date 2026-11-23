@@ -79,6 +79,8 @@ export const ZH: Record<string, string> = {
   "Allow": "允许",
   "Deny": "拒绝",
   "Typing…": "正在输入…",
+  "Working · {n} projects": "工作中 · {n} 个项目",
+  "Task done at {time}, open to view": "任务 {time} 完成，点开查看",
   "You: {text}": "你：{text}",
   "Sending…": "发送中…",
   "Delivered · replying": "已送达 · 回复中",

@@ -48,6 +48,15 @@ describe('session navigation', () => {
     vi.restoreAllMocks()
   })
 
+  it('counts a streamed reply as unread once when its final message lands on an unselected bot', () => {
+    useBotStore.setState({ bots: [{ ...bot, platformId: 'hark' }], selectedBotId: 'other' })
+    store().applyMessageDelta('hark_r1', bot.id, bot.activeAccountId, 'partial')
+    const final = { id: 'hark_r1', conversationId: bot.id, accountId: bot.activeAccountId, text: 'partial done', createdAt: 2 }
+    store().receiveMessage(final)
+    store().receiveMessage(final)
+    expect(store().bots[0]?.unread).toBe(1)
+  })
+
   it('drops observer snapshots from the previous Hark session or account', () => {
     useBotStore.setState({ bots: [{ ...bot, platformId: 'hark' }] })
     const history = [{ id: 'visible', role: 'assistant', content: 'fixture' }]

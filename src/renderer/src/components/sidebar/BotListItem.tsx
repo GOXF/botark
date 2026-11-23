@@ -6,7 +6,10 @@ import { BotAvatarEditorDialog } from '@/components/ui/BotAvatarEditorDialog'
 import { InlineEdit } from '@/components/ui/InlineEdit'
 import { Menu, MenuContent, MenuItem, MenuLabel, MenuSeparator, MenuTrigger } from '@/components/ui/Menu'
 import { cn } from '@/lib/cn'
+import { useShallow } from 'zustand/react/shallow'
 import { useBotStore } from '@/store/botStore'
+import { accountWork } from '@/lib/harkWork'
+import { useHarkWork } from '@/services/harkWork'
 import type { Bot, BotActivity, ChatMessage } from '@/types'
 import { t } from '@/lib/i18n'
 
@@ -63,6 +66,8 @@ function previewText(
   return last.role === 'user' ? t('You: {text}', { text: body }) : body
 }
 
+const NO_WORK = { working: 0, doneAt: 0 }
+
 export const BotListItem = memo(function BotListItem({
   bot,
   status,
@@ -86,9 +91,22 @@ export const BotListItem = memo(function BotListItem({
   const [pokeSignal, setPokeSignal] = useState(0)
   const rowRef = useRef<HTMLButtonElement>(null)
 
-  const preview = previewText(last, typing, activity)
+  // GOXF: Hark projects working in the background / finished while not looked at.
+  const work = useHarkWork(useShallow((s) => (bot.platformId === 'hark' ? accountWork(s, bot.accountIds) : NO_WORK)))
   const live = Boolean(activityPhrase(activity))
-  const isWorking = typing || live
+  const projectsWorking = !typing && !live && work.working > 0
+  const done = !typing && !live && !work.working && work.doneAt > 0
+  const preview = projectsWorking
+    ? t('Working · {n} projects', { n: work.working })
+    : done
+      ? t('Task done at {time}, open to view', {
+          time: new Date(work.doneAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })
+        })
+      : previewText(last, typing, activity)
+  const isWorking = typing || live || projectsWorking
+  const doneDot = done && bot.unread === 0 && (
+    <span aria-hidden className="absolute -top-0.5 -right-0.5 size-2.5 rounded-full bg-status-attention ring-2 ring-canvas" />
+  )
   const timeLabel = !isWorking && last?.createdAt ? formatShortTime(last.createdAt) : ''
   // Only a bot created a moment ago rises into the list; startup stays still.
   const [fresh] = useState(() => Date.now() - bot.createdAt < 3000)
@@ -138,6 +156,7 @@ export const BotListItem = memo(function BotListItem({
             {bot.unread > 99 ? '99+' : bot.unread}
           </span>
         )}
+        {doneDot}
       </div>
       <span className="mt-1.5 block w-full truncate text-center text-[12px] leading-4 font-medium text-ink">
         {bot.name}
@@ -164,6 +183,7 @@ export const BotListItem = memo(function BotListItem({
           {bot.unread > 9 ? '9+' : bot.unread}
         </span>
       )}
+      {doneDot}
     </div>
   ) : (
     <>
@@ -207,7 +227,7 @@ export const BotListItem = memo(function BotListItem({
           <span
             className={cn(
               'block truncate text-[12.5px] leading-[17px]',
-              isWorking ? 'shimmer-text font-medium' : 'text-ink-secondary'
+              isWorking ? 'shimmer-text font-medium' : done ? 'font-medium text-status-attention' : 'text-ink-secondary'
             )}
           >
             {preview}
@@ -227,6 +247,9 @@ export const BotListItem = memo(function BotListItem({
         >
           {bot.unread > 99 ? '99+' : bot.unread}
         </span>
+      )}
+      {done && bot.unread === 0 && (
+        <span aria-hidden className="size-2 shrink-0 rounded-full bg-status-attention transition-opacity duration-100 group-hover:opacity-0" />
       )}
     </>
   )
