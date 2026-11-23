@@ -5,6 +5,7 @@ import {
   decideUpdatePrompts,
   formatGoxfVersion,
   isNewerSemver,
+  nextCheckDelayMs,
   normalizeGoxfBuild,
   parseGoxfVersion,
   pickLatestGoxfRelease,
@@ -196,3 +197,16 @@ describe('buildZipReplaceScript', () => {
     expect(s).toContain('zip does not contain the app exe')
   })
 })
+
+describe('release readiness and check cadence', () => {
+  it('ignores assets GitHub has not finished uploading', () => {
+    const url = 'https://x/BotArk-Portable-0.12.1-goxf.2-win-x64.zip'
+    expect(pickPortableZipAsset([{ name: 'BotArk-Portable-0.12.1-goxf.2-win-x64.zip', browser_download_url: url, state: 'new' }])).toBeNull()
+    expect(pickPortableZipAsset([{ name: 'BotArk-Portable-0.12.1-goxf.2-win-x64.zip', browser_download_url: url, state: 'uploaded', size: 5 }])?.browser_download_url).toBe(url)
+  })
+  it('checks daily, backs off 1h→2h→4h→6h after failures', () => {
+    const h = 60 * 60 * 1000
+    expect([0, 1, 2, 3, 4, 9].map(nextCheckDelayMs)).toEqual([24 * h, h, 2 * h, 4 * h, 6 * h, 6 * h])
+  })
+})
+

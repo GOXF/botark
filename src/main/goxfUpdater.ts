@@ -3,7 +3,7 @@
  *
  * Why not electron-updater: it reads qybaihe's latest.yml and would install an
  * upstream build over the fork, and it cannot update a portable exe at all.
- * Instead two independent GitHub API checks run on the same 4h interval:
+ * Instead two independent GitHub API checks run daily (1h→6h backoff after failures):
  *   a) upstream  qybaihe/botark releases/latest  > package.json version → "merge into your fork" (open page only)
  *   b) fork      GOXF/botark newest v*-goxf.*     > version+goxfBuild    → "your portable build has an update"
  *                portable on Windows: download exe next to the old one, swap via PowerShell after exit, relaunch
@@ -31,6 +31,7 @@ import {
   buildZipReplaceScript,
   decideUpdatePrompts,
   formatGoxfVersion,
+  nextCheckDelayMs,
   normalizeGoxfBuild,
   type GitHubRelease,
   type PortableKind,
@@ -38,7 +39,6 @@ import {
 } from './goxfUpdateLogic'
 import { PORTABLE_DIR, PORTABLE_FILE } from './goxfPortable'
 
-const CHECK_INTERVAL_MS = 4 * 60 * 60 * 1000
 const UPSTREAM_REPO = 'qybaihe/botark'
 const FORK_REPO = 'GOXF/botark'
 const UPSTREAM_API_LATEST = `https://api.github.com/repos/${UPSTREAM_REPO}/releases/latest`
@@ -96,7 +96,8 @@ async function getJson<T>(url: string): Promise<Fetched<T>> {
   }
 }
 
-async function check(manual: boolean): Promise<void> {
+/** Returns false only when both GitHub requests failed (drives the retry backoff). */
+async function check(manual: boolean): Promise<boolean> {
   if (manual) broadcast({ type: 'checking' })
   const [up, fork] = await Promise.all([
     getJson<GitHubRelease>(UPSTREAM_API_LATEST),
@@ -119,7 +120,8 @@ async function check(manual: boolean): Promise<void> {
     const { asset: _asset, ...prompt } = decision.portable
     broadcastGoxf({ type: 'portable-available', prompt })
   }
-  if (!manual) return
+  const reachable = up.ok || fork.ok
+  if (!manual) return reachable
   if (decision.upstream || decision.portable) {
     // Ends the "checking…" spinner without a toast (UpdateBanner ignores 'dev-skip').
     broadcast({ type: 'error', message: 'dev-skip' })
@@ -128,6 +130,7 @@ async function check(manual: boolean): Promise<void> {
   } else {
     broadcast({ type: 'not-available', version: currentVersion() })
   }
+  return reachable
 }
 
 async function downloadTo(url: string, dest: string, expected?: number): Promise<void> {
@@ -246,6 +249,10 @@ export function registerUpdaterIpc(): void {
 export function startAutoUpdater(): void {
   if (started) return
   started = true
-  setTimeout(() => void check(false), 8_000)
-  setInterval(() => void check(false), CHECK_INTERVAL_MS)
+  let failures = 0
+  const run = async (): Promise<void> => {
+    failures = (await check(false).catch(() => false)) ? 0 : failures + 1
+    setTimeout(() => void run(), nextCheckDelayMs(failures)).unref()
+  }
+  setTimeout(() => void run(), 8_000)
 }

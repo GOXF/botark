@@ -24,6 +24,20 @@ export interface ReleaseAsset {
   name: string
   browser_download_url: string
   size?: number
+  /** GitHub sets 'uploaded' once the file is complete; 'new' while CI is still uploading. */
+  state?: string
+}
+
+/** Offer only assets GitHub reports as fully uploaded (CI creates the release before its uploads finish). */
+const isUploaded = (a: ReleaseAsset): boolean => (a.state === undefined || a.state === 'uploaded') && a.size !== 0
+
+const DAY_MS = 24 * 60 * 60 * 1000
+const HOUR_MS = 60 * 60 * 1000
+
+/** Next check delay: daily after a success; after failures 1h, 2h, 4h, then capped at 6h. */
+export function nextCheckDelayMs(consecutiveFailures: number): number {
+  if (consecutiveFailures <= 0) return DAY_MS
+  return Math.min(HOUR_MS * 2 ** (consecutiveFailures - 1), 6 * HOUR_MS)
 }
 
 export interface GitHubRelease {
@@ -101,7 +115,7 @@ export function pickLatestGoxfRelease(
 /** The portable x64 exe among a release's assets (prefers "*Portable*x64*.exe"). */
 export function pickPortableAsset(assets: ReleaseAsset[] | null | undefined): ReleaseAsset | null {
   const exes = (assets ?? []).filter(
-    (a) => a && typeof a.name === 'string' && /\.exe$/i.test(a.name) && /portable/i.test(a.name) && a.browser_download_url
+    (a) => a && typeof a.name === 'string' && /\.exe$/i.test(a.name) && /portable/i.test(a.name) && a.browser_download_url && isUploaded(a)
   )
   return exes.find((a) => /x64/i.test(a.name)) ?? exes[0] ?? null
 }
@@ -109,7 +123,7 @@ export function pickPortableAsset(assets: ReleaseAsset[] | null | undefined): Re
 /** The portable x64 zip (unpack-and-run folder build), e.g. "BotArk-Portable-0.12.0-goxf.2-win-x64.zip". */
 export function pickPortableZipAsset(assets: ReleaseAsset[] | null | undefined): ReleaseAsset | null {
   const zips = (assets ?? []).filter(
-    (a) => a && typeof a.name === 'string' && /\.zip$/i.test(a.name) && /portable/i.test(a.name) && a.browser_download_url
+    (a) => a && typeof a.name === 'string' && /\.zip$/i.test(a.name) && /portable/i.test(a.name) && a.browser_download_url && isUploaded(a)
   )
   return zips.find((a) => /x64/i.test(a.name)) ?? zips[0] ?? null
 }

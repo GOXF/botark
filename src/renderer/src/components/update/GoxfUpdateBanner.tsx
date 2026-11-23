@@ -9,6 +9,7 @@ import type { GoxfPortablePrompt, GoxfUpdateEvent, GoxfUpstreamPrompt } from '@s
 import { Button } from '@/components/ui/Button'
 import { getBridge } from '@/lib/bridge'
 import { t } from '@/lib/i18n'
+import { useBotStore } from '@/store/botStore'
 
 type PortableState =
   | { kind: 'hidden' }
@@ -38,6 +39,8 @@ export function GoxfUpdateBanner() {
   const [dismissedUpstream, setDismissedUpstream] = useState<string | null>(null)
   const [portable, setPortable] = useState<PortableState>({ kind: 'hidden' })
   const [dismissedPortable, setDismissedPortable] = useState<string | null>(null)
+  // Swapping files quits the app; never cut off a bot that is still replying.
+  const botBusy = useBotStore((s) => Object.values(s.typing).some(Boolean))
 
   useEffect(() => {
     const bridge = getBridge()?.goxfUpdates
@@ -87,8 +90,14 @@ export function GoxfUpdateBanner() {
               GOXF 自用版 v{portable.prompt.version} 已发布
               {portable.prompt.canSelfUpdate ? '，下载后会自动替换并重启' : '，请到发布页下载'}
             </p>
+            {botBusy && portable.prompt.canSelfUpdate && <p className="text-ink-muted">有 bot 正在回复，回复完再更新</p>}
           </div>
-          <Button size="sm" variant="primary" onClick={() => void getBridge()?.goxfUpdates?.installPortable()}>
+          <Button
+            size="sm"
+            variant="primary"
+            disabled={botBusy && portable.prompt.canSelfUpdate}
+            onClick={() => void getBridge()?.goxfUpdates?.installPortable()}
+          >
             {portable.prompt.canSelfUpdate ? '更新并重启' : '打开发布页'}
           </Button>
           <DismissButton onClick={() => setDismissedPortable(portable.prompt.version)} />

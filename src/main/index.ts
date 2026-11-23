@@ -10,6 +10,7 @@ import { attachMuseSessionManager, disposeAllMuseManagers, registerMuseIpc } fro
 // GOXF fork: fork-aware updater (upstream + portable prompts) instead of electron-updater.
 import { registerUpdaterIpc, startAutoUpdater } from './goxfUpdater'
 import { startPerfLog } from './goxfPerf'
+import { startSessionCookiePersistence } from './goxfSessionCookies'
 import { registerGrokIpc } from './grok/grokIpc'
 import { stopGrokAccountWatch } from './grok/grokWatchManager'
 import { registerHarkIpc } from './hark/harkIpc'
@@ -230,6 +231,8 @@ app.whenReady().then(async () => {
   hardenVaultFilePermissions()
   // Before any partition loads: otherwise the first requests go direct.
   await Promise.race([applyAllStoredProxies(), new Promise((r) => setTimeout(r, 5_000))])
+  // GOXF: put back session cookies Electron dropped at the last quit, before any page loads.
+  await startSessionCookiePersistence().catch(() => undefined)
   registerWebViewIpc()
   registerMuseIpc()
   registerUpdaterIpc()
