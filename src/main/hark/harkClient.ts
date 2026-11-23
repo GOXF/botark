@@ -1011,6 +1011,16 @@ export class HarkConversationSyncState {
     return changed
   }
 
+  /** GOXF: what Hark's web app shows under the chat while it works ("正在使用我的电脑"). */
+  liveStatus(): { busy: boolean; text: string } {
+    const streaming = [...this.order]
+      .reverse()
+      .map((id) => this.messages.get(id))
+      .find((m) => m && m.isStreaming && !/^user$/i.test(m.role))
+    const text = (this.narration || this.activeActivity || streaming?.narration || streaming?.thought || '').trim()
+    return { busy: Boolean(text || streaming), text: text.slice(0, 120) }
+  }
+
   orderedMessages(): HarkChatMessage[] {
     return this.order.map((id) => this.messages.get(id)!).filter(Boolean)
   }

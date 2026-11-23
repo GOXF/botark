@@ -9,7 +9,8 @@ import { formatBytes } from '@/lib/format'
 import { useBotStore } from '@/store/botStore'
 import type { Bot, BotAccount } from '@/types'
 import { t } from '@/lib/i18n'
-import { createAttachmentDraft, type DraftAttachment } from './attachmentDraft'
+import type { DraftAttachment } from './attachmentDraft'
+import { composerDraft } from './goxfComposerDrafts'
 
 interface ComposerProps {
   bot: Bot
@@ -160,9 +161,14 @@ function ConnectionNotice({
 }
 
 export function Composer({ bot, account, typing = false, onSend, onCancel, onConnect, onMuseLogin, onGrokLogin, onHarkLogin, onDotLogin, onAntigravityLogin, onCueLogin, hideNotice = false }: ComposerProps) {
-  const [text, setText] = useState('')
-  const [attachments, setAttachments] = useState<DraftAttachment[]>([])
-  const [draft] = useState(() => createAttachmentDraft(setAttachments))
+  // GOXF: unsent text/attachments survive switching bots or pages.
+  const [saved] = useState(() => composerDraft(bot.id))
+  const [text, setTextState] = useState(saved.text)
+  const setText = (next: string | ((prev: string) => string)) =>
+    setTextState((prev) => (saved.text = typeof next === 'function' ? next(prev) : next))
+  const [attachments, setAttachments] = useState<DraftAttachment[]>(saved.entries)
+  const draft = saved.attachments
+  useEffect(() => saved.bind(setAttachments), [saved])
   const [dragging, setDragging] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -189,6 +195,10 @@ export function Composer({ bot, account, typing = false, onSend, onCancel, onCon
     el.style.height = `${Math.min(el.scrollHeight, MAX_HEIGHT_PX)}px`
     setMultiline(el.scrollHeight > 40)
   }
+
+  // Size the box for a restored draft.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { if (saved.text) requestAnimationFrame(resize) }, [])
 
   const submit = () => {
     const sendable = draft.forSend()

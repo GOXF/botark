@@ -130,9 +130,21 @@ export function HarkProjects({ botId, compact }: { botId: string; compact?: bool
     const conversationId = bot.activeSessionId
     if (!compact || !connected || !conversationId || !hark) return
     const subscription = crypto.randomUUID()
+    let liveBusy = false
     const off = hark.onEvent((e) => {
       if (e.type === 'projectHistory' && e.subscription === subscription) {
-        useBotStore.getState().applyHarkHistory(botId, accountId, conversationId, e.messages)
+        const store = useBotStore.getState()
+        store.applyHarkHistory(botId, accountId, conversationId, e.messages)
+        // GOXF: show Hark's live status line even for replies BotArk did not send.
+        if (e.live?.busy) {
+          liveBusy = true
+          store.setTyping(botId, true)
+          store.setActivity(accountId, { code: 'thinking', text: e.live.text || null, emoji: null, busy: true })
+        } else if (e.live && liveBusy) {
+          liveBusy = false
+          store.setTyping(botId, false)
+          store.setActivity(accountId, null)
+        }
       }
     })
     void rpc({ op: 'observeProject', accountId, conversationId, subscription }).catch((e) =>
@@ -140,6 +152,10 @@ export function HarkProjects({ botId, compact }: { botId: string; compact?: bool
     )
     return () => {
       off()
+      if (liveBusy) {
+        useBotStore.getState().setTyping(botId, false)
+        useBotStore.getState().setActivity(accountId, null)
+      }
       void rpc({ op: 'leaveProject', accountId, subscription }).catch(() => {})
     }
   }, [compact, connected, accountId, botId, bot.activeSessionId])

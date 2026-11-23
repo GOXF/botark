@@ -307,7 +307,15 @@ export function HarkConversationsSection({ accountId, botId }: { accountId: stri
   }
 
   return (
-    <Section title="项目">
+    <Section
+      title="项目"
+      action={
+        <RefreshButton
+          loading={false}
+          onClick={() => window.dispatchEvent(new CustomEvent('bothub:hark-projects', { detail: { accountId } }))}
+        />
+      }
+    >
       <div className="flex flex-col gap-2 text-[12px]">
         <HarkProjects key={accountId} botId={botId} />
         {error && <p className="text-status-error">{error}</p>}

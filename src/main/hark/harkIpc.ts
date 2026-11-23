@@ -129,10 +129,10 @@ function observeProject(event: IpcMainInvokeEvent, req: Extract<HarkRpcRequest, 
   visibleProjects.set(senderId, { accountId: req.accountId, subscription: req.subscription, stop })
   sender.once('destroyed', stop)
   sender.once('did-navigate', stop)
-  const update = (messages: HarkChatMessage[]) => {
+  const update = (messages: HarkChatMessage[], live?: { busy: boolean; text: string }) => {
     if (!signal.aborted && !sender.isDestroyed()) sender.send(HARK_CHANNELS.event, {
       type: 'projectHistory', accountId: req.accountId, conversationId: req.conversationId,
-      subscription: req.subscription, messages: historyView(messages)
+      subscription: req.subscription, messages: historyView(messages), live
     })
   }
   void (async () => {
@@ -145,7 +145,7 @@ function observeProject(event: IpcMainInvokeEvent, req: Extract<HarkRpcRequest, 
         await readHarkStream(session, req.conversationId, manager, dial, signal, (frame) => {
           if (state.applyFrame(frame) && !timer) timer = setTimeout(() => {
             timer = undefined
-            update(state.orderedMessages())
+            update(state.orderedMessages(), state.liveStatus())
           }, 150)
         })
       } catch {
@@ -290,11 +290,12 @@ async function runHarkRpc(req: HarkRpcRequest): Promise<HarkRpcResponse> {
             const tools = mapHarkTools(msg)
             const media = mapHarkMedia(msg)
             const richWidgets = mapHarkRichWidgets(msg)
+            // GOXF: the conversation-level line is the live one; a message's own narration goes stale.
             const activePhrase =
-              msg.narration?.trim() ||
-              msg.thought?.trim() ||
               syncState.narration?.trim() ||
               syncState.activeActivity?.trim() ||
+              msg.narration?.trim() ||
+              msg.thought?.trim() ||
               ''
 
             if (!done && activePhrase) {

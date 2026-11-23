@@ -898,7 +898,15 @@ export const HARK_CHANNELS = {
 } as const
 
 export type HarkMainEvent =
-  | { type: 'projectHistory'; accountId: string; conversationId: string; subscription: string; messages: unknown[] }
+  | {
+      type: 'projectHistory'
+      accountId: string
+      conversationId: string
+      subscription: string
+      messages: unknown[]
+      /** GOXF: Hark's live status line for the conversation (narration / active activity). */
+      live?: { busy: boolean; text: string }
+    }
   | {
       type: 'login'
       accountId: string
