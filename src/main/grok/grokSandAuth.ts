@@ -20,7 +20,7 @@ import {
   isGoogleBlockedOrPasskeyText
 } from '../googleOAuthUaGuard'
 import { readJsonFile, writeJsonAtomic } from '../jsonFile'
-import { applyProxyToPartition, loadAccountProxyUrl } from '../muse/accountProxy'
+import { applyProxyToPartition, loadAccountTransportProxyUrl } from '../muse/accountProxy'
 import { proxyFetch } from '../proxyTransport'
 import { partitionForAccount } from '../webContentsViewManager'
 
@@ -48,7 +48,7 @@ export function grokFetcherForAccount(
 ): typeof fetch {
   if (explicitFetch) return explicitFetch
   return async (input, init) => {
-    const proxyUrl = await loadAccountProxyUrl(accountId)
+    const proxyUrl = await loadAccountTransportProxyUrl(accountId)
     return proxyFetch(proxyUrl, String(input), init)
   }
 }

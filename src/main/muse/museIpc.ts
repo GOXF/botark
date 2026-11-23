@@ -5,13 +5,15 @@ import { MuseSessionManager } from './museSessionManager'
 import {
   assignProxyPoolToAccounts,
   clearProxyPool,
+  describeSystemProxy,
   getProxyView,
   importProxyPool,
   listProxyPool,
   removeProxyPoolItem,
-  saveProxyConfig,
+  setAccountProxy,
+  testProxy,
   type MuseProxyConfig,
-  type MuseProxyMode
+  type ProxyScheme
 } from './accountProxy'
 import { rebindGrokAccountWatch } from '../grok/grokWatchManager'
 import { rebindDotAccountNetwork } from '../dot/dotClient'
@@ -53,6 +55,15 @@ function managerFor(event: IpcMainInvokeEvent): MuseSessionManager {
   const manager = managers.get(event.sender.id)
   if (!manager) throw new Error('Muse sessions are not available for this sender')
   return manager
+}
+
+/** After a proxy change made outside setProxy: re-point Muse WSS and other platforms' live streams. */
+function reapply(event: IpcMainInvokeEvent): (accountId: string) => Promise<void> {
+  const mgr = managerFor(event)
+  return async (accountId) => {
+    await mgr.applyAccountProxy(accountId).catch(() => undefined)
+    rebindNonMuseAccountStreams(accountId)
+  }
 }
 
 function parseEnsure(value: unknown): MuseEnsureRequest {
@@ -251,8 +262,8 @@ export function registerMuseIpc(): void {
   ipcMain.handle(MUSE_CHANNELS.setProxy, async (event, accountId: unknown, config: unknown) => {
     if (typeof accountId !== 'string') throw new TypeError('Invalid accountId')
     if (!config || typeof config !== 'object') throw new TypeError('Invalid proxy config')
-    const c = config as MuseProxyConfig
-    const view = await saveProxyConfig(accountId, c)
+    const c = config as MuseProxyConfig & { poolId?: string }
+    const view = await setAccountProxy(accountId, c)
     await managerFor(event).applyAccountProxy(accountId)
     rebindNonMuseAccountStreams(accountId)
     return view
@@ -264,34 +275,43 @@ export function registerMuseIpc(): void {
 
   ipcMain.handle(MUSE_CHANNELS.importProxyPool, async (_event, rawText: unknown, defaultMode: unknown) => {
     if (typeof rawText !== 'string') throw new TypeError('Invalid proxy pool text')
-    const mode: Exclude<MuseProxyMode, 'direct'> =
+    const mode: ProxyScheme =
       defaultMode === 'http' || defaultMode === 'https' || defaultMode === 'socks5h' ? defaultMode : 'socks5'
     return importProxyPool(rawText, mode)
   })
 
-  ipcMain.handle(MUSE_CHANNELS.removeProxyPoolItem, async (_event, id: unknown) => {
+  ipcMain.handle(MUSE_CHANNELS.removeProxyPoolItem, async (event, id: unknown) => {
     if (typeof id !== 'string') throw new TypeError('Invalid pool item id')
-    return removeProxyPoolItem(id)
+    return removeProxyPoolItem(id, reapply(event))
   })
 
-  ipcMain.handle(MUSE_CHANNELS.clearProxyPool, async () => {
-    return clearProxyPool()
+  ipcMain.handle(MUSE_CHANNELS.clearProxyPool, async (event) => {
+    return clearProxyPool(reapply(event))
   })
 
-  ipcMain.handle(MUSE_CHANNELS.assignProxyPool, async (event, accountIds: unknown, keepIds?: unknown) => {
+  ipcMain.handle(MUSE_CHANNELS.testProxy, async (_event, target: unknown) => {
+    if (!target || typeof target !== 'object') throw new TypeError('Invalid proxy test target')
+    const t = target as Record<string, unknown>
+    return testProxy({
+      accountId: typeof t.accountId === 'string' ? t.accountId : undefined,
+      poolId: typeof t.poolId === 'string' ? t.poolId : undefined,
+      draft: t.draft && typeof t.draft === 'object' ? (t.draft as MuseProxyConfig & { poolId?: string }) : undefined
+    })
+  })
+
+  ipcMain.handle(MUSE_CHANNELS.getSystemProxy, async () => describeSystemProxy())
+
+  ipcMain.handle(MUSE_CHANNELS.assignProxyPool, async (event, accountIds: unknown, keepIds?: unknown, limit?: unknown) => {
     if (!Array.isArray(accountIds)) throw new TypeError('Invalid accountIds array')
     const ids = accountIds.filter((id): id is string => typeof id === 'string')
     // Accounts that hold a slot but must not be handed a new one (Hark).
     const kept = new Set(Array.isArray(keepIds) ? keepIds.filter((id): id is string => typeof id === 'string') : [])
-    const mgr = managerFor(event)
     return assignProxyPoolToAccounts(
       ids,
-      async (accId) => {
-        await mgr.applyAccountProxy(accId).catch(() => undefined)
-        rebindNonMuseAccountStreams(accId)
-      },
+      reapply(event),
       // Logins still in flight are not in the renderer list yet; keep their proxy.
-      (accId) => kept.has(accId) || [...managers.values()].some((m) => m.isLoginInFlight(accId))
+      (accId) => kept.has(accId) || [...managers.values()].some((m) => m.isLoginInFlight(accId)),
+      typeof limit === 'number' && Number.isInteger(limit) && limit > 0 ? limit : 0
     )
   })
 

@@ -9,7 +9,9 @@ import type { MobileSendCommand, MobileSendResult } from '@shared/mobileSync'
 import { createSeed } from '@/data/seed'
 import { t } from '@/lib/i18n'
 import type { AccountDraft, Bot, BotAccount, BotGroup, ChatMessage, ChatReplyTarget, NewBotInput } from '@/types'
+import type { MuseProxyPoolItemView } from '@shared/ipc'
 import { keepActivity } from './goxfActivity'
+import { usePrefsStore } from './prefsStore'
 import { clearNoReplyFlag, createSafeStorage, sanitizePersisted, SEND_HARD_TIMEOUT_MS, SendTimeoutError, toPersistedMessages, withTimeout, deliveryAfterError, createInFlightSet, hasLostAttachments, ATTACHMENTS_LOST_TEXT } from './delivery'
 
 let warnedStorage = false
@@ -238,15 +240,6 @@ function uniqueGroupName(groups: BotGroup[], base = 'New section'): string {
   }
 }
 
-export const PROXY_POOL_PLATFORMS: ReadonlySet<PlatformId> = new Set([
-  'meta-muse',
-  'grok',
-  'dot',
-  'hark',
-  'antigravity',
-  'cue'
-])
-
 export function uniqueBotName(bots: ReadonlyArray<{ name: string }>, baseName: string): string {
   const base = baseName.trim() || 'Bot'
   const taken = new Set(bots.map((b) => b.name.trim().toLowerCase()))
@@ -418,65 +411,36 @@ function mergeHydratedMessages(existing: ChatMessage[], hydrated: ChatMessage[])
   })
 }
 
-/** Pool bookkeeping lists: cloud platforms (Muse, Grok, Dot, Hark, Antigravity, Cue) can receive 1-to-1 pool assignments. */
-export function poolAccountIds(accounts: Record<string, { id: string; platformId: string }>): {
-  museIds: string[]
-  grokIds: string[]
-  dotIds: string[]
-  harkIds: string[]
-  antigravityIds: string[]
-  cueIds: string[]
-  keepIds: string[]
-  assignableIds: string[]
-} {
-  const all = Object.values(accounts)
-  const museIds = all.filter((a) => a.platformId === 'meta-muse').map((a) => a.id)
-  const grokIds = all.filter((a) => a.platformId === 'grok').map((a) => a.id)
-  const dotIds = all.filter((a) => a.platformId === 'dot').map((a) => a.id)
-  const harkIds = all.filter((a) => a.platformId === 'hark').map((a) => a.id)
-  const antigravityIds = all.filter((a) => a.platformId === 'antigravity').map((a) => a.id)
-  const cueIds = all.filter((a) => a.platformId === 'cue').map((a) => a.id)
-  // Keep `keepIds` as all non-Muse accounts so MuseBatchImport.tsx never drops other platforms' slots.
-  const keepIds = all.filter((a) => a.platformId !== 'meta-muse').map((a) => a.id)
-  return {
-    museIds,
-    grokIds,
-    dotIds,
-    harkIds,
-    antigravityIds,
-    cueIds,
-    keepIds,
-    assignableIds: [...museIds, ...grokIds, ...dotIds, ...harkIds, ...antigravityIds, ...cueIds]
-  }
+/**
+ * `assignProxyPool(accountIds, keepIds)` arguments: targets are `targetIds`
+ * (default: every account) on the ticked `platforms`; every other known account
+ * — including `pending` ones not in the store yet — is kept so its binding survives.
+ */
+export function proxyPoolArgs(
+  accounts: Record<string, { id: string; platformId: string }>,
+  platforms: readonly string[],
+  targetIds?: readonly string[],
+  pending: ReadonlyArray<{ id: string; platformId: string }> = []
+): { accountIds: string[]; keepIds: string[] } {
+  const all = [...Object.values(accounts), ...pending]
+  const wanted = targetIds && new Set(targetIds)
+  const targets = new Set(
+    all.filter((a) => (!wanted || wanted.has(a.id)) && platforms.includes(a.platformId)).map((a) => a.id)
+  )
+  return { accountIds: [...targets], keepIds: [...new Set(all.map((a) => a.id))].filter((id) => !targets.has(id)) }
 }
 
-/** Build `assignProxyPool(accountIds, keepIds)` arguments while protecting all other accounts' slots. */
-export function proxyPoolArgsForAccounts(
-  accounts: Record<string, { id: string; platformId: string }>,
-  targetIds?: readonly string[]
-): { accountIds: string[]; keepIds: string[] } {
-  const all = Object.values(accounts)
-  if (!targetIds) {
-    const { assignableIds } = poolAccountIds(accounts)
-    const assignedSet = new Set(assignableIds)
-    return {
-      accountIds: assignableIds,
-      keepIds: all.filter((a) => !assignedSet.has(a.id)).map((a) => a.id)
-    }
-  }
-  const filteredTargets = [
-    ...new Set(
-      targetIds.filter((id) => {
-        const acc = accounts[id]
-        return !acc || PROXY_POOL_PLATFORMS.has(acc.platformId as PlatformId)
-      })
-    )
-  ]
-  const targetSet = new Set(filteredTargets)
-  return {
-    accountIds: filteredTargets,
-    keepIds: all.filter((a) => !targetSet.has(a.id)).map((a) => a.id)
-  }
+/** Auto-assign pool proxies per the pool settings (ticked platforms, per-proxy limit). */
+export async function autoAssignProxyPool(
+  targetIds?: readonly string[],
+  pending: ReadonlyArray<{ id: string; platformId: string }> = []
+): Promise<{ assignedCount: number; items: MuseProxyPoolItemView[] } | undefined> {
+  const assign = electronBridge()?.muse?.assignProxyPool
+  if (!assign) return undefined
+  const { proxyAssignPlatforms, proxyPerProxyLimit } = usePrefsStore.getState()
+  const { accountIds, keepIds } = proxyPoolArgs(useBotStore.getState().accounts, proxyAssignPlatforms, targetIds, pending)
+  if (accountIds.length === 0) return undefined
+  return assign(accountIds, keepIds, proxyPerProxyLimit)
 }
 
 export async function cancelPlatformTurn(bot: Bot) {
@@ -1260,11 +1224,7 @@ export const useBotStore = create<BotHubState>()(
       })
 
       const accounts = get().accounts
-      const bridge = electronBridge()
-      if (PROXY_POOL_PLATFORMS.has(input.platformId) && bridge?.muse?.assignProxyPool) {
-        const { accountIds, keepIds } = proxyPoolArgsForAccounts(accounts, ids)
-        void bridge.muse.assignProxyPool(accountIds, keepIds).catch(() => undefined)
-      }
+      void autoAssignProxyPool(ids).catch(() => undefined)
       for (const id of ids) if (accounts[id]?.status === 'offline') void get().connectAccount(id)
       return bot.id
     },
@@ -1283,11 +1243,7 @@ export const useBotStore = create<BotHubState>()(
       }))
 
       const accounts = get().accounts
-      const bridge = electronBridge()
-      if (PROXY_POOL_PLATFORMS.has(bot.platformId) && bridge?.muse?.assignProxyPool) {
-        const { accountIds, keepIds } = proxyPoolArgsForAccounts(accounts, newIds)
-        void bridge.muse.assignProxyPool(accountIds, keepIds).catch(() => undefined)
-      }
+      void autoAssignProxyPool(newIds).catch(() => undefined)
       for (const id of newIds) if (accounts[id]?.status === 'offline') void get().connectAccount(id)
     },
 

@@ -15,7 +15,7 @@ import { SegmentedControl } from '@/components/ui/SegmentedControl'
 import { getBridge } from '@/lib/bridge'
 import { cn } from '@/lib/cn'
 import { useT } from '@/lib/i18n'
-import { poolAccountIds, useBotStore } from '@/store/botStore'
+import { autoAssignProxyPool, useBotStore } from '@/store/botStore'
 
 type RowState = 'waiting' | 'running' | 'ok' | 'failed' | 'needs-human' | 'cancelled' | 'skipped'
 
@@ -146,13 +146,10 @@ export function MuseBatchImport({ onDone, onBusyChange }: { onDone: () => void; 
     // Give this account its own pool proxy. Rows still in flight are not in
     // the store yet, so list them too or the pool frees and re-hands out
     // their proxies (two concurrent logins on one IP).
-    if (muse?.assignProxyPool) {
-      const { museIds: existingMuseIds, keepIds } = poolAccountIds(useBotStore.getState().accounts)
-      const inFlight = rowsRef.current
-        .filter((r) => r.accountId && (r.state === 'running' || r.state === 'needs-human'))
-        .map((r) => r.accountId)
-      await muse.assignProxyPool([...new Set([...existingMuseIds, ...inFlight, accountId])], keepIds).catch(() => undefined)
-    }
+    const inFlight = rowsRef.current
+      .filter((r) => r.accountId && (r.state === 'running' || r.state === 'needs-human'))
+      .map((r) => ({ id: r.accountId, platformId: 'meta-muse' }))
+    await autoAssignProxyPool([accountId], [...inFlight, { id: accountId, platformId: 'meta-muse' }]).catch(() => undefined)
     if (stopRef.current) return { res: { ok: false, reason: 'cancelled' }, accountId, botId }
     try {
       const res = await muse!.autoLogin({ botId, accountId, email: row.email, inboxUrl: row.inboxUrl })

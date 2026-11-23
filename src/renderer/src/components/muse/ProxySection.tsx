@@ -1,22 +1,25 @@
-import { useCallback, useEffect, useState } from 'react'
-import { ShieldCheck } from 'lucide-react'
-import type { MuseProxyMode, MuseProxyView } from '@shared/ipc'
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import type { MuseProxyConfigInput, MuseProxyPoolItemView, MuseProxyScheme, MuseProxyView, ProxyTestResult } from '@shared/ipc'
 import { EmptyLine, Section } from '@/components/info/Section'
 import { Button } from '@/components/ui/Button'
 import { TextInput } from '@/components/ui/Field'
+import { SegmentedControl } from '@/components/ui/SegmentedControl'
 import { Select } from '@/components/ui/Select'
-import { RefreshButton } from '@/components/muse/RefreshButton'
 import { getBridge } from '@/lib/bridge'
+import { cn } from '@/lib/cn'
 import { t } from '@/lib/i18n'
 import { useBotStore } from '@/store/botStore'
 
-const MODES: Array<{ value: MuseProxyMode; label: () => string }> = [
-  { value: 'direct', label: () => t('Direct (no proxy)') },
-  { value: 'http', label: () => t('HTTP proxy') },
-  { value: 'https', label: () => t('HTTPS proxy') },
-  { value: 'socks5', label: () => t('SOCKS5') },
-  { value: 'socks5h', label: () => t('SOCKS5H (remote DNS)') }
+type Kind = 'direct' | 'system' | 'proxy'
+const KIND_LABEL: Record<Kind, string> = { direct: '真直连', system: '跟随系统', proxy: '代理' }
+const SCHEMES: Array<{ value: MuseProxyScheme; label: string }> = [
+  { value: 'socks5', label: 'SOCKS5' },
+  { value: 'socks5h', label: 'SOCKS5H' },
+  { value: 'http', label: 'HTTP' },
+  { value: 'https', label: 'HTTPS' }
 ]
+const schemeLabel = (m: MuseProxyScheme) => SCHEMES.find((x) => x.value === m)?.label ?? m
+const CUSTOM = '__custom__'
 
 function safeDecode(value: string): string {
   try {
@@ -32,9 +35,9 @@ function safeDecode(value: string): string {
  */
 export function parseInlineProxyInput(
   raw: string,
-  fallbackMode: Exclude<MuseProxyMode, 'direct'> = 'http'
+  fallbackMode: MuseProxyScheme = 'http'
 ): {
-  mode: Exclude<MuseProxyMode, 'direct'>
+  mode: MuseProxyScheme
   host: string
   port?: string
   username?: string
@@ -46,7 +49,7 @@ export function parseInlineProxyInput(
   const schemeMatch = /^(https?|socks5h?|socks):\/\/(.+)$/i.exec(trimmed)
   if (schemeMatch) {
     const rawScheme = schemeMatch[1]!.toLowerCase()
-    const mode: Exclude<MuseProxyMode, 'direct'> =
+    const mode: MuseProxyScheme =
       rawScheme === 'https'
         ? 'https'
         : rawScheme === 'http'
@@ -141,55 +144,83 @@ export function parseInlineProxyInput(
 }
 
 /**
- * Per-account isolated egress proxy across all 6 platforms (partition + WSS/RPC transport).
- * Password stored via OS Keychain (`safeStorage`) with fail-closed leak protection.
+ * 网络代理 for one account on any platform: 真直连 / 跟随系统 / 代理 (pool entry or 自定义).
+ * Applies to the account's session partition and its Node-side transport; passwords stay in the keychain.
  */
 export function ProxySection({ accountId }: { accountId: string }) {
   const platformId = useBotStore((s) => s.accounts[accountId]?.platformId)
   const [view, setView] = useState<MuseProxyView | null>(null)
-  const [mode, setMode] = useState<MuseProxyMode>('direct')
+  const [pool, setPool] = useState<MuseProxyPoolItemView[]>([])
+  const [systemProxy, setSystemProxy] = useState<string>()
+  const [kind, setKind] = useState<Kind>('system')
+  const [choice, setChoice] = useState<string>(CUSTOM)
+  const [scheme, setScheme] = useState<MuseProxyScheme>('socks5')
   const [host, setHost] = useState('')
   const [port, setPort] = useState('')
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
-  const [loading, setLoading] = useState(false)
+  const [savedKey, setSavedKey] = useState('')
   const [saving, setSaving] = useState(false)
+  const [testing, setTesting] = useState(false)
+  const [test, setTest] = useState<ProxyTestResult>()
   const [error, setError] = useState<string>()
   const [hint, setHint] = useState<string>()
 
-  const refresh = useCallback(async () => {
-    const muse = getBridge()?.muse
-    if (!muse?.getProxy) {
-      setView(null)
-      return
+  const draft = useMemo((): MuseProxyConfigInput => {
+    if (kind !== 'proxy') return { mode: kind }
+    const item = pool.find((p) => p.id === choice)
+    if (item) return { mode: item.mode, poolId: item.id }
+    return {
+      mode: scheme,
+      host: host.trim() || undefined,
+      port: port.trim() ? Number(port) : scheme === 'https' ? 443 : undefined,
+      username: username.trim() || undefined,
+      password: password || undefined
     }
-    setLoading(true)
+  }, [kind, choice, pool, scheme, host, port, username, password])
+
+  const load = useCallback(async () => {
+    const muse = getBridge()?.muse
+    if (!muse?.getProxy) return
     setError(undefined)
     try {
-      const next = await muse.getProxy(accountId)
+      const [next, items] = await Promise.all([muse.getProxy(accountId), muse.listProxyPool()])
+      void muse.getSystemProxy?.().then(setSystemProxy, () => undefined)
+      const bound = items.find((p) => p.assignedAccountIds.includes(accountId))
+      const isProxy = next.mode !== 'direct' && next.mode !== 'system'
       setView(next)
-      setMode(next.mode)
+      setPool(items)
+      setKind(isProxy ? 'proxy' : (next.mode as Kind))
+      setChoice(bound?.id ?? (isProxy || items.length === 0 ? CUSTOM : items[0]!.id))
+      if (isProxy) setScheme(next.mode as MuseProxyScheme)
       setHost(next.host || '')
       setPort(next.port != null ? String(next.port) : '')
       setUsername(next.username || '')
       setPassword('')
+      setSavedKey(
+        JSON.stringify(
+          !isProxy
+            ? { mode: next.mode }
+            : bound
+              ? { mode: bound.mode, poolId: bound.id }
+              : { mode: next.mode, host: next.host, port: next.port, username: next.username }
+        )
+      )
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
-    } finally {
-      setLoading(false)
     }
   }, [accountId])
 
   useEffect(() => {
-    void refresh()
-  }, [refresh])
+    setTest(undefined)
+    void load()
+  }, [load])
 
   const handleHostChange = (rawValue: string) => {
-    const fallback: Exclude<MuseProxyMode, 'direct'> = mode === 'direct' ? 'http' : mode
     if (rawValue.includes('://') || rawValue.includes('@') || (rawValue.split(':').length >= 2 && /:\d+/.test(rawValue))) {
-      const parsed = parseInlineProxyInput(rawValue, fallback)
+      const parsed = parseInlineProxyInput(rawValue, scheme)
       if (parsed) {
-        setMode(parsed.mode)
+        setScheme(parsed.mode)
         setHost(parsed.host)
         if (parsed.port) setPort(parsed.port)
         if (parsed.username !== undefined) setUsername(parsed.username)
@@ -200,6 +231,23 @@ export function ProxySection({ accountId }: { accountId: string }) {
     setHost(rawValue)
   }
 
+  const dirty = JSON.stringify(draft) !== savedKey || Boolean(password)
+
+  const runTest = async () => {
+    const muse = getBridge()?.muse
+    if (!muse?.testProxy) return
+    setTesting(true)
+    setTest(undefined)
+    try {
+      // Saved setting: test the account's own session; unsaved choice: test the draft.
+      setTest(await muse.testProxy(dirty ? { accountId, draft } : { accountId }))
+    } catch (err) {
+      setTest({ ok: false, error: err instanceof Error ? err.message : String(err) })
+    } finally {
+      setTesting(false)
+    }
+  }
+
   const save = async () => {
     const muse = getBridge()?.muse
     if (!muse?.setProxy) return
@@ -207,24 +255,9 @@ export function ProxySection({ accountId }: { accountId: string }) {
     setError(undefined)
     setHint(undefined)
     try {
-      const next = await muse.setProxy(accountId, {
-        mode,
-        host: host.trim() || undefined,
-        port: port.trim() ? Number(port) : mode === 'https' ? 443 : undefined,
-        username: username.trim() || undefined,
-        password: password || undefined
-      })
-      setView(next)
-      setMode(next.mode)
-      setHost(next.host || '')
-      setPort(next.port != null ? String(next.port) : '')
-      setUsername(next.username || '')
-      setPassword('')
-      setHint(
-        platformId === 'meta-muse'
-          ? t('Proxy saved — reconnect Muse to apply WSS fully')
-          : '独立代理已加密生效（钥匙串锁定异常时自动阻断直连防泄漏）'
-      )
+      await muse.setProxy(accountId, draft)
+      await load()
+      setHint(platformId === 'meta-muse' ? t('Proxy saved — reconnect Muse to apply WSS fully') : '已保存并立即生效')
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
     } finally {
@@ -234,76 +267,102 @@ export function ProxySection({ accountId }: { accountId: string }) {
 
   if (!getBridge()?.muse?.getProxy) {
     return (
-      <Section title={t('Account proxy')}>
+      <Section title="网络代理">
         <EmptyLine>{t('Proxy settings require the Electron app')}</EmptyLine>
       </Section>
     )
   }
 
+  const savedKind: Kind | undefined = !view ? undefined : view.mode === 'direct' || view.mode === 'system' ? view.mode : 'proxy'
+  const sys = systemProxy?.split(';')[0]?.trim()
+  const sysText =
+    !sys || sys === 'DIRECT'
+      ? '走系统代理；系统现在没开代理，等同直连。'
+      : `走系统代理（现在是 ${sys.replace(/^\S+\s+/, '')}），系统没开代理时就是直连。`
+
   return (
-    <Section
-      title={t('Account proxy')}
-      action={<RefreshButton loading={loading} onClick={() => void refresh()} />}
-    >
+    <Section title="网络代理" tag={savedKind && KIND_LABEL[savedKind]}>
       {error && <p className="pb-1 text-[12px] text-status-error">{error}</p>}
       {hint && <p className="pb-1 text-[12px] text-ink-secondary">{hint}</p>}
-      <p className="mb-2 flex items-center gap-1 text-[11px] text-ink-muted">
-        <ShieldCheck className="size-3 shrink-0 text-status-online-ink" aria-hidden />
-        <span>钥匙串加密存储 · 不可读时自动阻断直连</span>
-      </p>
-      <div className="flex flex-col gap-2">
-        <div className="flex flex-col gap-1 text-[12px]">
-          <span className="font-medium text-ink">{t('Mode')}</span>
-          <Select
-            size="sm"
-            value={mode}
-            onValueChange={(next) => {
-              setMode(next)
-              if (next === 'https' && !port.trim()) setPort('443')
-            }}
-            options={MODES.map((m) => ({ value: m.value, label: m.label() }))}
-          />
-        </div>
-        {mode !== 'direct' && (
+      <div className="flex flex-col gap-2.5">
+        <SegmentedControl<Kind>
+          fullWidth
+          size="xs"
+          aria-label="网络代理方式"
+          value={kind}
+          onValueChange={(next) => {
+            setKind(next)
+            setTest(undefined)
+          }}
+          options={(['direct', 'system', 'proxy'] as const).map((k) => ({ value: k, label: KIND_LABEL[k] }))}
+        />
+        {kind === 'direct' && <p className="text-[12px] text-ink-muted">完全不走任何代理，也不走系统代理。</p>}
+        {kind === 'system' && <p className="text-[12px] text-ink-muted">{sysText}</p>}
+        {kind === 'proxy' && (
           <>
-            <div className="grid grid-cols-[1fr_84px] gap-1.5">
-              <label className="flex flex-col gap-1 text-[12px]">
-                <span className="font-medium text-ink">{t('Host')}</span>
-                <TextInput
-                  value={host}
-                  onChange={(e) => handleHostChange(e.target.value)}
-                  placeholder={mode === 'https' ? 'proxy.example.com 或粘贴完整代理链接' : '127.0.0.1 或粘贴完整代理链接'}
-                />
-              </label>
-              <label className="flex flex-col gap-1 text-[12px]">
-                <span className="font-medium text-ink">{t('Port')}</span>
-                <TextInput
-                  value={port}
-                  onChange={(e) => setPort(e.target.value)}
-                  placeholder={mode === 'https' ? '443' : '7890'}
-                />
-              </label>
-            </div>
-            <label className="flex flex-col gap-1 text-[12px]">
-              <span className="font-medium text-ink">{t('Username (optional)')}</span>
-              <TextInput value={username} onChange={(e) => setUsername(e.target.value)} autoComplete="off" />
-            </label>
-            <label className="flex flex-col gap-1 text-[12px]">
-              <span className="font-medium text-ink">
-                {t('Password')}
-                {view?.hasPassword ? ` · ${t('stored')}` : ''}
-              </span>
-              <TextInput
-                type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                placeholder={view?.hasPassword ? t('Leave blank to keep') : ''}
-                autoComplete="new-password"
-              />
-            </label>
+            <Select
+              size="sm"
+              value={choice}
+              onValueChange={(next) => {
+                setChoice(next)
+                setTest(undefined)
+              }}
+              options={[
+                ...pool.map((p) => ({
+                  value: p.id,
+                  label: `${p.host}:${p.port} · ${schemeLabel(p.mode)} · ${p.assignedAccountIds.length} 个账号`
+                })),
+                { value: CUSTOM, label: '自定义…' }
+              ]}
+            />
+            {choice === CUSTOM && (
+              <>
+                <div className="grid grid-cols-[96px_1fr_72px] gap-1.5">
+                  <Select size="sm" value={scheme} onValueChange={setScheme} options={SCHEMES} aria-label="协议" />
+                  <TextInput
+                    value={host}
+                    onChange={(e) => handleHostChange(e.target.value)}
+                    placeholder="地址，或粘贴完整代理链接"
+                    aria-label={t('Host')}
+                  />
+                  <TextInput
+                    value={port}
+                    onChange={(e) => setPort(e.target.value)}
+                    placeholder={scheme === 'https' ? '443' : '1080'}
+                    aria-label={t('Port')}
+                  />
+                </div>
+                <div className="grid grid-cols-2 gap-1.5">
+                  <TextInput
+                    value={username}
+                    onChange={(e) => setUsername(e.target.value)}
+                    placeholder={t('Username (optional)')}
+                    autoComplete="off"
+                  />
+                  <TextInput
+                    type="password"
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    placeholder={view?.hasPassword ? t('Leave blank to keep') : t('Password')}
+                    autoComplete="new-password"
+                  />
+                </div>
+              </>
+            )}
           </>
         )}
-        <Button size="sm" variant="secondary" disabled={saving} onClick={() => void save()}>
+        <div className="flex flex-wrap items-center gap-2 text-[12px] tabular-nums">
+          <Button size="sm" variant="secondary" disabled={testing} onClick={() => void runTest()}>
+            {testing ? '测试中…' : '测试连通'}
+          </Button>
+          {test && (
+            <span className="flex items-center gap-1.5 text-ink-secondary">
+              <span className={cn('size-2 rounded-full', test.ok ? 'bg-status-online' : 'bg-status-error')} />
+              {test.ok ? `${test.ms} ms · 出口 ${test.ip ?? '未知'}` : test.error || '失败'}
+            </span>
+          )}
+        </div>
+        <Button size="sm" variant="primary" disabled={saving || !dirty} onClick={() => void save()} className="self-start">
           {t('Save proxy')}
         </Button>
       </div>

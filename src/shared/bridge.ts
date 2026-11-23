@@ -163,12 +163,20 @@ export interface MuseBridge {
   listProxyPool(): Promise<MuseProxyPoolItemView[]>
   importProxyPool(
     rawText: string,
-    defaultMode?: Exclude<import('./ipc').MuseProxyMode, 'direct'>
+    defaultMode?: import('./ipc').MuseProxyScheme
   ): Promise<{ added: number; total: number; items: MuseProxyPoolItemView[] }>
   removeProxyPoolItem(id: string): Promise<MuseProxyPoolItemView[]>
   clearProxyPool(): Promise<MuseProxyPoolItemView[]>
-  /** `keepIds`: accounts whose current slot is kept but who get no new one. */
-  assignProxyPool(accountIds: string[], keepIds?: string[]): Promise<{ assignedCount: number; items: MuseProxyPoolItemView[] }>
+  /** `keepIds`: accounts whose current binding is kept but who get no new one. `limit`: accounts per proxy, 0 = unlimited. */
+  assignProxyPool(
+    accountIds: string[],
+    keepIds?: string[],
+    limit?: number
+  ): Promise<{ assignedCount: number; items: MuseProxyPoolItemView[] }>
+  /** Test a pool proxy, an unsaved draft for an account, or the account's own session. */
+  testProxy(target: { accountId?: string; poolId?: string; draft?: MuseProxyConfigInput }): Promise<import('./ipc').ProxyTestResult>
+  /** What the OS proxy resolves to right now, e.g. `PROXY 127.0.0.1:7890` or `DIRECT`. */
+  getSystemProxy(): Promise<string>
 }
 
 export interface UpdateBridge {

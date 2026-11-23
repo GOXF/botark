@@ -7,7 +7,7 @@ import { app, safeStorage, session as electronSession } from 'electron'
 import { join } from 'node:path'
 import { createMutex } from '@shared/proxyPool'
 import { readJsonFile, writeJsonAtomic } from '../jsonFile'
-import { loadAccountProxyUrl } from '../muse/accountProxy'
+import { loadAccountTransportProxyUrl } from '../muse/accountProxy'
 import { proxyFetch } from '../proxyTransport'
 import { partitionForAccount } from '../webContentsViewManager'
 import {
@@ -139,7 +139,7 @@ export function cueFetcherForAccount(
   explicitFetch?: typeof fetch
 ): (input: string | URL, init?: RequestInit) => Promise<Response> {
   return async (input: string | URL, init?: RequestInit): Promise<Response> => {
-    const proxyUrl = await loadAccountProxyUrl(accountId)
+    const proxyUrl = await loadAccountTransportProxyUrl(accountId)
     if (explicitFetch) {
       return explicitFetch(input, init)
     }

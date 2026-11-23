@@ -1,37 +1,78 @@
 import { describe, expect, it } from 'vitest'
-import { createMutex, planPoolAssignment, releasePoolSlot } from './proxyPool'
+import { bindPoolSlot, createMutex, migratePoolSlot, planPoolAssignment, releasePoolSlot } from './proxyPool'
 
-const pool = (...owners: Array<string | undefined>) => owners.map((o, i) => ({ id: `p${i}`, assignedAccountId: o }))
+const pool = (...owners: Array<string[] | string | undefined>) =>
+  owners.map((o, i) => ({ id: `p${i}`, assignedAccountIds: o === undefined ? [] : Array.isArray(o) ? o : [o] }))
+const owners = (p: Array<{ assignedAccountIds: string[] }>) => p.map((s) => s.assignedAccountIds)
 
 describe('planPoolAssignment', () => {
-  it('keeps existing slots and fills new accounts from free ones', () => {
+  it('keeps existing bindings and fills new accounts from the least-loaded proxy', () => {
     const { pool: next, assigned } = planPoolAssignment(pool('a', undefined, undefined), ['a', 'b'])
-    expect(next.map((s) => s.assignedAccountId)).toEqual(['a', 'b', undefined])
+    expect(owners(next)).toEqual([['a'], ['b'], []])
     expect(assigned.map((x) => [x.accountId, x.slot.id])).toEqual([['a', 'p0'], ['b', 'p1']])
   })
 
-  it('does not hand an in-flight account slot to someone else', () => {
+  it('does not drop an in-flight account binding', () => {
     // "a" is still logging in and was left out of the caller list.
     const { pool: next } = planPoolAssignment(pool('a', undefined), ['b'], (id) => id === 'a')
-    expect(next.map((s) => s.assignedAccountId)).toEqual(['a', 'b'])
+    expect(owners(next)).toEqual([['a'], ['b']])
   })
 
-  it('never shares a slot when the pool runs out', () => {
-    const { pool: next, assigned } = planPoolAssignment(pool(undefined), ['a', 'b'])
-    expect(next[0]!.assignedAccountId).toBe('a')
+  it('unlimited (0) spreads evenly and shares once every proxy is used', () => {
+    const { pool: next, assigned } = planPoolAssignment(pool(undefined, undefined), ['a', 'b', 'c', 'd', 'e'])
+    expect(owners(next)).toEqual([['a', 'c', 'e'], ['b', 'd']])
+    expect(assigned).toHaveLength(5)
+  })
+
+  it('a limit caps auto-assignment; accounts beyond capacity stay unassigned', () => {
+    const { pool: next, assigned } = planPoolAssignment(pool(undefined, undefined), ['a', 'b', 'c', 'd', 'e'], undefined, 2)
+    expect(owners(next)).toEqual([['a', 'c'], ['b', 'd']])
+    expect(assigned.map((x) => x.accountId)).toEqual(['a', 'b', 'c', 'd'])
+  })
+
+  it('limit 1 is one-account-per-proxy', () => {
+    const { pool: next, assigned } = planPoolAssignment(pool(undefined), ['a', 'b'], undefined, 1)
+    expect(owners(next)).toEqual([['a']])
     expect(assigned.map((x) => x.accountId)).toEqual(['a'])
+  })
+
+  it('never unbinds manual bindings above the limit, but fills nothing more there', () => {
+    // p0 was manually given three accounts with limit 2.
+    const { pool: next } = planPoolAssignment(pool(['m1', 'm2', 'm3'], undefined), ['m1', 'm2', 'm3', 'x'], undefined, 2)
+    expect(owners(next)).toEqual([['m1', 'm2', 'm3'], ['x']])
+  })
+
+  it('skips proxies whose last test timed out', () => {
+    const slots = pool(undefined, undefined).map((s, i) => (i === 0 ? { ...s, lastTest: { ok: false } } : s))
+    const { pool: next } = planPoolAssignment(slots, ['a', 'b'])
+    expect(owners(next)).toEqual([[], ['a', 'b']])
+  })
+
+  it('handles accounts from several platforms in one call without dropping kept ones', () => {
+    // Muse "m" and Hark "h" are targets; Grok "g" (unticked platform) is kept on its manual binding.
+    const { pool: next } = planPoolAssignment(pool('g', undefined), ['m', 'h'], (id) => id === 'g')
+    expect(owners(next)).toEqual([['g', 'h'], ['m']])
   })
 
   it('does not mutate the input', () => {
     const input = pool('x')
     planPoolAssignment(input, ['y'])
-    expect(input[0]!.assignedAccountId).toBe('x')
+    expect(input[0]!.assignedAccountIds).toEqual(['x'])
   })
 })
 
-describe('releasePoolSlot', () => {
+describe('releasePoolSlot / bindPoolSlot / migratePoolSlot', () => {
   it('frees only that account', () => {
-    expect(releasePoolSlot(pool('a', 'b'), 'a').map((s) => s.assignedAccountId)).toEqual([undefined, 'b'])
+    expect(owners(releasePoolSlot(pool(['a', 'c'], 'b'), 'a'))).toEqual([['c'], ['b']])
+  })
+
+  it('manual binding moves the account and ignores any limit', () => {
+    expect(owners(bindPoolSlot(pool(['a', 'b'], 'c'), 'c', 'p0'))).toEqual([['a', 'b', 'c'], []])
+  })
+
+  it('reads the old single-owner pool format', () => {
+    expect(migratePoolSlot({ id: 'p', assignedAccountId: 'a' })).toEqual({ id: 'p', assignedAccountIds: ['a'] })
+    expect(migratePoolSlot({ id: 'p' })).toEqual({ id: 'p', assignedAccountIds: [] })
   })
 })
 
