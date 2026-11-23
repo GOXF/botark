@@ -171,3 +171,8 @@ git clone <GOXF/botark> && cd botark && git checkout fix/hark-login-sync && npm 
   3. 顶部「会话 / 任务」切换（Vibex 看板式按状态分组）。
 - 代码落点：src/renderer/src/rooms/（model.ts CollabRoom: mode manual|auto, cursor 顺序轮流 → 改并发派发）、RoomView.tsx、roomStore.ts、sidebar/BotList.tsx。等「开工」才写。
 - 继续命令：cd /workspace/work/botark && git checkout goxf/portable && git pull && python3 /workspace/work/mock/tasks4.py（以 v4 脚本为底改 v5）
+
+## 2026-11-23 22:30（新账号接手）
+- 新账号项目工作区：/workspace/projects/611143f9-c3e5-4009-8c13-e0450fd350a0/work/botark；效果图在同级 work/mock/（v5.py 生成，字体 NotoSansSC*.otf）。
+- 任务组 v5 效果图已出：v5-A-split.png（会话模式：侧栏组下挂成员子任务+状态+用时，中间分屏 3 成员，右栏派发方式 总管拆分/全员同题/手动@、同时运行不限）；v5-B-tasks.png（任务模式：等你处理/进行中/已完成，群聊内并行进度条）。等用户「开工」。
+- 本账号尚未保存 GitHub PAT，暂不能推送；Muse 相关事项本账号不处理。
