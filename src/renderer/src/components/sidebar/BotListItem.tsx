@@ -152,7 +152,7 @@ export const BotListItem = memo(function BotListItem({
           ringClassName="ring-canvas"
         />
         {bot.unread > 0 && (
-          <span className="absolute -top-0.5 -right-1 grid h-[18px] min-w-[18px] place-items-center rounded-full bg-accent-600 px-1 text-[10px] font-semibold text-white tabular-nums shadow-soft">
+          <span className="absolute -top-0.5 -right-1 grid h-[18px] min-w-[18px] place-items-center rounded-full bg-accent-600 px-1 text-[10px] leading-none font-semibold text-white tabular-nums shadow-soft">
             {bot.unread > 99 ? '99+' : bot.unread}
           </span>
         )}
@@ -179,7 +179,7 @@ export const BotListItem = memo(function BotListItem({
         ringClassName="ring-canvas"
       />
       {bot.unread > 0 && (
-        <span className="absolute -top-1 -right-1 grid h-4 min-w-4 place-items-center rounded-full bg-accent-600 px-1 text-[10px] font-semibold text-white tabular-nums">
+        <span className="absolute -top-1 -right-1 grid h-4 min-w-4 place-items-center rounded-full bg-accent-600 px-1 text-[10px] leading-none font-semibold text-white tabular-nums">
           {bot.unread > 9 ? '9+' : bot.unread}
         </span>
       )}
@@ -248,21 +248,15 @@ export const BotListItem = memo(function BotListItem({
           </span>
         )}
         {/* GOXF: a dot under the time for anything new (unread reply or finished task), hard to miss. */}
-        {(bot.unread > 0 || done) && (
-          <span aria-hidden className={cn('size-2 shrink-0 rounded-full', bot.unread > 0 ? 'bg-accent-600' : 'bg-status-attention')} />
+        {bot.unread > 0 ? (
+          <span className="inline-flex h-4 min-w-4 shrink-0 items-center justify-center rounded-full bg-accent-600 px-1 text-[10.5px] leading-none font-semibold text-white tabular-nums">
+            {bot.unread > 99 ? '99+' : bot.unread}
+          </span>
+        ) : (
+          done && <span aria-hidden className="size-2 shrink-0 rounded-full bg-status-attention" />
         )}
         </span>
       </span>
-      {bot.unread > 0 && (
-        <span
-          className={cn(
-            'grid h-[18px] min-w-[18px] shrink-0 place-items-center rounded-full bg-accent-600 px-1.5 text-[11px] font-medium text-white tabular-nums transition-opacity duration-100 group-focus-within:opacity-0 group-hover:opacity-0',
-            menuOpen && 'opacity-0'
-          )}
-        >
-          {bot.unread > 99 ? '99+' : bot.unread}
-        </span>
-      )}
     </>
   )
 
