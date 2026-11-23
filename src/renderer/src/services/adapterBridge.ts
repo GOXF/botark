@@ -3,6 +3,7 @@ import { adapterRegistry } from "@adapters/registry"
 import type { AdapterEvent, PlatformId } from "@adapters/types"
 import { useBotStore } from "@/store/botStore"
 import { ReplyWatchdog } from "@/store/replyWatchdog"
+import { noteHarkRun, startHarkWork } from "./harkWork"
 
 const STALLED_TEXT = "很久没有收到回复，已停止等待；可以刷新会话或再发一次"
 const watchdog = new ReplyWatchdog()
@@ -55,6 +56,13 @@ function handleEvent(platformId: PlatformId, event: AdapterEvent): void {
   const accountId = event.type === "message" ? event.message.accountId : event.accountId
   const account = store.accounts[accountId]
   if (account && account.platformId !== platformId) return
+  // Any Hark project counts as working, not only the one on screen.
+  if (
+    platformId === "hark" &&
+    ((event.type === "activity" && event.activity.busy) ||
+      (event.type === "typing" && event.isTyping) ||
+      event.type === "message_delta")
+  ) noteHarkRun(event.accountId, event.sessionId)
   if (!belongsToSelectedSession(event, store.bots)) return
   if (event.type === "message") watchdog.touch(botIdFor(event.message.conversationId))
   else if (event.type === "typing" || event.type === "message_delta") watchdog.touch(botIdFor(event.conversationId))
@@ -316,9 +324,11 @@ export function startAdapterBridge(): () => void {
   }
 
   const watchdogTimer = setInterval(checkStalledReplies, 15_000)
+  const stopHarkWork = startHarkWork()
 
   return () => {
     clearInterval(watchdogTimer)
+    stopHarkWork()
     for (const unsubscribe of unsubscribers) unsubscribe()
   }
 }

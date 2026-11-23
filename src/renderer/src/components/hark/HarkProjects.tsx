@@ -27,6 +27,8 @@ import { getBridge } from '@/lib/bridge'
 import { cn } from '@/lib/cn'
 import { useOverlayLock } from '@/lib/overlay'
 import { useBotStore } from '@/store/botStore'
+import type { HarkProjectWork } from '@/lib/harkWork'
+import { noteHarkRun, useHarkWork } from '@/services/harkWork'
 
 async function rpc(request: HarkRpcRequest) {
   const result = await getBridge()?.hark.rpc(request)
@@ -35,6 +37,25 @@ async function rpc(request: HarkRpcRequest) {
 }
 
 const PROJECTS_CHANGED = 'bothub:hark-projects'
+
+/** GOXF: Hark-style state per project: spinner "工作中", amber "完成" until opened. */
+function WorkDot({ work, current }: { work?: HarkProjectWork; current: boolean }) {
+  if (work?.working) return <Loader2 aria-hidden className="size-3 shrink-0 animate-spin text-status-online" />
+  return (
+    <span
+      className={cn(
+        'size-1.5 shrink-0 rounded-full',
+        work?.doneAt ? 'bg-status-attention' : current ? 'bg-accent-600' : 'bg-ink-faint'
+      )}
+    />
+  )
+}
+
+function WorkLabel({ work }: { work?: HarkProjectWork }) {
+  if (work?.working) return <span className="shrink-0 text-[10.5px] font-medium text-status-online">工作中</span>
+  if (work?.doneAt) return <span className="shrink-0 text-[10.5px] font-medium text-status-attention">完成</span>
+  return null
+}
 
 export function HarkProjects({ botId, compact }: { botId: string; compact?: boolean }) {
   const bot = useBotStore((s) => s.bots.find((b) => b.id === botId))!
@@ -52,6 +73,7 @@ export function HarkProjects({ botId, compact }: { botId: string; compact?: bool
   const [showArchived, setShowArchived] = useState(false)
   const [revision, setRevision] = useState(0)
   const lastFetchAt = useRef(0)
+  const work = useHarkWork((s) => s.projects[accountId])
 
   useOverlayLock(menuOpen)
 
@@ -137,6 +159,7 @@ export function HarkProjects({ botId, compact }: { botId: string; compact?: bool
         store.applyHarkHistory(botId, accountId, conversationId, e.messages)
         // GOXF: show Hark's live status line even for replies BotArk did not send.
         if (e.live?.busy) {
+          noteHarkRun(accountId, conversationId)
           liveBusy = true
           store.setTyping(botId, true)
           store.setActivity(accountId, { code: 'thinking', text: e.live.text || null, emoji: null, busy: true })
@@ -326,13 +349,9 @@ export function HarkProjects({ botId, compact }: { botId: string; compact?: bool
                         isCurrent && 'bg-accent-50/70 font-medium'
                       )}
                     >
-                      <span
-                        className={cn(
-                          'size-1.5 shrink-0 rounded-full',
-                          isCurrent ? 'bg-accent-600' : 'bg-ink-faint'
-                        )}
-                      />
+                      <WorkDot work={work?.[p.id]} current={isCurrent} />
                       <span className="min-w-0 flex-1 truncate">{p.title}</span>
+                      <WorkLabel work={work?.[p.id]} />
                       {p.main && (
                         <span className="rounded-full bg-hover px-1.5 py-0.2 text-[10px] text-ink-muted">
                           默认
@@ -420,12 +439,7 @@ export function HarkProjects({ botId, compact }: { botId: string; compact?: bool
                 onClick={() => void select(p.id)}
                 className="flex min-w-0 flex-1 items-center gap-2 text-left outline-none"
               >
-                <span
-                  className={cn(
-                    'size-1.5 shrink-0 rounded-full',
-                    isCurrent ? 'bg-accent-600' : 'bg-ink-faint'
-                  )}
-                />
+                <WorkDot work={work?.[p.id]} current={isCurrent} />
                 <span
                   className={cn(
                     'min-w-0 flex-1 truncate text-[12.5px]',
@@ -434,6 +448,7 @@ export function HarkProjects({ botId, compact }: { botId: string; compact?: bool
                 >
                   {p.title}
                 </span>
+                <WorkLabel work={work?.[p.id]} />
                 {p.main && (
                   <span className="shrink-0 text-[10.5px] text-ink-muted">默认</span>
                 )}

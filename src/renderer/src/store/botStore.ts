@@ -23,6 +23,8 @@ const workspaceStorage = createJSONStorage(() =>
 )
 
 const NO_REPLY_TEXT = '已送达，但没有收到回复'
+/** Replies that appeared through stream deltas and have not had their final message yet (unread counts there). */
+const streamedReplies = new Set<string>()
 
 function electronBridge() {
   if (typeof window === 'undefined') return undefined
@@ -1441,7 +1443,8 @@ export const useBotStore = create<BotHubState>()(
           richWidgets: incomingRich?.length ? incomingRich : prevRich
         }
         const selected = state.selectedBotId === botId
-        const isNew = existingIdx < 0
+        // A streamed reply (Hark, Muse) already exists from its deltas: its first final message is the new one.
+        const isNew = existingIdx < 0 || streamedReplies.delete(incoming.id)
         let accounts = state.accounts
         const account = accounts[incoming.accountId]
         if (account) {
@@ -1548,6 +1551,7 @@ export const useBotStore = create<BotHubState>()(
           media: media?.length ? media : undefined,
           richWidgets: richWidgets?.length ? richWidgets : undefined
         }
+        streamedReplies.add(messageId)
         return {
           accounts: liveAccounts,
           messages: { ...state.messages, [botId]: clearNoReplyFlag([...list, message]) }

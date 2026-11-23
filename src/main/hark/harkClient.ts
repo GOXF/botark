@@ -12,6 +12,7 @@ import { session as electronSession, type Session } from 'electron'
 import { applyProxyToPartition } from '../muse/accountProxy'
 import { guessMediaMimeFromName, inferMediaMime } from '../mediaMime'
 import { partitionForAccount } from '../webContentsViewManager'
+import { HARK_TAIL_CAP_MS, HARK_TAIL_IDLE_MS, harkTurnBusy } from './harkBusy'
 import { HarkWatchRegistry } from './watchRegistry'
 
 export const HARK_ORIGIN = 'https://app.hark.com'
@@ -1524,18 +1525,29 @@ export async function watchHarkConversationSync(
     afterMessageIds?: Set<string>
     timeoutMs?: number
     onUpdate?: (msg: HarkChatMessage, state: HarkConversationSyncState) => void
+    /**
+     * GOXF: when set, return as soon as the reply is done but keep the stream
+     * open while Hark's turn stays busy; called on every change and once with
+     * `ended` when the watch stops (idle, cap, or cancelled).
+     */
+    onTail?: (state: HarkConversationSyncState, ended: boolean) => void
   } = {}
-): Promise<{ reply: HarkChatMessage | null; messages: HarkChatMessage[] }> {
+): Promise<{ reply: HarkChatMessage | null; messages: HarkChatMessage[]; tailing: boolean }> {
   const ses = await preparedSessionForAccount(accountId)
   const managerId = randomUUID()
   const timeoutMs = opts.timeoutMs ?? 90_000
-  const deadline = Date.now() + timeoutMs
+  let deadline = Date.now() + timeoutMs
   const ac = new AbortController()
-  const timer = setTimeout(() => ac.abort(), timeoutMs)
+  let timer = setTimeout(() => ac.abort(), timeoutMs)
   const syncState = new HarkConversationSyncState()
   const afterIds = opts.afterMessageIds ?? new Set<string>()
   let lastReply: HarkChatMessage | null = null
   let finished = false
+  let tailing = false
+  let lastBusyAt = 0
+  let tick: ReturnType<typeof setInterval> | undefined
+  let replyDone: () => void = () => {}
+  const replyDonePromise = new Promise<void>((resolve) => (replyDone = resolve))
 
   // Do not cancel an earlier send's watch: that cut its reply short.
   const abortWatch = () => {
@@ -1559,6 +1571,17 @@ export async function watchHarkConversationSync(
 
   const checkState = (): boolean => {
     if (finished) return true
+    if (tailing) {
+      const now = Date.now()
+      if (harkTurnBusy(syncState, afterIds)) lastBusyAt = now
+      if (now - lastBusyAt > HARK_TAIL_IDLE_MS) {
+        finished = true
+        ac.abort()
+        return true
+      }
+      opts.onTail?.(syncState, false)
+      return false
+    }
     const all = syncState.orderedMessages()
     const target = opts.responseMessageId ? syncState.messages.get(opts.responseMessageId) : undefined
     const claimed = activeHarkWatches.claimedByOthers(accountId, watchToken)
@@ -1578,6 +1601,17 @@ export async function watchHarkConversationSync(
       lastReply = candidate
       opts.onUpdate?.(candidate, syncState)
       if (isHarkReplyDone(candidate)) {
+        if (opts.onTail) {
+          tailing = true
+          lastBusyAt = Date.now()
+          deadline = Date.now() + HARK_TAIL_CAP_MS
+          clearTimeout(timer)
+          timer = setTimeout(() => ac.abort(), HARK_TAIL_CAP_MS)
+          tick = setInterval(checkState, 5_000)
+          activeHarkWatches.markTaken(accountId, candidate.id)
+          replyDone()
+          return false
+        }
         finished = true
         ac.abort()
         return true
@@ -1632,7 +1666,8 @@ export async function watchHarkConversationSync(
         /* ignore transient poll error */
       }
       if (finished || ac.signal.aborted) return
-      await new Promise((r) => setTimeout(r, 1200))
+      // While tailing the SSE stream carries the updates; the poll is only a slow fallback.
+      await new Promise((r) => setTimeout(r, tailing ? 5000 : 1200))
     }
   }
 
@@ -1653,18 +1688,20 @@ export async function watchHarkConversationSync(
     }
   }
 
-  try {
-    await Promise.race([runSseStream(), runPollLoop()])
-  } finally {
+  const loops = Promise.race([runSseStream(), runPollLoop()]).finally(() => {
     finished = true
     ac.abort()
     clearTimeout(timer)
+    clearInterval(tick)
     const done = lastReply as HarkChatMessage | null
     if (done?.id) activeHarkWatches.markTaken(accountId, done.id)
     activeHarkWatches.remove(accountId, watchToken)
-  }
+    if (tailing) opts.onTail?.(syncState, true)
+  })
+  await Promise.race([loops, replyDonePromise])
 
-  return { reply: lastReply, messages: syncState.orderedMessages() }
+  // `tailing`: the reply is done but Hark's turn is still busy; the watch goes on in the background.
+  return { reply: lastReply, messages: syncState.orderedMessages(), tailing: tailing && !finished && harkTurnBusy(syncState, afterIds) }
 }
 
 export function conversationIdFromPayload(payload: unknown): string | undefined {
