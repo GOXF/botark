@@ -2,7 +2,7 @@
 import { isPortable } from './goxfPortable'
 import { registerSlackIpc, stopSlack } from './slack/slackIpc'
 import { registerWorkspaceIpc, stopWorkspaces } from './mcp/hub'
-import { existsSync } from 'node:fs'
+import { appendFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { app, BrowserWindow, shell } from 'electron'
 import { attachWebViewManager, registerWebViewIpc } from './webViewIpc'
@@ -92,6 +92,15 @@ const gotLock = app.requestSingleInstanceLock()
 if (!gotLock) {
   app.quit()
 } else {
+  // Debug capture: create the file at once so the user can tell the variable reached this process.
+  const museCapture = process.env['BOTARK_MUSE_CAPTURE']
+  if (museCapture) {
+    try {
+      appendFileSync(museCapture, JSON.stringify({ capture: 'started', at: new Date().toISOString() }) + '\n')
+    } catch {
+      /* debug only */
+    }
+  }
   app.on('second-instance', (_event, argv) => {
     // Windows delivers `cuedev://oauth/desktop-callback?...` (Cue browser login) as an argv entry.
     const cueCallback = findCueCallbackArg(argv)

@@ -27,20 +27,7 @@ import {
   type HelperJob
 } from './goxfUpdateHelper'
 import { createHash } from 'node:crypto'
-import {
-  appendFileSync,
-  createReadStream,
-  createWriteStream,
-  existsSync,
-  mkdirSync,
-  readdirSync,
-  readFileSync,
-  renameSync,
-  rmSync,
-  statSync,
-  unlinkSync,
-  writeFileSync
-} from 'node:fs'
+import { fs } from './fsNoAsar'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import { Readable } from 'node:stream'
@@ -75,6 +62,21 @@ import {
 import { writeJsonAtomic } from './jsonFile'
 import { PORTABLE_DATA_DIR, PORTABLE_DIR, PORTABLE_FILE } from './goxfPortable'
 import { flushSessionCookies } from './goxfSessionCookies'
+
+const {
+  appendFileSync,
+  createReadStream,
+  createWriteStream,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  statSync,
+  unlinkSync,
+  writeFileSync
+} = fs
 
 const UPSTREAM_REPO = 'qybaihe/botark'
 const FORK_REPO = 'GOXF/botark'
@@ -371,7 +373,7 @@ async function startHelper(job: HelperJob, exe: string): Promise<void> {
     detached: true,
     stdio: 'ignore',
     windowsHide: true,
-    env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' }
+    env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', ELECTRON_NO_ASAR: '1' }
   })
   let failure: string | null = null
   child.on('error', (e) => (failure = `cannot start: ${e.message}`))

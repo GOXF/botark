@@ -80,6 +80,7 @@ function relaunch() {
   try { fs.unlinkSync(job.lockFile) } catch (e) {}
   const env = Object.assign({}, process.env)
   delete env.ELECTRON_RUN_AS_NODE
+  delete env.ELECTRON_NO_ASAR
   const exe = path.join(job.appDir, job.exeName)
   try {
     const child = cp.spawn(exe, [], { cwd: job.appDir, env, detached: true, stdio: 'ignore', windowsHide: false })
