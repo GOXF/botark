@@ -3,6 +3,7 @@ import { WORKSPACE_CHANNEL } from '@shared/workspace'
 import { contextBridge, ipcRenderer } from 'electron'
 import type { BotHubBridge } from '@shared/bridge'
 import { GOXF_UPDATE_CHANNELS, type GoxfUpdateEvent } from '@shared/goxfUpdate'
+import { GOXF_DOWNLOAD_CHANNELS, type GoxfDownloadEvent } from '@shared/goxfDownload'
 import {
   ANTIGRAVITY_CHANNELS,
   CUE_CHANNELS,
@@ -130,6 +131,16 @@ const bridge: BotHubBridge = {
       const handler = (_event: unknown, payload: GoxfUpdateEvent) => listener(payload)
       ipcRenderer.on(GOXF_UPDATE_CHANNELS.event, handler)
       return () => ipcRenderer.removeListener(GOXF_UPDATE_CHANNELS.event, handler)
+    }
+  },
+  goxfDownloads: {
+    start: (req) => ipcRenderer.invoke(GOXF_DOWNLOAD_CHANNELS.start, req),
+    cancel: (id) => ipcRenderer.invoke(GOXF_DOWNLOAD_CHANNELS.cancel, id),
+    reveal: (path) => ipcRenderer.invoke(GOXF_DOWNLOAD_CHANNELS.reveal, path),
+    onEvent: (listener) => {
+      const handler = (_event: unknown, payload: GoxfDownloadEvent) => listener(payload)
+      ipcRenderer.on(GOXF_DOWNLOAD_CHANNELS.event, handler)
+      return () => ipcRenderer.removeListener(GOXF_DOWNLOAD_CHANNELS.event, handler)
     }
   },
   grok: {

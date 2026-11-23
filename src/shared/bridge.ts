@@ -1,4 +1,5 @@
 import type { GoxfUpdateBridge } from './goxfUpdate'
+import type { GoxfDownloadBridge } from './goxfDownload'
 import type { SlackBridge } from './slack'
 import type { WorkspaceBridge } from './workspace'
 import type { MuseAutoLoginRequest, MuseAutoLoginResult } from './museBatch'
@@ -304,4 +305,6 @@ export interface BotHubBridge {
   readonly vault?: VaultBridge
   /** GOXF fork: upstream-merge + portable self-update prompts. */
   readonly goxfUpdates?: GoxfUpdateBridge
+  /** GOXF fork: streamed file downloads with progress. */
+  readonly goxfDownloads?: GoxfDownloadBridge
 }

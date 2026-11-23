@@ -10,6 +10,7 @@ import { attachMuseSessionManager, disposeAllMuseManagers, registerMuseIpc } fro
 // GOXF fork: fork-aware updater (upstream + portable prompts) instead of electron-updater.
 import { exitIfUpdating, registerUpdaterIpc, startAutoUpdater } from './goxfUpdater'
 import { startPerfLog } from './goxfPerf'
+import { registerDownloadIpc } from './goxfDownload'
 import { flushSessionCookies, startSessionCookiePersistence } from './goxfSessionCookies'
 import { registerGrokIpc } from './grok/grokIpc'
 import { stopGrokAccountWatch } from './grok/grokWatchManager'
@@ -261,6 +262,7 @@ app.whenReady().then(async () => {
   registerWebViewIpc()
   registerMuseIpc()
   registerUpdaterIpc()
+  registerDownloadIpc()
   registerGrokIpc()
   registerHarkIpc()
   registerDotIpc()

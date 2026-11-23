@@ -1,11 +1,12 @@
 import { parseComputerContext } from '@/components/muse/computerContext'
 import { memo, useEffect, useState } from 'react'
-import { AlertCircle, Check, Clock3, Copy, CornerDownRight, Download, ExternalLink, FileText, Film, Globe, Image as ImageIcon, KeyRound, Loader2, Maximize2, Monitor, Music, RotateCw, Wrench, ZoomIn } from 'lucide-react'
+import { AlertCircle, Check, Clock3, Copy, CornerDownRight, Download, ExternalLink, FileText, Film, FolderOpen, Globe, Image as ImageIcon, KeyRound, Loader2, Maximize2, Monitor, Music, RotateCw, Wrench, X, ZoomIn } from 'lucide-react'
 import { cn } from '@/lib/cn'
 import { formatBytes, formatClock } from '@/lib/format'
 import { useBotStore } from '@/store/botStore'
 import type { ChatMediaPart, ChatMessage, ChatOptionWidget, ChatRichWidget, ChatToolCall } from '@/types'
 import { getBridge } from '@/lib/bridge'
+import { downloadPercent, formatDownloadSize, type GoxfDownloadEvent } from '@shared/goxfDownload'
 import { ArkExportDocSvg, ArkHandoffCurveSvg, ArkShieldVaultSvg } from '@/components/ui/ArkGlyphs'
 import { Button } from '@/components/ui/Button'
 import { ConnectorIcon } from '@/components/ui/ConnectorIcon'
@@ -666,11 +667,23 @@ function MediaParts({
 }) {
   const [downloadingKey, setDownloadingKey] = useState<string | null>(null)
   const [downloadError, setDownloadError] = useState<string | null>(null)
+  // GOXF: http(s) files stream to Downloads in main with progress + size, instead of base64 over IPC.
+  const [progress, setProgress] = useState<Record<string, GoxfDownloadEvent>>({})
+  const downloads = getBridge()?.goxfDownloads
+  useEffect(() => downloads?.onEvent((e) => setProgress((prev) => (e.id in prev ? { ...prev, [e.id]: e } : prev))), [downloads])
   if (!parts.length) return null
 
   const handleDirectDownload = async (part: ChatMediaPart) => {
-    if (!accountId) return
     const key = part.path || part.name || ''
+    const rawUrl = (part.path || '').trim()
+    if (downloads && /^https?:\/\//i.test(rawUrl)) {
+      setDownloadError(null)
+      setProgress((prev) => ({ ...prev, [key]: { id: key, received: 0, total: 0, state: 'progress' } }))
+      const res = await downloads.start({ id: key, url: rawUrl, filename: part.name })
+      if (!res.ok && res.error !== 'cancelled') setDownloadError(res.error || 'Download failed')
+      return
+    }
+    if (!accountId) return
     setDownloadingKey(key)
     setDownloadError(null)
     try {
@@ -757,9 +770,30 @@ function MediaParts({
                     <span className="block max-w-56 truncate font-medium text-ink">
                       {part.name || part.path}
                     </span>
-                    <span className="block truncate text-caption text-ink-muted" title={subtitle}>
-                      {subtitle}
-                    </span>
+                    {(() => {
+                      const p = progress[key]
+                      if (!p) return (
+                        <span className="block truncate text-caption text-ink-muted" title={subtitle}>
+                          {subtitle}
+                        </span>
+                      )
+                      const pct = downloadPercent(p.received, p.total)
+                      const label = p.state === 'done' ? `已下载 · ${formatDownloadSize(p.total || p.received, 0)}`
+                        : p.state === 'error' ? `下载失败 · ${p.error ?? ''}`
+                        : p.state === 'cancelled' ? '已取消'
+                        : `${pct === null ? '' : pct + '% · '}${formatDownloadSize(p.received, p.total)}`
+                      return (
+                        <span className="block min-w-48">
+                          <span className="block truncate text-caption tabular-nums text-ink-muted" role="status">{label}</span>
+                          {p.state === 'progress' && (
+                            <span className="mt-1 block h-1 overflow-hidden rounded-full bg-sunken">
+                              <span className={cn('block h-full rounded-full bg-accent-500 transition-[width]', pct === null && 'w-1/3 animate-pulse')}
+                                style={pct === null ? undefined : { width: `${pct}%` }} />
+                            </span>
+                          )}
+                        </span>
+                      )
+                    })()}
                   </span>
                 </button>
                 <div className="flex shrink-0 items-center gap-1">
@@ -780,14 +814,24 @@ function MediaParts({
                   >
                     <Maximize2 /> 预览
                   </Button>
-                  <Button
-                    size="sm"
-                    variant="primary"
-                    disabled={downloadingKey === key}
-                    onClick={() => void handleDirectDownload(part)}
-                  >
-                    <Download /> {downloadingKey === key ? '下载中…' : '下载'}
-                  </Button>
+                  {progress[key]?.state === 'progress' ? (
+                    <Button size="sm" variant="secondary" onClick={() => void downloads?.cancel(key)}>
+                      <X /> 取消
+                    </Button>
+                  ) : progress[key]?.state === 'done' && progress[key]?.path ? (
+                    <Button size="sm" variant="secondary" onClick={() => void downloads?.reveal(progress[key]!.path!)}>
+                      <FolderOpen /> 打开文件夹
+                    </Button>
+                  ) : (
+                    <Button
+                      size="sm"
+                      variant="primary"
+                      disabled={downloadingKey === key}
+                      onClick={() => void handleDirectDownload(part)}
+                    >
+                      <Download /> {downloadingKey === key ? '下载中…' : '下载'}
+                    </Button>
+                  )}
                 </div>
               </div>
             )}
