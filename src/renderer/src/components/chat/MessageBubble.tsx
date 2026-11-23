@@ -6,6 +6,7 @@ import { useBotStore } from '@/store/botStore'
 import type { ChatMediaPart, ChatMessage, ChatOptionWidget, ChatRichWidget, ChatToolCall } from '@/types'
 import { getBridge } from '@/lib/bridge'
 import { ArkExportDocSvg, ArkHandoffCurveSvg, ArkShieldVaultSvg } from '@/components/ui/ArkGlyphs'
+import { Button } from '@/components/ui/Button'
 import { ConnectorIcon } from '@/components/ui/ConnectorIcon'
 import { SwitchPill } from '@/components/ui/Controls'
 import { Select } from '@/components/ui/Select'
@@ -893,8 +894,9 @@ function MediaParts({
                   </span>
                 </button>
                 <div className="flex shrink-0 items-center gap-1">
-                  <button
-                    type="button"
+                  <Button
+                    size="sm"
+                    variant="secondary"
                     onClick={() => {
                       if (accountId && onOpenDoc) {
                         onOpenDoc({
@@ -905,18 +907,18 @@ function MediaParts({
                         })
                       }
                     }}
-                    className="inline-flex items-center gap-1 rounded-full bg-hover px-2 py-0.5 text-[11px] font-medium text-accent-600 hover:bg-active"
+                    className="text-accent-600"
                   >
-                    <Maximize2 className="size-3" /> 预览
-                  </button>
-                  <button
-                    type="button"
+                    <Maximize2 /> 预览
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="primary"
                     disabled={downloadingKey === key}
                     onClick={() => void handleDirectDownload(part)}
-                    className="inline-flex items-center gap-1 rounded-full bg-accent-600 px-2.5 py-0.5 text-[11px] font-medium text-white hover:bg-accent-700 disabled:opacity-50"
                   >
-                    <Download className="size-3" /> {downloadingKey === key ? '下载中…' : '下载'}
-                  </button>
+                    <Download /> {downloadingKey === key ? '下载中…' : '下载'}
+                  </Button>
                 </div>
               </div>
             )}
@@ -1187,7 +1189,8 @@ function RichWidgets({
                           href={b.url}
                           target="_blank"
                           rel="noreferrer"
-                          className="inline-flex items-center gap-1.5 rounded-full bg-accent-600 px-3 py-1 text-[12px] font-medium text-white hover:bg-accent-700"
+                          // A link, so not <Button>; same look as Button primary sm.
+                          className="press inline-flex h-7 items-center gap-1.5 rounded-full bg-accent-600 px-3 text-[12px] font-medium text-white hover:bg-accent-700"
                         >
                           <ConnectorIcon id={harkProvider} name={b.label} className="size-4 border-0 bg-transparent shadow-none" />
                           {b.label}
@@ -1331,8 +1334,9 @@ function RichWidgets({
                     </span>
                   </span>
                 </button>
-                <button
-                  type="button"
+                <Button
+                  size="sm"
+                  variant="primary"
                   onClick={() =>
                     onOpenDoc({
                       accountId,
@@ -1342,10 +1346,9 @@ function RichWidgets({
                       mimeType: 'text/markdown'
                     })
                   }
-                  className="inline-flex shrink-0 items-center gap-1 rounded-full bg-accent-600 px-3 py-1 text-[11.5px] font-medium text-white shadow-hairline hover:bg-accent-700"
                 >
-                  <Maximize2 className="size-3" /> 右侧画布阅读
-                </button>
+                  <Maximize2 /> 右侧画布阅读
+                </Button>
               </div>
               {w.markdown && (
                 <div className="relative max-h-60 overflow-hidden px-4 py-3 text-[13.5px] leading-relaxed text-ink">
@@ -1734,14 +1737,10 @@ function GrokFormCard({
 
         {!submitted && (
           <div className="mt-0.5 flex justify-end">
-            <button
-              type="submit"
-              disabled={submitting}
-              className="inline-flex items-center gap-1.5 rounded-full bg-accent-600 px-3.5 py-1.5 text-[12px] font-medium text-white shadow-hairline hover:bg-accent-700 disabled:opacity-50"
-            >
-              {submitting && <Loader2 className="size-3.5 animate-spin" />}
+            <Button type="submit" size="sm" variant="primary" disabled={submitting}>
+              {submitting && <Loader2 className="animate-spin" />}
               {submitting ? '提交中…' : '提交'}
-            </button>
+            </Button>
           </div>
         )}
       </form>
@@ -1813,12 +1812,9 @@ function OptionChips({ message, widget }: { message: ChatMessage; widget: ChatOp
             className="min-w-0 flex-1 rounded-full border border-line bg-surface px-3 py-1.5 text-[13px] outline-none focus:border-accent"
             autoFocus
           />
-          <button
-            type="submit"
-            className="rounded-full bg-accent-600 px-3 py-1.5 text-[13px] text-white"
-          >
+          <Button type="submit" size="sm" variant="primary">
             发送
-          </button>
+          </Button>
         </form>
       )}
     </div>
@@ -2217,8 +2213,9 @@ export const MessageBubble = memo(function MessageBubble({
                     {articleExpanded ? '收起预览' : '展开全文'}
                   </button>
                 )}
-                <button
-                  type="button"
+                <Button
+                  size="sm"
+                  variant="primary"
                   onClick={() =>
                     openDocument({
                       accountId: message.accountId,
@@ -2227,10 +2224,9 @@ export const MessageBubble = memo(function MessageBubble({
                       mimeType: 'text/markdown'
                     })
                   }
-                  className="inline-flex items-center gap-1 rounded-full bg-accent-600 px-3 py-1 text-[11.5px] font-medium text-white shadow-hairline hover:bg-accent-700"
                 >
-                  <Maximize2 className="size-3" /> 右侧画布阅读
-                </button>
+                  <Maximize2 /> 右侧画布阅读
+                </Button>
               </div>
             </div>
 
