@@ -57,7 +57,16 @@ function WorkLabel({ work }: { work?: HarkProjectWork }) {
   return null
 }
 
-export function HarkProjects({ botId, compact }: { botId: string; compact?: boolean }) {
+export function HarkProjects({
+  botId,
+  compact,
+  onLoadingChange
+}: {
+  botId: string
+  compact?: boolean
+  /** Lets a parent refresh button spin while the list is being fetched. */
+  onLoadingChange?: (loading: boolean) => void
+}) {
   const bot = useBotStore((s) => s.bots.find((b) => b.id === botId))!
   const accountId = bot.activeAccountId
   const connected = useBotStore((s) =>
@@ -72,6 +81,8 @@ export function HarkProjects({ botId, compact }: { botId: string; compact?: bool
   const [showArchived, setShowArchived] = useState(false)
   const [revision, setRevision] = useState(0)
   const lastFetchAt = useRef(0)
+  const onLoadingRef = useRef(onLoadingChange)
+  onLoadingRef.current = onLoadingChange
   const work = useHarkWork((s) => s.projects[accountId])
 
   useOverlayLock(menuOpen)
@@ -126,6 +137,7 @@ export function HarkProjects({ botId, compact }: { botId: string; compact?: bool
     let current = true
     if (connected) {
       lastFetchAt.current = Date.now()
+      onLoadingRef.current?.(true)
       void rpc({ accountId, op: 'listConversations' })
         .then(harkProjects)
         .then((rows) => {
@@ -137,6 +149,9 @@ export function HarkProjects({ botId, compact }: { botId: string; compact?: bool
         })
         .catch((e) => {
           if (current) setError(String(e instanceof Error ? e.message : e))
+        })
+        .finally(() => {
+          if (current) onLoadingRef.current?.(false)
         })
     }
     return () => {

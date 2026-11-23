@@ -420,6 +420,7 @@ export function HarkConversationsSection({ accountId, botId }: { accountId: stri
   const [hits, setHits] = useState<Array<{ id: string; text: string }> | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string>()
+  const [projectsLoading, setProjectsLoading] = useState(false)
   const activeSessionId = useBotStore((s) => s.bots.find((b) => b.id === botId)?.activeSessionId)
 
   const runSearch = async () => {
@@ -461,13 +462,13 @@ export function HarkConversationsSection({ accountId, botId }: { accountId: stri
       title="项目"
       action={
         <RefreshButton
-          loading={false}
+          loading={projectsLoading}
           onClick={() => window.dispatchEvent(new CustomEvent('bothub:hark-projects', { detail: { accountId } }))}
         />
       }
     >
       <div className="flex flex-col gap-2 text-[12px]">
-        <HarkProjects key={accountId} botId={botId} />
+        <HarkProjects key={accountId} botId={botId} onLoadingChange={setProjectsLoading} />
         {error && <p className="text-status-error">{error}</p>}
 
         <div className="flex gap-1.5 pt-1">
