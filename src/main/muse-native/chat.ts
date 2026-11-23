@@ -12,6 +12,7 @@
  *   activity leaves the busy set (or hard timeout), never 4s after first done.
  */
 import { EventEmitter } from 'node:events'
+import { appendFileSync } from 'node:fs'
 import { randomUUID } from 'node:crypto'
 import type { MuseNativeGateway, SubscriptionHandle } from './gateway'
 
@@ -1003,6 +1004,23 @@ function assistantTextFromPayload(p: Record<string, unknown>): string {
   return raw.replace(/\[\[hatch_widget:[^\]]+\]\]/g, '').trim()
 }
 
+/** Debug: BOTARK_MUSE_CAPTURE=<file> appends every decrypted chat.subscribe event as NDJSON. */
+export function captureLine(e: unknown): string {
+  // Long strings (base64 frames, transcripts) are cut so field names stay readable.
+  return JSON.stringify(e, (_k, v) => (typeof v === 'string' && v.length > 2000 ? `${v.slice(0, 200)}…[${v.length} chars]` : v))
+}
+
+function captureMuseEvent(e: unknown): void {
+  const file = process.env['BOTARK_MUSE_CAPTURE']
+  if (!file) return
+  try {
+    // shortcut: sync append, fine for an opt-in debug capture; never enable by default.
+    appendFileSync(file, captureLine(e) + '\n')
+  } catch {
+    /* capture must never break chat */
+  }
+}
+
 /**
  * One `chat.subscribe` per connection; re-subscribes after every reconnect.
  * Emits `event` (MuseChatEvent).
@@ -1025,6 +1043,7 @@ export class MuseChatChannel extends EventEmitter {
     if (this.opening) return this.opening
     this.opening = (async () => {
       const h = await this.gw.subscribe('chat.subscribe', { capabilities: MUSE_CHAT_CAPABILITIES }, (e) => {
+        captureMuseEvent(e)
         if (e['type'] !== 'event') return
         const name = str(e['event']) || str(e['event_name'])
         if (!name) return
