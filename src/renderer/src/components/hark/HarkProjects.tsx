@@ -22,6 +22,8 @@ import {
 import type { HarkRpcRequest } from '@shared/ipc'
 import { HARK_DRAFT_SESSION } from '@shared/harkProjects'
 import { ArkProjectStackSvg } from '@/components/ui/ArkGlyphs'
+import { Button } from '@/components/ui/Button'
+import { IconButton } from '@/components/ui/IconButton'
 import { MENU_SURFACE } from '@/components/ui/Menu'
 import { getBridge } from '@/lib/bridge'
 import { cn } from '@/lib/cn'
@@ -55,6 +57,23 @@ function WorkLabel({ work }: { work?: HarkProjectWork }) {
   if (work?.working) return <span className="shrink-0 text-[10.5px] font-medium text-status-busy-ink">工作中</span>
   if (work?.doneAt) return <span className="shrink-0 text-[10.5px] font-medium text-status-attention-ink">完成</span>
   return null
+}
+
+const DEFAULT_TAG = (
+  <span className="shrink-0 rounded-full bg-hover px-1.5 text-[10px] leading-4 text-ink-muted">默认</span>
+)
+
+/** Same delete control in the active and archived lists; the second click deletes. */
+function DeleteProjectButton({ confirming, disabled, onClick }: { confirming: boolean; disabled: boolean; onClick: () => void }) {
+  return confirming ? (
+    <Button size="sm" variant="danger-confirm" disabled={disabled} title="再点一次删除" onClick={onClick}>
+      确认删除
+    </Button>
+  ) : (
+    <IconButton size="sm" label="删除" disabled={disabled} className="hover:text-status-error" onClick={onClick}>
+      <Trash2 />
+    </IconButton>
+  )
 }
 
 export function HarkProjects({
@@ -330,15 +349,10 @@ export function HarkProjects({
                 <span className="text-[11px] font-semibold tracking-tight text-ink-muted">
                   Hark 项目工作空间 ({visibleProjects.length})
                 </span>
-                <button
-                  type="button"
-                  disabled={busy}
-                  onClick={() => void createProject()}
-                  className="press inline-flex items-center gap-1 rounded-full bg-accent-50 px-2 py-0.5 text-[11px] font-semibold text-accent-600 hover:bg-accent-100"
-                >
-                  <Plus className="size-3" />
+                <Button size="sm" variant="secondary" disabled={busy} onClick={() => void createProject()}>
+                  <Plus />
                   新建项目
-                </button>
+                </Button>
               </div>
 
               <div className="flex max-h-64 flex-col gap-0.5 overflow-y-auto py-0.5">
@@ -357,11 +371,7 @@ export function HarkProjects({
                       <WorkDot work={work?.[p.id]} current={isCurrent} />
                       <span className="min-w-0 flex-1 truncate">{p.title}</span>
                       <WorkLabel work={work?.[p.id]} />
-                      {p.main && (
-                        <span className="rounded-full bg-hover px-1.5 py-0.2 text-[10px] text-ink-muted">
-                          默认
-                        </span>
-                      )}
+                      {p.main && DEFAULT_TAG}
                       <Check
                         aria-hidden
                         className={cn(
@@ -393,15 +403,10 @@ export function HarkProjects({
         <span className="text-[11px] font-medium text-ink-muted">
           项目 ({visibleProjects.length})
         </span>
-        <button
-          type="button"
-          disabled={busy}
-                  onClick={() => void createProject()}
-          className="press inline-flex items-center gap-1 rounded-full bg-hover px-2 py-0.5 text-[11px] font-medium text-ink hover:bg-active"
-        >
-          <Plus className="size-3 text-accent-600" />
-          新建
-        </button>
+        <Button size="sm" variant="secondary" disabled={busy} onClick={() => void createProject()}>
+          <Plus />
+          新建项目
+        </Button>
       </div>
 
       {/* Active Projects List */}
@@ -433,48 +438,18 @@ export function HarkProjects({
                   {p.title}
                 </span>
                 <WorkLabel work={work?.[p.id]} />
-                {p.main && (
-                  <span className="shrink-0 text-[10.5px] text-ink-muted">默认</span>
-                )}
+                {p.main && DEFAULT_TAG}
               </button>
 
               {!p.main && (
                 <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
-                  <button
-                    type="button"
-                    disabled={busy}
-                    title="在线预览"
-                    aria-label={`预览 ${p.title}`}
-                    onClick={() => void openPreview(p.id)}
-                    className="press-icon grid size-6 place-items-center rounded-full text-ink-secondary hover:bg-active hover:text-accent-600 disabled:opacity-35"
-                  >
-                    <ExternalLink className="size-3.5" />
-                  </button>
-                  <button
-                    type="button"
-                    disabled={busy}
-                    title="归档"
-                    aria-label={`归档 ${p.title}`}
-                    onClick={() => void toggleArchive(p)}
-                    className="press-icon grid size-6 place-items-center rounded-full text-ink-secondary hover:bg-active hover:text-ink disabled:opacity-35"
-                  >
-                    <Archive className="size-3.5" />
-                  </button>
-                  <button
-                    type="button"
-                    disabled={busy}
-                    title={confirmDelete === p.id ? '再点一次删除' : '删除'}
-                    aria-label={`删除 ${p.title}`}
-                    onClick={() => void deleteProject(p)}
-                    className={cn(
-                      'press-icon grid h-6 min-w-6 place-items-center rounded-full disabled:opacity-35',
-                      confirmDelete === p.id
-                        ? 'bg-status-error/10 px-2 text-[11px] font-medium text-status-error hover:bg-status-error/15'
-                        : 'text-ink-secondary hover:bg-active hover:text-status-error'
-                    )}
-                  >
-                    {confirmDelete === p.id ? '确认删除' : <Trash2 className="size-3.5" />}
-                  </button>
+                  <IconButton size="sm" label="在线预览" disabled={busy} onClick={() => void openPreview(p.id)}>
+                    <ExternalLink />
+                  </IconButton>
+                  <IconButton size="sm" label="归档" disabled={busy} onClick={() => void toggleArchive(p)}>
+                    <Archive />
+                  </IconButton>
+                  <DeleteProjectButton confirming={confirmDelete === p.id} disabled={busy} onClick={() => void deleteProject(p)} />
                 </div>
               )}
             </li>
@@ -510,21 +485,7 @@ export function HarkProjects({
                     <ArchiveRestore className="size-3" />
                     恢复
                   </button>
-                  <button
-                    type="button"
-                    disabled={busy}
-                    title={confirmDelete === p.id ? '再点一次删除' : '删除'}
-                    aria-label={`删除 ${p.title}`}
-                    onClick={() => void deleteProject(p)}
-                    className={cn(
-                      'press-icon grid h-6 min-w-6 shrink-0 place-items-center rounded-full disabled:opacity-35',
-                      confirmDelete === p.id
-                        ? 'bg-status-error/10 px-2 text-[11px] font-medium text-status-error hover:bg-status-error/15'
-                        : 'text-ink-muted hover:bg-active hover:text-status-error'
-                    )}
-                  >
-                    {confirmDelete === p.id ? '确认删除' : <Trash2 className="size-3" />}
-                  </button>
+                  <DeleteProjectButton confirming={confirmDelete === p.id} disabled={busy} onClick={() => void deleteProject(p)} />
                   </span>
                 </li>
               ))}
