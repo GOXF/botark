@@ -48,6 +48,110 @@ function fmtTokens(n: number): string {
   return String(n)
 }
 
+type QuotaMode = 'used' | 'left'
+const QUOTA_MODE_KEY = 'botark.hark.quotaMode'
+const QUOTA_REFRESH_MS = 5 * 60_000
+
+/** First parseable time among `keys` on any of `objs` (ISO string, seconds or ms). Field names are guessed: none → no line. */
+function pickTime(objs: Array<Record<string, unknown> | null>, keys: string[]): Date | null {
+  for (const o of objs) {
+    if (!o) continue
+    for (const k of keys) {
+      const v = o[k]
+      if (v == null || v === '') continue
+      const d = typeof v === 'number' ? new Date(v < 1e12 ? v * 1000 : v) : new Date(String(v))
+      if (!Number.isNaN(d.getTime())) return d
+    }
+  }
+  return null
+}
+
+const pad2 = (n: number): string => String(n).padStart(2, '0')
+
+/** 「明天 14:06 重置」 / 「12月23日 14:02 重置」 */
+function fmtResetAt(d: Date, now: Date): string {
+  const hm = `${pad2(d.getHours())}:${pad2(d.getMinutes())}`
+  const day = (x: Date): number => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime()
+  const diff = Math.round((day(d) - day(now)) / 86_400_000)
+  const label = diff === 0 ? '今天' : diff === 1 ? '明天' : `${d.getMonth() + 1}月${d.getDate()}日`
+  return `${label} ${hm} 重置`
+}
+
+/** 「约 22 小时后恢复」 / 「还剩 30 天」 / 「约 15 分钟后恢复」 */
+function fmtCountdown(d: Date, now: Date): string {
+  const ms = d.getTime() - now.getTime()
+  if (ms <= 0) return '即将恢复'
+  const h = ms / 3_600_000
+  if (h >= 48) return `还剩 ${Math.round(h / 24)} 天`
+  if (h >= 1) return `约 ${Math.round(h)} 小时后恢复`
+  return `约 ${Math.max(1, Math.round(ms / 60_000))} 分钟后恢复`
+}
+
+function leftColor(pct: number): string {
+  return pct > 50 ? 'bg-[#16a34a]' : pct >= 20 ? 'bg-[#d97706]' : 'bg-[#e5484d]'
+}
+
+function QuotaModeToggle({ mode, onChange }: { mode: QuotaMode; onChange: (m: QuotaMode) => void }) {
+  return (
+    <div className="mr-1 flex rounded-full bg-hover p-0.5 text-[11px]">
+      {(['used', 'left'] as const).map((m) => (
+        <button
+          key={m}
+          type="button"
+          onClick={() => onChange(m)}
+          className={
+            mode === m
+              ? 'rounded-full bg-surface px-2 py-px font-medium text-ink shadow-sm'
+              : 'rounded-full px-2 py-px text-ink-muted hover:text-ink'
+          }
+        >
+          {m === 'used' ? '已用' : '剩余'}
+        </button>
+      ))}
+    </div>
+  )
+}
+
+function QuotaMeter(props: {
+  label: string
+  used: number
+  limit: number
+  mode: QuotaMode
+  usedColor: string
+  resetAt: Date | null
+  now: Date
+}) {
+  const { used, limit, mode, resetAt, now } = props
+  const usedPct = Math.min(100, Math.round((used / limit) * 100))
+  const shown = mode === 'used' ? used : Math.max(0, limit - used)
+  const pct = mode === 'used' ? usedPct : 100 - usedPct
+  return (
+    <div>
+      <div className="flex justify-between text-[11.5px]">
+        <span className="text-ink-secondary">
+          {props.label}
+          {mode === 'used' ? '已用' : '剩余'}
+        </span>
+        <span className="tabular-nums text-ink">
+          {fmtTokens(shown)} / {fmtTokens(limit)} ({pct}%)
+        </span>
+      </div>
+      <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-hover">
+        <div
+          className={`h-full rounded-full ${mode === 'used' ? props.usedColor : leftColor(pct)}`}
+          style={{ width: `${pct}%` }}
+        />
+      </div>
+      {resetAt && (
+        <div className="mt-1 flex justify-between text-[11px] text-ink-muted tabular-nums">
+          <span>{fmtResetAt(resetAt, now)}</span>
+          <span>{fmtCountdown(resetAt, now)}</span>
+        </div>
+      )}
+    </div>
+  )
+}
+
 /**
  * 1. Hark Billing & Token Meters (`/billing/summary`, `/profile`)
  */
@@ -57,6 +161,15 @@ export function HarkBillingSection({ accountId }: { accountId: string }) {
   const [profile, setProfile] = useState<Record<string, unknown> | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string>()
+  const [mode, setModeState] = useState<QuotaMode>(() =>
+    localStorage.getItem(QUOTA_MODE_KEY) === 'left' ? 'left' : 'used'
+  )
+  const setMode = (m: QuotaMode): void => {
+    localStorage.setItem(QUOTA_MODE_KEY, m)
+    setModeState(m)
+  }
+  const [updatedAt, setUpdatedAt] = useState<Date | null>(null)
+  const [now, setNow] = useState(() => new Date())
 
   const refresh = useCallback(async () => {
     setLoading(true)
@@ -66,18 +179,31 @@ export function HarkBillingSection({ accountId }: { accountId: string }) {
         callHark(accountId, '/billing/summary').catch(() => null),
         callHark(accountId, '/profile').catch(() => null)
       ])
-      if (sumRaw && typeof sumRaw === 'object') setSummary(sumRaw as Record<string, unknown>)
+      if (sumRaw && typeof sumRaw === 'object') {
+        setSummary(sumRaw as Record<string, unknown>)
+        setUpdatedAt(new Date())
+      }
       if (profRaw && typeof profRaw === 'object') setProfile(profRaw as Record<string, unknown>)
     } catch (err) {
       setError(cleanSidebarError(err))
     } finally {
       setLoading(false)
+      setNow(new Date())
     }
   }, [accountId])
 
+  const live = status === 'online' || status === 'busy'
   useEffect(() => {
-    if (status === 'online' || status === 'busy') void refresh()
-  }, [refresh, status])
+    if (!live) return
+    void refresh()
+    const timer = setInterval(() => void refresh(), QUOTA_REFRESH_MS)
+    // Countdown text only; cheap, no network.
+    const tick = setInterval(() => setNow(new Date()), 60_000)
+    return () => {
+      clearInterval(timer)
+      clearInterval(tick)
+    }
+  }, [refresh, live])
 
   const plan = asObj(summary?.['plan'])
   const planName = str(plan?.['name'] ?? summary?.['tier'] ?? 'Hark Pro')
@@ -87,13 +213,25 @@ export function HarkBillingSection({ accountId }: { accountId: string }) {
   const dailyLimit = Number(harkTokens?.['dailyLimit'] ?? 0)
   const poolUsed = Number(harkTokens?.['poolUsed'] ?? 0)
   const poolLimit = Number(harkTokens?.['poolLimit'] ?? 0)
-  const dailyPct = dailyLimit > 0 ? Math.min(100, Math.round((dailyUsed / dailyLimit) * 100)) : 0
-  const poolPct = poolLimit > 0 ? Math.min(100, Math.round((poolUsed / poolLimit) * 100)) : 0
+  const tokens = asObj(summary?.['tokens'])
+  const dailyReset = pickTime(
+    [harkTokens, meters, summary, asObj(tokens?.['daily']), asObj(harkTokens?.['daily'])],
+    ['dailyResetsAt', 'dailyResetAt', 'daily_resets_at', 'dailyReset', 'dailyWindowEnd', 'resets_at', 'resetsAt']
+  )
+  const poolReset = pickTime(
+    [harkTokens, meters, summary, asObj(tokens?.['pool']), asObj(harkTokens?.['pool']), plan],
+    ['poolResetsAt', 'poolResetAt', 'pool_resets_at', 'periodEnd', 'currentPeriodEnd', 'current_period_end', 'renewsAt', 'resets_at', 'resetsAt']
+  )
 
   return (
     <Section
       title="套餐与额度"
-      action={<RefreshButton loading={loading} onClick={() => void refresh()} />}
+      action={
+        <>
+          <QuotaModeToggle mode={mode} onChange={setMode} />
+          <RefreshButton loading={loading} onClick={() => void refresh()} />
+        </>
+      }
     >
       <div className="flex flex-col gap-2 text-[12px]">
         {error && <p className="text-status-error">{error}</p>}
@@ -111,31 +249,33 @@ export function HarkBillingSection({ accountId }: { accountId: string }) {
             </div>
 
             {dailyLimit > 0 && (
-              <div>
-                <div className="flex justify-between text-[11.5px]">
-                  <span className="text-ink-secondary">今日额度</span>
-                  <span className="tabular-nums text-ink">
-                    {fmtTokens(dailyUsed)} / {fmtTokens(dailyLimit)} ({dailyPct}%)
-                  </span>
-                </div>
-                <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-hover">
-                  <div className="h-full rounded-full bg-ink/75" style={{ width: `${dailyPct}%` }} />
-                </div>
-              </div>
+              <QuotaMeter
+                label="今日"
+                used={dailyUsed}
+                limit={dailyLimit}
+                mode={mode}
+                usedColor="bg-ink/75"
+                resetAt={dailyReset}
+                now={now}
+              />
             )}
 
             {poolLimit > 0 && (
-              <div>
-                <div className="flex justify-between text-[11.5px]">
-                  <span className="text-ink-secondary">周期额度</span>
-                  <span className="tabular-nums text-ink">
-                    {fmtTokens(poolUsed)} / {fmtTokens(poolLimit)} ({poolPct}%)
-                  </span>
-                </div>
-                <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-hover">
-                  <div className="h-full rounded-full bg-accent-600" style={{ width: `${poolPct}%` }} />
-                </div>
-              </div>
+              <QuotaMeter
+                label="周期"
+                used={poolUsed}
+                limit={poolLimit}
+                mode={mode}
+                usedColor="bg-accent-600"
+                resetAt={poolReset}
+                now={now}
+              />
+            )}
+
+            {updatedAt && (
+              <p className="border-t border-line pt-1.5 text-[11px] text-ink-muted">
+                {pad2(updatedAt.getHours())}:{pad2(updatedAt.getMinutes())} 更新 · 每 5 分钟自动刷新
+              </p>
             )}
           </div>
         )}

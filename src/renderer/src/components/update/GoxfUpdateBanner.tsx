@@ -46,7 +46,14 @@ function DismissButton({ onClick }: { onClick: () => void }) {
 
 export function GoxfUpdateBanner() {
   const [upstream, setUpstream] = useState<GoxfUpstreamPrompt | null>(null)
-  const [dismissedUpstream, setDismissedUpstream] = useState<string | null>(null)
+  // Remembered across restarts: one dismiss per upstream version.
+  const [dismissedUpstream, setDismissedUpstreamState] = useState<string | null>(() =>
+    localStorage.getItem('botark.goxf.dismissedUpstream')
+  )
+  const setDismissedUpstream = (v: string): void => {
+    localStorage.setItem('botark.goxf.dismissedUpstream', v)
+    setDismissedUpstreamState(v)
+  }
   const [portable, setPortable] = useState<PortableState>({ kind: 'hidden' })
   const [dismissedPortable, setDismissedPortable] = useState<string | null>(null)
   // Swapping files quits the app; never cut off a bot that is still replying.
