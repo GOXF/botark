@@ -150,6 +150,13 @@ function createMainWindow(): BrowserWindow {
   }
   win.once('ready-to-show', showMainWindow)
   win.webContents.once('did-finish-load', showMainWindow)
+  // GOXF: F12 toggles DevTools (Ctrl+Shift+I still works).
+  win.webContents.on('before-input-event', (event, input) => {
+    if (input.type === 'keyDown' && input.key === 'F12' && !input.control && !input.alt && !input.meta && !input.shift) {
+      event.preventDefault()
+      win.webContents.toggleDevTools()
+    }
+  })
   setTimeout(showMainWindow, 1500)
 
   // macOS: the red button hides the window instead of destroying it. A
