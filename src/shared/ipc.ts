@@ -93,6 +93,8 @@ export const MUSE_CHANNELS = {
   previewWorkspaceFile: 'bothub:muse:files:preview',
   /** Chunked fs.write eager upload → file_ref path. */
   uploadWorkspaceFile: 'bothub:muse:files:upload',
+  /** Fetch Muse virtual avatar & persona identity (identity / peers.avatar / IDENTITY.md). */
+  syncIdentity: 'bothub:muse:identity:sync',
   getProxy: 'bothub:muse:proxy:get',
   setProxy: 'bothub:muse:proxy:set',
   listProxyPool: 'bothub:muse:proxy-pool:list',
@@ -279,7 +281,7 @@ export interface MuseOptionWidgetView {
 }
 
 
-export type MuseProxyMode = 'direct' | 'http' | 'socks5' | 'socks5h'
+export type MuseProxyMode = 'direct' | 'http' | 'https' | 'socks5' | 'socks5h'
 
 /** Renderer-safe proxy view (password never returned). */
 export interface MuseProxyView {
@@ -307,6 +309,13 @@ export interface MuseProxyPoolItemView {
   username?: string
   hasPassword: boolean
   assignedAccountId?: string
+}
+
+export interface MuseIdentityView {
+  displayName?: string
+  emoji?: string
+  avatarDataUrl?: string
+  avatarColor?: string
 }
 
 export type MuseMainEvent =
@@ -352,6 +361,7 @@ export type MuseMainEvent =
   | { type: 'sessions'; accountId: string; sessions: MuseChatSessionView[] }
   | { type: 'files'; accountId: string; files: MuseFileEntryView[] }
   | { type: 'connectors'; accountId: string; connectors: MuseConnectorView[] }
+  | { type: 'identity'; accountId: string; identity: MuseIdentityView }
 
 /** Renderer-safe quota snapshot (no cookies/tokens). */
 export interface MuseQuotaSnapshot {
@@ -1366,7 +1376,7 @@ export interface SecurityStoreAudit {
 
 export interface SecurityAccountAudit {
   accountId: string
-  platformId?: 'meta-muse' | 'grok' | 'hark' | 'dot' | 'hermes' | 'antigravity'
+  platformId?: 'meta-muse' | 'grok' | 'hark' | 'dot' | 'hermes' | 'antigravity' | 'cue'
   partition: string
   transportProtocol: string
   credentialIsolation: string
@@ -1393,8 +1403,160 @@ export interface SecurityVaultStatus {
 
 export interface VaultStatusRequest {
   accountId?: string
-  platformId?: 'meta-muse' | 'grok' | 'hark' | 'dot' | 'hermes' | 'antigravity'
+  platformId?: 'meta-muse' | 'grok' | 'hark' | 'dot' | 'hermes' | 'antigravity' | 'cue'
 }
+
+export const CUE_CHANNELS = {
+  openLogin: 'bothub:cue:open-login',
+  cancelLogin: 'bothub:cue:cancel-login',
+  importCredentials: 'bothub:cue:import-credentials',
+  clearAuth: 'bothub:cue:clear-auth',
+  authStatus: 'bothub:cue:auth-status',
+  getSession: 'bothub:cue:get-session',
+  rpc: 'bothub:cue:rpc',
+  event: 'bothub:cue:event'
+} as const
+
+export interface CueOpenLoginRequest {
+  accountId: string
+  openInBrowser?: boolean
+}
+
+export interface CueImportCredentialsRequest {
+  accountId: string
+  verifyApiKey?: boolean
+  credential?: string
+  rawInput?: string
+  accessToken?: string
+  refreshToken?: string
+}
+
+export interface CueAuthStatus {
+  accountId: string
+  signedIn: boolean
+  handle?: string
+  displayName?: string
+  accountSlot?: string
+  deviceId?: string
+  authKind?: 'oauth' | 'api-key' | 'session' | 'mock'
+  hasProxy?: boolean
+  error?: string
+}
+
+export interface CueAuthSessionPayload {
+  accountId: string
+  signedIn: boolean
+  handle?: string
+  displayName?: string
+  accountSlot?: string
+  deviceId?: string
+  authKind?: 'oauth' | 'api-key' | 'session' | 'mock'
+}
+
+export type CueRpcRequest =
+  | { accountId: string; op: 'health'; baseUrl?: string }
+  | { accountId: string; op: 'listAgents'; baseUrl?: string }
+  | { accountId: string; op: 'listTasks'; agentId?: string; baseUrl?: string }
+  | {
+      accountId: string
+      op: 'getHistory'
+      sessionId?: string
+      agentId?: string
+      limit?: number
+      baseUrl?: string
+    }
+  | {
+      accountId: string
+      op: 'sendMessage'
+      agentId?: string
+      sessionId?: string
+      conversationId?: string
+      text: string
+      baseUrl?: string
+    }
+  | {
+      accountId: string
+      op: 'watchUntilReply'
+      agentId?: string
+      sessionId?: string
+      conversationId?: string
+      afterMessageId?: string
+      expectedUserText?: string
+      baseUrl?: string
+    }
+  | {
+      accountId: string
+      op: 'approve'
+      approvalId: string
+      decision: string
+      sessionId?: string
+      baseUrl?: string
+    }
+  | { accountId: string; op: 'quota'; baseUrl?: string }
+  | {
+      accountId: string
+      op: 'call'
+      path: string
+      method?: 'GET' | 'POST'
+      body?: unknown
+      baseUrl?: string
+    }
+
+export type CueRpcResponse =
+  | { ok: true; data: unknown }
+  | { ok: false; status: number; code?: string; message: string }
+
+export type CueMainEvent =
+  | {
+      type: 'auth'
+      accountId: string
+      signedIn: boolean
+      handle?: string
+      displayName?: string
+      accountSlot?: string
+      windowClosed?: boolean
+    }
+  | {
+      type: 'roster_changed'
+      accountId: string
+    }
+  | {
+      type: 'activity'
+      accountId: string
+      agentId?: string
+      sessionId?: string
+      activityCode?: string
+      activityText?: string | null
+      busy: boolean
+    }
+  | {
+      type: 'stream'
+      accountId: string
+      agentId?: string
+      conversationId?: string
+      sessionId?: string
+      messageId: string
+      text: string
+      done: boolean
+    }
+  | {
+      type: 'turn_failed'
+      accountId: string
+      agentId?: string
+      conversationId?: string
+      message: string
+    }
+  | {
+      type: 'approvals'
+      accountId: string
+      pending: Array<Record<string, unknown>>
+    }
+  | {
+      type: 'message_deleted'
+      accountId: string
+      conversationId?: string
+      messageIds: string[]
+    }
 
 export const ANTIGRAVITY_CHANNELS = {
   openLogin: 'bothub:antigravity:open-login',

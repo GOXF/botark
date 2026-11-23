@@ -1,11 +1,13 @@
 package com.qybaihe.botark
 
+import com.qybaihe.botark.model.MobileOutboundAttachment
 import com.qybaihe.botark.model.PairedDesktopInfo
 import com.qybaihe.botark.model.PlatformId
 import com.qybaihe.botark.service.DesktopBridgeClient
 import com.qybaihe.botark.service.DesktopBridgeException
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import okhttp3.OkHttpClient
@@ -58,6 +60,29 @@ class DesktopBridgeClientTest {
             JsonObject(mapOf("platformId" to JsonPrimitive("hermes"), "decision" to JsonPrimitive("allow_once"))),
             Json.parseToJsonElement(bodyOf(commands[3]))
         )
+    }
+
+    @Test
+    fun postsAttachmentsInSendMessageBody() {
+        val bridge = bridgeResponding { 200 }
+        val att = MobileOutboundAttachment(
+            name = "dog.png",
+            mimeType = "image/png",
+            dataUrl = "data:image/png;base64,iVBORw0KGgo=",
+            size = 9L
+        )
+        runBlocking {
+            bridge.sendMessage(desktop, "bot_1", "", "client-att", listOf(att))
+        }
+        val parsed = Json.parseToJsonElement(bodyOf(commands[0])) as JsonObject
+        assertEquals(JsonPrimitive(""), parsed["text"])
+        assertEquals(JsonPrimitive("client-att"), parsed["clientMessageId"])
+        val arr = parsed["attachments"] as JsonArray
+        assertEquals(1, arr.size)
+        val first = arr[0] as JsonObject
+        assertEquals(JsonPrimitive("dog.png"), first["name"])
+        assertEquals(JsonPrimitive("image/png"), first["mimeType"])
+        assertEquals(JsonPrimitive("data:image/png;base64,iVBORw0KGgo="), first["dataUrl"])
     }
 
     @Test

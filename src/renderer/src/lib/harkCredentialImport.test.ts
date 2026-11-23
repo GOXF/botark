@@ -14,14 +14,13 @@ function bridge(signedIn: boolean) {
 }
 
 describe('importHarkCredentialsForAccount', () => {
-  it('imports into the given account with trimmed input and never clears the partition', async () => {
+  it('imports into the given account with trimmed input and never calls cancelLogin', async () => {
     const b = bridge(true)
     const st = await importHarkCredentialsForAccount(b, 'acc_1', '  Cookie: __Secure-hark.session_token=abc  \n')
     expect(b.importCredentials).toHaveBeenCalledWith({
       accountId: 'acc_1',
       rawInput: 'Cookie: __Secure-hark.session_token=abc'
     })
-    // cancelLogin wipes the account partition (clearStorageData) — regression guard.
     expect(b.cancelLogin).not.toHaveBeenCalled()
     expect(st).toMatchObject({ accountId: 'acc_1', signedIn: true, handle: 'me@example.com' })
   })

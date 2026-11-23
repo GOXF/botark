@@ -9,9 +9,56 @@ import { t } from '@/lib/i18n'
 
 type MemoryHit = { id: string; title: string; snippet: string }
 
-function asHits(raw: unknown): MemoryHit[] {
+export function parseMemoryMarkdownToHits(label: string, content: string): MemoryHit[] {
+  const trimmed = content.trim()
+  if (!trimmed) return []
+  const sections = trimmed.split(/^##+\s+/m).filter((s) => s.trim().length > 0)
+  if (sections.length > 1) {
+    return sections.slice(0, 20).map((sec, idx) => {
+      const newlineIdx = sec.indexOf('\n')
+      const heading = (newlineIdx >= 0 ? sec.slice(0, newlineIdx) : sec).trim()
+      const body = (newlineIdx >= 0 ? sec.slice(newlineIdx + 1) : '').replace(/\s+/g, ' ').trim()
+      return {
+        id: `${label}-${idx}`,
+        title: heading || label,
+        snippet: body.slice(0, 280)
+      }
+    })
+  }
+  const bullets = trimmed
+    .split(/\r?\n/)
+    .map((l) => l.replace(/^[-*•]\s+/, '').trim())
+    .filter((l) => l && !l.startsWith('#'))
+  if (bullets.length > 1) {
+    return bullets.slice(0, 20).map((line, idx) => ({
+      id: `${label}-b-${idx}`,
+      title: label,
+      snippet: line.slice(0, 280)
+    }))
+  }
+  return [
+    {
+      id: `${label}-0`,
+      title: label,
+      snippet: trimmed.replace(/\s+/g, ' ').slice(0, 280)
+    }
+  ]
+}
+
+function asHits(raw: unknown, fallbackTitle = 'MEMORY'): MemoryHit[] {
+  if (typeof raw === 'string') return parseMemoryMarkdownToHits(fallbackTitle, raw)
   if (!raw || typeof raw !== 'object') return []
   const root = raw as Record<string, unknown>
+
+  // Direct `memory.get` / `fs.read` document payload (`content` / `text` / `markdown`)
+  const directText = root['content'] ?? root['text'] ?? root['markdown'] ?? root['value']
+  if (typeof directText === 'string' && directText.trim()) {
+    const uriLabel = String(root['memory_uri'] ?? root['path'] ?? root['title'] ?? fallbackTitle)
+      .replace(/^memory:\/\//i, '')
+      .replace(/\.md$/i, '')
+    return parseMemoryMarkdownToHits(uriLabel || fallbackTitle, directText)
+  }
+
   const lists = [root['results'], root['items'], root['memories'], root['entries'], root['hits']]
   let arr: unknown[] = []
   for (const c of lists) {
@@ -25,15 +72,18 @@ function asHits(raw: unknown): MemoryHit[] {
   for (const row of arr) {
     if (!row || typeof row !== 'object') continue
     const o = row as Record<string, unknown>
-    const id = String(o['id'] ?? o['memory_id'] ?? o['key'] ?? out.length)
-    const title = String(o['title'] ?? o['name'] ?? o['label'] ?? o['kind'] ?? id)
+    const id = String(o['id'] ?? o['memory_id'] ?? o['memory_uri'] ?? o['key'] ?? out.length)
+    const rawTitle = String(o['title'] ?? o['name'] ?? o['label'] ?? o['memory_uri'] ?? o['kind'] ?? id)
+      .replace(/^memory:\/\//i, '')
     const snippet = String(
       o['snippet'] ?? o['text'] ?? o['content'] ?? o['summary'] ?? o['value'] ?? ''
     ).slice(0, 280)
-    out.push({ id, title, snippet })
+    out.push({ id, title: rawTitle, snippet })
   }
   return out
 }
+
+const DEFAULT_MEMORY_URIS = ['memory://MEMORY.md', 'memory://USER.md'] as const
 
 export function MemorySection({ accountId }: { accountId: string }) {
   const [query, setQuery] = useState('')
@@ -55,12 +105,72 @@ export function MemorySection({ accountId }: { accountId: string }) {
       setError(undefined)
       setUnavailable(false)
       try {
-        const method = q.trim() ? 'memory.search' : 'memory.get'
-        const params = q.trim() ? { query: q.trim(), limit: 20 } : { limit: 20 }
-        const raw = await muse.rpc({ accountId, method, params })
-        const next = asHits(raw)
-        setHits(next)
-        if (!next.length && (raw === null || raw === undefined || raw === '')) {
+        const trimmedQuery = q.trim()
+        if (trimmedQuery) {
+          const raw = await muse.rpc({
+            accountId,
+            method: 'memory.search',
+            params: { query: trimmedQuery, limit: 20 }
+          })
+          setHits(asHits(raw))
+          return
+        }
+
+        // Initial overview without search query: `memory.get` requires `memory_uri`.
+        // Probe canonical memory URIs first, then fall back to `memory.search` / `fs.read`.
+        const collected: MemoryHit[] = []
+        let anySucceeded = false
+
+        for (const uri of DEFAULT_MEMORY_URIS) {
+          try {
+            const doc = await muse.rpc({
+              accountId,
+              method: 'memory.get',
+              params: { memory_uri: uri }
+            })
+            anySucceeded = true
+            collected.push(...asHits(doc, uri.replace(/^memory:\/\//, '').replace(/\.md$/i, '')))
+          } catch {
+            /* try next source */
+          }
+        }
+
+        if (collected.length === 0) {
+          try {
+            const searched = await muse.rpc({
+              accountId,
+              method: 'memory.search',
+              params: { query: '*', limit: 20 }
+            })
+            anySucceeded = true
+            collected.push(...asHits(searched))
+          } catch {
+            /* fallback to workspace MEMORY.md */
+          }
+        }
+
+        if (collected.length === 0) {
+          for (const path of ['MEMORY.md', 'workspace/MEMORY.md']) {
+            try {
+              const fileDoc = await muse.rpc({
+                accountId,
+                method: 'fs.read',
+                params: { path }
+              })
+              anySucceeded = true
+              const parsed = asHits(fileDoc, 'MEMORY')
+              if (parsed.length > 0) {
+                collected.push(...parsed)
+                break
+              }
+            } catch {
+              /* ignore */
+            }
+          }
+        }
+
+        setHits(collected)
+        if (!anySucceeded && collected.length === 0) {
           setUnavailable(true)
         }
       } catch (err) {
@@ -87,7 +197,7 @@ export function MemorySection({ accountId }: { accountId: string }) {
       await muse.rpc({ accountId, method: 'memory.consolidate', params: {} })
       await runSearch(query)
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
+      setError(cleanSidebarError(err))
     } finally {
       setBusy(false)
     }

@@ -140,20 +140,34 @@ public actor DesktopBridgeClient {
         return try JSONDecoder().decode(Wrapper.self, from: data).snapshot
     }
 
-    public func sendMessage(desktop: PairedDesktopInfo, botId: String, text: String, clientMessageId: String) async throws -> String? {
+    public func sendMessage(
+        desktop: PairedDesktopInfo,
+        botId: String,
+        text: String,
+        clientMessageId: String,
+        attachments: [MobileOutboundAttachment] = []
+    ) async throws -> String? {
         let pathSegment = CharacterSet.urlPathAllowed.subtracting(CharacterSet(charactersIn: "/?#%"))
         let encodedBot = botId.addingPercentEncoding(withAllowedCharacters: pathSegment) ?? botId
         guard let url = URL(string: "http://\(desktop.activeHost):\(desktop.port)/api/mobile/v1/bots/\(encodedBot)/send") else {
             throw DesktopBridgeError.invalidResponse("Invalid URL")
         }
+        struct SendPayload: Encodable {
+            let text: String
+            let clientMessageId: String
+            let attachments: [MobileOutboundAttachment]?
+        }
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.setValue("Bearer \(desktop.deviceToken)", forHTTPHeaderField: "Authorization")
-        req.httpBody = try JSONSerialization.data(withJSONObject: [
-            "text": text,
-            "clientMessageId": clientMessageId
-        ])
+        req.httpBody = try JSONEncoder().encode(
+            SendPayload(
+                text: text,
+                clientMessageId: clientMessageId,
+                attachments: attachments.isEmpty ? nil : attachments
+            )
+        )
         let (data, resp) = try await session.data(for: req)
         guard let http = resp as? HTTPURLResponse else { throw DesktopBridgeError.invalidResponse("No status") }
         if http.statusCode == 401 { throw DesktopBridgeError.unauthorized }

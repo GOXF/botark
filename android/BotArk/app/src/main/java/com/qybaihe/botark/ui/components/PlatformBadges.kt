@@ -42,6 +42,7 @@ fun PlatformId.drawableRes(): Int = when (this) {
     PlatformId.HARK -> R.drawable.ic_platform_hark
     PlatformId.HERMES -> R.drawable.ic_platform_hermes
     PlatformId.ANTIGRAVITY -> R.drawable.ic_platform_antigravity
+    PlatformId.CUE -> R.drawable.ic_platform_cue
 }
 
 @Composable
@@ -137,6 +138,9 @@ fun PlatformBadgePill(platform: PlatformId) {
 
 fun decodeBase64Image(raw: String?): ImageBitmap? {
     if (raw.isNullOrBlank()) return null
+    if (!raw.startsWith("data:") && raw.length < 512 && (raw.contains('/') || raw.contains('.'))) {
+        return null
+    }
     val part = raw.substringAfter(",", raw)
     return runCatching {
         val bytes = Base64.decode(part, Base64.DEFAULT)

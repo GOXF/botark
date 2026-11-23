@@ -28,7 +28,10 @@ enum class PlatformId(
     HERMES("hermes", "Hermes", "Hermes"),
 
     @SerialName("antigravity")
-    ANTIGRAVITY("antigravity", "Antigravity", "Antigravity");
+    ANTIGRAVITY("antigravity", "Antigravity", "Antigravity"),
+
+    @SerialName("cue")
+    CUE("cue", "Cue (Manus)", "Cue");
 
     val supportsQuickNewSession: Boolean
         get() = this == META_MUSE || this == GROK || this == HERMES || this == ANTIGRAVITY
@@ -40,6 +43,7 @@ enum class PlatformId(
             GROK -> "https://grok.com"
             DOT -> "https://chatgpt.com/dots"
             HARK -> "https://app.hark.com"
+            CUE -> "https://cue.im"
             HERMES -> ""
         }
 
@@ -50,6 +54,7 @@ enum class PlatformId(
             GROK -> "xAI Grok"
             DOT -> "OpenAI Dot"
             HARK -> "Hark 个人助手"
+            CUE -> "Manus Cue 个人智能体"
             HERMES -> "开源 SSE 网关"
         }
 
@@ -58,7 +63,7 @@ enum class PlatformId(
 
     companion object {
         val pickerOrder: List<PlatformId> = listOf(
-            ANTIGRAVITY, META_MUSE, GROK, DOT, HARK, HERMES
+            ANTIGRAVITY, META_MUSE, GROK, DOT, HARK, CUE, HERMES
         )
     }
 }
@@ -124,6 +129,14 @@ data class SyncedMediaPart(
     val path: String,
     val name: String? = null,
     val mimeType: String? = null
+)
+
+@Serializable
+data class MobileOutboundAttachment(
+    val name: String,
+    val mimeType: String,
+    val dataUrl: String,
+    val size: Long? = null
 )
 
 @Serializable

@@ -150,6 +150,18 @@ function toQuery(params: Record<string, unknown>, existingPath = ''): string {
   return existingPath.includes('?') ? `&${s}` : `?${s}`
 }
 
+/**
+ * Extract canonical daemon path from Muse 400 validation errors such as:
+ * `{"ok":false,"error":{"code":"invalid_params","message":"\`method\` must be \`/api/session/start\`"}}`
+ */
+export function extractRequiredMethodPath(errText: string): string | null {
+  if (!errText) return null
+  const m = /`method`\s+must\s+be\s+`(\/[A-Za-z0-9_./-]+)`/i.exec(errText)
+  const candidate = m?.[1]?.trim()
+  if (!candidate || candidate.includes('..') || candidate.startsWith('//')) return null
+  return candidate
+}
+
 /** Noise handshake class. Personal VM = hatch_vm; Shared Agent remote = shared_agent. */
 export type MuseNoiseConnectionClass = 'hatch_vm' | 'shared_agent'
 
@@ -178,6 +190,7 @@ export class MuseNativeGateway extends EventEmitter {
   private transport: NoiseTransport | null = null
   private connecting: Promise<void> | null = null
   private streams = new Map<bigint, PendingStream>()
+  private pathOverrides = new Map<string, string>()
   private heartbeat: ReturnType<typeof setInterval> | null = null
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null
   private attempt = 0
@@ -195,6 +208,14 @@ export class MuseNativeGateway extends EventEmitter {
   /** Hot-swap WSS proxy agent (session.setProxy is applied separately). */
   setProxyAgent(agent: import('node:https').Agent | undefined): void {
     this.opts.agent = agent
+  }
+
+  /** Update WSS proxy agent and drop any live socket so traffic immediately switches to the new proxy. */
+  reconnectWithProxyAgent(agent: import('node:https').Agent | undefined): void {
+    this.opts.agent = agent
+    if (this.ws) {
+      this.hardClose(4000, 'proxy updated')
+    }
   }
 
   private log(msg: string, extra?: Record<string, unknown>): void {
@@ -473,7 +494,8 @@ export class MuseNativeGateway extends EventEmitter {
   } {
     const spec = MUSE_METHODS[method]
     if (!spec) throw new MuseGatewayError(`unknown muse method ${method}`, 'unknown_method')
-    const { path, rest } = substitutePath(spec.path, params)
+    const template = this.pathOverrides.get(method) ?? spec.path
+    const { path, rest } = substitutePath(template, params)
     const isGet = spec.httpMethod === 'GET'
     const isEmptyBody = isGet || spec.requestBody === 'empty'
     return {
@@ -513,6 +535,15 @@ export class MuseNativeGateway extends EventEmitter {
 
   /** Unary RPC. Returns parsed JSON (or text/records/binary) body; throws on HTTP ≥ 400. */
   async request(method: string, params: Record<string, unknown> = {}, timeoutMs?: number): Promise<unknown> {
+    return this.requestInternal(method, params, timeoutMs, true)
+  }
+
+  private async requestInternal(
+    method: string,
+    params: Record<string, unknown>,
+    timeoutMs: number | undefined,
+    allowPathRedirect: boolean
+  ): Promise<unknown> {
     await this.connect()
     const req = this.buildRequest(method, params)
     if (req.subscription) throw new MuseGatewayError(`${method} is a subscription; use subscribe()`, 'unknown_method')
@@ -528,6 +559,19 @@ export class MuseNativeGateway extends EventEmitter {
     })
     if (res.status >= 400) {
       const errText = new TextDecoder().decode(res.body)
+      if (allowPathRedirect && (res.status === 400 || res.status === 404)) {
+        const spec = MUSE_METHODS[method]
+        const currentBase = req.path.split('?')[0] ?? req.path
+        let redirected = extractRequiredMethodPath(errText)
+        if (!redirected && res.status === 404 && spec && !spec.path.includes('{') && currentBase.startsWith('/api/session/')) {
+          redirected = currentBase.slice('/api'.length)
+        }
+        if (redirected && redirected !== currentBase && spec && !spec.path.includes('{')) {
+          this.pathOverrides.set(method, redirected)
+          this.log('muse-native: learned method path override', { method, path: redirected })
+          return this.requestInternal(method, params, timeoutMs, false)
+        }
+      }
       let errJson: unknown = errText
       try {
         errJson = errText ? JSON.parse(errText) : null

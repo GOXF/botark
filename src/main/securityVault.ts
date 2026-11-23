@@ -44,13 +44,15 @@ const AUDITED_STORES: ReadonlyArray<{ id: string; label: string; fileName: strin
   { id: 'proxy-pool', label: '全局代理池密文库', fileName: 'muse-proxy-pool.json' },
   { id: 'grok-tokens', label: 'Grok Sand 令牌保险箱', fileName: 'grok-sand-tokens.json' },
   { id: 'dot-tokens', label: 'Dot OAuth 凭据保险箱', fileName: 'dot-accounts.json' },
+  { id: 'cue-tokens', label: 'Cue 会话凭据保险箱', fileName: 'cue-tokens.json' },
   { id: 'hermes-accounts', label: 'Hermes 网关密钥保险箱', fileName: 'hermes-accounts.json' },
+  { id: 'mcp-registry', label: 'MCP 服务密钥库', fileName: 'mcp-registry.json' },
   { id: 'mobile-sync', label: 'iOS 配对设备令牌哈希库', fileName: 'mobile-sync-devices.json' },
   { id: 'secrets-vault', label: '记忆快照与私密数据保险箱', fileName: VAULT_FILE }
 ]
 
 const PLATFORM_SECURITY_SPECS: Record<
-  'meta-muse' | 'grok' | 'hark' | 'dot' | 'hermes' | 'antigravity',
+  'meta-muse' | 'grok' | 'hark' | 'dot' | 'hermes' | 'antigravity' | 'cue',
   { transportProtocol: string; credentialIsolation: string }
 > = {
   'meta-muse': {
@@ -76,6 +78,10 @@ const PLATFORM_SECURITY_SPECS: Record<
   antigravity: {
     transportProtocol: 'Google gRPC-Web (JSPB) + StreamAgentStateUpdates（TLS 1.3）',
     credentialIsolation: '独立 persist 分区 Google 会话 + 主进程 SAPISIDHASH 签名（渲染层零 Cookie 接触）'
+  },
+  cue: {
+    transportProtocol: 'Manus Connect-RPC + REST v2（TLS 1.3 · 主进程代理转发）',
+    credentialIsolation: '独立 persist 分区 + 系统钥匙串 SafeStorage 密文存储（渲染层零密钥暴露）'
   }
 }
 

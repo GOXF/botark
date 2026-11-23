@@ -7,7 +7,17 @@
  * Never prints cookie/token values.
  */
 
-import { BrowserWindow, session as electronSession, shell } from 'electron'
+import { BrowserWindow, session as electronSession, shell, type WebContents } from 'electron'
+import { getAppWindowIcon } from '../appIcon'
+import {
+  attachGoogleOAuthWebContentsGuard,
+  buildGoogleFallbackBannerScript,
+  buildGoogleFirefoxCompatUa,
+  GOOGLE_BLOCK_CHECK_SCRIPT,
+  installGoogleOAuthHeaderGuard,
+  isGoogleBlockedOrPasskeyText,
+  setGoogleFirefoxCompatMode
+} from '../googleOAuthUaGuard'
 import { applyProxyToPartition } from '../muse/accountProxy'
 import { partitionForAccount } from '../webContentsViewManager'
 import {
@@ -18,12 +28,12 @@ import {
   type HarkAuthSession
 } from './harkClient'
 import { probeHarkSession } from './harkSession'
-import { harkLoginUserAgentFor, harkNativeUserAgent, isGoogleAuthUrl } from './harkUserAgent'
 
 const ALLOWED_HOST =
   /^(?:[\w-]+\.)*(?:hark\.com|google\.com|googleusercontent\.com|gstatic\.com|googleapis\.com|youtube\.com|chromiumapp\.org|apple\.com|icloud\.com|cloudflare\.com)$/i
 
 const loginWindows = new Map<string, BrowserWindow>()
+const loginChildWindows = new Map<string, Set<BrowserWindow>>()
 
 export type HarkLoginSuccess = {
   accountId: string
@@ -57,9 +67,11 @@ function emit(event: HarkLoginEvent): void {
 }
 
 function hostAllowed(url: string): boolean {
+  if (!url || url === 'about:blank') return true
   try {
-    const host = new URL(url).hostname
-    return ALLOWED_HOST.test(host)
+    const parsed = new URL(url)
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return false
+    return ALLOWED_HOST.test(parsed.hostname)
   } catch {
     return false
   }
@@ -103,25 +115,9 @@ export async function openHarkLoginWindow(accountId: string, parent?: BrowserWin
 
   const partition = partitionForAccount(accountId)
   const ses = electronSession.fromPartition(partition)
-  // Turnstile on app.hark.com only passes with Electron's native UA (a
-  // hand-edited string no longer matches the engine's own fingerprint). The
-  // partition may have been switched to a cleaned UA by another view, so reset.
-  const nativeUa = harkNativeUserAgent()
-  ses.setUserAgent(nativeUa)
-  // Google OAuth rejects UAs naming Electron: rewrite the header for Google only.
-  ses.webRequest.onBeforeSendHeaders(
-    { urls: ['*://*.google.com/*', '*://accounts.youtube.com/*'] },
-    (details, callback) => {
-      const headers = { ...details.requestHeaders }
-      if (isGoogleAuthUrl(details.url)) {
-        const ua = harkLoginUserAgentFor(details.url, nativeUa)
-        for (const k of Object.keys(headers)) if (k.toLowerCase() === 'user-agent') delete headers[k]
-        headers['User-Agent'] = ua
-      }
-      callback({ requestHeaders: headers })
-    }
-  )
+  installGoogleOAuthHeaderGuard(ses)
 
+  const windowIcon = getAppWindowIcon()
   const win = new BrowserWindow({
     width: 1040,
     height: 780,
@@ -130,6 +126,7 @@ export async function openHarkLoginWindow(accountId: string, parent?: BrowserWin
     title: '使用 Hark 登录',
     backgroundColor: '#f7f7f8',
     autoHideMenuBar: true,
+    ...(windowIcon ? { icon: windowIcon } : {}),
     parent: parent && !parent.isDestroyed() ? parent : undefined,
     webPreferences: {
       partition,
@@ -139,34 +136,140 @@ export async function openHarkLoginWindow(accountId: string, parent?: BrowserWin
       backgroundThrottling: false
     }
   })
-  win.webContents.setUserAgent(nativeUa)
   loginWindows.set(accountId, win)
 
-  // Keep navigator.userAgent in step with the header: cleaned on Google pages,
-  // native again as soon as the flow returns to hark.com.
-  win.webContents.on('did-start-navigation', (details) => {
-    if (!details.isMainFrame || details.isSameDocument) return
-    const want = harkLoginUserAgentFor(details.url, nativeUa)
-    if (win.webContents.getUserAgent() !== want) win.webContents.setUserAgent(want)
-  })
-
-  win.webContents.setWindowOpenHandler(({ url }) => {
-    if (hostAllowed(url)) {
-      void win.webContents.loadURL(url)
-      return { action: 'deny' }
+  const childPopups = new Set<BrowserWindow>()
+  loginChildWindows.set(accountId, childPopups)
+  const closeChildPopups = () => {
+    for (const child of childPopups) {
+      try {
+        if (!child.isDestroyed()) child.close()
+      } catch {
+        /* ignore */
+      }
     }
-    if (/^https?:\/\//.test(url)) void shell.openExternal(url)
-    return { action: 'deny' }
-  })
-
-  win.webContents.on('will-navigate', (event, url) => {
-    if (!hostAllowed(url) && /^https?:\/\//.test(url)) {
-      event.preventDefault()
-      void shell.openExternal(url)
-    }
-  })
+    childPopups.clear()
+  }
 
   let settling = false
+  let handedOffToBrowser = false
+  let lastBlockCheckAt = 0
+
+  const maybeShowGoogleFallbackBanner = async (wc: WebContents): Promise<void> => {
+    if (settling || wc.isDestroyed()) return
+    try {
+      const currentUrl = wc.getURL()
+      if (!/^https:\/\/accounts\.(?:google|youtube)\.com\//i.test(currentUrl)) return
+      const now = Date.now()
+      if (now - lastBlockCheckAt < 150) return
+      lastBlockCheckAt = now
+      const bodyText = await wc.executeJavaScript(GOOGLE_BLOCK_CHECK_SCRIPT, true)
+      if (!isGoogleBlockedOrPasskeyText(bodyText, currentUrl)) return
+      if (!handedOffToBrowser) {
+        handedOffToBrowser = true
+        void shell.openExternal(HARK_LOGIN_URL)
+      }
+      await wc.executeJavaScript(
+        buildGoogleFallbackBannerScript({
+          title: 'Google 登录受限或需要通行密钥',
+          detail: '可尝试兼容模式重试，或在系统浏览器打开 Hark 登录后使用「粘贴凭据导入」。',
+          buttonLabel: '在系统浏览器打开',
+          actionUrl: 'botark-external://open',
+          secondaryActions: [
+            { label: '尝试兼容模式重试', actionUrl: 'botark-action://retry-firefox-ua' },
+            { label: '返回 Hark 登录页', actionUrl: 'botark-action://back-to-login' }
+          ]
+        }),
+        true
+      )
+    } catch {
+      /* ignore transient navigation states */
+    }
+  }
+
+  const attachNavigationGuards = (wc: WebContents, parentForChild: BrowserWindow) => {
+    attachGoogleOAuthWebContentsGuard(wc, ses)
+
+    const retryWithFirefoxUa = () => {
+      setGoogleFirefoxCompatMode(ses, true)
+      if (!wc.isDestroyed()) {
+        wc.setUserAgent(buildGoogleFirefoxCompatUa())
+        if (/^https:\/\/accounts\.(?:google|youtube)\.com\//i.test(wc.getURL())) {
+          void wc.loadURL(HARK_LOGIN_URL).catch(() => undefined)
+        } else {
+          wc.reload()
+        }
+      }
+    }
+
+    const backToLogin = () => {
+      setGoogleFirefoxCompatMode(ses, false)
+      closeChildPopups()
+      if (!win.isDestroyed()) {
+        void win.loadURL(HARK_LOGIN_URL).catch(() => undefined)
+      }
+    }
+
+    wc.setWindowOpenHandler(({ url }) => {
+      if (url === 'botark-external://open') {
+        void shell.openExternal(HARK_LOGIN_URL)
+        return { action: 'deny' }
+      }
+      if (url === 'botark-action://retry-firefox-ua') {
+        retryWithFirefoxUa()
+        return { action: 'deny' }
+      }
+      if (url === 'botark-action://back-to-login') {
+        backToLogin()
+        return { action: 'deny' }
+      }
+      if (hostAllowed(url)) {
+        return {
+          action: 'allow',
+          overrideBrowserWindowOptions: {
+            width: 540,
+            height: 700,
+            title: 'Hark 安全登录',
+            autoHideMenuBar: true,
+            ...(windowIcon ? { icon: windowIcon } : {}),
+            parent: parentForChild.isDestroyed() ? undefined : parentForChild,
+            webPreferences: {
+              partition,
+              sandbox: true,
+              contextIsolation: true,
+              nodeIntegration: false
+            }
+          }
+        }
+      }
+      if (/^https?:\/\//i.test(url)) void shell.openExternal(url)
+      return { action: 'deny' }
+    })
+
+    wc.on('will-navigate', (event, url) => {
+      if (url === 'botark-external://open') {
+        event.preventDefault()
+        void shell.openExternal(HARK_LOGIN_URL)
+        return
+      }
+      if (url === 'botark-action://retry-firefox-ua') {
+        event.preventDefault()
+        retryWithFirefoxUa()
+        return
+      }
+      if (url === 'botark-action://back-to-login') {
+        event.preventDefault()
+        backToLogin()
+        return
+      }
+      if (!hostAllowed(url) && /^https?:\/\//i.test(url)) {
+        event.preventDefault()
+        void shell.openExternal(url)
+      }
+    })
+  }
+
+  attachNavigationGuards(win.webContents, win)
 
   const finish = async (): Promise<void> => {
     if (settling || win.isDestroyed()) return
@@ -182,6 +285,7 @@ export async function openHarkLoginWindow(accountId: string, parent?: BrowserWin
       displayName,
       sessionCookieNames: hit.cookieNames
     })
+    closeChildPopups()
     try {
       if (!win.isDestroyed()) win.close()
     } catch {
@@ -189,13 +293,29 @@ export async function openHarkLoginWindow(accountId: string, parent?: BrowserWin
     }
   }
 
-  const onNav = (): void => {
+  const onNav = (wc: WebContents): void => {
     void finish()
+    void maybeShowGoogleFallbackBanner(wc)
   }
-  win.webContents.on('did-finish-load', onNav)
-  win.webContents.on('did-navigate', onNav)
-  win.webContents.on('did-navigate-in-page', onNav)
-  win.webContents.on('did-redirect-navigation', onNav)
+  win.webContents.on('did-finish-load', () => onNav(win.webContents))
+  win.webContents.on('did-navigate', () => onNav(win.webContents))
+  win.webContents.on('did-navigate-in-page', () => onNav(win.webContents))
+  win.webContents.on('did-redirect-navigation', () => onNav(win.webContents))
+
+  const trackChildWindow = (childWin: BrowserWindow) => {
+    childPopups.add(childWin)
+    attachNavigationGuards(childWin.webContents, childWin)
+    childWin.webContents.on('did-finish-load', () => onNav(childWin.webContents))
+    childWin.webContents.on('did-navigate', () => onNav(childWin.webContents))
+    childWin.webContents.on('did-navigate-in-page', () => onNav(childWin.webContents))
+    childWin.webContents.on('did-redirect-navigation', () => onNav(childWin.webContents))
+    childWin.webContents.on('did-create-window', (nested) => trackChildWindow(nested))
+    childWin.on('closed', () => {
+      childPopups.delete(childWin)
+      void finish()
+    })
+  }
+  win.webContents.on('did-create-window', trackChildWindow)
 
   const onCookie = (
     _event: unknown,
@@ -207,9 +327,19 @@ export async function openHarkLoginWindow(accountId: string, parent?: BrowserWin
   }
   ses.cookies.on('changed', onCookie)
 
+  const poll = setInterval(() => {
+    if (win.isDestroyed() || settling) {
+      clearInterval(poll)
+      return
+    }
+    void finish()
+  }, 1200)
+
   win.on('closed', () => {
+    clearInterval(poll)
     ses.cookies.off('changed', onCookie)
-    ses.webRequest.onBeforeSendHeaders(null)
+    closeChildPopups()
+    loginChildWindows.delete(accountId)
     loginWindows.delete(accountId)
     void (async () => {
       if (settling) return
@@ -229,15 +359,6 @@ export async function openHarkLoginWindow(accountId: string, parent?: BrowserWin
     })()
   })
 
-  const poll = setInterval(() => {
-    if (win.isDestroyed() || settling) {
-      clearInterval(poll)
-      return
-    }
-    void finish()
-  }, 1200)
-  win.on('closed', () => clearInterval(poll))
-
   try {
     await win.loadURL(HARK_LOGIN_URL)
   } catch (error) {
@@ -248,24 +369,31 @@ export async function openHarkLoginWindow(accountId: string, parent?: BrowserWin
 export async function cancelHarkLogin(accountId: string): Promise<void> {
   const win = loginWindows.get(accountId)
   loginWindows.delete(accountId)
+  const children = loginChildWindows.get(accountId)
+  loginChildWindows.delete(accountId)
+  if (children) {
+    for (const child of children) {
+      try {
+        if (!child.isDestroyed()) child.destroy()
+      } catch {
+        /* ignore */
+      }
+    }
+    children.clear()
+  }
   if (win && !win.isDestroyed()) win.destroy()
   try {
-    const ses = electronSession.fromPartition(partitionForAccount(accountId))
-    await ses.clearStorageData()
+    const existingCookies = await listSessionCookieNames(accountId)
+    const alreadyValid = existingCookies.length > 0 && Boolean(await probeSignedIn(accountId))
+    if (!alreadyValid) {
+      const ses = electronSession.fromPartition(partitionForAccount(accountId))
+      await ses.clearStorageData()
+    }
   } catch (error) {
     console.error('[hark] clear partition failed', error)
   }
 }
 
-/**
- * Close the login window (if any) WITHOUT touching the account partition.
- *
- * Use this after credentials were imported into the partition: unlike
- * `cancelHarkLogin`, it must never call `clearStorageData()`, or the freshly
- * imported session cookies are wiped and the account ends up signed out.
- * Returns true when a window was closed (its `closed` handler then probes the
- * partition and emits `signedIn`).
- */
 export function closeHarkLoginWindow(accountId: string): boolean {
   const win = loginWindows.get(accountId)
   if (!win || win.isDestroyed()) return false

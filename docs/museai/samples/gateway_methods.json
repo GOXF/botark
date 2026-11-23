@@ -2317,7 +2317,7 @@
   {
     "method": "session.start",
     "httpMethod": "POST",
-    "path": "/session/start",
+    "path": "/api/session/start",
     "noiseOnly": false,
     "service": null,
     "aliases": [],
@@ -2326,7 +2326,7 @@
   {
     "method": "session.archive",
     "httpMethod": "POST",
-    "path": "/session/archive",
+    "path": "/api/session/archive",
     "noiseOnly": false,
     "service": null,
     "aliases": [],
@@ -2335,7 +2335,7 @@
   {
     "method": "session.unarchive",
     "httpMethod": "POST",
-    "path": "/session/unarchive",
+    "path": "/api/session/unarchive",
     "noiseOnly": false,
     "service": null,
     "aliases": [],
@@ -2344,7 +2344,7 @@
   {
     "method": "session.pin",
     "httpMethod": "POST",
-    "path": "/session/pin",
+    "path": "/api/session/pin",
     "noiseOnly": false,
     "service": null,
     "aliases": [],
@@ -2353,7 +2353,7 @@
   {
     "method": "session.unpin",
     "httpMethod": "POST",
-    "path": "/session/unpin",
+    "path": "/api/session/unpin",
     "noiseOnly": false,
     "service": null,
     "aliases": [],
@@ -2362,7 +2362,7 @@
   {
     "method": "session.rename",
     "httpMethod": "POST",
-    "path": "/session/rename",
+    "path": "/api/session/rename",
     "noiseOnly": false,
     "service": null,
     "aliases": [],
@@ -2371,7 +2371,7 @@
   {
     "method": "session.delete",
     "httpMethod": "POST",
-    "path": "/session/delete",
+    "path": "/api/session/delete",
     "noiseOnly": false,
     "service": null,
     "aliases": [],

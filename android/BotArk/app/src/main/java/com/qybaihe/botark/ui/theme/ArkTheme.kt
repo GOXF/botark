@@ -126,6 +126,7 @@ fun PlatformId.brandColor(): Color = when (this) {
     PlatformId.HARK -> Color(0xFFE86629)
     PlatformId.HERMES -> Color(0xFF784FF0)
     PlatformId.ANTIGRAVITY -> Color(0xFF4285F4)
+    PlatformId.CUE -> Color(0xFF429DFA)
 }
 
 fun ConnectionStatus.dotColor(): Color = when (this) {

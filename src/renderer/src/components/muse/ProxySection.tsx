@@ -13,12 +13,135 @@ import { useBotStore } from '@/store/botStore'
 const MODES: Array<{ value: MuseProxyMode; label: () => string }> = [
   { value: 'direct', label: () => t('Direct (no proxy)') },
   { value: 'http', label: () => t('HTTP proxy') },
+  { value: 'https', label: () => t('HTTPS proxy') },
   { value: 'socks5', label: () => t('SOCKS5') },
   { value: 'socks5h', label: () => t('SOCKS5H (remote DNS)') }
 ]
 
+function safeDecode(value: string): string {
+  try {
+    return decodeURIComponent(value)
+  } catch {
+    return value
+  }
+}
+
 /**
- * Per-account isolated egress proxy across all 4 platforms (partition + WSS/RPC transport).
+ * Smart parser when a user pastes a complete proxy URL (`https://user:pass@host:port`,
+ * `socks5://host:port`, or `host:port:user:pass`) into the Host input box.
+ */
+export function parseInlineProxyInput(
+  raw: string,
+  fallbackMode: Exclude<MuseProxyMode, 'direct'> = 'http'
+): {
+  mode: Exclude<MuseProxyMode, 'direct'>
+  host: string
+  port?: string
+  username?: string
+  password?: string
+} | null {
+  const trimmed = raw.trim()
+  if (!trimmed) return null
+
+  const schemeMatch = /^(https?|socks5h?|socks):\/\/(.+)$/i.exec(trimmed)
+  if (schemeMatch) {
+    const rawScheme = schemeMatch[1]!.toLowerCase()
+    const mode: Exclude<MuseProxyMode, 'direct'> =
+      rawScheme === 'https'
+        ? 'https'
+        : rawScheme === 'http'
+          ? 'http'
+          : rawScheme === 'socks5h'
+            ? 'socks5h'
+            : 'socks5'
+    const rest = schemeMatch[2]!.replace(/[/?#].*$/, '')
+    const atIdx = rest.lastIndexOf('@')
+    const hostPort = atIdx >= 0 ? rest.slice(atIdx + 1) : rest
+    const authPart = atIdx >= 0 ? rest.slice(0, atIdx) : ''
+    if (!hostPort) return null
+
+    let host = hostPort
+    let port: string | undefined
+    let extraUser: string | undefined
+    let extraPass: string | undefined
+
+    if (hostPort.startsWith('[')) {
+      const closeIdx = hostPort.indexOf(']')
+      if (closeIdx <= 1) return null
+      host = hostPort.slice(0, closeIdx + 1)
+      const tail = hostPort.slice(closeIdx + 1)
+      if (tail.startsWith(':')) {
+        const parts = tail.slice(1).split(':')
+        if (/^\d+$/.test(parts[0] ?? '')) port = parts[0]
+        if (parts.length > 1) extraUser = parts[1]
+        if (parts.length > 2) extraPass = parts.slice(2).join(':')
+      }
+    } else {
+      const parts = hostPort.split(':')
+      host = parts[0]!.trim()
+      if (parts.length >= 2 && /^\d+$/.test(parts[1] ?? '')) {
+        port = parts[1]
+        if (parts.length > 2) extraUser = parts[2]
+        if (parts.length > 3) extraPass = parts.slice(3).join(':')
+      }
+    }
+
+    if (!port && mode === 'https') port = '443'
+    if (!port && mode === 'http') port = '80'
+
+    let username: string | undefined
+    let password: string | undefined
+    if (authPart) {
+      const cIdx = authPart.indexOf(':')
+      username = cIdx >= 0 ? safeDecode(authPart.slice(0, cIdx)) : safeDecode(authPart)
+      password = cIdx >= 0 ? safeDecode(authPart.slice(cIdx + 1)) : undefined
+    } else if (extraUser) {
+      username = safeDecode(extraUser)
+      password = extraPass ? safeDecode(extraPass) : undefined
+    }
+
+    if (!host) return null
+    return { mode, host, port, username, password }
+  }
+
+  // `host:port:user:pass` or `user:pass@host:port` pasted into Host field
+  if (trimmed.includes('@')) {
+    const atIdx = trimmed.lastIndexOf('@')
+    const authPart = trimmed.slice(0, atIdx)
+    const hostPort = trimmed.slice(atIdx + 1)
+    const colonIdx = hostPort.lastIndexOf(':')
+    if (colonIdx <= 0) return null
+    const h = hostPort.slice(0, colonIdx).trim()
+    const p = hostPort.slice(colonIdx + 1).trim()
+    if (!h || !/^\d+$/.test(p)) return null
+    const cIdx = authPart.indexOf(':')
+    return {
+      mode: fallbackMode,
+      host: h,
+      port: p,
+      username: cIdx >= 0 ? safeDecode(authPart.slice(0, cIdx)) : safeDecode(authPart),
+      password: cIdx >= 0 ? safeDecode(authPart.slice(cIdx + 1)) : undefined
+    }
+  }
+
+  if (!trimmed.startsWith('[')) {
+    const parts = trimmed.split(':')
+    if (parts.length >= 2 && /^\d+$/.test(parts[1] ?? '')) {
+      return {
+        mode: fallbackMode,
+        host: parts[0]!.trim(),
+        port: parts[1]!.trim(),
+        username: parts[2]?.trim() || undefined,
+        password: parts.length > 3 ? parts.slice(3).join(':') : undefined
+      }
+    }
+  }
+
+  return null
+}
+
+/**
+ * Per-account isolated egress proxy across all 6 platforms (partition + WSS/RPC transport).
  * Password stored via OS Keychain (`safeStorage`) with fail-closed leak protection.
  */
 export function ProxySection({ accountId }: { accountId: string }) {
@@ -61,6 +184,22 @@ export function ProxySection({ accountId }: { accountId: string }) {
     void refresh()
   }, [refresh])
 
+  const handleHostChange = (rawValue: string) => {
+    const fallback: Exclude<MuseProxyMode, 'direct'> = mode === 'direct' ? 'http' : mode
+    if (rawValue.includes('://') || rawValue.includes('@') || (rawValue.split(':').length >= 2 && /:\d+/.test(rawValue))) {
+      const parsed = parseInlineProxyInput(rawValue, fallback)
+      if (parsed) {
+        setMode(parsed.mode)
+        setHost(parsed.host)
+        if (parsed.port) setPort(parsed.port)
+        if (parsed.username !== undefined) setUsername(parsed.username)
+        if (parsed.password !== undefined) setPassword(parsed.password)
+        return
+      }
+    }
+    setHost(rawValue)
+  }
+
   const save = async () => {
     const muse = getBridge()?.muse
     if (!muse?.setProxy) return
@@ -71,11 +210,15 @@ export function ProxySection({ accountId }: { accountId: string }) {
       const next = await muse.setProxy(accountId, {
         mode,
         host: host.trim() || undefined,
-        port: port.trim() ? Number(port) : undefined,
+        port: port.trim() ? Number(port) : mode === 'https' ? 443 : undefined,
         username: username.trim() || undefined,
         password: password || undefined
       })
       setView(next)
+      setMode(next.mode)
+      setHost(next.host || '')
+      setPort(next.port != null ? String(next.port) : '')
+      setUsername(next.username || '')
       setPassword('')
       setHint(
         platformId === 'meta-muse'
@@ -114,7 +257,10 @@ export function ProxySection({ accountId }: { accountId: string }) {
           <Select
             size="sm"
             value={mode}
-            onValueChange={(next) => setMode(next)}
+            onValueChange={(next) => {
+              setMode(next)
+              if (next === 'https' && !port.trim()) setPort('443')
+            }}
             options={MODES.map((m) => ({ value: m.value, label: m.label() }))}
           />
         </div>
@@ -123,11 +269,19 @@ export function ProxySection({ accountId }: { accountId: string }) {
             <div className="grid grid-cols-[1fr_84px] gap-1.5">
               <label className="flex flex-col gap-1 text-[12px]">
                 <span className="font-medium text-ink">{t('Host')}</span>
-                <TextInput value={host} onChange={(e) => setHost(e.target.value)} placeholder="127.0.0.1" />
+                <TextInput
+                  value={host}
+                  onChange={(e) => handleHostChange(e.target.value)}
+                  placeholder={mode === 'https' ? 'proxy.example.com 或粘贴完整代理链接' : '127.0.0.1 或粘贴完整代理链接'}
+                />
               </label>
               <label className="flex flex-col gap-1 text-[12px]">
                 <span className="font-medium text-ink">{t('Port')}</span>
-                <TextInput value={port} onChange={(e) => setPort(e.target.value)} placeholder="7890" />
+                <TextInput
+                  value={port}
+                  onChange={(e) => setPort(e.target.value)}
+                  placeholder={mode === 'https' ? '443' : '7890'}
+                />
               </label>
             </div>
             <label className="flex flex-col gap-1 text-[12px]">

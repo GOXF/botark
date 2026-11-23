@@ -1,12 +1,13 @@
 /** Pure helpers for user-entered proxy URLs (no Electron/undici imports: testable). */
 
-export type ProxyKind = 'http' | 'socks'
+export type ProxyKind = 'http' | 'https' | 'socks'
 
-/** `host:port` → `http://host:port`; trims; returns null for anything unusable. */
+/** `host:port` → `http://host:port`; preserves `https://` & explicit default ports; returns null for anything unusable. */
 export function normalizeProxyUrl(raw: string | undefined | null): string | null {
   const text = (raw ?? '').trim()
   if (!text) return null
-  const withScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(text) ? text : `http://${text}`
+  const hasExplicitScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(text)
+  const withScheme = hasExplicitScheme ? text : `http://${text}`
   let url: URL
   try {
     url = new URL(withScheme)
@@ -15,17 +16,34 @@ export function normalizeProxyUrl(raw: string | undefined | null): string | null
   }
   const kind = proxyKindOf(url.protocol)
   if (!url.hostname || !kind) return null
-  // URL drops default ports (http :80, https :443): those are fine. SOCKS needs one.
-  if (!url.port && kind === 'socks' && !/:\d+(\/|$)/.test(withScheme.replace(/^[^@]*@/, ''))) return null
-  if (!url.port && kind === 'http' && !/:\d+(\/|$)/.test(withScheme.split('://')[1] ?? '')) return null
-  return url.toString().replace(/\/$/, '')
+
+  const afterScheme = withScheme.replace(/^[a-z][a-z0-9+.-]*:\/\//i, '').replace(/[/?#].*$/, '')
+  const hostPort = afterScheme.includes('@') ? afterScheme.slice(afterScheme.lastIndexOf('@') + 1) : afterScheme
+  const explicitPortMatch = /:(\d+)$/.exec(hostPort)
+
+  if (!hasExplicitScheme && !explicitPortMatch) return null
+  if (kind === 'socks' && !url.port && !explicitPortMatch) return null
+  if (kind === 'http' && !url.port && !explicitPortMatch) return null
+
+  const rawPort = url.port || explicitPortMatch?.[1] || (kind === 'https' ? '443' : '')
+  const portNum = Number(rawPort)
+  if (!Number.isInteger(portNum) || portNum < 1 || portNum > 65535) return null
+
+  const auth =
+    url.username && url.password
+      ? `${url.username}:${url.password}@`
+      : url.username
+        ? `${url.username}@`
+        : ''
+  return `${url.protocol}//${auth}${url.hostname}:${portNum}`
 }
 
 function proxyKindOf(protocol: string): ProxyKind | null {
   switch (protocol) {
     case 'http:':
-    case 'https:':
       return 'http'
+    case 'https:':
+      return 'https'
     case 'socks:':
     case 'socks5:':
     case 'socks5h:':
@@ -52,7 +70,7 @@ export function undiciProxyUrl(normalizedUrl: string): string {
 export function requireValidProxyUrl(raw: string | undefined | null): string | undefined {
   if (!(raw ?? '').trim()) return undefined
   const url = normalizeProxyUrl(raw)
-  if (!url) throw new Error('代理地址无效：需要 http:// 或 socks5:// 加 主机:端口')
+  if (!url) throw new Error('代理地址无效：需要 http://、https:// 或 socks5:// 加 主机:端口')
   return url
 }
 

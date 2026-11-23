@@ -28,14 +28,13 @@ import { cn } from '@/lib/cn'
 import { useOverlayLock } from '@/lib/overlay'
 import { useBotStore } from '@/store/botStore'
 
-/** Fired after any local change to the project list; `detail` may carry a just-created project. */
-const PROJECTS_CHANGED = 'bothub:hark-projects'
-
 async function rpc(request: HarkRpcRequest) {
   const result = await getBridge()?.hark.rpc(request)
   if (!result?.ok) throw new Error(result?.message ?? 'Hark unavailable')
   return result.data
 }
+
+const PROJECTS_CHANGED = 'bothub:hark-projects'
 
 export function HarkProjects({ botId, compact }: { botId: string; compact?: boolean }) {
   const bot = useBotStore((s) => s.bots.find((b) => b.id === botId))!
@@ -52,19 +51,23 @@ export function HarkProjects({ botId, compact }: { botId: string; compact?: bool
   const [title, setTitle] = useState('')
   const [showArchived, setShowArchived] = useState(false)
   const [revision, setRevision] = useState(0)
+  const lastFetchAt = useRef(0)
 
   useOverlayLock(menuOpen)
 
-  const lastFetchAt = useRef(0)
   const invalidate = useCallback(() => setRevision((n) => n + 1), [])
-  // Opportunistic refresh (focus, menu open): skipped if we fetched moments ago.
   const refreshSoon = useCallback(() => {
     if (shouldRefreshHarkProjects(lastFetchAt.current, Date.now())) invalidate()
   }, [invalidate])
 
   useEffect(() => {
-    const onChanged = (e: Event) => {
-      const created = (e as CustomEvent<{ accountId?: string; project?: HarkPendingProject }>).detail
+    setPending([])
+    lastFetchAt.current = 0
+  }, [accountId])
+
+  useEffect(() => {
+    const onChanged = (event: Event) => {
+      const created = (event as CustomEvent<{ accountId?: string; project?: HarkPendingProject }>).detail
       if (created?.project && created.accountId === accountId) {
         const project = created.project
         setPending((list) => [...list.filter((p) => p.id !== project.id), project])

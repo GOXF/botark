@@ -173,7 +173,7 @@ function broadcast(payload: unknown): void {
 
 async function statusFor(accountId: string): Promise<HarkAuthStatus> {
   const hasProxy = Boolean(await loadAccountProxyUrl(accountId).catch(() => true))
-  const probe = await probeHarkSession(accountId)
+  const probe = await probeHarkSession(accountId, { reportConnectionErrors: true })
   if ('signedIn' in probe) return { accountId, signedIn: false, hasProxy }
   return {
     accountId,
@@ -508,12 +508,7 @@ export function registerHarkIpc(): void {
     }
     const st = await statusFor(targetId)
     if (st.signedIn) {
-      // A still-open login window for this account is now redundant. Close it
-      // without clearing the partition (never `cancelHarkLogin` here). Its
-      // `closed` handler emits `signedIn`, and onHarkLoginEvent reloads the views.
       if (!closeHarkLoginWindow(targetId)) {
-        // An embedded web view opened while signed out still shows the login /
-        // Cloudflare page; reload it onto the app with the new cookies.
         reloadAccountWebViews(targetId, harkWebViewUrlAfterSignIn)
       }
       broadcast({

@@ -6,6 +6,7 @@ import androidx.lifecycle.viewModelScope
 import com.qybaihe.botark.model.BridgeConnectionState
 import com.qybaihe.botark.model.ConnectionStatus
 import com.qybaihe.botark.model.DirectHermesCredential
+import com.qybaihe.botark.model.MobileOutboundAttachment
 import com.qybaihe.botark.model.MobileWsEnvelope
 import com.qybaihe.botark.model.OfflineSyncInnerPayload
 import com.qybaihe.botark.model.OfflineSyncOuterBundle
@@ -16,6 +17,7 @@ import com.qybaihe.botark.model.PlatformId
 import com.qybaihe.botark.model.SyncedAccount
 import com.qybaihe.botark.model.SyncedBot
 import com.qybaihe.botark.model.SyncedGroup
+import com.qybaihe.botark.model.SyncedMediaPart
 import com.qybaihe.botark.model.SyncedMessage
 import com.qybaihe.botark.model.WorkspaceSnapshot
 import com.qybaihe.botark.service.DesktopBridgeClient
@@ -364,10 +366,28 @@ class BotArkViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    fun sendMessage(bot: SyncedBot, text: String) {
+    fun sendMessage(
+        bot: SyncedBot,
+        text: String,
+        attachments: List<MobileOutboundAttachment> = emptyList()
+    ) {
         val trimmed = text.trim()
-        if (trimmed.isEmpty()) return
+        if (trimmed.isEmpty() && attachments.isEmpty()) return
         val clientMsgId = "and_msg_${UUID.randomUUID()}"
+        val optimisticMedia = attachments.takeIf { it.isNotEmpty() }?.map { att ->
+            val kind = when {
+                att.mimeType.startsWith("image/") -> "image"
+                att.mimeType.startsWith("video/") -> "video"
+                att.mimeType.startsWith("audio/") -> "audio"
+                else -> "file"
+            }
+            SyncedMediaPart(
+                kind = kind,
+                path = att.dataUrl,
+                name = att.name,
+                mimeType = att.mimeType
+            )
+        }
         val userMsg = SyncedMessage(
             id = clientMsgId,
             botId = bot.id,
@@ -375,7 +395,8 @@ class BotArkViewModel(application: Application) : AndroidViewModel(application) 
             role = "user",
             text = trimmed,
             createdAt = System.currentTimeMillis().toDouble(),
-            delivery = "sending"
+            delivery = "sending",
+            media = optimisticMedia
         )
         val state = _uiState.value
         val desktop = state.pairedDesktop
@@ -383,7 +404,7 @@ class BotArkViewModel(application: Application) : AndroidViewModel(application) 
             appendOrUpdateMessage(bot.id, userMsg.copy(isLocalRelayMessage = true))
             viewModelScope.launch {
                 try {
-                    val messageId = bridge.sendMessage(desktop, bot.id, trimmed, clientMsgId)
+                    val messageId = bridge.sendMessage(desktop, bot.id, trimmed, clientMsgId, attachments)
                     if (messageId != clientMsgId) updateLocalRelayMessage(bot.id, clientMsgId) { null }
                 } catch (e: CancellationException) {
                     throw e
@@ -396,6 +417,11 @@ class BotArkViewModel(application: Application) : AndroidViewModel(application) 
             return
         }
         appendOrUpdateMessage(bot.id, userMsg)
+
+        if (attachments.isNotEmpty() && trimmed.isEmpty()) {
+            markDelivery(bot.id, clientMsgId, "failed", "发送图片或视频需要连接电脑端")
+            return
+        }
 
         val cred = state.directCredential(bot)
         if (cred != null) {

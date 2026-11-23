@@ -137,17 +137,29 @@ export function normalizeSubscription(raw: unknown): MuseSubscription | null {
 }
 
 const ACTION_RE =
-  /createServerReference\(\s*["']([0-9a-f]{40,44})["'][\s\S]{0,180}?["']fetchSubscriptionAction["']/i
+  /(?:createServerReference|\.\w+)\(\s*["']([0-9a-f]{40,44})["'][\s\S]{0,200}?["']fetchSubscriptionAction["']/i
 const ACTION_RE_REV =
-  /["']fetchSubscriptionAction["'][\s\S]{0,180}?createServerReference\(\s*["']([0-9a-f]{40,44})["']/i
+  /["']fetchSubscriptionAction["'][\s\S]{0,200}?(?:createServerReference|\.\w+)\(\s*["']([0-9a-f]{40,44})["']/i
 const LOOSE_NEAR =
-  /fetchSubscriptionAction[\s\S]{0,120}?([0-9a-f]{40,44})|([0-9a-f]{40,44})[\s\S]{0,120}?fetchSubscriptionAction/i
+  /fetchSubscriptionAction[\s\S]{0,140}?([0-9a-f]{40,44})|([0-9a-f]{40,44})[\s\S]{0,140}?fetchSubscriptionAction/i
+
+function extractActionIdFromSource(source: string): string | null {
+  return (
+    source.match(ACTION_RE)?.[1] ||
+    source.match(ACTION_RE_REV)?.[1] ||
+    source.match(LOOSE_NEAR)?.[1] ||
+    source.match(LOOSE_NEAR)?.[2] ||
+    null
+  )
+}
 
 /** Best-effort: scrape muse.ai bundles for the current Server Action id. */
 export async function discoverSubscriptionActionId(fetchFn: FetchFn): Promise<string | null> {
   const seenScripts = new Set<string>()
   const scriptQueue: string[] = []
-  for (const pagePath of ['/', '/chat', '/settings']) {
+  // Probe authenticated app routes (/settings, /chat) BEFORE `/` so marketing landing
+  // chunks do not crowd out the authenticated settings/subscription chunks.
+  for (const pagePath of ['/settings', '/chat', '/']) {
     try {
       const res = await fetchFn(ORIGIN + pagePath, {
         method: 'GET',
@@ -155,11 +167,7 @@ export async function discoverSubscriptionActionId(fetchFn: FetchFn): Promise<st
       })
       if (!res.ok) continue
       const html = await res.text()
-      const fromHtml =
-        html.match(ACTION_RE)?.[1] ||
-        html.match(ACTION_RE_REV)?.[1] ||
-        html.match(LOOSE_NEAR)?.[1] ||
-        html.match(LOOSE_NEAR)?.[2]
+      const fromHtml = extractActionIdFromSource(html)
       if (fromHtml) return fromHtml
       for (const m of html.matchAll(/<script[^>]+src=["']([^"']+)["']/gi)) {
         const src = m[1]!
@@ -169,20 +177,23 @@ export async function discoverSubscriptionActionId(fetchFn: FetchFn): Promise<st
         seenScripts.add(url)
         scriptQueue.push(url)
       }
+      for (const m of html.matchAll(/\/_next\/static\/(?:immutable\/)?chunks\/[A-Za-z0-9_-]+\.js/g)) {
+        const url = `${ORIGIN}${m[0]}`
+        if (!seenScripts.has(url)) {
+          seenScripts.add(url)
+          scriptQueue.push(url)
+        }
+      }
     } catch {
       /* try next page */
     }
   }
-  for (const url of scriptQueue.slice(0, 36)) {
+  for (const url of scriptQueue.slice(0, 96)) {
     try {
       const r = await fetchFn(url, { headers: { Accept: '*/*' } })
       if (!r.ok) continue
       const js = await r.text()
-      const id =
-        js.match(ACTION_RE)?.[1] ||
-        js.match(ACTION_RE_REV)?.[1] ||
-        js.match(LOOSE_NEAR)?.[1] ||
-        js.match(LOOSE_NEAR)?.[2]
+      const id = extractActionIdFromSource(js)
       if (id) return id
     } catch {
       /* try next chunk */
@@ -218,19 +229,26 @@ async function postAction(
   includeAgreement: boolean
 ): Promise<{ status: number; text: string }> {
   const body = JSON.stringify([{ includeAgreement }])
-  const res = await fetchFn(ORIGIN + '/', {
-    method: 'POST',
-    headers: {
-      Accept: 'text/x-component',
-      'Content-Type': 'text/plain;charset=UTF-8',
-      'Next-Action': actionId,
-      Origin: ORIGIN,
-      Referer: ORIGIN + '/'
-    },
-    body
-  })
-  const text = await res.text()
-  return { status: res.status, text }
+  let last = { status: 0, text: '' }
+  for (const actionPath of ['/settings', '/']) {
+    const res = await fetchFn(ORIGIN + actionPath, {
+      method: 'POST',
+      headers: {
+        Accept: 'text/x-component',
+        'Content-Type': 'text/plain;charset=UTF-8',
+        'Next-Action': actionId,
+        Origin: ORIGIN,
+        Referer: ORIGIN + actionPath
+      },
+      body
+    })
+    const text = await res.text()
+    last = { status: res.status, text }
+    if (res.status !== 409 && res.status !== 404) {
+      return last
+    }
+  }
+  return last
 }
 
 function looksLikeSubscription(text: string): boolean {
@@ -300,7 +318,7 @@ export async function fetchSubscription(
   const viaRest = await tryRestSubscriptionEndpoints(fetchFn, fetchedAt)
   if (viaRest) return viaRest
 
-  if (lastStatus === 404 || lastStatus === 400 || !looksLikeSubscription(lastText)) {
+  if (lastStatus === 404 || lastStatus === 400 || lastStatus === 409 || !looksLikeSubscription(lastText)) {
     throw new MuseQuotaError(
       `quota: fetchSubscriptionAction unavailable (HTTP ${lastStatus || 'n/a'})`,
       'action_not_found'

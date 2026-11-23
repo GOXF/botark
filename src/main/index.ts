@@ -20,13 +20,48 @@ import { registerHermesIpc } from './hermes/hermesIpc'
 import { cancelAllHermesRuns } from './hermes/hermesClient'
 import { registerAntigravityIpc } from './antigravity/antigravityIpc'
 import { cancelAllAntigravityRuns } from './antigravity/antigravityClient'
+import { registerCueIpc } from './cue/cueIpc'
+import { findCueCallbackArg, handleCueDesktopCallbackUrl } from './cue/cueDesktopHandoff'
+import { stopCueAccountWatch } from './cue/cueWatchManager'
 import { registerMobileSyncIpc, stopMobileSyncServer } from './mobileSync/mobileSyncIpc'
 import { applyAllStoredProxies } from './muse/accountProxy'
+import { closeAllLocalProxyBridges } from './localProxyBridge'
 import { hardenVaultFilePermissions, registerVaultIpc } from './securityVault'
+import { getAppWindowIcon } from './appIcon'
+
+try {
+  app.commandLine?.appendSwitch?.('disable-blink-features', 'AutomationControlled')
+} catch {
+  /* ignore in test environments */
+}
 
 const isMac = process.platform === 'darwin'
 let mainWindow: BrowserWindow | null = null
 let quitting = false
+let readyForDeepLinks = false
+const pendingCueCallbacks: string[] = []
+
+function dispatchCueCallback(rawUrl: string): void {
+  if (!readyForDeepLinks) {
+    pendingCueCallbacks.push(rawUrl)
+    return
+  }
+  void handleCueDesktopCallbackUrl(rawUrl).catch((err) =>
+    console.error('[cue] desktop callback failed', err instanceof Error ? err.message : err)
+  )
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    if (mainWindow.isMinimized()) mainWindow.restore()
+    mainWindow.show()
+    mainWindow.focus()
+  }
+}
+
+// macOS delivers `cuedev://oauth/desktop-callback?...` via `open-url` instead of `second-instance`.
+app.on('open-url', (event, url) => {
+  if (!url.toLowerCase().startsWith('cuedev://')) return
+  event.preventDefault()
+  dispatchCueCallback(url)
+})
 
 // Seamless upgrade from legacy "bothub" userData directory: if an existing user
 // already has accounts/sessions in Application Support/bothub and no new botark
@@ -35,7 +70,14 @@ try {
   const appData = app.getPath('appData')
   const newUserData = join(appData, 'botark')
   const legacyUserData = join(appData, 'bothub')
-  if (!isPortable() && !existsSync(newUserData) && existsSync(legacyUserData)) {
+  const legacyHasData =
+    existsSync(join(legacyUserData, 'Partitions')) ||
+    existsSync(join(legacyUserData, 'grok-sand-tokens.json'))
+  const newHasData =
+    existsSync(join(newUserData, 'Partitions')) ||
+    existsSync(join(newUserData, 'grok-sand-tokens.json')) ||
+    existsSync(join(newUserData, 'cue-tokens.json'))
+  if (!isPortable() && existsSync(legacyUserData) && (legacyHasData || !existsSync(newUserData)) && !newHasData) {
     app.setPath('userData', legacyUserData)
   }
 } catch {
@@ -49,6 +91,11 @@ if (!gotLock) {
   app.quit()
 } else {
   app.on('second-instance', (_event, argv) => {
+    // Windows delivers `cuedev://oauth/desktop-callback?...` (Cue browser login) as an argv entry.
+    const cueCallback = findCueCallbackArg(argv)
+    if (cueCallback) {
+      dispatchCueCallback(cueCallback)
+    }
     if (!mainWindow || mainWindow.isDestroyed()) return
     if (mainWindow.isMinimized()) mainWindow.restore()
     mainWindow.show()
@@ -72,6 +119,7 @@ process.on('uncaughtException', (error) => {
 })
 
 function createMainWindow(): BrowserWindow {
+  const windowIcon = getAppWindowIcon()
   const win = new BrowserWindow({
     width: 1360,
     height: 860,
@@ -81,6 +129,7 @@ function createMainWindow(): BrowserWindow {
     title: 'BotArk',
     backgroundColor: '#f7f7f8',
     autoHideMenuBar: true,
+    ...(windowIcon ? { icon: windowIcon } : {}),
     ...(isMac ? { titleBarStyle: 'hiddenInset' as const, trafficLightPosition: { x: 18, y: 28 } } : {}),
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
@@ -94,7 +143,13 @@ function createMainWindow(): BrowserWindow {
   const views = attachWebViewManager(win)
   attachMuseSessionManager(win, views)
 
-  win.once('ready-to-show', () => win.show())
+  const showMainWindow = (): void => {
+    if (win.isDestroyed()) return
+    if (!win.isVisible()) win.show()
+  }
+  win.once('ready-to-show', showMainWindow)
+  win.webContents.once('did-finish-load', showMainWindow)
+  setTimeout(showMainWindow, 1500)
 
   // macOS: the red button hides the window instead of destroying it. A
   // re-created window used to start a second Muse session manager while the
@@ -164,8 +219,10 @@ app.on('before-quit', () => {
   cancelHarkWatch('*')
   cancelAllHermesRuns('*')
   cancelAllAntigravityRuns('*')
+  stopCueAccountWatch('*')
   void stopMobileSyncServer()
   disposeAllMuseManagers()
+  void closeAllLocalProxyBridges()
 })
 
 app.whenReady().then(async () => {
@@ -181,12 +238,20 @@ app.whenReady().then(async () => {
   registerDotIpc()
   registerHermesIpc()
   registerAntigravityIpc()
+  registerCueIpc()
   registerMobileSyncIpc()
   registerVaultIpc()
   registerWorkspaceIpc(() => mainWindow)
   registerSlackIpc(() => mainWindow)
   mainWindow = createMainWindow()
   startPerfLog(mainWindow)
+  readyForDeepLinks = true
+  const initialCueCallback = findCueCallbackArg(process.argv)
+  if (initialCueCallback) pendingCueCallbacks.push(initialCueCallback)
+  while (pendingCueCallbacks.length > 0) {
+    const nextUrl = pendingCueCallbacks.shift()
+    if (nextUrl) dispatchCueCallback(nextUrl)
+  }
   startAutoUpdater()
 
   app.on('activate', () => {

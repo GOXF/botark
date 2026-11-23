@@ -238,6 +238,11 @@ export function registerMuseIpc(): void {
     })
   })
 
+  ipcMain.handle(MUSE_CHANNELS.syncIdentity, async (event, accountId: unknown) => {
+    if (typeof accountId !== 'string') throw new TypeError('Invalid accountId')
+    return managerFor(event).syncIdentity(accountId)
+  })
+
   ipcMain.handle(MUSE_CHANNELS.getProxy, async (_event, accountId: unknown) => {
     if (typeof accountId !== 'string') throw new TypeError('Invalid accountId')
     return getProxyView(accountId)
@@ -260,7 +265,7 @@ export function registerMuseIpc(): void {
   ipcMain.handle(MUSE_CHANNELS.importProxyPool, async (_event, rawText: unknown, defaultMode: unknown) => {
     if (typeof rawText !== 'string') throw new TypeError('Invalid proxy pool text')
     const mode: Exclude<MuseProxyMode, 'direct'> =
-      defaultMode === 'http' || defaultMode === 'socks5h' ? defaultMode : 'socks5'
+      defaultMode === 'http' || defaultMode === 'https' || defaultMode === 'socks5h' ? defaultMode : 'socks5'
     return importProxyPool(rawText, mode)
   })
 

@@ -147,11 +147,11 @@ export function MuseBatchImport({ onDone, onBusyChange }: { onDone: () => void; 
     // the store yet, so list them too or the pool frees and re-hands out
     // their proxies (two concurrent logins on one IP).
     if (muse?.assignProxyPool) {
-      const { museIds: existingMuseIds, harkIds } = poolAccountIds(useBotStore.getState().accounts)
+      const { museIds: existingMuseIds, keepIds } = poolAccountIds(useBotStore.getState().accounts)
       const inFlight = rowsRef.current
         .filter((r) => r.accountId && (r.state === 'running' || r.state === 'needs-human'))
         .map((r) => r.accountId)
-      await muse.assignProxyPool([...new Set([...existingMuseIds, ...inFlight, accountId])], harkIds).catch(() => undefined)
+      await muse.assignProxyPool([...new Set([...existingMuseIds, ...inFlight, accountId])], keepIds).catch(() => undefined)
     }
     if (stopRef.current) return { res: { ok: false, reason: 'cancelled' }, accountId, botId }
     try {

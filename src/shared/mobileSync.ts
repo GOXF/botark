@@ -1,6 +1,6 @@
 import type { HermesApprovalView, MuseMediaPartView, MuseToolCallView } from './ipc'
 
-export type MobilePlatformId = 'meta-muse' | 'grok' | 'hark' | 'dot' | 'hermes' | 'antigravity'
+export type MobilePlatformId = 'meta-muse' | 'grok' | 'hark' | 'dot' | 'hermes' | 'antigravity' | 'cue'
 export type MobileConnectionStatus = 'online' | 'busy' | 'attention' | 'offline' | 'error'
 
 export const MOBILE_SYNC_CHANNELS = {
@@ -143,10 +143,18 @@ export type MobileBridgeLiveEvent =
       pending: HermesApprovalView[]
     }
 
+export interface MobileOutboundAttachment {
+  name: string
+  mimeType: string
+  dataUrl: string
+  size?: number
+}
+
 export interface MobileSendCommand {
   botId: string
   text: string
   clientMessageId: string
+  attachments?: MobileOutboundAttachment[]
 }
 
 export type MobileSendResult =

@@ -187,7 +187,7 @@ private fun BotArkRoot(
                     state = state,
                     botId = activeBotId!!,
                     onBack = { activeBotId = null },
-                    onSend = { bot, text -> viewModel.sendMessage(bot, text) },
+                    onSend = { bot, text, attachments -> viewModel.sendMessage(bot, text, attachments) },
                     onStop = { bot -> viewModel.stopGeneration(bot) },
                     onNewSession = { bot -> viewModel.startNewSession(bot) },
                     onDecideApproval = { item, dec -> viewModel.decideApproval(item, dec) }

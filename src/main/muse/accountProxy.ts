@@ -3,18 +3,20 @@
  * Persist via Electron safeStorage; apply to session partition + Noise WSS agent.
  */
 import { join } from "node:path"
-import { app, safeStorage, session as electronSession } from "electron"
+import { app, safeStorage, session as electronSession, type Session } from "electron"
 import { HttpsProxyAgent } from "https-proxy-agent"
 import { SocksProxyAgent } from "socks-proxy-agent"
 import type { Agent } from "node:https"
 import { partitionForAccount } from "../webContentsViewManager"
 import { readJsonFile, writeJsonAtomic } from "../jsonFile"
+import { ensureLocalProxyBridge } from "../localProxyBridge"
+import { remoteDnsProxyUrl } from "../proxyUrl"
 import { createMutex, planPoolAssignment, releasePoolSlot } from "@shared/proxyPool"
 
 /** One lock for both proxy files: every change is read-modify-write across awaits. */
 const withProxyStoreLock = createMutex()
 
-export type MuseProxyMode = "direct" | "http" | "socks5" | "socks5h"
+export type MuseProxyMode = "direct" | "http" | "https" | "socks5" | "socks5h"
 
 export interface MuseProxyConfig {
   mode: MuseProxyMode
@@ -42,10 +44,90 @@ function writeStore(store: StoreFile): void {
   writeJsonAtomic(storePath(), store)
 }
 
+function safeDecodeURIComponent(value: string): string {
+  try {
+    return decodeURIComponent(value)
+  } catch {
+    return value
+  }
+}
+
+function formatHostForUrl(host: string): string {
+  const clean = host.trim()
+  if (clean.includes(":") && !clean.startsWith("[")) return `[${clean}]`
+  return clean
+}
+
+function splitHostAndPort(
+  hostPort: string,
+  fallbackPort?: number
+): { host: string; port: number; extraParts?: string[] } | null {
+  const raw = hostPort.trim()
+  if (!raw) return null
+
+  if (raw.startsWith("[")) {
+    const closeIdx = raw.indexOf("]")
+    if (closeIdx <= 1) return null
+    const host = raw.slice(0, closeIdx + 1)
+    const rest = raw.slice(closeIdx + 1)
+    if (!rest) {
+      if (!fallbackPort) return null
+      return { host, port: fallbackPort }
+    }
+    if (!rest.startsWith(":")) return null
+    const afterColon = rest.slice(1).split(":")
+    const port = Number(afterColon[0])
+    if (!Number.isInteger(port) || port < 1 || port > 65535) return null
+    return {
+      host,
+      port,
+      extraParts: afterColon.length > 1 ? afterColon.slice(1) : undefined
+    }
+  }
+
+  const parts = raw.split(":")
+  if (parts.length === 1) {
+    if (!fallbackPort) return null
+    const host = parts[0]!.trim()
+    if (!host) return null
+    return { host, port: fallbackPort }
+  }
+
+  // `host:port` or `host:port:username:password`
+  const host = parts[0]!.trim()
+  const port = Number(parts[1])
+  if (!host || !Number.isInteger(port) || port < 1 || port > 65535) return null
+  return {
+    host,
+    port,
+    extraParts: parts.length > 2 ? parts.slice(2) : undefined
+  }
+}
+
 function normalize(cfg: MuseProxyConfig | null | undefined): MuseProxyConfig {
   if (!cfg || cfg.mode === "direct") return { mode: "direct" }
-  const host = (cfg.host || "").trim()
-  const port = Number(cfg.port)
+  const rawHost = (cfg.host || "").trim()
+
+  // If the user pasted a full URL (`https://user:pass@host:port`) or `host:port:user:pass`
+  // into the single-account Host input, honor the scheme (`https` stays `https`) and credentials.
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(rawHost) || (!cfg.port && rawHost.includes(":"))) {
+    const parsed = parseProxyLine(rawHost, cfg.mode)
+    if (parsed && parsed.mode !== "direct" && parsed.host && parsed.port) {
+      const explicitPort = Number(cfg.port)
+      const validExplicitPort = Number.isInteger(explicitPort) && explicitPort >= 1 && explicitPort <= 65535
+      return {
+        mode: /^[a-z][a-z0-9+.-]*:\/\//i.test(rawHost) ? parsed.mode : cfg.mode,
+        host: parsed.host,
+        port: /^[a-z][a-z0-9+.-]*:\/\//i.test(rawHost) ? parsed.port : validExplicitPort ? explicitPort : parsed.port,
+        username: cfg.username?.trim() || parsed.username || undefined,
+        password: cfg.password || parsed.password || undefined
+      }
+    }
+  }
+
+  const host = rawHost
+  const rawPort = cfg.port ?? (cfg.mode === "https" ? 443 : undefined)
+  const port = Number(rawPort)
   if (!host || !Number.isInteger(port) || port < 1 || port > 65535) {
     throw new Error("Proxy host and port (1–65535) are required")
   }
@@ -160,13 +242,13 @@ export function buildAccountProxyUrl(cfg: MuseProxyConfig): string | null {
       : cfg.username
         ? `${encodeURIComponent(cfg.username)}@`
         : ""
-  const scheme = cfg.mode === "http" ? "http" : cfg.mode
-  return `${scheme}://${auth}${cfg.host}:${cfg.port}`
+  const host = formatHostForUrl(cfg.host)
+  return `${cfg.mode}://${auth}${host}:${cfg.port}`
 }
 
 /**
- * Resolve the per-account proxy URL string (`http://...`, `socks5://...`, `socks5h://...`)
- * for Node-side `proxyFetch` / `proxyWsAgent` callers (Grok, Dot, etc.).
+ * Resolve the per-account proxy URL string (`http://...`, `https://...`, `socks5://...`, `socks5h://...`)
+ * for Node-side `proxyFetch` / `proxyWsAgent` callers (Grok, Dot, Hermes, etc.).
  * Throws `ProxyConfigUnreadableError` if a proxy is configured on disk yet
  * `safeStorage` cannot decrypt it — never silently falls back to direct.
  */
@@ -175,28 +257,71 @@ export async function loadAccountProxyUrl(accountId: string): Promise<string | u
   return buildAccountProxyUrl(cfg) ?? undefined
 }
 
+async function resolvePartitionProxyRules(cfg: MuseProxyConfig): Promise<string | null> {
+  if (cfg.mode === "direct" || !cfg.host || !cfg.port) return null
+
+  const hasAuth = Boolean(cfg.username || cfg.password)
+  // Chromium's session.setProxy neither supports RFC 1929 SOCKS5 auth nor extracts
+  // `user:pass@` from proxyRules, and HTTPS proxies need HTTP/1.1 ALPN CONNECT over TLS.
+  // Route `https://` proxies and any authenticated proxy via a loopback-only local bridge.
+  if (cfg.mode === "https" || hasAuth) {
+    return ensureLocalProxyBridge({
+      mode: cfg.mode,
+      host: cfg.host,
+      port: cfg.port,
+      username: cfg.username,
+      password: cfg.password
+    })
+  }
+
+  const host = formatHostForUrl(cfg.host)
+  // Chromium's `socks5://` already performs remote DNS resolution on the SOCKS5 proxy,
+  // whereas `socks5h://` is not a recognized scheme in Chromium's proxy string parser.
+  const scheme = cfg.mode === "socks5h" ? "socks5" : cfg.mode
+  return `${scheme}://${host}:${cfg.port}`
+}
+
+async function closePartitionConnections(ses: Electron.Session): Promise<void> {
+  if (typeof ses.closeAllConnections === "function") {
+    await ses.closeAllConnections().catch(() => undefined)
+  }
+}
+
+const partitionProxies = new WeakMap<Session, {
+  lock: ReturnType<typeof createMutex>
+  applied?: string | null
+}>()
+
 export async function applyProxyToPartition(accountId: string, cfg?: MuseProxyConfig): Promise<void> {
   const ses = electronSession.fromPartition(partitionForAccount(accountId))
-  let c: MuseProxyConfig
-  try {
-    c = cfg ?? (await loadProxyConfig(accountId))
-  } catch (err) {
-    // Fail closed: an unreadable proxy must not turn into the real IP.
-    await ses.setProxy({ proxyRules: BLOCKING_PROXY_RULE, proxyBypassRules: "" })
-    throw err
+  let state = partitionProxies.get(ses)
+  if (!state) {
+    state = { lock: createMutex() }
+    partitionProxies.set(ses, state)
   }
-  if (c.mode === "direct") {
-    // Respect OS system proxy (e.g. Clash / Surge on 127.0.0.1) when no per-account proxy is set.
-    await ses.setProxy({ mode: "system" })
-    return
-  }
-  const url = buildAccountProxyUrl(c)
-  if (!url) {
-    await ses.setProxy({ mode: "system" })
-    return
-  }
-  // Electron honors proxyRules for partition fetch + WebContents login window.
-  await ses.setProxy({ proxyRules: url, proxyBypassRules: "<local>" })
+  const proxyState = state
+  await proxyState.lock(async () => {
+    const applyRules = async (rules: string | null): Promise<void> => {
+      // Setting unchanged rules and closing the session would abort concurrent
+      // requests and Hark's live response stream on this same partition.
+      if (proxyState.applied === rules) return
+      await ses.setProxy(rules
+        ? { proxyRules: rules, proxyBypassRules: rules === BLOCKING_PROXY_RULE ? "" : "<local>" }
+        : { mode: "system" })
+      await closePartitionConnections(ses)
+      proxyState.applied = rules
+    }
+
+    let rules: string | null
+    try {
+      rules = await resolvePartitionProxyRules(cfg ?? await loadProxyConfig(accountId))
+    } catch (error) {
+      // An unreadable or unusable configured proxy must not fall back to direct.
+      await applyRules(BLOCKING_PROXY_RULE)
+      throw error
+    }
+    await applyRules(rules)
+  })
 }
 
 /** Node `ws` / HTTPS agent for Noise WSS (session.setProxy does not cover Node ws). */
@@ -204,8 +329,8 @@ export async function createProxyAgent(accountId: string): Promise<Agent | undef
   const cfg = await loadProxyConfig(accountId)
   const url = buildAccountProxyUrl(cfg)
   if (!url) return undefined
-  if (cfg.mode === "http") return new HttpsProxyAgent(url) as unknown as Agent
-  return new SocksProxyAgent(url) as unknown as Agent
+  if (cfg.mode === "http" || cfg.mode === "https") return new HttpsProxyAgent(url) as unknown as Agent
+  return new SocksProxyAgent(remoteDnsProxyUrl(url)) as unknown as Agent
 }
 
 export interface MuseProxyPoolItemView {
@@ -236,7 +361,7 @@ function writePoolStore(list: StoredPoolItem[]): void {
   writeJsonAtomic(poolStorePath(), list)
 }
 
-/** Parse one proxy line (`socks5://u:p@h:p`, `http://h:p`, `h:p:u:p`, `h:p`). */
+/** Parse one proxy line (`https://u:p@h:p`, `socks5://u:p@h:p`, `http://h:p`, `h:p:u:p`, `h:p`). */
 export function parseProxyLine(
   line: string,
   defaultMode: Exclude<MuseProxyMode, "direct"> = "socks5"
@@ -244,60 +369,86 @@ export function parseProxyLine(
   const trimmed = line.trim()
   if (!trimmed || trimmed.startsWith("#")) return null
 
-  const schemeMatch = /^(https?|socks5h?):\/\/(.+)$/i.exec(trimmed)
+  const schemeMatch = /^(https?|socks5h?|socks):\/\/(.+)$/i.exec(trimmed)
   if (schemeMatch) {
     const rawScheme = schemeMatch[1]!.toLowerCase()
     const mode: Exclude<MuseProxyMode, "direct"> =
-      rawScheme === "socks5h" ? "socks5h" : rawScheme === "socks5" ? "socks5" : "http"
-    const rest = schemeMatch[2]!.replace(/\/.*$/, "")
+      rawScheme === "https"
+        ? "https"
+        : rawScheme === "http"
+          ? "http"
+          : rawScheme === "socks5h"
+            ? "socks5h"
+            : "socks5"
+    const rest = schemeMatch[2]!.replace(/[/?#].*$/, "")
     const atIdx = rest.lastIndexOf("@")
-    const hostPort = atIdx >= 0 ? rest.slice(atIdx + 1) : rest
+    const hostPortPart = atIdx >= 0 ? rest.slice(atIdx + 1) : rest
     const authPart = atIdx >= 0 ? rest.slice(0, atIdx) : ""
-    const colonIdx = hostPort.lastIndexOf(":")
-    if (colonIdx <= 0) return null
-    const host = hostPort.slice(0, colonIdx).trim()
-    const port = Number(hostPort.slice(colonIdx + 1))
-    if (!host || !Number.isInteger(port) || port < 1 || port > 65535) return null
+    const defaultPort = mode === "https" ? 443 : mode === "http" ? 80 : undefined
+    const parsedHostPort = splitHostAndPort(hostPortPart, defaultPort)
+    if (!parsedHostPort) return null
+
     let username: string | undefined
     let password: string | undefined
     if (authPart) {
       const cIdx = authPart.indexOf(":")
       if (cIdx >= 0) {
-        username = decodeURIComponent(authPart.slice(0, cIdx))
-        password = decodeURIComponent(authPart.slice(cIdx + 1))
+        username = safeDecodeURIComponent(authPart.slice(0, cIdx))
+        password = safeDecodeURIComponent(authPart.slice(cIdx + 1))
       } else {
-        username = decodeURIComponent(authPart)
+        username = safeDecodeURIComponent(authPart)
       }
+    } else if (parsedHostPort.extraParts && parsedHostPort.extraParts.length > 0) {
+      // Vendor format with scheme: `https://gate.provider.com:7000:user:pass`
+      username = safeDecodeURIComponent(parsedHostPort.extraParts[0]?.trim() ?? "")
+      password =
+        parsedHostPort.extraParts.length > 1
+          ? safeDecodeURIComponent(parsedHostPort.extraParts.slice(1).join(":"))
+          : undefined
     }
-    return { mode, host, port, username: username || undefined, password: password || undefined }
+    return {
+      mode,
+      host: parsedHostPort.host,
+      port: parsedHostPort.port,
+      username: username || undefined,
+      password: password || undefined
+    }
   }
 
-  // host:port:user:pass or user:pass@host:port or host:port
+  // `user:pass@host:port` without scheme
   if (trimmed.includes("@")) {
     const atIdx = trimmed.lastIndexOf("@")
     const authPart = trimmed.slice(0, atIdx)
     const hostPort = trimmed.slice(atIdx + 1)
-    const [host, portStr] = hostPort.split(":")
-    const port = Number(portStr)
-    if (!host || !Number.isInteger(port) || port < 1 || port > 65535) return null
-    const [u, ...pRest] = authPart.split(":")
+    const parsedHostPort = splitHostAndPort(hostPort)
+    if (!parsedHostPort) return null
+    const cIdx = authPart.indexOf(":")
+    const username = cIdx >= 0 ? safeDecodeURIComponent(authPart.slice(0, cIdx)).trim() : safeDecodeURIComponent(authPart).trim()
+    const password = cIdx >= 0 ? safeDecodeURIComponent(authPart.slice(cIdx + 1)) : undefined
     return {
       mode: defaultMode,
-      host: host.trim(),
-      port,
-      username: u?.trim() || undefined,
-      password: pRest.join(":") || undefined
+      host: parsedHostPort.host,
+      port: parsedHostPort.port,
+      username: username || undefined,
+      password: password || undefined
     }
   }
 
-  const parts = trimmed.split(":")
-  if (parts.length >= 2) {
-    const host = parts[0]!.trim()
-    const port = Number(parts[1])
-    if (!host || !Number.isInteger(port) || port < 1 || port > 65535) return null
-    const username = parts[2]?.trim() || undefined
-    const password = parts.length > 3 ? parts.slice(3).join(":") : undefined
-    return { mode: defaultMode, host, port, username, password }
+  // `host:port` or `host:port:user:pass` (including `[::1]:1080`)
+  const parsedHostPort = splitHostAndPort(trimmed)
+  if (parsedHostPort) {
+    const username = parsedHostPort.extraParts?.[0]?.trim() || undefined
+    const password =
+      parsedHostPort.extraParts && parsedHostPort.extraParts.length > 1
+        ? parsedHostPort.extraParts.slice(1).join(":")
+        : undefined
+    return {
+      mode: defaultMode,
+      host: parsedHostPort.host,
+      port: parsedHostPort.port,
+      username,
+      password
+    }
   }
   return null
 }
@@ -388,7 +539,7 @@ export async function clearProxyPool(): Promise<MuseProxyPoolItemView[]> {
 /**
  * Match 1 proxy from the pool to each accountId in `accountIds` (1-to-1).
  * Accounts that already have a pool proxy keep it; unassigned accounts get the
- * next free pool proxy (or round-robin if pool is smaller than accounts).
+ * next free pool proxy (or stay on current setting if pool is smaller than accounts).
  */
 export async function assignProxyPoolToAccounts(
   accountIds: string[],

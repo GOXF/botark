@@ -37,7 +37,7 @@ import {
 
 const DEFAULT_PORT = 19472
 const PAIR_TTL_MS = 10 * 60 * 1000
-const MAX_BODY_BYTES = 2 * 1024 * 1024
+const MAX_BODY_BYTES = 16 * 1024 * 1024
 const SEND_RETRY_TTL_MS = 2 * 60 * 1000
 const MAX_SEND_RECORDS = 512
 
@@ -607,8 +607,23 @@ code{color:#93c5fd}</style></head><body><div class="card">
         const botId = decodeURIComponent(sendMatch[1]!)
         const body = await readJsonBody(req)
         const text = typeof body['text'] === 'string' ? body['text'].trim() : ''
-        if (!text) {
-          sendJson(res, 400, { ok: false, message: 'Message text is required' })
+        const rawAttachments = Array.isArray(body['attachments']) ? body['attachments'] : []
+        const attachments: NonNullable<MobileSendCommand['attachments']> = []
+        for (const item of rawAttachments.slice(0, 6)) {
+          if (!item || typeof item !== 'object') continue
+          const rec = item as Record<string, unknown>
+          const name = typeof rec['name'] === 'string' && rec['name'].trim() ? rec['name'].trim() : 'attachment'
+          const mimeType =
+            typeof rec['mimeType'] === 'string' && rec['mimeType'].trim()
+              ? rec['mimeType'].trim()
+              : 'application/octet-stream'
+          const dataUrl = typeof rec['dataUrl'] === 'string' ? rec['dataUrl'].trim() : ''
+          if (!dataUrl.startsWith('data:')) continue
+          const size = typeof rec['size'] === 'number' && Number.isFinite(rec['size']) ? rec['size'] : undefined
+          attachments.push({ name, mimeType, dataUrl, size })
+        }
+        if (!text && attachments.length === 0) {
+          sendJson(res, 400, { ok: false, message: 'Message text or attachment is required' })
           return
         }
         const id = body['clientMessageId']
@@ -619,7 +634,8 @@ code{color:#93c5fd}</style></head><body><div class="card">
         const result = await this.queueSend(device.deviceId, {
           botId,
           text,
-          clientMessageId: id ?? `mobile_${randomUUID()}`
+          clientMessageId: id ?? `mobile_${randomUUID()}`,
+          ...(attachments.length > 0 ? { attachments } : {})
         })
         if (!result.ok) {
           sendJson(res, result.status, { ok: false, message: result.message })
@@ -687,7 +703,8 @@ code{color:#93c5fd}</style></head><body><div class="card">
       if (entry.expiresAt <= now) this.sends.delete(id)
     }
     const key = JSON.stringify([deviceId, command.clientMessageId])
-    const fingerprint = sha256Hex(JSON.stringify([command.botId, command.text]))
+    const attSig = (command.attachments ?? []).map((a) => `${a.name}:${a.mimeType}:${a.dataUrl.length}`)
+    const fingerprint = sha256Hex(JSON.stringify([command.botId, command.text, attSig]))
     const previous = this.sends.get(key)
     if (previous) {
       return previous.fingerprint === fingerprint

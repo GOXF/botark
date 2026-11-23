@@ -1,5 +1,15 @@
-import { BrowserWindow, Notification, session as electronSession } from 'electron'
+import { BrowserWindow, Notification, session as electronSession, shell, type WebContents } from 'electron'
 import type { MuseMainEvent, MuseSessionStatus, WebViewBounds } from '@shared/ipc'
+import { getAppWindowIcon } from '../appIcon'
+import {
+  attachGoogleOAuthWebContentsGuard,
+  buildGoogleFallbackBannerScript,
+  buildGoogleFirefoxCompatUa,
+  GOOGLE_BLOCK_CHECK_SCRIPT,
+  installGoogleOAuthHeaderGuard,
+  isGoogleBlockedOrPasskeyText,
+  setGoogleFirefoxCompatMode
+} from '../googleOAuthUaGuard'
 import { partitionForAccount, webViewId, WebContentsViewManager } from '../webContentsViewManager'
 import { MUSE_HOOK_SCRIPT, museDomSendScript, museRpcScript } from './hookScript'
 import {
@@ -46,12 +56,14 @@ import {
 } from '../muse-native/schedules'
 import { sessionsFromListResult, sessionIdParams } from '../muse-native/sessions'
 import { artifactsFromListResult, libraryFromResult } from '../muse-native/files'
+import { fetchMuseIdentitySnapshot } from '../muse-native/identity'
 import type {
   MuseChatSessionView,
   MuseConnectorConnectResult,
   MuseConnectorView,
   MuseFileEntryView,
   MuseHistoryMessageView,
+  MuseIdentityView,
   MuseInviteSnapshot,
   MuseQuotaSnapshot,
   MuseSchedule,
@@ -92,6 +104,8 @@ interface AccountSession {
   chatSessions?: MuseChatSessionView[]
   files?: MuseFileEntryView[]
   connectors?: MuseConnectorView[]
+  identitySynced?: boolean
+  identity?: MuseIdentityView
 }
 
 /**
@@ -177,7 +191,7 @@ export class MuseSessionManager {
     if (!session) {
       await applyProxyToPartition(accountId)
       const ses = electronSession.fromPartition(partitionForAccount(accountId))
-      ses.setUserAgent(cleanMuseChromeUserAgent(ses.getUserAgent()))
+      installGoogleOAuthHeaderGuard(ses)
       session = {
         accountId,
         botId,
@@ -217,14 +231,40 @@ export class MuseSessionManager {
     const view = this.views.getView(viewId)
     if (!view) return
 
-    view.webContents.setUserAgent(cleanMuseChromeUserAgent(view.webContents.getUserAgent()))
+    const partition = partitionForAccount(accountId)
+    installGoogleOAuthHeaderGuard(electronSession.fromPartition(partition))
 
-    view.webContents.setWindowOpenHandler(({ url }) => {
-      if (isAllowedMuseUrl(url) && url !== 'about:blank') {
-        void view.webContents.loadURL(url)
-      }
-      return { action: 'deny' }
-    })
+    const attachViewPopupGuards = (wc: WebContents) => {
+      const viewSes = electronSession.fromPartition(partition)
+      const windowIcon = getAppWindowIcon()
+      attachGoogleOAuthWebContentsGuard(wc, viewSes)
+      wc.setWindowOpenHandler(({ url }) => {
+        if (isAllowedMuseUrl(url)) {
+          return {
+            action: 'allow',
+            overrideBrowserWindowOptions: {
+              width: 540,
+              height: 700,
+              title: 'Muse 安全登录',
+              autoHideMenuBar: true,
+              ...(windowIcon ? { icon: windowIcon } : {}),
+              parent: this.window.isDestroyed() ? undefined : this.window,
+              webPreferences: {
+                partition,
+                sandbox: true,
+                contextIsolation: true,
+                nodeIntegration: false
+              }
+            }
+          }
+        }
+        return { action: 'deny' }
+      })
+      wc.on('did-create-window', (childWin) => {
+        attachViewPopupGuards(childWin.webContents)
+      })
+    }
+    attachViewPopupGuards(view.webContents)
 
     void applyMuseKeepAlive(view.webContents)
     view.webContents.on('dom-ready', () => {
@@ -510,9 +550,28 @@ export class MuseSessionManager {
     this.chatWatchBound.add(accountId)
     void client.chat.ensure().then(() => {
       client.chat.on('event', (e: MuseChatEvent) => this.onChatWatchEvent(accountId, e))
+      if (!session.identitySynced) {
+        session.identitySynced = true
+        void this.syncIdentity(accountId).catch(() => undefined)
+      }
     }).catch(() => {
       this.chatWatchBound.delete(accountId)
     })
+  }
+
+  async syncIdentity(accountId: string): Promise<MuseIdentityView> {
+    await this.ensure('muse', accountId)
+    const client = this.native.get(accountId)
+    const identity = await fetchMuseIdentitySnapshot(client.gateway, this.partitionFetch(accountId))
+    const session = this.sessions.get(accountId)
+    if (session) {
+      session.identity = identity
+      session.identitySynced = true
+    }
+    if (identity.displayName || identity.avatarDataUrl || identity.emoji) {
+      this.emit({ type: 'identity', accountId, identity })
+    }
+    return identity
   }
 
   private onChatWatchEvent(accountId: string, e: MuseChatEvent): void {
@@ -882,6 +941,11 @@ export class MuseSessionManager {
       return fetchViaSession(trimmed)
     }
 
+    if (!this.native.peek(accountId) && !(await this.hasSessionCookie(accountId))) {
+      if (isHttpUrl) return fetchViaSession(trimmed)
+      throw new Error('Muse account is not signed in')
+    }
+
     await this.ensure('muse', accountId)
     const client = this.native.get(accountId)
     if (!client) {
@@ -922,7 +986,7 @@ export class MuseSessionManager {
     const client = this.native.peek(accountId)
     if (!client) return
     const agent = await createProxyAgent(accountId)
-    client.gateway.setProxyAgent(agent)
+    client.gateway.reconnectWithProxyAgent(agent)
   }
 
 
@@ -1372,8 +1436,7 @@ export class MuseSessionManager {
   }
 
   async listSessions(accountId: string): Promise<MuseChatSessionView[]> {
-    const native = await this.rpcNative(accountId, 'sessions.list', {})
-    const raw = native ? native.value : await this.rpc(accountId, 'sessions.list', {})
+    const raw = await this.rpc(accountId, 'sessions.list', {})
     const list = sessionsFromListResult(raw)
     const session = this.sessions.get(accountId)
     if (session) session.chatSessions = list
@@ -1396,8 +1459,7 @@ export class MuseSessionManager {
     } else {
       throw new TypeError('Unknown session mutation')
     }
-    const native = await this.rpcNative(accountId, method, params)
-    const raw = native ? native.value : await this.rpc(accountId, method, params)
+    const raw = await this.rpc(accountId, method, params)
     void this.listSessions(accountId)
     return raw
   }
@@ -1417,8 +1479,7 @@ export class MuseSessionManager {
   }
 
   async startSession(accountId: string): Promise<{ sessionId: string | null }> {
-    const native = await this.rpcNative(accountId, 'session.start', {})
-    const raw = native ? native.value : await this.rpc(accountId, 'session.start', {})
+    const raw = await this.rpc(accountId, 'session.start', {})
     const o = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {}
     const nested = o['session'] && typeof o['session'] === 'object' ? (o['session'] as Record<string, unknown>) : o
     const sessionId =
@@ -1437,8 +1498,7 @@ export class MuseSessionManager {
     const session = this.sessions.get(accountId)
     if (session && sessionId) session.activeSessionId = sessionId
     const params = { session_id: sessionId, limit: 100 }
-    const native = await this.rpcNative(accountId, 'chat.history', params)
-    const raw = native ? native.value : await this.rpc(accountId, 'chat.history', params)
+    const raw = await this.rpc(accountId, 'chat.history', params)
     const rows = parseHistoryTranscript(raw)
     try {
       void this.rpcNative(accountId, 'chat.mark_seen', { thread_id: sessionId, session_id: sessionId }).catch(() => undefined)
@@ -1602,7 +1662,7 @@ export class MuseSessionManager {
     const partition = partitionForAccount(accountId)
     const ses = electronSession.fromPartition(partition)
     const cleanUa = cleanMuseChromeUserAgent(ses.getUserAgent())
-    ses.setUserAgent(cleanUa)
+    installGoogleOAuthHeaderGuard(ses)
 
     const pendingStatus: MuseSessionStatus = {
       accountId,
@@ -1640,6 +1700,7 @@ export class MuseSessionManager {
       this.destroyAccount(accountId)
     }
 
+    const windowIcon = getAppWindowIcon()
     const win = new BrowserWindow({
       width: 1040,
       height: 780,
@@ -1649,6 +1710,7 @@ export class MuseSessionManager {
       show: !opts?.hidden,
       backgroundColor: '#f7f7f8',
       autoHideMenuBar: true,
+      ...(windowIcon ? { icon: windowIcon } : {}),
       parent: this.window.isDestroyed() ? undefined : this.window,
       webPreferences: {
         partition,
@@ -1658,7 +1720,6 @@ export class MuseSessionManager {
         backgroundThrottling: false
       }
     })
-    win.webContents.setUserAgent(cleanUa)
     this.loginWindows.set(accountId, win)
 
     const childPopups = new Set<BrowserWindow>()
@@ -1680,25 +1741,110 @@ export class MuseSessionManager {
       return false
     }
 
-    win.webContents.setWindowOpenHandler(({ url }) => {
-      if (!isAllowedMuseUrl(url)) return { action: 'deny' }
-      return {
-        action: 'allow',
-        overrideBrowserWindowOptions: {
-          width: 540,
-          height: 700,
-          title: 'Muse 安全登录',
-          autoHideMenuBar: true,
-          parent: win.isDestroyed() ? undefined : win,
-          webPreferences: {
-            partition,
-            sandbox: true,
-            contextIsolation: true,
-            nodeIntegration: false
+    let lastBlockCheckAt = 0
+    const maybeShowGoogleFallbackBanner = async (wc: WebContents): Promise<void> => {
+      if (wc.isDestroyed()) return
+      try {
+        const currentUrl = wc.getURL()
+        if (!/^https:\/\/accounts\.(?:google|youtube)\.com\//i.test(currentUrl)) return
+        const now = Date.now()
+        if (now - lastBlockCheckAt < 150) return
+        lastBlockCheckAt = now
+        const bodyText = (await wc.executeJavaScript(GOOGLE_BLOCK_CHECK_SCRIPT, true)) as string
+        if (!isGoogleBlockedOrPasskeyText(bodyText, currentUrl)) return
+        await wc.executeJavaScript(
+          buildGoogleFallbackBannerScript({
+            title: 'Google 登录受限或需要通行密钥',
+            detail: '可尝试兼容模式重试，或在 Muse 登录页改用邮箱验证码（Email OTP）登录。',
+            buttonLabel: '在系统浏览器打开',
+            actionUrl: 'botark-external://open',
+            secondaryActions: [
+              { label: '尝试兼容模式重试', actionUrl: 'botark-action://retry-firefox-ua' },
+              { label: '改用邮箱登录', actionUrl: 'botark-action://back-to-login' }
+            ]
+          }),
+          true
+        )
+      } catch {
+        /* ignore transient navigation states */
+      }
+    }
+
+    const attachLoginNavigationGuards = (wc: WebContents, parentForChild: BrowserWindow) => {
+      attachGoogleOAuthWebContentsGuard(wc, ses)
+
+      const retryWithFirefoxUa = () => {
+        setGoogleFirefoxCompatMode(ses, true)
+        if (!wc.isDestroyed()) {
+          wc.setUserAgent(buildGoogleFirefoxCompatUa())
+          if (/^https:\/\/accounts\.(?:google|youtube)\.com\//i.test(wc.getURL())) {
+            void wc.loadURL(MUSE_ORIGIN).catch(() => undefined)
+          } else {
+            wc.reload()
           }
         }
       }
-    })
+
+      const backToLogin = () => {
+        setGoogleFirefoxCompatMode(ses, false)
+        closeChildPopups()
+        if (!win.isDestroyed()) {
+          void win.loadURL(MUSE_ORIGIN).catch(() => undefined)
+        }
+      }
+
+      wc.setWindowOpenHandler(({ url }) => {
+        if (url === 'botark-external://open') {
+          void shell.openExternal(MUSE_ORIGIN)
+          return { action: 'deny' }
+        }
+        if (url === 'botark-action://retry-firefox-ua') {
+          retryWithFirefoxUa()
+          return { action: 'deny' }
+        }
+        if (url === 'botark-action://back-to-login') {
+          backToLogin()
+          return { action: 'deny' }
+        }
+        if (!isAllowedMuseUrl(url)) return { action: 'deny' }
+        return {
+          action: 'allow',
+          overrideBrowserWindowOptions: {
+            width: 540,
+            height: 700,
+            title: 'Muse 安全登录',
+            autoHideMenuBar: true,
+            ...(windowIcon ? { icon: windowIcon } : {}),
+            parent: parentForChild.isDestroyed() ? undefined : parentForChild,
+            webPreferences: {
+              partition,
+              sandbox: true,
+              contextIsolation: true,
+              nodeIntegration: false
+            }
+          }
+        }
+      })
+
+      wc.on('will-navigate', (event, url) => {
+        if (url === 'botark-external://open') {
+          event.preventDefault()
+          void shell.openExternal(MUSE_ORIGIN)
+          return
+        }
+        if (url === 'botark-action://retry-firefox-ua') {
+          event.preventDefault()
+          retryWithFirefoxUa()
+          return
+        }
+        if (url === 'botark-action://back-to-login') {
+          event.preventDefault()
+          backToLogin()
+        }
+      })
+    }
+
+    attachLoginNavigationGuards(win.webContents, win)
 
     let settling = false
     let checking = false
@@ -1747,31 +1893,29 @@ export class MuseSessionManager {
       }
     }
 
-    const onNav = () => {
+    const onNav = (wc?: WebContents) => {
       void finishIfSignedIn()
+      if (wc) void maybeShowGoogleFallbackBanner(wc)
     }
-    win.webContents.on('did-finish-load', onNav)
-    win.webContents.on('did-navigate', onNav)
-    win.webContents.on('did-navigate-in-page', onNav)
-    win.webContents.on('did-redirect-navigation', onNav)
+    win.webContents.on('did-finish-load', () => onNav(win.webContents))
+    win.webContents.on('did-navigate', () => onNav(win.webContents))
+    win.webContents.on('did-navigate-in-page', () => onNav(win.webContents))
+    win.webContents.on('did-redirect-navigation', () => onNav(win.webContents))
 
-    win.webContents.on('did-create-window', (childWin) => {
+    const trackChildWindow = (childWin: BrowserWindow) => {
       childPopups.add(childWin)
-      childWin.webContents.setUserAgent(cleanUa)
-      childWin.webContents.setWindowOpenHandler(({ url }) => {
-        if (isAllowedMuseUrl(url) && url !== 'about:blank') {
-          void childWin.webContents.loadURL(url)
-        }
-        return { action: 'deny' }
-      })
-      childWin.webContents.on('did-finish-load', onNav)
-      childWin.webContents.on('did-navigate', onNav)
-      childWin.webContents.on('did-redirect-navigation', onNav)
+      attachLoginNavigationGuards(childWin.webContents, childWin)
+      childWin.webContents.on('did-finish-load', () => onNav(childWin.webContents))
+      childWin.webContents.on('did-navigate', () => onNav(childWin.webContents))
+      childWin.webContents.on('did-navigate-in-page', () => onNav(childWin.webContents))
+      childWin.webContents.on('did-redirect-navigation', () => onNav(childWin.webContents))
+      childWin.webContents.on('did-create-window', (nested) => trackChildWindow(nested))
       childWin.on('closed', () => {
         childPopups.delete(childWin)
         void finishIfSignedIn()
       })
-    })
+    }
+    win.webContents.on('did-create-window', trackChildWindow)
 
     const onCookie = (
       _event: unknown,

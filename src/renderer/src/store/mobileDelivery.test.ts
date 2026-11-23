@@ -51,4 +51,34 @@ describe('mobile delivery', () => {
     expect(store().queueMobileMessage(command)).toMatchObject({ status: 409 })
     expect(store().messages).toEqual({})
   })
+
+  it('queues attachment-only mobile messages and converts dataUrl into dataBase64', () => {
+    const adapter = new HermesAdapter()
+    vi.spyOn(adapterRegistry, 'has').mockReturnValue(true)
+    vi.spyOn(adapterRegistry, 'get').mockReturnValue(adapter)
+    const send = vi.spyOn(adapter, 'sendMessage').mockResolvedValue({ messageId: 'srv-1', acceptedAt: 10 })
+
+    const res = store().queueMobileMessage({
+      botId: bot.id,
+      clientMessageId: 'phone-img-1',
+      text: '   ',
+      attachments: [
+        {
+          name: 'cat.png',
+          mimeType: 'image/png',
+          dataUrl: 'data:image/png;base64,iVBORw0KGgo=',
+          size: 9
+        }
+      ]
+    })
+    expect(res).toEqual({ ok: true, messageId: 'phone-img-1' })
+    expect(send).toHaveBeenCalledTimes(1)
+    expect(send.mock.calls[0]?.[0].attachments).toMatchObject([
+      {
+        name: 'cat.png',
+        mimeType: 'image/png',
+        dataBase64: 'iVBORw0KGgo='
+      }
+    ])
+  })
 })

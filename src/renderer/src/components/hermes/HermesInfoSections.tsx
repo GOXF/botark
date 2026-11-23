@@ -29,9 +29,45 @@ import { cleanSidebarError } from '@/lib/sidebarCompat'
 import { t } from '@/lib/i18n'
 import { useBotStore } from '@/store/botStore'
 
+const HERMES_CUSTOM_MODELS_KEY = 'bothub.hermes.customModels.v1'
+
+const HERMES_COMMON_PRESETS: Array<{ id: string; root?: string }> = [
+  { id: 'hermes-agent', root: '网关默认配置模型' },
+  { id: 'anthropic/claude-sonnet-4', root: 'Anthropic / OpenRouter' },
+  { id: 'openai/gpt-4o', root: 'OpenAI / OpenRouter' },
+  { id: 'google/gemini-2.5-pro', root: 'Google / OpenRouter' },
+  { id: 'deepseek/deepseek-chat', root: 'DeepSeek / OpenRouter' }
+]
+
+function loadSavedHermesModels(): string[] {
+  try {
+    const raw = localStorage.getItem(HERMES_CUSTOM_MODELS_KEY)
+    if (!raw) return []
+    const parsed = JSON.parse(raw) as unknown
+    return Array.isArray(parsed) ? parsed.filter((x): x is string => typeof x === 'string' && x.trim().length > 0) : []
+  } catch {
+    return []
+  }
+}
+
+function persistSavedHermesModel(modelId: string): string[] {
+  const trimmed = modelId.trim()
+  if (!trimmed) return loadSavedHermesModels()
+  const next = [trimmed, ...loadSavedHermesModels().filter((m) => m !== trimmed)].slice(0, 24)
+  try {
+    localStorage.setItem(HERMES_CUSTOM_MODELS_KEY, JSON.stringify(next))
+  } catch {
+    /* ignore */
+  }
+  return next
+}
+
 export function HermesServerSection({ accountId }: { accountId: string }) {
   const [status, setStatus] = useState<HermesAuthStatus | null>(null)
   const [models, setModels] = useState<Array<{ id: string; root?: string }>>([])
+  const [customModels, setCustomModels] = useState<string[]>(() => loadSavedHermesModels())
+  const [customInputOpen, setCustomInputOpen] = useState(false)
+  const [customModelDraft, setCustomModelDraft] = useState('')
   const [loading, setLoading] = useState(false)
   const [savingModel, setSavingModel] = useState(false)
   const [error, setError] = useState<string>()
@@ -64,18 +100,46 @@ export function HermesServerSection({ accountId }: { accountId: string }) {
   }, [refresh])
 
   const handleModelChange = async (nextModel: string) => {
+    const trimmed = nextModel.trim()
+    if (!trimmed) return
     const hermes = getBridge()?.hermes
     if (!hermes?.rpc) return
     setSavingModel(true)
     try {
-      const res = await hermes.rpc({ accountId, op: 'setModel', model: nextModel })
+      const res = await hermes.rpc({ accountId, op: 'setModel', model: trimmed })
       if (res.ok) {
-        setStatus((prev) => (prev ? { ...prev, model: nextModel } : prev))
+        setStatus((prev) => (prev ? { ...prev, model: trimmed } : prev))
       }
     } finally {
       setSavingModel(false)
     }
   }
+
+  const handleSaveCustomModel = async () => {
+    const trimmed = customModelDraft.trim()
+    if (!trimmed) return
+    setCustomModels(persistSavedHermesModel(trimmed))
+    setCustomModelDraft('')
+    setCustomInputOpen(false)
+    await handleModelChange(trimmed)
+  }
+
+  const mergedModelOptions = (() => {
+    const map = new Map<string, { id: string; root?: string }>()
+    for (const m of models) {
+      if (m.id) map.set(m.id, m)
+    }
+    if (status?.model && !map.has(status.model)) {
+      map.set(status.model, { id: status.model, root: '当前选定模型' })
+    }
+    for (const cm of customModels) {
+      if (!map.has(cm)) map.set(cm, { id: cm, root: '自定义模型' })
+    }
+    for (const preset of HERMES_COMMON_PRESETS) {
+      if (!map.has(preset.id)) map.set(preset.id, preset)
+    }
+    return [...map.values()]
+  })()
 
   return (
     <Section
@@ -98,25 +162,53 @@ export function HermesServerSection({ accountId }: { accountId: string }) {
           )}
         </div>
 
-        {models.length > 0 && (
-          <div className="flex items-center gap-2">
-            <span className="flex shrink-0 items-center gap-1 text-[11.5px] text-ink-secondary">
-              <Cpu className="size-3" aria-hidden />
-              {t('Model')}
-            </span>
-            <Select
-              size="xs"
-              variant="pill"
-              disabled={savingModel}
-              value={status?.model || models[0]?.id || 'hermes-agent'}
-              onValueChange={(next) => void handleModelChange(next)}
-              className="flex-1 font-mono"
-              options={models.map((m) => ({
-                value: m.id,
-                label: m.id,
-                description: m.root && m.root !== m.id ? m.root : undefined
-              }))}
+        <div className="flex items-center gap-1.5">
+          <span className="flex shrink-0 items-center gap-1 text-[11.5px] text-ink-secondary">
+            <Cpu className="size-3" aria-hidden />
+            {t('Model')}
+          </span>
+          <Select
+            size="xs"
+            variant="pill"
+            disabled={savingModel}
+            value={status?.model || models[0]?.id || 'hermes-agent'}
+            onValueChange={(next) => void handleModelChange(next)}
+            className="min-w-0 flex-1 font-mono"
+            options={mergedModelOptions.map((m) => ({
+              value: m.id,
+              label: m.id,
+              description: m.root && m.root !== m.id ? m.root : undefined
+            }))}
+          />
+          <button
+            type="button"
+            onClick={() => setCustomInputOpen((v) => !v)}
+            className="shrink-0 rounded-full border border-line bg-surface px-2 py-0.5 text-[11px] font-medium text-ink-secondary hover:bg-hover hover:text-ink"
+            title="输入任意自定义模型 ID"
+          >
+            {customInputOpen ? '收起' : '+ 自定义'}
+          </button>
+        </div>
+
+        {customInputOpen && (
+          <div className="flex items-center gap-1.5">
+            <input
+              value={customModelDraft}
+              onChange={(e) => setCustomModelDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') void handleSaveCustomModel()
+              }}
+              placeholder="如 anthropic/claude-opus-4 或 qwen3:32b"
+              className="h-7 min-w-0 flex-1 rounded-lg border border-line bg-canvas px-2.5 font-mono text-[11.5px] text-ink outline-none placeholder:text-ink-muted focus:border-accent-600"
             />
+            <Button
+              size="sm"
+              variant="primary"
+              disabled={savingModel || !customModelDraft.trim()}
+              onClick={() => void handleSaveCustomModel()}
+            >
+              应用
+            </Button>
           </div>
         )}
 

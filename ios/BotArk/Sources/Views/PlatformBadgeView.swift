@@ -91,6 +91,7 @@ extension PlatformId {
         case .hark: return Color(red: 0.91, green: 0.40, blue: 0.16)
         case .hermes: return Color(red: 0.47, green: 0.31, blue: 0.94)
         case .antigravity: return Color(red: 0.25, green: 0.52, blue: 0.96)
+        case .cue: return Color(red: 0.26, green: 0.62, blue: 0.98)
         }
     }
 }
@@ -200,6 +201,9 @@ struct BotAvatarView: View {
     }
 
     static func decodeBase64Image(_ raw: String) -> UIImage? {
+        if !raw.hasPrefix("data:") && raw.count < 512 && (raw.contains("/") || raw.contains(".")) {
+            return nil
+        }
         let base64Part: String
         if let commaRange = raw.range(of: ",") {
             base64Part = String(raw[commaRange.upperBound...])

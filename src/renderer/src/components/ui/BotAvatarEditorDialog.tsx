@@ -1,4 +1,5 @@
 import { useRef, useState } from 'react'
+import { Sparkles } from 'lucide-react'
 import { Dialog } from '@/components/ui/Dialog'
 import { Button } from '@/components/ui/Button'
 import {
@@ -12,6 +13,7 @@ import {
   type BotShape
 } from '@/components/ui/GrokBotMark'
 import { avatarFromFile } from '@/lib/avatarImage'
+import { getBridge } from '@/lib/bridge'
 import { cn } from '@/lib/cn'
 import { useBotStore } from '@/store/botStore'
 import type { Bot } from '@/types'
@@ -31,9 +33,41 @@ interface BotAvatarEditorDialogProps {
 export function BotAvatarEditorDialog({ bot, open, onOpenChange }: BotAvatarEditorDialogProps) {
   const setBotAvatar = useBotStore((s) => s.setBotAvatar)
   const setBotCharacter = useBotStore((s) => s.setBotCharacter)
+  const renameBot = useBotStore((s) => s.renameBot)
   const [tab, setTab] = useState<'bot' | 'upload'>(bot.avatar ? 'upload' : 'bot')
   const [poke, setPoke] = useState(0)
+  const [syncingMuse, setSyncingMuse] = useState(false)
+  const [museSyncHint, setMuseSyncHint] = useState<string>()
   const fileRef = useRef<HTMLInputElement>(null)
+  const canSyncMuseIdentity = bot.platformId === 'meta-muse' && Boolean(getBridge()?.muse?.syncIdentity)
+
+  const handleImportMuseAvatar = async () => {
+    const muse = getBridge()?.muse
+    if (!muse?.syncIdentity || !bot.activeAccountId) return
+    setSyncingMuse(true)
+    setMuseSyncHint(undefined)
+    try {
+      const identity = await muse.syncIdentity(bot.activeAccountId)
+      if (identity.avatarDataUrl) {
+        setBotAvatar(bot.id, identity.avatarDataUrl)
+        setTab('upload')
+      }
+      if (identity.displayName && /^(?:Meta Muse|Muse)(?:\s+\d+)?$/i.test(bot.name.trim())) {
+        renameBot(bot.id, `Muse · ${identity.displayName}`)
+      }
+      if (identity.avatarDataUrl) {
+        setMuseSyncHint(`已导入 Muse 虚拟形象${identity.displayName ? `（${identity.displayName}）` : ''}`)
+      } else if (identity.displayName) {
+        setMuseSyncHint(`已同步 Muse 角色名「${identity.displayName}」（当前账号未设置自定义头像图片）`)
+      } else {
+        setMuseSyncHint('当前 Muse 账号暂未配置自定义虚拟形象图片')
+      }
+    } catch {
+      setMuseSyncHint('无法读取 Muse 虚拟形象，请确认账号在线后重试')
+    } finally {
+      setSyncingMuse(false)
+    }
+  }
 
   const currentShape = resolveBotShape(bot.id, bot.avatarShape)
   const currentColor = resolveBotColor(bot.id, bot.avatarColor)
@@ -79,6 +113,22 @@ export function BotAvatarEditorDialog({ bot, open, onOpenChange }: BotAvatarEdit
           {t('Photo')}
         </button>
       </div>
+
+      {canSyncMuseIdentity && (
+        <div className="mb-3 flex flex-col items-center gap-1.5">
+          <Button
+            size="sm"
+            variant="secondary"
+            disabled={syncingMuse}
+            onClick={() => void handleImportMuseAvatar()}
+            className="w-full justify-center"
+          >
+            <Sparkles className="size-3.5 text-accent-600" aria-hidden />
+            {syncingMuse ? '正在同步 Muse 虚拟形象…' : '一键导入 Muse 虚拟形象'}
+          </Button>
+          {museSyncHint && <p className="text-center text-[11.5px] text-ink-secondary">{museSyncHint}</p>}
+        </div>
+      )}
 
       {tab === 'bot' ? (
         <div className="flex flex-col items-center gap-3">

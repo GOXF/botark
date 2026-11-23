@@ -318,9 +318,27 @@ public final class BotArkStore {
 
     // MARK: - Messaging & Approvals (Dual-Mode: Desktop Bridge or Direct Hermes)
 
-    public func sendMessage(to bot: SyncedBot, text: String) async {
+    public func sendMessage(
+        to bot: SyncedBot,
+        text: String,
+        attachments: [MobileOutboundAttachment] = []
+    ) async {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
+        guard !trimmed.isEmpty || !attachments.isEmpty else { return }
+
+        let optimisticMedia: [SyncedMediaPart]? = attachments.isEmpty ? nil : attachments.map { att in
+            let kind: String
+            if att.mimeType.hasPrefix("image/") {
+                kind = "image"
+            } else if att.mimeType.hasPrefix("video/") {
+                kind = "video"
+            } else if att.mimeType.hasPrefix("audio/") {
+                kind = "audio"
+            } else {
+                kind = "file"
+            }
+            return SyncedMediaPart(kind: kind, path: att.dataUrl, name: att.name, mimeType: att.mimeType)
+        }
 
         let clientMsgId = "ios_msg_\(UUID().uuidString.lowercased())"
         var userMsg = SyncedMessage(
@@ -330,13 +348,20 @@ public final class BotArkStore {
             role: "user",
             text: trimmed,
             createdAt: Date().timeIntervalSince1970 * 1000,
-            delivery: "sending"
+            delivery: "sending",
+            media: optimisticMedia
         )
         if let desktop = pairedDesktop, connectionState.isBridgeConnected {
             userMsg.isLocalRelayMessage = true
             appendOrUpdateMessage(botId: bot.id, message: userMsg)
             do {
-                let messageId = try await bridge.sendMessage(desktop: desktop, botId: bot.id, text: trimmed, clientMessageId: clientMsgId)
+                let messageId = try await bridge.sendMessage(
+                    desktop: desktop,
+                    botId: bot.id,
+                    text: trimmed,
+                    clientMessageId: clientMsgId,
+                    attachments: attachments
+                )
                 if messageId != clientMsgId {
                     // Older desktops publish their own ID in the next snapshot.
                     snapshot.messages[bot.id]?.removeAll { $0.id == clientMsgId && $0.isLocalRelayMessage }
@@ -350,6 +375,11 @@ public final class BotArkStore {
             return
         }
         appendOrUpdateMessage(botId: bot.id, message: userMsg)
+
+        if !attachments.isEmpty && trimmed.isEmpty {
+            markMessageDelivery(botId: bot.id, messageId: clientMsgId, delivery: "failed", error: "发送图片或视频需要连接电脑端")
+            return
+        }
 
         // Path 2: Standalone Direct Hermes SSE (computer asleep / away!)
         if let cred = directCredential(for: bot) {

@@ -2,6 +2,7 @@ package com.qybaihe.botark.service
 
 import android.os.Build
 import com.qybaihe.botark.model.DirectHermesCredential
+import com.qybaihe.botark.model.MobileOutboundAttachment
 import com.qybaihe.botark.model.MobileWsEnvelope
 import com.qybaihe.botark.model.PairApiResponse
 import com.qybaihe.botark.model.PairedDesktopInfo
@@ -42,7 +43,8 @@ private data class PairRequestBody(
 @Serializable
 private data class SendMessageBody(
     val text: String,
-    val clientMessageId: String
+    val clientMessageId: String,
+    val attachments: List<MobileOutboundAttachment>? = null
 )
 
 @Serializable
@@ -172,9 +174,16 @@ class DesktopBridgeClient internal constructor(private val client: OkHttpClient)
         desktop: PairedDesktopInfo,
         botId: String,
         text: String,
-        clientMessageId: String
+        clientMessageId: String,
+        attachments: List<MobileOutboundAttachment> = emptyList()
     ): String? {
-        val body = json.encodeToString(SendMessageBody(text, clientMessageId))
+        val body = json.encodeToString(
+            SendMessageBody(
+                text = text,
+                clientMessageId = clientMessageId,
+                attachments = attachments.takeIf { it.isNotEmpty() }
+            )
+        )
         return postCommand(desktop, "bots", botId, "send", failure = "发送失败", body = body.toRequestBody(jsonMedia))?.messageId
     }
 
