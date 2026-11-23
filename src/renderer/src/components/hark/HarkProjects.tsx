@@ -19,6 +19,7 @@ import {
   type HarkProject
 } from '@shared/harkProjects'
 import type { HarkRpcRequest } from '@shared/ipc'
+import { HARK_DRAFT_SESSION } from '@shared/harkProjects'
 import { ArkProjectStackSvg } from '@/components/ui/ArkGlyphs'
 import { MENU_SURFACE } from '@/components/ui/Menu'
 import { getBridge } from '@/lib/bridge'
@@ -200,16 +201,23 @@ export function HarkProjects({ botId, compact }: { botId: string; compact?: bool
   const changed = (project?: HarkPendingProject) =>
     window.dispatchEvent(new CustomEvent(PROJECTS_CHANGED, { detail: { accountId, project } }))
 
-  const createProject = () =>
-    perform(async () => {
-      // Like Hark: one click creates an untitled project and opens it; Hark names it (autoTitle)
-      // from the first message and the list poll picks the name up. Rename it any time from its row.
-      const id = await useBotStore.getState().startNewHarkSession(botId, '')
-      setMenuOpen(false)
-      changed(id ? { id, title: '新项目', createdAt: Date.now() } : undefined)
-      // Hark's list can trail the create; check again shortly after.
-      window.setTimeout(() => changed(), 3_000)
-    })
+  // Like Hark's web app: 新建 opens an empty draft; the project is created (untitled, Hark names
+  // it) when the first message is sent. Leaving the draft without sending keeps nothing.
+  const createProject = () => {
+    useBotStore.getState().startHarkDraft(botId)
+    setMenuOpen(false)
+  }
+
+  // The draft just became a real project: show it now; Hark's list (and its auto title) can trail.
+  const prevSession = useRef(bot.activeSessionId)
+  useEffect(() => {
+    const prev = prevSession.current
+    prevSession.current = bot.activeSessionId
+    if (prev !== HARK_DRAFT_SESSION || !bot.activeSessionId || bot.activeSessionId === HARK_DRAFT_SESSION) return
+    changed({ id: bot.activeSessionId, title: '新项目', createdAt: Date.now() })
+    const timers = [3_000, 15_000].map((ms) => window.setTimeout(() => changed(), ms))
+    return () => timers.forEach((t) => window.clearTimeout(t))
+  }, [bot.activeSessionId])
 
   const openPreview = (projectId: string) =>
     perform(async () => {
@@ -266,7 +274,7 @@ export function HarkProjects({ botId, compact }: { botId: string; compact?: bool
             ) : (
               <ArkProjectStackSvg className="size-3.5 shrink-0 text-accent-600" />
             )}
-            <span className="truncate">{activeProject?.title ?? '当前项目'}</span>
+            <span className="truncate">{activeProject?.title ?? (bot.activeSessionId === HARK_DRAFT_SESSION ? '新项目' : '当前项目')}</span>
             <ChevronDown
               aria-hidden
               className="size-3.5 shrink-0 text-ink-muted transition-transform duration-200 ease-spring-tap group-data-[state=open]:rotate-180"

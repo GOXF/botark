@@ -2,6 +2,7 @@ import { statusAfterSendFailure } from '../sendFailure'
 import { createId } from '@shared/id'
 import type { HarkMainEvent, HarkRpcRequest, HarkRpcResponse } from '@shared/ipc'
 import { getBotHubBridge } from '../meta-muse/electronBridge'
+import { HARK_DRAFT_SESSION } from '@shared/harkProjects'
 import {
   AdapterError,
   type AdapterEvent,
@@ -253,10 +254,14 @@ export class HarkAdapter implements PlatformAdapter {
 
   async sendMessage(message: OutgoingMessage): Promise<SendReceipt> {
     this.bindBridgeEvents()
-    const before = (await invokeHarkRpc(message.sessionId
-      ? { accountId: message.accountId, op: 'conversationSnapshot', conversationId: message.sessionId }
-      : { accountId: message.accountId, op: 'mainConversation' }
-    )) as { conversationId?: string; messages: Array<{ id: string }> }
+    const draft = message.sessionId === HARK_DRAFT_SESSION
+    const before = (draft
+      // Draft project: create it now, untitled, so Hark names it from this first message.
+      ? { ...(await invokeHarkRpc({ accountId: message.accountId, op: 'createConversation', title: '' }) as { conversationId?: string }), messages: [] }
+      : await invokeHarkRpc(message.sessionId
+        ? { accountId: message.accountId, op: 'conversationSnapshot', conversationId: message.sessionId }
+        : { accountId: message.accountId, op: 'mainConversation' }
+      )) as { conversationId?: string; messages: Array<{ id: string }> }
     const conversationId = before.conversationId
     if (!conversationId) throw new AdapterError('network', 'No Hark conversation ID')
     const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone
@@ -293,7 +298,7 @@ export class HarkAdapter implements PlatformAdapter {
       }
 
       accepted = true
-      message.onAccepted?.()
+      message.onAccepted?.(draft ? conversationId : undefined)
       if (sent?.idempotencyKey) afterIds.push(sent.idempotencyKey)
 
       const polled = (await invokeHarkRpc({

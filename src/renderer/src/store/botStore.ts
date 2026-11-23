@@ -4,6 +4,7 @@ import { getPlatform } from '@adapters/platforms'
 import { adapterRegistry } from '@adapters/registry'
 import { AdapterError, type AttachmentMeta, type ConnectionStatus, type IncomingMessage, type PlatformId } from '@adapters/types'
 import { createId } from '@shared/id'
+import { HARK_DRAFT_SESSION } from '@shared/harkProjects'
 import type { MobileSendCommand, MobileSendResult } from '@shared/mobileSync'
 import { createSeed } from '@/data/seed'
 import { t } from '@/lib/i18n'
@@ -161,6 +162,8 @@ export interface BotHubState {
   switchHarkSession: (botId: string, sessionId: string) => Promise<void>
   /** Resolves to the new Hark conversation id (undefined if the bot is gone). */
   startNewHarkSession: (botId: string, title: string) => Promise<string | undefined>
+  /** Open an empty Hark draft project; it is created on Hark when its first message is sent. */
+  startHarkDraft: (botId: string) => void
   switchHermesSession: (botId: string, sessionId: string) => Promise<void>
   startNewHermesSession: (botId: string) => Promise<boolean>
   switchAntigravitySession: (botId: string, sessionId: string) => Promise<void>
@@ -693,6 +696,7 @@ export const useBotStore = create<BotHubState>()(
 
   const loadHarkSession = async (bot: Bot, sessionId: string | undefined, selection: symbol | undefined) => {
     const accountId = bot.activeAccountId
+    if (sessionId === HARK_DRAFT_SESSION) return // nothing on Hark yet
     const result = await electronBridge()?.hark.rpc(sessionId
       ? { accountId, op: 'conversationSnapshot', conversationId: sessionId }
       : { accountId, op: 'mainConversation' })
@@ -839,9 +843,14 @@ export const useBotStore = create<BotHubState>()(
     }
 
     let accepted = false
-    const onAccepted = () => {
+    const onAccepted = (createdSessionId?: string) => {
       if (accepted) return
       accepted = true
+      // A draft project now exists on Hark: follow it, unless the user already moved on.
+      if (createdSessionId) {
+        const current = getBotForSessionSelection(bot, selection)
+        if (current?.activeSessionId === HARK_DRAFT_SESSION) patchBot(botId, () => ({ activeSessionId: createdSessionId }))
+      }
       const current = get().messages[botId]?.find((m) => m.id === messageId)
       if (current?.delivery === 'sending') updateMessage(botId, messageId, { delivery: 'accepted', error: undefined })
       ensureAccountLive(message.accountId, 'online', { onlyFrom: ['offline', 'error'] })
@@ -1802,6 +1811,11 @@ export const useBotStore = create<BotHubState>()(
         setFreshSession(botId, conversationId)
       }
       return conversationId
+    },
+
+    startHarkDraft: (botId) => {
+      markSessionSelection(botId)
+      setFreshSession(botId, HARK_DRAFT_SESSION)
     },
 
     switchHermesSession: async (botId, sessionId) => {

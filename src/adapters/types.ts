@@ -67,9 +67,10 @@ export interface OutgoingMessage {
   /**
    * Called once the platform has taken the message (before the reply).
    * After this a failure must not be reported as "not sent": a blind retry
-   * would post the message twice.
+   * would post the message twice. `sessionId` is the platform thread the message went
+   * to, when the send created it (a Hark draft project becoming a real one).
    */
-  onAccepted?: () => void
+  onAccepted?: (sessionId?: string) => void
   /** Optional abort signal (e.g. Collaboration Room Stop) to cancel waiting for the turn. */
   signal?: AbortSignal
 }

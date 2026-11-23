@@ -1,3 +1,9 @@
+/**
+ * Session id of a Hark project that exists only in BotArk so far: like Hark's web app,
+ * "新建" opens an empty draft and the project is created when its first message is sent.
+ */
+export const HARK_DRAFT_SESSION = 'hark:draft'
+
 export interface HarkProject {
   id: string
   title: string
