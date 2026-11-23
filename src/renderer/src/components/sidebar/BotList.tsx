@@ -50,7 +50,7 @@ function SectionHeader({
       {renaming ? (
         <div className="flex min-w-0 flex-1 items-center px-1.5">
           <InlineEdit
-            value={group.name}
+            value={group.name === 'Workspace' ? t('Workspace') : group.name}
             label={t('Section name')}
             maxLength={40}
             className="h-7 w-full text-[12px] font-medium"
@@ -66,7 +66,15 @@ function SectionHeader({
           aria-controls={listId}
           className="flex h-7 min-w-0 flex-1 items-center gap-1 rounded-md px-1.5 text-left text-ink-muted transition-colors hover:bg-hover hover:text-ink-secondary"
         >
-          <span id={`${listId}-label`} className="truncate text-[12px] font-medium tracking-tight">
+          <span
+            id={`${listId}-label`}
+            className="truncate text-[12px] font-medium tracking-tight"
+            title={t('Double-click to rename')}
+            onDoubleClick={(e) => {
+              e.stopPropagation()
+              setRenaming(true)
+            }}
+          >
             {group.name === 'Workspace' ? t('Workspace') : group.name || t('Unallocated')}
           </span>
           <span className="ml-auto flex shrink-0 items-center gap-1 pr-0.5">

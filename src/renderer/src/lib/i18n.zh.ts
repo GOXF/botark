@@ -80,6 +80,7 @@ export const ZH: Record<string, string> = {
   "Deny": "拒绝",
   "Typing…": "正在输入…",
   "Working · {n} projects": "工作中 · {n} 个项目",
+  "Double-click to rename": "双击重命名",
   "Task done at {time}, open to view": "任务 {time} 完成，点开查看",
   "You: {text}": "你：{text}",
   "Sending…": "发送中…",

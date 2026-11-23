@@ -215,7 +215,16 @@ export const BotListItem = memo(function BotListItem({
           />
         ) : (
           <span className="flex items-baseline justify-between gap-1.5">
-            <span className="truncate text-[14px] leading-5 font-medium text-ink">{bot.name}</span>
+            <span
+              className="truncate text-[14px] leading-5 font-medium text-ink"
+              title={t('Double-click to rename')}
+              onDoubleClick={(e) => {
+                e.stopPropagation()
+                setRenaming(true)
+              }}
+            >
+              {bot.name}
+            </span>
             {timeLabel && (
               <span className="shrink-0 text-[11px] leading-4 text-ink-faint tabular-nums group-hover:opacity-0">
                 {timeLabel}
