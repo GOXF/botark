@@ -8,6 +8,7 @@ import {
   clearRoomTranscript,
   deleteRoom,
   renameRoom,
+  setRoomAdministrator,
   stopRoom,
   submitBrief,
   updateRoomConfig,
@@ -119,4 +120,95 @@ it('renames, updates config, clears transcripts, and removes forked Slack thread
   deleteRoom(parent.id)
   expect(useRooms.getState().rooms).toEqual([])
   expect(useBotStore.getState().selectedBotId).toBe('fallback-bot')
+})
+
+it('stops the old identity before accepting its late reply and resets the new session context', async () => {
+  let finish!: (text: string) => void
+  fixture('auto', () => new Promise((resolve) => { finish = resolve }))
+  const original = useRooms.getState().rooms[0]!
+  useRooms.setState({ rooms: [{ ...original, members: original.members.map((m) => ({
+    ...m, cursor: 2, sessionId: 'previous-session'
+  })) }] })
+  const run = submitBrief('room', '@Muse review')
+  useBotStore.setState(({ bots }) => ({ bots: bots.map((b) => b.id === 'Muse'
+    ? { ...b, accountIds: ['Muse', 'other'], activeAccountId: 'other' } : b) }))
+  finish('@Dot old reply')
+  await run
+  const room = useRooms.getState().rooms[0]!
+  expect(room.members[0]).toMatchObject({ accountId: 'other', cursor: 0, sessionId: undefined })
+  expect(room.messages.map((m) => m.author)).toEqual(['User'])
+})
+
+it('honors a lowered turn cap before routing another reply', async () => {
+  fixture('auto', async () => {
+    updateRoomConfig('room', { limit: 1 })
+    return '@Dot check this'
+  })
+  await submitBrief('room', '@Muse start')
+  expect(useRooms.getState().rooms[0]!.messages.map((m) => m.author)).toEqual(['User', 'Muse'])
+})
+
+it('does not restore a session allocated after the user cleared the room', async () => {
+  let finish!: (response: { sessionId: string }) => void
+  const startSession = vi.fn(() => new Promise((resolve) => { finish = resolve }))
+  vi.stubGlobal('window', { electron: { muse: { startSession } } })
+  const respond = vi.fn(async () => 'reply')
+  fixture('auto', respond)
+  const original = useRooms.getState().rooms[0]!
+  useRooms.setState({ rooms: [{ ...original, members: original.members.map((m) => ({
+    ...m, platform: 'meta-muse'
+  })) }] })
+  const run = submitBrief('room', '@Muse start')
+  expect(startSession).toHaveBeenCalledOnce()
+  clearRoomTranscript('room')
+  finish({ sessionId: 'cleared-session' })
+  await run
+  expect(useRooms.getState().rooms[0]!.members[0]!.sessionId).toBeUndefined()
+  expect(respond).not.toHaveBeenCalled()
+})
+
+function adminFixture(respond: (m: OutgoingMessage) => Promise<string>) {
+  fixture('auto', respond)
+  useBotStore.setState({ bots: members.map((m) => ({
+    id: m.botId, name: m.name, platformId: m.platform,
+    accountIds: [m.accountId], activeAccountId: m.accountId
+  } as Bot)) })
+  return setRoomAdministrator('Muse', true)!
+}
+
+it('assigns tasks to a newly added bot and returns the result to the administrator', async () => {
+  const calls: OutgoingMessage[] = []
+  const id = adminFixture(async (m) => {
+    calls.push(m)
+    return ['@Notes check dates', '[FINAL] dates verified @Dot', '[FINAL] schedule approved'][calls.length - 1]!
+  })
+  useBotStore.setState(({ bots }) => ({ bots: [...bots, {
+    ...bots[0]!, id: 'notes', name: 'Notes', accountIds: ['notes'], activeAccountId: 'notes'
+  }] }))
+  await submitBrief(id, 'Have @Notes review the schedule')
+  expect(calls.map((m) => m.accountId)).toEqual(['Muse', 'notes', 'Muse'])
+  expect(calls[2]!.text).toContain('[Notes] [FINAL] dates verified')
+  expect(roomMarkdown(useRooms.getState().rooms.find((r) => r.id === id)!)).toContain('schedule approved')
+  expect(useRooms.getState().rooms[0]!.members).toHaveLength(2)
+})
+
+it('revoking one administrator interrupts delegation and preserves other administrators', async () => {
+  let finish!: (text: string) => void
+  const id = adminFixture(() => new Promise((resolve) => { finish = resolve }))
+  const other = setRoomAdministrator('Dot', true)
+  const run = submitBrief(id, 'Delegate the review')
+  setRoomAdministrator('Muse', false)
+  finish('@Dot review')
+  await run
+  expect(useRooms.getState().rooms.find((r) => r.id === id)).toMatchObject({
+    coordinatorId: undefined, mode: 'manual', messages: [{ author: 'User' }]
+  })
+  expect(useRooms.getState().rooms.find((r) => r.id === other)?.coordinatorId).toBe('Dot')
+})
+
+it('does not transfer administrator authority to a newly selected account', () => {
+  const id = adminFixture(async () => '')
+  useBotStore.setState(({ bots }) => ({ bots: bots.map((b) => b.id === 'Muse'
+    ? { ...b, accountIds: ['Muse', 'other'], activeAccountId: 'other' } : b) }))
+  expect(useRooms.getState().rooms.find((r) => r.id === id)?.coordinatorId).toBeUndefined()
 })

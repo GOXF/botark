@@ -58,6 +58,7 @@ export const useRooms = create<RoomState>()(
                 mode: r.mode === 'manual' ? ('manual' as const) : ('auto' as const),
                 limit: typeof r.limit === 'number' && r.limit > 0 ? r.limit : 6,
                 brief: typeof r.brief === 'string' ? r.brief : '',
+                coordinatorId: typeof r.coordinatorId === 'string' ? r.coordinatorId : undefined,
                 slackParent: typeof r.slackParent === 'string' ? r.slackParent : undefined,
                 slackChannel: typeof r.slackChannel === 'string' ? r.slackChannel : undefined,
                 slackThread: typeof r.slackThread === 'string' ? r.slackThread : undefined,
@@ -108,7 +109,7 @@ function reconcileRoomMemberList(
       bot.activeAccountId ||
       (bot.accountIds?.includes(member.accountId) ? member.accountId : bot.accountIds?.[0]) ||
       member.accountId
-    const nextAgentId = bot.selectedAgentId ?? member.agentId
+    const nextAgentId = bot.selectedAgentId
     const rawName = bot.name?.trim()
     let nextName = member.name
     if (rawName) {
@@ -153,6 +154,7 @@ function reconcileRoomMemberList(
         accountId: nextAccountId,
         agentId: nextAgentId,
         name: nextName,
+        cursor: resetSession ? 0 : member.cursor,
         sessionId: nextSessionId
       }
     }
@@ -161,15 +163,68 @@ function reconcileRoomMemberList(
   return { members: changed ? next : members, changed }
 }
 
+function initialMember(bot: Bot): RoomMember {
+  return {
+    botId: bot.id, platform: bot.platformId, accountId: bot.activeAccountId,
+    agentId: bot.selectedAgentId, name: bot.name.trim() || bot.id, cursor: 0
+  }
+}
+
+function revokeCoordination(room: CollabRoom): CollabRoom {
+  stopRoom(room.id)
+  return {
+    ...room, coordinatorId: undefined, mode: 'manual',
+    members: room.members.filter((m) => m.botId === room.coordinatorId)
+  }
+}
+
+export function setRoomAdministrator(botId: string, enabled: boolean) {
+  const existing = useRooms.getState().rooms.find((r) => r.coordinatorId === botId)
+  if (existing) {
+    if (!enabled) update(existing.id, revokeCoordination)
+    return existing.id
+  }
+  const { bots, accounts } = useBotStore.getState()
+  const owner = bots.find((b) => b.id === botId)
+  if (!enabled || !owner) return
+  const members = [owner, ...bots.filter((b) => b !== owner)].map(initialMember)
+  const room: CollabRoom = {
+    id: createId('room'), title: owner.name + ' · 管理员调度', coordinatorId: owner.id,
+    members: reconcileRoomMemberList(members, bots, accounts).members,
+    messages: [], brief: '', mode: 'auto', limit: 8, createdAt: Date.now()
+  }
+  useRooms.setState((s) => ({ rooms: [...s.rooms, room] }))
+  return room.id
+}
+
 function reconcileRooms(targetRoomId?: string) {
   const { bots, accounts } = useBotStore.getState()
   const { rooms } = useRooms.getState()
   let anyChanged = false
   const nextRooms = rooms.map((room) => {
     if (targetRoomId && room.id !== targetRoomId) return room
-    const res = reconcileRoomMemberList(room.members, bots, accounts)
-    if (!res.changed) return room
+    let members = room.members
+    if (room.coordinatorId) {
+      const owner = bots.find((b) => b.id === room.coordinatorId)
+      const original = members.find((m) => m.botId === room.coordinatorId)
+      if (!owner || owner.activeAccountId !== original?.accountId || owner.selectedAgentId !== original?.agentId) {
+        anyChanged = true
+        return revokeCoordination(room)
+      }
+      const roster = [owner, ...bots.filter((b) => b !== owner)].map((b) =>
+        members.find((m) => m.botId === b.id) ?? initialMember(b)
+      )
+      if (roster.length !== members.length || roster.some((m, i) => m !== members[i])) {
+        stopRoom(room.id)
+        members = roster
+      }
+    }
+    const res = reconcileRoomMemberList(members, bots, accounts)
+    if (!res.changed && members === room.members) return room
     anyChanged = true
+    if (res.members.some((m, i) => m.accountId !== members[i]!.accountId || m.agentId !== members[i]!.agentId)) {
+      stopRoom(room.id)
+    }
     return { ...room, members: res.members }
   })
   if (anyChanged) {
@@ -217,7 +272,7 @@ export function updateRoomConfig(
 ) {
   update(id, (r) => ({
     ...r,
-    ...(patch.mode ? { mode: patch.mode } : {}),
+    ...(patch.mode && !r.coordinatorId ? { mode: patch.mode } : {}),
     ...(patch.limit !== undefined
       ? { limit: Math.max(1, Math.min(24, Math.round(patch.limit))) }
       : {})
@@ -259,7 +314,7 @@ export function deleteRoom(id: string) {
 export function addRoom(title: string, ids: string[], mode: CollabRoom['mode'], limit: number) {
   const { bots, accounts } = useBotStore.getState()
   const usedNames = new Set<string>()
-  const members: RoomMember[] = ids.map((id) => {
+  const members: RoomMember[] = [...new Set(ids)].map((id) => {
     const bot = bots.find((b) => b.id === id)
     const storeStatus = bot ? accounts[bot.activeAccountId]?.status : undefined
     const adapterStatus = bot
@@ -310,6 +365,7 @@ export function addRoom(title: string, ids: string[], mode: CollabRoom['mode'], 
 export function removeMember(roomId: string, botId: string): { ok: boolean; error?: string } {
   const room = roomById(roomId)
   if (!room) return { ok: false, error: '未找到该群聊' }
+  if (room.coordinatorId) return { ok: false, error: '管理员调度自动同步 Bot 列表' }
   if (!room.members.some((m) => m.botId === botId)) {
     return { ok: false, error: '该成员不在当前群聊中' }
   }
@@ -332,6 +388,7 @@ export function removeMember(roomId: string, botId: string): { ok: boolean; erro
 export function addMemberToRoom(roomId: string, botId: string): { ok: boolean; error?: string } {
   const room = roomById(roomId)
   if (!room) return { ok: false, error: '未找到该群聊' }
+  if (room.coordinatorId) return { ok: false, error: '管理员调度自动同步 Bot 列表' }
   if (room.members.some((m) => m.botId === botId)) {
     return { ok: false, error: '该 Bot 已在群聊中' }
   }
@@ -392,6 +449,7 @@ export function moveMemberToRoom(
   if (!source) return { ok: false, error: '未找到源群聊' }
   const target = roomById(targetRoomId)
   if (!target) return { ok: false, error: '未找到目标群聊' }
+  if (source.coordinatorId || target.coordinatorId) return { ok: false, error: '管理员调度自动同步 Bot 列表' }
   const member = source.members.find((m) => m.botId === botId)
   if (!member) return { ok: false, error: '该成员不在当前群聊中' }
   if (source.members.length <= 1) {
@@ -501,6 +559,7 @@ async function memberReply(room: CollabRoom, member: RoomMember, signal: AbortSi
         sessionId = undefined
       }
     }
+    signal.throwIfAborted()
     if (sessionId && sessionId !== member.sessionId)
       update(room.id, (r) => ({
         ...r,
@@ -512,7 +571,7 @@ async function memberReply(room: CollabRoom, member: RoomMember, signal: AbortSi
     if (workspace?.tools.length) {
       prompt +=
         '\n\nTo request one workspace tool, reply with [TOOL] followed by JSON {"name":"…","args":{…}}. A person approves each call. Available tools: ' +
-        JSON.stringify(workspace.tools.map((t) => ({ name: t.name, schema: t.inputSchema })))
+        JSON.stringify(workspace.tools.map((t) => ({ name: t.name, description: t.description, schema: t.inputSchema })))
     }
     signal.throwIfAborted()
     signal.addEventListener('abort', cancel, { once: true })
@@ -573,7 +632,8 @@ export async function submitBrief(
   runs.set(id, controller)
   const message: RoomMessage = { id: messageId, author, text, createdAt: Date.now() }
   update(id, (r) => ({ ...r, brief: text, finalId: undefined, messages: [...r.messages, message] }))
-  const queue = mentions(text, room.members)
+  const coordinator = room.coordinatorId ? room.members[0] : undefined
+  const queue = coordinator ? [coordinator] : mentions(text, room.members)
   if (!queue.length && room.mode === 'auto') {
     const { accounts } = useBotStore.getState()
     const first = room.members.find((member) => {
@@ -598,11 +658,12 @@ export async function submitBrief(
     const previous = pendingTurns.get(id)
     if (previous) await previous.catch(() => {})
     controller.signal.throwIfAborted()
-    for (let turn = 0; turn < room.limit && queue.length; turn++) {
+    for (let turn = 0; queue.length; turn++) {
       const next = queue.shift()!
       const current = roomById(id)
-      const member = current?.members.find((m) => m.botId === next.botId)
-      if (!current || !member) continue
+      if (!current || turn >= current.limit) break
+      const member = current.members.find((m) => m.botId === next.botId)
+      if (!member) continue
       useRooms.setState((s) => ({
         speakers: { ...s.speakers, [id]: member.name },
         turnProgress: { ...s.turnProgress, [id]: { turn: turn + 1, limit: current.limit } }
@@ -619,7 +680,7 @@ export async function submitBrief(
         text: reply.text,
         createdAt: Date.now()
       }
-      const done = isFinal(post.text)
+      const done = (!coordinator || member.botId === coordinator.botId) && isFinal(post.text)
       update(id, (r) => ({
         ...r,
         finalId: done ? post.id : undefined,
@@ -632,7 +693,8 @@ export async function submitBrief(
       }))
       if (done) break
       const tool = requestedTool(post.text)
-      if (tool && turn + 1 < room.limit) {
+      const latest = roomById(id)!
+      if (tool && turn + 1 < latest.limit) {
         const bridge = getBridge()?.workspace
         if (!bridge) throw new Error('工作区不可用')
         const recipient = [
@@ -654,8 +716,10 @@ export async function submitBrief(
         queue.unshift(member)
         continue
       }
-      if (room.mode === 'auto') {
-        for (const target of mentions(post.text, room.members)) {
+      if (coordinator && member.botId !== coordinator.botId) {
+        if (!queue.some((m) => m.botId === coordinator.botId)) queue.push(coordinator)
+      } else if (latest.mode === 'auto') {
+        for (const target of mentions(post.text, latest.members)) {
           if (target.botId !== member.botId && !queue.some((m) => m.botId === target.botId)) {
             queue.push(target)
           }
