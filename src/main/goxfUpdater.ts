@@ -28,6 +28,7 @@ import {
 } from './goxfUpdateHelper'
 import { createHash } from 'node:crypto'
 import { fs } from './fsNoAsar'
+import { readFileSync as readAsarFile } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import { Readable } from 'node:stream'
@@ -92,7 +93,8 @@ let portablePrompt: PromptDecision['portable'] = null
 /** package.json fork fields; goxfTag/goxfBuiltAt are stamped by CI (absent in local builds). */
 function readPkg(): { goxfBuild: number; goxfTag: string | null; goxfBuiltAt: string | null } {
   try {
-    const pkg = JSON.parse(readFileSync(join(app.getAppPath(), 'package.json'), 'utf8')) as Record<string, unknown>
+    // package.json sits inside app.asar: read it with Electron's asar-aware fs, not original-fs (→ goxf.0).
+    const pkg = JSON.parse(readAsarFile(join(app.getAppPath(), 'package.json'), 'utf8')) as Record<string, unknown>
     const str = (v: unknown): string | null => (typeof v === 'string' && v.trim() ? v.trim() : null)
     return { goxfBuild: normalizeGoxfBuild(pkg.goxfBuild), goxfTag: str(pkg.goxfTag), goxfBuiltAt: str(pkg.goxfBuiltAt) }
   } catch {
