@@ -62,3 +62,17 @@ export function StatusBadge({ status, label, className }: StatusBadgeProps) {
     </span>
   )
 }
+
+/** Unread count pill shared by every sidebar layout. */
+export function UnreadBadge({ count, max = 99, className }: { count: number; max?: number; className?: string }) {
+  return (
+    <span
+      className={cn(
+        'inline-flex h-[18px] min-w-[18px] shrink-0 items-center justify-center rounded-full bg-accent-600 px-1 text-[10px] leading-none font-semibold text-white tabular-nums',
+        className
+      )}
+    >
+      {count > max ? `${max}+` : count}
+    </span>
+  )
+}

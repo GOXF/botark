@@ -4,6 +4,7 @@ import { FolderInput, Pin, PinOff, Palette, MoreHorizontal, Pencil, Trash2 } fro
 import { BotAvatar } from '@/components/ui/Avatar'
 import { BotAvatarEditorDialog } from '@/components/ui/BotAvatarEditorDialog'
 import { InlineEdit } from '@/components/ui/InlineEdit'
+import { StatusDot, UnreadBadge } from '@/components/ui/Status'
 import { Menu, MenuContent, MenuItem, MenuLabel, MenuSeparator, MenuTrigger } from '@/components/ui/Menu'
 import { cn } from '@/lib/cn'
 import { useShallow } from 'zustand/react/shallow'
@@ -105,7 +106,7 @@ export const BotListItem = memo(function BotListItem({
       : previewText(last, typing, activity)
   const isWorking = typing || live || projectsWorking
   const doneDot = done && bot.unread === 0 && (
-    <span aria-hidden className="absolute -top-0.5 -right-0.5 size-2.5 rounded-full bg-status-attention ring-2 ring-canvas" />
+    <StatusDot status="attention" className="absolute -top-0.5 -right-0.5 ring-2 ring-canvas" />
   )
   const timeLabel = !isWorking && last?.createdAt ? formatShortTime(last.createdAt) : ''
   // Only a bot created a moment ago rises into the list; startup stays still.
@@ -152,9 +153,7 @@ export const BotListItem = memo(function BotListItem({
           ringClassName="ring-canvas"
         />
         {bot.unread > 0 && (
-          <span className="absolute -top-0.5 -right-1 grid h-[18px] min-w-[18px] place-items-center rounded-full bg-accent-600 px-1 text-[10px] leading-none font-semibold text-white tabular-nums shadow-soft">
-            {bot.unread > 99 ? '99+' : bot.unread}
-          </span>
+          <UnreadBadge count={bot.unread} className="absolute -top-0.5 -right-1 shadow-soft" />
         )}
         {doneDot}
       </div>
@@ -179,9 +178,7 @@ export const BotListItem = memo(function BotListItem({
         ringClassName="ring-canvas"
       />
       {bot.unread > 0 && (
-        <span className="absolute -top-1 -right-1 grid h-4 min-w-4 place-items-center rounded-full bg-accent-600 px-1 text-[10px] leading-none font-semibold text-white tabular-nums">
-          {bot.unread > 9 ? '9+' : bot.unread}
-        </span>
+        <UnreadBadge count={bot.unread} max={9} className="absolute -top-1 -right-1" />
       )}
       {doneDot}
     </div>
@@ -249,20 +246,19 @@ export const BotListItem = memo(function BotListItem({
         )}
         {/* GOXF: a dot under the time for anything new (unread reply or finished task), hard to miss. */}
         {bot.unread > 0 ? (
-          <span
+          <UnreadBadge
+            count={bot.unread}
             className={cn(
-              'inline-flex h-4 min-w-4 shrink-0 items-center justify-center rounded-full bg-accent-600 px-1 text-[10.5px] leading-none font-semibold text-white tabular-nums transition-opacity duration-100 group-focus-within:opacity-0 group-hover:opacity-0',
+              'transition-opacity duration-100 group-focus-within:opacity-0 group-hover:opacity-0',
               menuOpen && 'opacity-0'
             )}
-          >
-            {bot.unread > 99 ? '99+' : bot.unread}
-          </span>
+          />
         ) : (
           done && (
-            <span
-              aria-hidden
+            <StatusDot
+              status="attention"
               className={cn(
-                'size-2 shrink-0 rounded-full bg-status-attention transition-opacity duration-100 group-focus-within:opacity-0 group-hover:opacity-0',
+                'transition-opacity duration-100 group-focus-within:opacity-0 group-hover:opacity-0',
                 menuOpen && 'opacity-0'
               )}
             />
