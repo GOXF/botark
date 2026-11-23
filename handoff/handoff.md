@@ -176,3 +176,4 @@ git clone <GOXF/botark> && cd botark && git checkout fix/hark-login-sync && npm 
 - 新账号项目工作区：/workspace/projects/611143f9-c3e5-4009-8c13-e0450fd350a0/work/botark；效果图在同级 work/mock/（v5.py 生成，字体 NotoSansSC*.otf）。
 - 任务组 v5 效果图已出：v5-A-split.png（会话模式：侧栏组下挂成员子任务+状态+用时，中间分屏 3 成员，右栏派发方式 总管拆分/全员同题/手动@、同时运行不限）；v5-B-tasks.png（任务模式：等你处理/进行中/已完成，群聊内并行进度条）。等用户「开工」。
 - 本账号尚未保存 GitHub PAT，暂不能推送；Muse 相关事项本账号不处理。
+- 22:35 用户否了「任务组」：要的是每个 bot / 每个群聊各自正在进行的任务，按状态区分。v5 作废。出 v6（work/mock/v6.py）：A 任务视图（顶部 会话/任务 切换，bot 与群聊混排，分区 等你处理/进行中/刚完成/空闲折叠，卡片=谁·任务·当前步骤·用时）；B 会话视图内嵌状态（状态筛选 chip、头像状态点、第二行换成当前步骤）。等用户选 A/B/都要 +「开工」。
