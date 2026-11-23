@@ -43,7 +43,8 @@ import {
   isAllowedMuseUrl,
   isMuseCheckpointUrl
 } from './museLoginHelpers'
-import { fetchInviteSummary, fetchSubscription } from '../muse-native/quota'
+import { fetchInviteSummary, fetchSubscription, MuseQuotaError } from '../muse-native/quota'
+import { logLine } from '../goxfPerf'
 import {
   fetchInvite,
   redeemInviteCode,
@@ -1262,8 +1263,10 @@ export class MuseSessionManager {
           stale: Boolean(prev),
           success: false,
           subscription: prev?.subscription ?? null,
-          error: 'Sign in to muse.ai first'
+          error: 'Sign in to muse.ai first',
+          errorCode: 'signed_out'
         }
+        logLine(`muse-quota ${accountId} no hatch_sess cookie`)
         if (session) session.quota = snap
         this.emit({ type: 'quota', accountId, snapshot: snap })
         return snap
@@ -1285,12 +1288,15 @@ export class MuseSessionManager {
       return snap
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error)
+      const errorCode = error instanceof MuseQuotaError ? (error.code ?? 'http') : 'http'
+      logLine(`muse-quota ${accountId} ${errorCode}: ${msg.slice(0, 300)}`)
       const snap: MuseQuotaSnapshot = {
         fetchedAt: Date.now(),
         stale: true,
         success: false,
         subscription: prev?.subscription ?? null,
-        error: msg.slice(0, 200)
+        error: msg.slice(0, 200),
+        errorCode
       }
       if (session) session.quota = snap
       this.emit({ type: 'quota', accountId, snapshot: snap })

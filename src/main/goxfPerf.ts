@@ -11,7 +11,7 @@ import { PORTABLE_DATA_DIR } from './goxfPortable'
 const MEMORY_INTERVAL_MS = 10 * 60 * 1000
 const MAX_LOG_BYTES = 512 * 1024
 
-function logLine(text: string): void {
+export function logLine(text: string): void {
   if (!PORTABLE_DATA_DIR) return
   const file = join(PORTABLE_DATA_DIR, 'perf.log')
   try {

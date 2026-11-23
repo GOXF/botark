@@ -385,6 +385,8 @@ export interface MuseQuotaSnapshot {
   success: boolean
   subscription: MuseSubscriptionView | null
   error?: string
+  /** GOXF: why quota is missing, so the sidebar can say it instead of a bare "unavailable". */
+  errorCode?: 'signed_out' | 'action_not_found' | 'parse' | 'http'
   inviteUsesRemaining?: number | null
 }
 

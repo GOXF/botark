@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import type { MuseQuotaSnapshot } from '@shared/ipc'
 import { EmptyLine, Section } from '@/components/info/Section'
+import { Button } from '@/components/ui/Button'
 import { RefreshButton } from '@/components/muse/RefreshButton'
 import { getBridge } from '@/lib/bridge'
 import { cleanSidebarError, isOnlineAccountStatus } from '@/lib/sidebarCompat'
@@ -22,11 +23,45 @@ function ProgressBar({ value }: { value: number }) {
   )
 }
 
+const UNAVAILABLE_REASON: Partial<Record<NonNullable<MuseQuotaSnapshot['errorCode']>, string>> = {
+  action_not_found: '额度接口已变',
+  parse: '额度接口已变',
+  signed_out: '网页登录已失效'
+}
+
+/** GOXF: say why quota is missing; real errors still show as the red line above. */
+function QuotaUnavailable({
+  loading,
+  code,
+  onRelogin
+}: {
+  loading: boolean
+  code: MuseQuotaSnapshot['errorCode']
+  onRelogin: () => void
+}) {
+  if (loading) return <EmptyLine>{t('Loading usage…')}</EmptyLine>
+  const reason = code ? UNAVAILABLE_REASON[code] : undefined
+  return (
+    <div className="flex items-center justify-between gap-2">
+      <EmptyLine>
+        {t('Usage unavailable')}
+        {reason && <span className="ml-1.5 text-[11px] text-ink-faint">· {reason}</span>}
+      </EmptyLine>
+      {code === 'signed_out' && (
+        <Button variant="ghost" size="sm" className="-my-1" onClick={onRelogin}>
+          重新登录
+        </Button>
+      )}
+    </div>
+  )
+}
+
 export function QuotaSection({ accountId }: { accountId: string }) {
   const [snap, setSnap] = useState<MuseQuotaSnapshot | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string>()
   const status = useBotStore((s) => s.accounts[accountId]?.status)
+  const openMuseLogin = useBotStore((s) => s.openMuseLogin)
 
   const refresh = useCallback(async () => {
     const muse = getBridge()?.muse
@@ -62,7 +97,11 @@ export function QuotaSection({ accountId }: { accountId: string }) {
     <Section title="额度管理" action={<RefreshButton loading={loading} onClick={() => void refresh()} />}>
       {error && <p className="pb-1 text-[12px] text-status-error">{error}</p>}
       {!sub ? (
-        <EmptyLine>{loading ? t('Loading usage…') : t('Usage unavailable')}</EmptyLine>
+        <QuotaUnavailable
+          loading={loading}
+          code={snap?.errorCode}
+          onRelogin={() => void openMuseLogin(accountId)}
+        />
       ) : (
         <div className="flex flex-col gap-2 py-0.5">
           <div className="flex items-baseline justify-between gap-2">
