@@ -1059,6 +1059,7 @@ export class MuseChatChannel extends EventEmitter {
       })
       await h.ack
       this.handle = h
+      this.emit('resumed')
       h.done.then(
         () => this.onEnded(h),
         () => this.onEnded(h)
@@ -1074,7 +1075,16 @@ export class MuseChatChannel extends EventEmitter {
     this.handle = null
     this.emit('ended')
     // If the socket is still up the server closed only the subscription: reopen.
-    if (!this.stopped && this.gw.isReady()) void this.ensure().catch(() => undefined)
+    if (!this.stopped && this.gw.isReady()) {
+      void this.ensure().catch(() => {
+        if (this.stopped || this.handle) return
+        setTimeout(() => {
+          if (!this.stopped && !this.handle && this.gw.isReady()) {
+            void this.ensure().catch(() => undefined)
+          }
+        }, 1500)
+      })
+    }
   }
 
   stop(): void {
@@ -1481,12 +1491,27 @@ export async function streamChat(
     }
   }
 
-  const backfill = async (): Promise<void> => {
+  const clearGap = (): void => {
+    if (gapTimer) {
+      clearTimeout(gapTimer)
+      gapTimer = null
+    }
+  }
+
+  const backfill = async (forceOnce = false): Promise<void> => {
     if (backfilling) return
     backfilling = true
+    let ranOnce = false
     try {
-      while (!closed && sessionId && (order.some((id) => !doneIds.has(id)) || (lastActivity && !isMuseIdleActivity(lastActivity)))) {
-        await new Promise((r) => setTimeout(r, 2000))
+      while (
+        !closed &&
+        sessionId &&
+        ((forceOnce && !ranOnce) ||
+          order.some((id) => !doneIds.has(id)) ||
+          (lastActivity && !isMuseIdleActivity(lastActivity)))
+      ) {
+        await new Promise((r) => setTimeout(r, ranOnce ? 2000 : 400))
+        ranOnce = true
         if (closed || !gw.isReady()) continue
         let hist: unknown
         try {
@@ -1499,10 +1524,7 @@ export async function streamChat(
           knownAssistantIds: new Set(order),
           turnStartedAtMs
         })
-        if (gapTimer) {
-          clearTimeout(gapTimer)
-          gapTimer = null
-        }
+        clearGap()
         applyHistoryRows(rows)
         if (order.length && order.every((id) => doneIds.has(id)) && isMuseIdleActivity(lastActivity)) {
           settle()
@@ -1529,8 +1551,15 @@ export async function streamChat(
     }
   }
 
+  const onResumed = (): void => {
+    clearGap()
+    void backfill(true)
+  }
+
   const onPhase = (p: string): void => {
-    if (p === 'ready' && gapTimer) void backfill()
+    if (p === 'ready' && gapTimer) {
+      void channel.ensure().then(onResumed).catch(() => void backfill(true))
+    }
   }
   gw.on('phase', onPhase)
   const onEnded = (): void => {
@@ -1539,6 +1568,7 @@ export async function streamChat(
   }
   channel.on('event', onEvent)
   channel.on('ended', onEnded)
+  channel.on('resumed', onResumed)
   const onAbort = (): void => {
     if (opts.signal?.reason !== MUSE_STREAM_SUPERSEDED) {
       void gw.request('chat.cancel', sessionId ? { session_id: sessionId } : {}).catch(() => undefined)
@@ -1572,9 +1602,10 @@ export async function streamChat(
     gw.off('phase', onPhase)
     clearTimeout(timer)
     clearSettle()
-    if (gapTimer) clearTimeout(gapTimer)
+    clearGap()
     channel.off('event', onEvent)
     channel.off('ended', onEnded)
+    channel.off('resumed', onResumed)
     opts.signal?.removeEventListener('abort', onAbort)
   }
   for (const id of order) if (!doneIds.has(id)) pushUpdate(id, true)
