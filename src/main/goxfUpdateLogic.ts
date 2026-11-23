@@ -12,7 +12,9 @@
  *   stable = non-prerelease v*-goxf.N releases, compared by (base, build) as above
  *   test   = also CI prereleases v<ver>-goxf.dev.<sha> from every push to goxf/portable;
  *            newest by published_at, offered when it is a different build published after ours
- *            (our tag + build time are stamped into package.json by CI: goxfTag, goxfBuiltAt)
+ *            (our tag + build time are stamped into package.json by CI: goxfTag, goxfBuiltAt);
+ *            a fast CI build ships only manifest + patch: offered to zip folders only, with the newest
+ *            full zip as fallback when the delta does not fit (exe/other builds skip such releases)
  */
 import type { GoxfUpdateChannel } from '@shared/goxfUpdate'
 
@@ -141,33 +143,39 @@ export function pickPortableZipAsset(assets: ReleaseAsset[] | null | undefined):
   return zips.find((a) => /x64/i.test(a.name)) ?? zips[0] ?? null
 }
 
-/** Delta assets next to the zip: "manifest-<zip name>.json" + "patch-<zip name>.zip". Both or nothing. */
-export function pickDeltaAssets(
-  assets: ReleaseAsset[] | null | undefined,
-  zip: ReleaseAsset | null
-): { manifest: ReleaseAsset; patch: ReleaseAsset } | null {
-  if (!zip) return null
-  const stem = zip.name.replace(/\.zip$/i, '')
-  const find = (name: string) => (assets ?? []).find((a) => a?.name === name && a.browser_download_url && isUploaded(a))
-  const manifest = find(`manifest-${stem}.json`)
-  const patch = find(`patch-${stem}.zip`)
-  return manifest && patch ? { manifest, patch } : null
+/**
+ * Delta assets: "manifest-<stem>.json" + "patch-<stem>.zip" (stem = the full zip's name without .zip).
+ * Both or nothing. A fast CI build publishes only these two, no full zip.
+ */
+export function pickDeltaAssets(assets: ReleaseAsset[] | null | undefined): { manifest: ReleaseAsset; patch: ReleaseAsset } | null {
+  const ready = (assets ?? []).filter((a) => a && typeof a.name === 'string' && a.browser_download_url && isUploaded(a))
+  for (const manifest of ready) {
+    const stem = /^manifest-(.*portable.*)\.json$/i.exec(manifest.name)?.[1]
+    const patch = stem && ready.find((a) => a.name === `patch-${stem}.zip`)
+    if (patch) return { manifest, patch }
+  }
+  return null
 }
+
+/** A fast CI build: manifest + patch only, no full zip or exe. */
+const isPatchOnly = (r: GitHubRelease): boolean =>
+  !pickPortableZipAsset(r.assets) && !pickPortableAsset(r.assets) && pickDeltaAssets(r.assets) !== null
 
 const publishedMs = (r: GitHubRelease): number => Date.parse(r.published_at ?? '') || 0
 
 /**
  * Release to offer on the test channel: newest non-draft goxf release (stable or dev) by published_at,
  * when its tag differs from ours and it was published after we were built. Without a build time
- * (local build) only a stable tag newer by (base, build) counts.
+ * (local build) only a stable tag newer by (base, build) counts. `accept` filters candidates first.
  */
 export function pickTestChannelRelease(
   releases: GitHubRelease[] | null | undefined,
-  own: { tag: string; builtAt: string | null; current: GoxfVersion | null }
+  own: { tag: string; builtAt: string | null; current: GoxfVersion | null },
+  accept: (r: GitHubRelease) => boolean = () => true
 ): GitHubRelease | null {
   let best: GitHubRelease | null = null
   for (const r of releases ?? []) {
-    if (!r || r.draft) continue
+    if (!r || r.draft || !accept(r)) continue
     const tag = String(r.tag_name ?? '')
     if (!GOXF_RE.test(tag) && !GOXF_DEV_RE.test(tag)) continue
     if (!best || publishedMs(r) > publishedMs(best)) best = r
@@ -211,6 +219,8 @@ export interface PromptDecision {
     canSelfUpdate: boolean
     asset: ReleaseAsset | null
     delta: { manifest: ReleaseAsset; patch: ReleaseAsset } | null
+    /** Patch-only release: the newest full zip to install instead when the delta does not fit this install. */
+    fallback: { version: string; asset: ReleaseAsset } | null
   } | null
 }
 
@@ -233,13 +243,16 @@ export function decideUpdatePrompts(input: PromptInput): PromptDecision {
 
   const base = parseSemver(input.version)
   const current: GoxfVersion | null = base ? { base, build: input.goxfBuild } : null
+  const zipKind = input.portable === 'zip'
   let release: GitHubRelease | null = null
+  let fallback: GitHubRelease | null = null
   if (input.channel === 'test') {
-    release = pickTestChannelRelease(input.forkReleases, {
-      tag: input.buildTag || `v${formatGoxfVersion(input.version, input.goxfBuild)}`,
-      builtAt: input.builtAt ?? null,
-      current
-    })
+    const own = { tag: input.buildTag || `v${formatGoxfVersion(input.version, input.goxfBuild)}`, builtAt: input.builtAt ?? null, current }
+    // Only a zip folder can apply a patch-only (fast CI) release; everyone else skips those.
+    release = pickTestChannelRelease(input.forkReleases, own, (r) => zipKind || !isPatchOnly(r))
+    if (zipKind && release && !pickPortableZipAsset(release.assets)) {
+      fallback = pickTestChannelRelease(input.forkReleases, own, (r) => pickPortableZipAsset(r.assets) !== null)
+    }
   } else {
     const latest = pickLatestGoxfRelease(input.forkReleases)
     if (latest && current && compareGoxf(latest.version, current) > 0) release = latest.release
@@ -247,13 +260,16 @@ export function decideUpdatePrompts(input: PromptInput): PromptDecision {
   if (release) {
     const versionText = String(release.tag_name).replace(/^v/i, '')
     // Each build kind replaces itself with the same kind of asset.
-    const asset = input.portable === 'zip' ? pickPortableZipAsset(release.assets) : pickPortableAsset(release.assets)
+    const asset = zipKind ? pickPortableZipAsset(release.assets) : pickPortableAsset(release.assets)
+    const delta = zipKind ? pickDeltaAssets(release.assets) : null
+    const fallbackAsset = fallback && pickPortableZipAsset(fallback.assets)
     decision.portable = {
       version: versionText,
       url: release.html_url || `https://github.com/${forkRepo}/releases/tag/v${versionText}`,
-      canSelfUpdate: input.portable !== null && input.platform === 'win32' && asset !== null,
+      canSelfUpdate: input.portable !== null && input.platform === 'win32' && (asset !== null || delta !== null),
       asset,
-      delta: input.portable === 'zip' ? pickDeltaAssets(release.assets, asset) : null
+      delta,
+      fallback: fallback && fallbackAsset ? { version: String(fallback.tag_name).replace(/^v/i, ''), asset: fallbackAsset } : null
     }
   }
   return decision

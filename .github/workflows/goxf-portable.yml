@@ -11,6 +11,12 @@ name: GOXF Portable
 #   patch-BotArk-Portable-<v>-win-x64.zip          the whole resources/ folder; applied file-by-file when the
 #                                                  runtime (everything outside resources/) matches the manifest
 #   *Portable*.exe                                 single-exe build
+# Fast path (job fast, ~2 min): a push to goxf/portable that leaves the Electron runtime alone since the newest
+# full release (no change to package.json dependencies/devDependencies/overrides, package-lock.json,
+# electron-builder.config.cjs, build/) skips electron-builder: electron-vite build, app.asar rebuilt from the base
+# release's patch (its node_modules kept), and only manifest + patch are published (no zip/exe). The manifest's
+# runtime entries come from the base, so clients on that runtime take the delta. See scripts/goxf-fast.mts.
+# Anything else, or a failed fast job, runs the full build (job portable).
 on:
   push:
     tags: ['v*-goxf.*']
@@ -25,8 +31,74 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  portable:
+  fast:
     if: github.repository == 'GOXF/botark'
+    runs-on: ubuntu-latest
+    outputs:
+      mode: ${{ steps.plan.outputs.mode }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # diff against the base release's tag
+      - name: CRLF checkout like the Windows full build, so out/ is byte-identical
+        run: git config core.autocrlf true && git rm -rq --cached . && git reset -q --hard
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+      - name: Fast (patch only) or full build
+        id: plan
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = push ] && [ "$GITHUB_REF_TYPE" = branch ]; then
+            gh api "repos/$GITHUB_REPOSITORY/releases?per_page=50" > "$RUNNER_TEMP/releases.json"
+            node --no-warnings scripts/goxf-fast.mts plan "$RUNNER_TEMP/releases.json" | tee -a "$GITHUB_OUTPUT"
+          else
+            echo "mode=full" | tee -a "$GITHUB_OUTPUT"
+          fi
+      - if: steps.plan.outputs.mode == 'fast'
+        run: npm ci --ignore-scripts # no Electron binary needed: electron-builder does not run
+      - name: Stamp build identity, then typecheck + test + build in parallel
+        if: steps.plan.outputs.mode == 'fast'
+        run: |
+          tag="v$(node -p "require('./package.json').version")-goxf.dev.${GITHUB_SHA::7}"
+          echo "GOXF_TAG=$tag" >> "$GITHUB_ENV"
+          npm pkg set "goxfTag=$tag" "goxfBuiltAt=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          npm run typecheck & tc=$!
+          npm test & t=$!
+          npx electron-vite build & b=$!
+          wait $tc && wait $t && wait $b
+      - name: Patch + manifest on top of the base release
+        if: steps.plan.outputs.mode == 'fast'
+        run: |
+          ver="${GOXF_TAG#v}"
+          name="BotArk-Portable-$ver-win-x64"
+          base="$RUNNER_TEMP/base"
+          gh release download "${{ steps.plan.outputs.base }}" --repo "$GITHUB_REPOSITORY" -p 'manifest-*.json' -p 'patch-*.zip' -D "$base"
+          unzip -q "$base"/patch-*.zip -d "$base/app"
+          node --no-warnings scripts/goxf-fast.mts assemble "$base/app/resources" "$base"/manifest-*.json "$ver" "$RUNNER_TEMP/new"
+          mkdir -p release
+          mv "$RUNNER_TEMP/new/manifest.json" "release/manifest-$name.json"
+          (cd "$RUNNER_TEMP/new" && zip -qrX "$GITHUB_WORKSPACE/release/patch-$name.zip" resources)
+      - name: Publish dev prerelease (manifest + patch only)
+        if: steps.plan.outputs.mode == 'fast'
+        run: |
+          gh release create "$GOXF_TAG" release/manifest-*.json release/patch-*.zip --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+            --prerelease --latest=false --title "BotArk Portable $GOXF_TAG (测试·增量)" \
+            --notes "Fast dev build of $GITHUB_SHA: resources/ only, no full zip. Applies as a delta on the runtime of ${{ steps.plan.outputs.base }}."
+      - name: Keep the newest 5 dev prereleases (and the newest full one)
+        if: steps.plan.outputs.mode == 'fast'
+        continue-on-error: true
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" > "$RUNNER_TEMP/releases.json"
+          node --no-warnings scripts/goxf-fast.mts prune "$RUNNER_TEMP/releases.json" |
+            while read -r old; do gh release delete "$old" --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag; done
+
+  portable:
+    needs: fast
+    # Full build unless the fast path published; also the fallback when the fast job failed.
+    if: always() && github.repository == 'GOXF/botark' && (needs.fast.outputs.mode != 'fast' || needs.fast.result == 'failure')
     runs-on: windows-latest
     env:
       TAG: ${{ github.ref_name }}
@@ -91,11 +163,13 @@ jobs:
             exit 1
           fi
           if [ "${{ github.ref_type }}" != tag ]; then
+            # A failed fast job may have left this tag's release behind; the full build replaces it.
+            gh release delete "$GOXF_TAG" --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag 2>/dev/null || true
             # Created with GITHUB_TOKEN, so this tag does not re-trigger the tag build.
             gh release create "$GOXF_TAG" "${files[@]}" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
               --prerelease --latest=false --title "BotArk Portable $GOXF_TAG (测试)" --notes "Dev build of $GITHUB_SHA"
-            gh release list --repo "$GITHUB_REPOSITORY" --limit 100 --json tagName,isPrerelease,createdAt \
-              --jq '[.[] | select(.isPrerelease and (.tagName | test("-goxf\\.dev\\.")))] | sort_by(.createdAt) | reverse | .[5:] | .[].tagName' |
+            gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" > "$RUNNER_TEMP/releases.json"
+            node --no-warnings scripts/goxf-fast.mts prune "$RUNNER_TEMP/releases.json" |
               while read -r old; do gh release delete "$old" --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag; done
           elif gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release upload "$TAG" "${files[@]}" --repo "$GITHUB_REPOSITORY" --clobber

@@ -213,7 +213,7 @@ async function check(manual: boolean): Promise<boolean> {
   portablePrompt = decision.portable
   if (decision.upstream) broadcastGoxf({ type: 'upstream-available', prompt: decision.upstream })
   if (decision.portable && !installing) {
-    const { asset: _asset, delta: _delta, ...prompt } = decision.portable
+    const { asset: _asset, delta: _delta, fallback: _fallback, ...prompt } = decision.portable
     broadcastGoxf({ type: 'portable-available', prompt })
   }
   const reachable = up.ok || fork.ok
@@ -336,7 +336,7 @@ async function quitForUpdate(): Promise<void> {
 async function installPortable(): Promise<void> {
   const prompt = portablePrompt
   if (!prompt) return
-  if (!portableSelfUpdate() || !prompt.canSelfUpdate || !prompt.asset) {
+  if (!portableSelfUpdate() || !prompt.canSelfUpdate) {
     void shell.openExternal(prompt.url || FORK_RELEASES_PAGE)
     return
   }
@@ -348,7 +348,22 @@ async function installPortable(): Promise<void> {
   broadcastGoxf({ type: 'portable-downloading', percent: 0 })
   logUpdate(`update ${currentVersion()} → ${prompt.version} (${currentChannel()} channel)`)
   const changed = zipMode && prompt.delta ? await planDeltaFor(dir, prompt.delta.manifest.browser_download_url) : null
-  const asset = changed ? prompt.delta!.patch : prompt.asset
+  // A patch-only (fast CI) release that does not fit this install: take the newest full zip instead.
+  let target = prompt.version
+  let full = prompt.asset
+  if (!changed && !full) {
+    if (!prompt.fallback) {
+      installing = false
+      logUpdate(`${prompt.version} has only a delta patch, it does not fit this install, and no newer full build exists`)
+      broadcastGoxf({ type: 'portable-error', message: `v${prompt.version} 只有增量补丁，且不适用于当前程序；暂无可用的完整包。已为你打开发布页。` })
+      void shell.openExternal(prompt.url || FORK_RELEASES_PAGE)
+      return
+    }
+    full = prompt.fallback.asset
+    target = prompt.fallback.version
+    logUpdate(`${prompt.version} has only a delta patch and it does not fit this install; skipping to newest full build ${target}`)
+  }
+  const asset = changed ? prompt.delta!.patch : full!
   const partial = join(dir, `.${basename(asset.name)}.download`)
   const ready = changed
     ? join(dir, '.botark-update-patch.zip')
@@ -365,7 +380,7 @@ async function installPortable(): Promise<void> {
     const logFile = join(dir, 'BotArk-Data', 'update.log')
     let body: string
     if (zipMode) {
-      broadcastGoxf({ type: 'portable-extracting', version: prompt.version })
+      broadcastGoxf({ type: 'portable-extracting', version: target })
       await unzip(ready, stage)
       const head = { appDir: dir, exeName, pid: process.pid, logFile, lockFile: lockFile! }
       if (changed) {
@@ -387,7 +402,7 @@ async function installPortable(): Promise<void> {
     const script = join(tmpdir(), `botark-portable-update-${Date.now()}.ps1`)
     // UTF-8 BOM so Windows PowerShell 5.1 reads non-ASCII paths correctly.
     writeFileSync(script, '\uFEFF' + body, 'utf8')
-    if (pendingFile) writeFileSync(pendingFile, JSON.stringify({ target: prompt.version, from: currentVersion() }))
+    if (pendingFile) writeFileSync(pendingFile, JSON.stringify({ target, from: currentVersion() }))
     // Before quitting, so a relaunch in the gap before the script starts is turned away too.
     if (zipMode) writeFileSync(lockFile!, new Date().toISOString())
     const child = spawn(
@@ -397,7 +412,7 @@ async function installPortable(): Promise<void> {
     )
     child.unref()
     logUpdate(`swap script started (${script})`)
-    broadcastGoxf({ type: 'portable-restarting', version: prompt.version })
+    broadcastGoxf({ type: 'portable-restarting', version: target })
     setTimeout(() => void quitForUpdate(), 600)
   } catch (error) {
     installing = false

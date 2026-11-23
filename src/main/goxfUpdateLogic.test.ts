@@ -241,8 +241,12 @@ describe('delta assets', () => {
     const assets = zipAssets('0.12.1-goxf.4').reverse()
     const zip = pickPortableZipAsset(assets)
     expect(zip?.name).toBe('BotArk-Portable-0.12.1-goxf.4-win-x64.zip')
-    expect(pickDeltaAssets(assets, zip)?.patch.name).toBe('patch-BotArk-Portable-0.12.1-goxf.4-win-x64.zip')
-    expect(pickDeltaAssets(assets.filter((a) => !a.name.startsWith('manifest-')), zip)).toBeNull()
+    expect(pickDeltaAssets(assets)?.patch.name).toBe('patch-BotArk-Portable-0.12.1-goxf.4-win-x64.zip')
+    expect(pickDeltaAssets(assets.filter((a) => !a.name.startsWith('manifest-')))).toBeNull()
+    // fast CI build: manifest + patch only
+    expect(pickDeltaAssets(assets.filter((a) => /^(manifest|patch)-/.test(a.name)))?.manifest.name).toBe(
+      'manifest-BotArk-Portable-0.12.1-goxf.4-win-x64.json'
+    )
   })
 })
 
@@ -336,6 +340,46 @@ describe('update channels', () => {
     const rs = [dev('abc1234', '2026-11-22T00:00:00Z', { draft: true }), stable(5, '2026-11-21T00:00:00Z')]
     expect(decideUpdatePrompts(input({ ...base, forkReleases: rs, channel: 'test' })).portable?.version).toBe('0.12.1-goxf.5')
     expect(decideUpdatePrompts(input({ ...base, channel: 'test' })).portable).toBeNull()
+  })
+})
+
+describe('patch-only (fast CI) dev releases on the test channel', () => {
+  const full = (tag: string, at: string) =>
+    forkRelease(tag, { prerelease: true, published_at: at, assets: [exe(`BotArk-Portable-${tag.slice(1)}-x64.exe`), ...zipAssets(tag.slice(1))] })
+  const fast = (tag: string, at: string) =>
+    forkRelease(tag, { prerelease: true, published_at: at, assets: zipAssets(tag.slice(1)).filter((a) => /^(manifest|patch)-/.test(a.name)) })
+  const releases = [
+    fast('v0.12.1-goxf.dev.fff0002', '2026-11-23T08:00:00Z'),
+    fast('v0.12.1-goxf.dev.fff0001', '2026-11-22T08:00:00Z'),
+    full('v0.12.1-goxf.dev.aaa0001', '2026-11-21T08:00:00Z')
+  ]
+  const test = { version: '0.12.1', goxfBuild: 4, channel: 'test' as const, forkReleases: releases, platform: 'win32' }
+  const fromFast1 = { buildTag: 'v0.12.1-goxf.dev.fff0001', builtAt: '2026-11-22T07:55:00Z' }
+
+  it('a zip folder is offered the newest patch-only release as a delta, with no fallback newer than itself', () => {
+    const p = decideUpdatePrompts(input({ ...test, ...fromFast1, portable: 'zip' })).portable
+    expect(p?.version).toBe('0.12.1-goxf.dev.fff0002')
+    expect(p?.asset).toBeNull()
+    expect(p?.delta?.patch.name).toBe('patch-BotArk-Portable-0.12.1-goxf.dev.fff0002-win-x64.zip')
+    expect(p?.canSelfUpdate).toBe(true)
+    expect(p?.fallback).toBeNull()
+  })
+  it('falls back to the newest full zip published after our build', () => {
+    const p = decideUpdatePrompts(input({ ...test, portable: 'zip', buildTag: 'v0.12.1-goxf.4', builtAt: '2026-11-20T08:00:00Z' })).portable
+    expect(p?.version).toBe('0.12.1-goxf.dev.fff0002')
+    expect(p?.fallback?.version).toBe('0.12.1-goxf.dev.aaa0001')
+    expect(p?.fallback?.asset.name).toBe('BotArk-Portable-0.12.1-goxf.dev.aaa0001-win-x64.zip')
+  })
+  it('exe and non-portable builds skip patch-only releases', () => {
+    const own = { buildTag: 'v0.12.1-goxf.4', builtAt: '2026-11-20T08:00:00Z' }
+    expect(decideUpdatePrompts(input({ ...test, ...own, portable: 'exe' })).portable?.version).toBe('0.12.1-goxf.dev.aaa0001')
+    expect(decideUpdatePrompts(input({ ...test, ...own, portable: null })).portable?.version).toBe('0.12.1-goxf.dev.aaa0001')
+    expect(decideUpdatePrompts(input({ ...test, ...fromFast1, portable: 'exe' })).portable).toBeNull()
+  })
+  it('a full release has no fallback', () => {
+    const p = decideUpdatePrompts(input({ ...test, forkReleases: [releases[2]], portable: 'zip', builtAt: '2026-11-20T08:00:00Z' })).portable
+    expect(p?.asset?.name).toMatch(/\.zip$/)
+    expect(p?.fallback).toBeNull()
   })
 })
 
