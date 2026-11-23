@@ -114,11 +114,22 @@ export function GoxfUpdateBanner() {
         </div>
       )}
       {showPortable && portable.kind === 'downloading' && (
-        <div className={cn(CARD, 'pr-3')}>
+        <div className={CARD}>
           <RefreshCw className="size-3.5 shrink-0 animate-spin text-accent-600" aria-hidden />
           <span className="truncate text-ink tabular-nums">
             下载中 {Math.round(portable.percent)}%{portable.totalMb ? ` · ${portable.totalMb} MB` : ''}
           </span>
+          <button
+            type="button"
+            title="取消下载（之后点更新会直接装最新版）"
+            className="press shrink-0 rounded-full px-2 py-0.5 text-[12px] text-ink-secondary hover:bg-hover hover:text-ink"
+            onClick={() => {
+              setPortable({ kind: 'hidden' })
+              void getBridge()?.goxfUpdates?.cancelPortable()
+            }}
+          >
+            取消
+          </button>
         </div>
       )}
       {showPortable && portable.kind === 'extracting' && (

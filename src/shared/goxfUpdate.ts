@@ -9,6 +9,7 @@ export const GOXF_UPDATE_CHANNELS = {
   event: 'goxf:update:event',
   openUpstream: 'goxf:update:open-upstream',
   installPortable: 'goxf:update:install-portable',
+  cancelPortable: 'goxf:update:cancel-portable',
   state: 'goxf:update:state',
   setChannel: 'goxf:update:set-channel'
 } as const
@@ -50,6 +51,7 @@ export interface GoxfUpdateState {
 export interface GoxfUpdateBridge {
   openUpstream(): Promise<{ ok: true }>
   installPortable(): Promise<{ ok: true }>
+  cancelPortable(): Promise<{ ok: true }>
   state(): Promise<GoxfUpdateState>
   setChannel(channel: GoxfUpdateChannel): Promise<GoxfUpdateState>
   onEvent(listener: (event: GoxfUpdateEvent) => void): () => void

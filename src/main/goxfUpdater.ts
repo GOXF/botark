@@ -229,10 +229,11 @@ async function check(manual: boolean): Promise<boolean> {
   return reachable
 }
 
-async function downloadTo(url: string, dest: string, expected?: number): Promise<void> {
+async function downloadTo(url: string, dest: string, expected?: number, signal?: AbortSignal): Promise<void> {
   const res = await net.fetch(url, {
     headers: { 'User-Agent': `BotArk/${currentVersion()}`, Accept: 'application/octet-stream' },
-    redirect: 'follow'
+    redirect: 'follow',
+    signal
   })
   if (!res.ok || !res.body) throw new Error(`下载失败（HTTP ${res.status}）`)
   const total = Number(res.headers.get('content-length')) || expected || 0
@@ -250,7 +251,7 @@ async function downloadTo(url: string, dest: string, expected?: number): Promise
       broadcastGoxf({ type: 'portable-downloading', percent: pct, totalMb })
     }
   })
-  await pipeline(body, createWriteStream(dest))
+  await pipeline(body, createWriteStream(dest), { signal })
   if (total && received !== total) throw new Error(`下载不完整（${received}/${total} 字节）`)
 }
 
@@ -335,15 +336,25 @@ async function quitForUpdate(): Promise<void> {
   app.quit()
 }
 
+/** GOXF: the running download, so the user can cancel it (and then take a newer build). */
+let downloadAbort: AbortController | null = null
+
+function cancelPortable(): void {
+  downloadAbort?.abort()
+}
+
 async function installPortable(): Promise<void> {
-  const prompt = portablePrompt
-  if (!prompt) return
-  if (!portableSelfUpdate() || !prompt.canSelfUpdate) {
-    void shell.openExternal(prompt.url || FORK_RELEASES_PAGE)
+  const shown = portablePrompt
+  if (!shown) return
+  if (!portableSelfUpdate() || !shown.canSelfUpdate) {
+    void shell.openExternal(shown.url || FORK_RELEASES_PAGE)
     return
   }
   if (installing) return
   installing = true
+  // Always install the newest build, not the one the notice was raised for.
+  await check(false).catch(() => false)
+  const prompt = portablePrompt?.canSelfUpdate ? portablePrompt : shown
   const zipMode = portableKind() === 'zip'
   // exe build: the launcher's exe; zip build: the folder holding BotArk.exe.
   const dir = zipMode ? PORTABLE_DIR! : dirname(PORTABLE_FILE!)
@@ -375,7 +386,9 @@ async function installPortable(): Promise<void> {
   const stage = join(dir, '.botark-update-stage')
   try {
     for (const f of [partial, ready]) if (existsSync(f)) unlinkSync(f)
-    await downloadTo(asset.browser_download_url, partial, asset.size)
+    downloadAbort = new AbortController()
+    await downloadTo(asset.browser_download_url, partial, asset.size, downloadAbort.signal)
+    downloadAbort = null
     renameSync(partial, ready)
     logUpdate(`downloaded ${changed ? `delta (${changed.length} files)` : 'full'}: ${asset.name}`)
     const exeName = basename(process.execPath)
@@ -426,6 +439,14 @@ async function installPortable(): Promise<void> {
       }
     }
     rmSync(stage, { recursive: true, force: true, maxRetries: 2 })
+    if (downloadAbort?.signal.aborted) {
+      downloadAbort = null
+      logUpdate('download cancelled by the user')
+      const { asset: _a, delta: _d, fallback: _f, ...again } = portablePrompt ?? prompt
+      broadcastGoxf({ type: 'portable-available', prompt: again })
+      return
+    }
+    downloadAbort = null
     const raw = error instanceof Error ? error.message : String(error)
     logUpdate(`failed before swap: ${raw}`)
     broadcastGoxf({ type: 'portable-error', message: `便携版更新失败：${raw}。已为你打开发布页，可手动下载替换。` })
@@ -464,6 +485,10 @@ export function registerUpdaterIpc(): void {
   })
   ipcMain.handle(GOXF_UPDATE_CHANNELS.installPortable, async () => {
     await installPortable()
+    return { ok: true as const }
+  })
+  ipcMain.handle(GOXF_UPDATE_CHANNELS.cancelPortable, () => {
+    cancelPortable()
     return { ok: true as const }
   })
   ipcMain.handle(GOXF_UPDATE_CHANNELS.state, () => state())
