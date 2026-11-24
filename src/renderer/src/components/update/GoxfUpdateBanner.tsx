@@ -47,6 +47,18 @@ export function GoxfUpdateBanner() {
   useEffect(() => setProgressHidden(false), [portable.kind])
   // Swapping files quits the app; never cut off a bot that is still replying.
   const botBusy = useBotStore((s) => Object.values(s.typing).some(Boolean))
+  // GOXF: 更新 while a bot replies = queue it; it installs the moment every reply ends.
+  const [queued, setQueued] = useState(false)
+  useEffect(() => {
+    if (queued && !botBusy) {
+      setQueued(false)
+      void getBridge()?.goxfUpdates?.installPortable()
+    }
+  }, [queued, botBusy])
+  // A manual 检查更新 shows the card again even if its × was pressed earlier.
+  useEffect(() => getBridge()?.updates?.onEvent((event) => {
+    if (event.type === 'checking') { setDismissedPortable(null); setProgressHidden(false) }
+  }), [])
 
   useEffect(() => {
     const bridge = getBridge()?.goxfUpdates
@@ -134,17 +146,20 @@ export function GoxfUpdateBanner() {
       {showPortable && portable.kind === 'available' && (
         <Notice
           icon={<Download className="size-4" aria-hidden />}
-          title={botBusy && portable.prompt.canSelfUpdate ? '新版本 · 回复完再更新' : '新版本可更新'}
+          title={queued ? '已排队 · 回复完自动更新' : botBusy && portable.prompt.canSelfUpdate ? '新版本 · 正在回复中' : '新版本可更新'}
           desc={`${shortVersion(portable.prompt.version)}，${portable.prompt.canSelfUpdate ? '点更新自动下载并重启' : '点下载打开发布页'}`}
           tip={`GOXF 自用版 v${portable.prompt.version}`}
           action={
             <Button
               size="sm"
               variant="primary"
-              disabled={botBusy && portable.prompt.canSelfUpdate}
-              onClick={() => void getBridge()?.goxfUpdates?.installPortable()}
+              disabled={queued}
+              onClick={() => {
+                if (botBusy && portable.prompt.canSelfUpdate) setQueued(true)
+                else void getBridge()?.goxfUpdates?.installPortable()
+              }}
             >
-              {portable.prompt.canSelfUpdate ? '更新' : '下载'}
+              {!portable.prompt.canSelfUpdate ? '下载' : queued ? '已排队' : botBusy ? '回复完更新' : '更新'}
             </Button>
           }
           onDismiss={() => setDismissedPortable(portable.prompt.version)}
