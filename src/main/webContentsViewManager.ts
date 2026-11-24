@@ -389,6 +389,22 @@ export class WebContentsViewManager {
     if (!managed.view.webContents.isDestroyed()) managed.view.webContents.close()
   }
 
+  /** GOXF pop-out: hand a bot's views to another window's manager so one webContents never lives twice. Pinned DOM-hook helpers stay. */
+  transferBot(botId: string, to: WebContentsViewManager): void {
+    for (const [viewId, managed] of [...this.views]) {
+      if (managed.info.botId !== botId || managed.pinned) continue
+      if (to.views.has(viewId)) {
+        this.destroy(viewId)
+        continue
+      }
+      this.clearIdleTimer(managed)
+      if (!this.window.isDestroyed()) this.detachIfAttached(viewId, managed)
+      this.views.delete(viewId)
+      to.views.set(viewId, managed)
+      to.scheduleIdleHibernate(managed)
+    }
+  }
+
   getView(viewId: string): WebContentsView | undefined {
     return this.views.get(viewId)?.view
   }

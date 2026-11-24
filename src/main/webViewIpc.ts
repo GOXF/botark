@@ -28,6 +28,13 @@ export function reloadAccountWebViews(
   return count
 }
 
+/** GOXF pop-out: move a bot's embedded web views from one window to another. */
+export function moveBotWebViews(botId: string, from: BrowserWindow, to: BrowserWindow): void {
+  const source = managers.get(from.webContents.id)
+  const target = managers.get(to.webContents.id)
+  if (source && target) source.transferBot(botId, target)
+}
+
 function managerFor(event: IpcMainEvent | IpcMainInvokeEvent): WebContentsViewManager {
   const manager = managers.get(event.sender.id)
   if (!manager) throw new Error('Web views are not available for this sender')

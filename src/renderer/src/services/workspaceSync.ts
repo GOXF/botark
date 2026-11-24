@@ -1,10 +1,12 @@
 import { create } from 'zustand'
 import { getBridge } from '@/lib/bridge'
-import { findLeaf } from '@/lib/paneTree'
+import { canSplitFocused, paneArea } from '@/components/workspace/PaneGrid'
+import { findLeaf, leafOfBot } from '@/lib/paneTree'
 import { useRooms } from '@/rooms/roomStore'
 import { useBotStore } from '@/store/botStore'
 import { usePanes, visibleBotIds } from '@/store/paneStore'
 import { useHarkWork } from './harkWork'
+import { isPopped, usePopped } from './popoutSync'
 
 /**
  * GOXF v12/v13 glue between the pane layout and the rest of the app.
@@ -29,6 +31,7 @@ function isRoom(id: string): boolean {
 }
 
 function onScreen(botId: string): boolean {
+  if (isPopped(botId)) return true
   return typeof document !== 'undefined' && document.visibilityState === 'visible' && document.hasFocus() && visibleBotIds().has(botId)
 }
 
@@ -75,6 +78,10 @@ export function startWorkspaceSync(): () => void {
         return
       }
       if (!s.bots.some((b) => b.id === id)) return
+      if (isPopped(id)) {
+        void getBridge()?.goxfPopout?.focus(id)
+        return
+      }
       if (panes.view !== 'sessions' && !settling) panes.setView('sessions')
       panes.place(id)
     })
@@ -97,6 +104,27 @@ export function startWorkspaceSync(): () => void {
       if (s.bots === prev.bots) return
       const alive = new Set(s.bots.map((b) => b.id))
       usePanes.getState().prune((id) => alive.has(id))
+    })
+  )
+
+  // Pop-out: a popped bot leaves its pane; docking it back puts it on screen again.
+  stops.push(
+    usePopped.subscribe((s, prev) => {
+      for (const id of s.ids) {
+        if (prev.ids.includes(id)) continue
+        const panes = usePanes.getState()
+        if (panes.stash) panes.toggleMaximize(panes.focusedId)
+        const own = leafOfBot(usePanes.getState().tree, id)
+        if (own) usePanes.getState().close(own.id)
+      }
+      for (const id of prev.ids) {
+        if (s.ids.includes(id) || !useBotStore.getState().bots.some((b) => b.id === id)) continue
+        const panes = usePanes.getState()
+        const busy = panes.view === 'sessions' && findLeaf(panes.tree, panes.focusedId)?.botId
+        if (busy && canSplitFocused('right', paneArea.box).ok) panes.split(panes.focusedId, 'right', id)
+        else panes.place(id)
+        useBotStore.getState().selectBot(id)
+      }
     })
   )
 

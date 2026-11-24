@@ -1,7 +1,8 @@
 import { useEffect, useLayoutEffect, useRef, useState, type DragEvent, type PointerEvent as ReactPointerEvent } from 'react'
-import { Maximize2, Minimize2, X } from 'lucide-react'
+import { Maximize2, Minimize2, SquareArrowOutUpRight, X } from 'lucide-react'
 import { ChatArea } from '@/components/chat/ChatArea'
 import { ErrorBoundary } from '@/components/ui/ErrorBoundary'
+import { getBridge } from '@/lib/bridge'
 import { cn } from '@/lib/cn'
 import {
   PANE_MIN_H,
@@ -126,8 +127,21 @@ function Pane({ id, botId, rect, multi, focused, hint, box }: {
   const [localHint, setLocalHint] = useState<DropHint | null>(null)
   const shown = localHint ?? hint
 
+  const popOut = botId && getBridge()?.goxfPopout ? (
+    <button
+      type="button"
+      title="弹出到独立窗口"
+      aria-label="弹出到独立窗口"
+      onClick={() => void getBridge()?.goxfPopout?.open(botId)}
+      className="grid size-7 place-items-center rounded-full text-ink-secondary hover:bg-hover hover:text-ink"
+    >
+      <SquareArrowOutUpRight className="size-3.5" />
+    </button>
+  ) : null
+
   const controls = (
     <span className="no-drag flex items-center gap-0.5 border-l border-line pl-1">
+      {popOut}
       <button
         type="button"
         title={maximized ? '还原分屏' : '最大化这一格'}
@@ -202,7 +216,7 @@ function Pane({ id, botId, rect, multi, focused, hint, box }: {
         </button>
       )}
       <ErrorBoundary surface="会话格" resetKey={botId ?? id}>
-        <ChatArea botId={botId} focused={focused} compact={multi} headerExtra={multi ? controls : undefined} />
+        <ChatArea botId={botId} focused={focused} compact={multi} headerExtra={multi ? controls : popOut && !maximized ? <span className="no-drag flex items-center border-l border-line pl-1">{popOut}</span> : undefined} />
       </ErrorBoundary>
       {shown && (
         <div className="pointer-events-none absolute inset-0 z-30">

@@ -7,6 +7,7 @@ import { BoardView } from '@/components/workspace/BoardView'
 import { PaneGrid } from '@/components/workspace/PaneGrid'
 import { WorkspaceTopBar } from '@/components/workspace/WorkspaceTopBar'
 import { startWorkspaceSync } from '@/services/workspaceSync'
+import { startPopoutHost } from '@/services/popoutSync'
 import { usePanes } from '@/store/paneStore'
 import { AppShell } from '@/components/layout/AppShell'
 import { InfoPanel } from '@/components/info/InfoPanel'
@@ -181,6 +182,7 @@ export default function App() {
 
   useEffect(() => startPrefsSync(), [])
   useEffect(() => startWorkspaceSync(), [])
+  useEffect(() => startPopoutHost(), [])
   useEffect(() => {
     // Only resume an explicitly connected bridge after a renderer reload.
     if (sessionStorage.getItem('botark.slack.connected') !== '1') return
