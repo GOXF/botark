@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
 import { getPlatform } from '@adapters/platforms'
 import {
+  ArrowRight,
   ArrowUp,
   Check,
   ChevronDown,
@@ -70,6 +71,8 @@ import {
   useRooms
 } from './roomStore'
 import { WorkspaceTools } from './WorkspaceTools'
+import { markHandoffRead, takePendingFocus } from './handoff'
+import { HandoffBreadcrumb, HandoffMessage, HandoffPicker } from './HandoffViews'
 
 export const NEW_ROOM_ID = 'room-create'
 
@@ -251,8 +254,11 @@ function RoomSidebarItem({
             ringClassName="ring-canvas"
           />
           <div className="min-w-0 flex-1 pr-4">
-            <span className="block truncate text-[13px] leading-[18px] font-medium tracking-tight text-ink">
-              {room.title}
+            <span className="flex items-center gap-1.5 text-[13px] leading-[18px] font-medium tracking-tight text-ink">
+              <span className="truncate">{room.title}</span>
+              {room.handoffUnread && (
+                <span className="shrink-0 rounded-full bg-accent-50 px-1.5 text-[10.5px] leading-4 font-medium text-accent-600">新需求</span>
+              )}
             </span>
             <p
               className={cn(
@@ -776,6 +782,14 @@ function ReferenceList({ references, onRemove }: {
   )
 }
 
+/** Re-run the requirement this final answered (keeps a handed-over quote intact). */
+function regenerate(room: CollabRoom, final: RoomMessage) {
+  const idx = room.messages.indexOf(final)
+  const ask = room.messages.slice(0, idx).findLast(isHumanRoomMessage)
+  if (!ask) return
+  void submitBrief(room.id, ask.text, { author: ask.author, references: ask.references ?? [], handoff: ask.handoff })
+}
+
 function RoomMessageRow({
   room,
   message,
@@ -786,7 +800,9 @@ function RoomMessageRow({
   onMentionReply: (memberName: string) => void
 }) {
   const bots = useBotStore((s) => s.bots)
+  const speaking = useRooms((s) => Boolean(s.speakers[room.id]))
   const [copied, setCopied] = useState(false)
+  const [handingOff, setHandingOff] = useState(false)
 
   if (message.notice) {
     return <p className="mx-auto text-xs text-ink-muted">{message.text}</p>
@@ -794,6 +810,8 @@ function RoomMessageRow({
   if (!message.authorBotId && message.author === 'Tool') {
     return <ToolExecutionCard message={message} />
   }
+
+  if (message.handoff) return <HandoffMessage message={message} />
 
   if (isHumanRoomMessage(message)) {
     const fromSlack = message.author.startsWith('Slack ')
@@ -864,6 +882,14 @@ function RoomMessageRow({
           <div className="px-5 py-4 text-[14px] leading-[23px] text-ink">
             <MarkdownText text={cleanText} />
           </div>
+        </div>
+        <div className="relative mt-1.5 flex items-center gap-1.5">
+          <Button size="sm" onClick={copyBody}>{copied ? '已复制' : '复制'}</Button>
+          <Button size="sm" disabled={speaking} onClick={() => regenerate(room, message)}>重新生成</Button>
+          <Button size="sm" variant="primary" aria-expanded={handingOff} onClick={() => setHandingOff((v) => !v)}>
+            <ArrowRight aria-hidden /> 交给其他群组
+          </Button>
+          {handingOff && <HandoffPicker room={room} message={message} onClose={() => setHandingOff(false)} />}
         </div>
       </article>
     )
@@ -974,6 +1000,18 @@ export function RoomView({ id }: { id: string }) {
     return () => window.removeEventListener('botark:room-append-draft', onAppend)
   }, [id])
 
+  useEffect(() => {
+    if (room?.handoffUnread) markHandoffRead(id)
+  }, [id, room?.handoffUnread])
+
+  useEffect(() => {
+    const messageId = takePendingFocus(id)
+    if (!messageId) return
+    const el = transcriptRef.current?.querySelector<HTMLElement>(`[data-room-message="${CSS.escape(messageId)}"]`)
+    el?.scrollIntoView({ block: 'center' })
+    el?.animate([{ backgroundColor: 'var(--color-accent-50)' }, { backgroundColor: 'transparent' }], { duration: 1600 })
+  }, [id])
+
   if (!room) return <CreateRoom />
 
   const mentionMatch = /(?:^|.*[^A-Za-z0-9_.+-])(@([^\n]*))$/u.exec(text)
@@ -1069,7 +1107,9 @@ export function RoomView({ id }: { id: string }) {
               <ArkSlackWeaveSvg className="size-3 text-accent-600" />
               <span className="truncate">{slackLabel}</span>
             </span>
-          ) : null}
+          ) : (
+            <HandoffBreadcrumb room={room} />
+          )}
         </div>
 
         {/* Center Grok Floating Capsule (Clean Title Only) */}
@@ -1180,12 +1220,13 @@ export function RoomView({ id }: { id: string }) {
         <div ref={transcriptRef} className="min-h-0 flex-1 overflow-y-auto px-6 py-5">
           <div className="flex flex-col gap-5">
             {room.messages.map((m) => (
-              <RoomMessageRow
-                key={m.id}
-                room={room}
-                message={m}
-                onMentionReply={(name) => insertMention(name)}
-              />
+              <div key={m.id} data-room-message={m.id}>
+                <RoomMessageRow
+                  room={room}
+                  message={m}
+                  onMentionReply={(name) => insertMention(name)}
+                />
+              </div>
             ))}
 
             {speaker && (

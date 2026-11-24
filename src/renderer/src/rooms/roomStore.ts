@@ -70,7 +70,9 @@ export const useRooms = create<RoomState>()(
                 slackChannel: typeof r.slackChannel === 'string' ? r.slackChannel : undefined,
                 slackThread: typeof r.slackThread === 'string' ? r.slackThread : undefined,
                 finalId: typeof r.finalId === 'string' ? r.finalId : undefined,
-                createdAt: typeof r.createdAt === 'number' ? r.createdAt : undefined
+                createdAt: typeof r.createdAt === 'number' ? r.createdAt : undefined,
+                handoffChain: Array.isArray(r.handoffChain) ? r.handoffChain.filter((x): x is string => typeof x === 'string') : undefined,
+                handoffUnread: r.handoffUnread === true ? true : undefined
               }))
           : []
         return { ...current, rooms: safeRooms }
@@ -661,24 +663,32 @@ async function memberReply(room: CollabRoom, member: RoomMember, signal: AbortSi
 export async function submitBrief(
   id: string,
   input: string,
-  { author = 'User', messageId = createId('post'), references = [] }: {
+  { author = 'User', messageId = createId('post'), references = [], handoff, start = true }: {
     author?: string
     messageId?: string
     references?: RoomReference[]
+    handoff?: RoomMessage['handoff']
+    /** false: only post the requirement, nobody starts on it. */
+    start?: boolean
   } = {}
 ) {
   reconcileRooms(id)
   const room = roomById(id)
   const text = input.trim() || (references.length ? '请查看随附资料。' : '')
   if (!room || !text) return
+  const message: RoomMessage = {
+    id: messageId, author, text, createdAt: Date.now(),
+    ...(references.length ? { references } : {}),
+    ...(handoff ? { handoff } : {})
+  }
+  if (!start) {
+    update(id, (r) => ({ ...r, brief: text, finalId: undefined, messages: [...r.messages, message] }))
+    return
+  }
   stopRoom(id)
   setError(id)
   const controller = new AbortController()
   runs.set(id, controller)
-  const message: RoomMessage = {
-    id: messageId, author, text, createdAt: Date.now(),
-    ...(references.length ? { references } : {})
-  }
   update(id, (r) => ({ ...r, brief: text, finalId: undefined, messages: [...r.messages, message] }))
   const coordinator = room.coordinatorId ? room.members[0] : undefined
   const queue = coordinator ? [coordinator] : mentions(text, room.members)
