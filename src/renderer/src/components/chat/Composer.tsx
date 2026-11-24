@@ -11,6 +11,7 @@ import type { Bot, BotAccount } from '@/types'
 import { t } from '@/lib/i18n'
 import type { DraftAttachment } from './attachmentDraft'
 import { composerDraft } from './goxfComposerDrafts'
+import { ImageLightbox } from './ImageLightbox'
 
 interface ComposerProps {
   bot: Bot
@@ -170,6 +171,8 @@ export function Composer({ bot, account, typing = false, onSend, onCancel, onCon
   const draft = saved.attachments
   useEffect(() => saved.bind(setAttachments), [saved])
   const [dragging, setDragging] = useState(false)
+  // GOXF: click a pending image chip to view it full size before sending.
+  const [preview, setPreview] = useState<{ src: string; name: string } | null>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const replyTarget = useBotStore((s) => s.replyingTo[bot.id])
@@ -235,6 +238,20 @@ export function Composer({ bot, account, typing = false, onSend, onCancel, onCon
   return (
     <div className="shrink-0 px-6 pt-2 pb-5">
       <div className="mx-auto max-w-[860px] px-2">
+        {preview && (
+          <ImageLightbox
+            src={preview.src}
+            alt={preview.name}
+            filename={preview.name}
+            onSave={() => {
+              const a = document.createElement('a')
+              a.href = preview.src
+              a.download = preview.name
+              a.click()
+            }}
+            onClose={() => setPreview(null)}
+          />
+        )}
         {account && !connected && !hideNotice && (
           <ConnectionNotice
             account={account}
@@ -307,11 +324,18 @@ export function Composer({ bot, account, typing = false, onSend, onCancel, onCon
                     )}
                   >
                     {isImg ? (
-                      <img
-                        src={`data:${file.mimeType};base64,${file.dataBase64}`}
-                        alt={file.name}
-                        className="size-8 shrink-0 rounded-lg object-cover ring-1 ring-line/60"
-                      />
+                      <button
+                        type="button"
+                        title={t('Click to preview')}
+                        onClick={() => setPreview({ src: `data:${file.mimeType};base64,${file.dataBase64}`, name: file.name })}
+                        className="shrink-0 cursor-zoom-in rounded-lg"
+                      >
+                        <img
+                          src={`data:${file.mimeType};base64,${file.dataBase64}`}
+                          alt={file.name}
+                          className="size-8 rounded-lg object-cover ring-1 ring-line/60"
+                        />
+                      </button>
                     ) : (
                       <span className="grid size-7 shrink-0 place-items-center rounded-lg bg-surface text-accent-600">
                         {status === 'reading' ? (

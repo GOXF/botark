@@ -130,6 +130,7 @@ export const ZH: Record<string, string> = {
   "Agent": "智能体",
   "Select Grok Bot agent": "选择 Grok Bot 智能体",
   "Working…": "处理中…",
+  "Click to preview": "点击预览",
   "Unpin from sidebar": "从侧栏取消置顶",
   "Pin to sidebar": "置顶到侧栏",
   "Not sent": "未发送",

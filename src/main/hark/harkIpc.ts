@@ -43,7 +43,8 @@ import {
   type HarkActivityPanel,
   type HarkPendingAsk,
   type HarkChatMessage,
-  type HarkUploadedAttachment
+  type HarkUploadedAttachment,
+  harkRunningToolLine
 } from './harkClient'
 import { harkTurnBusy } from './harkBusy'
 import { cancelHarkLogin, closeHarkLoginWindow, onHarkLoginEvent, openHarkLoginWindow } from './harkLogin'
@@ -366,6 +367,8 @@ async function runHarkRpc(req: HarkRpcRequest): Promise<HarkRpcResponse> {
           syncState.activeActivity?.trim() ||
           msg?.narration?.trim() ||
           msg?.thought?.trim() ||
+          harkRunningToolLine(msg) ||
+          syncState.liveStatus().text ||
           ''
         // Turn messages as last shown (by object: sync state replaces a message on change).
         const shown = new Map<string, HarkChatMessage>()

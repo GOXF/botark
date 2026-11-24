@@ -199,7 +199,11 @@ export function HarkProjects({
           noteHarkRun(accountId, conversationId)
           liveBusy = true
           store.setTyping(botId, true)
-          store.setActivity(accountId, { code: 'thinking', text: e.live.text || null, emoji: null, busy: true })
+          // GOXF: two feeds write this line (the send tail and this project stream); an empty
+          // reading must not wipe the live sentence the other one just set.
+          const prev = store.activity[accountId]
+          const keep = prev && prev.code === 'thinking' ? prev.text : null
+          store.setActivity(accountId, { code: 'thinking', text: e.live.text || keep || null, emoji: null, busy: true })
         } else if (e.live && liveBusy) {
           liveBusy = false
           store.setTyping(botId, false)

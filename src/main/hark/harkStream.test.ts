@@ -43,3 +43,9 @@ it('keeps the current browser frame in the selected conversation as Hark updates
   state.applyFrame(JSON.stringify({ type: 'snapshot', data: {} }))
   expect(currentHarkBrowser(state.extractPanels())).toBeNull()
 })
+
+import { harkRunningToolLine } from './harkClient'
+it('running tool gives a live line when Hark sends no narration', () => {
+  expect(harkRunningToolLine({ toolCalls: [{ name: 'browser', status: 'running', detail: '查看日志' }] })).toBe('正在用浏览器：查看日志')
+  expect(harkRunningToolLine({ toolCalls: [{ name: 'shell', status: 'completed' }] })).toBe('')
+})

@@ -1045,7 +1045,14 @@ export class HarkConversationSyncState {
       .reverse()
       .map((id) => this.messages.get(id))
       .find((m) => m && m.isStreaming && !/^user$/i.test(m.role))
-    const text = (this.narration || this.activeActivity || streaming?.narration || streaming?.thought || '').trim()
+    const text = (
+      this.narration ||
+      this.activeActivity ||
+      streaming?.narration ||
+      streaming?.thought ||
+      harkRunningToolLine(streaming) ||
+      ''
+    ).trim()
     return { busy: Boolean(text || streaming), text: text.slice(0, 120) }
   }
 
@@ -1822,6 +1829,16 @@ export function extractMessages(payload: unknown): HarkChatMessage[] {
     out.push(normalizeSyncMessage(id, raw))
   }
   return out
+}
+
+/** GOXF: when Hark gives no narration, say what its running tool does (「正在用浏览器：…」). */
+export function harkRunningToolLine(msg: { toolCalls?: Array<{ name: string; status: string; detail?: string; url?: string; command?: string }> } | undefined): string {
+  const tc = [...(msg?.toolCalls ?? [])].reverse().find((t) => /^(running|pending|active|started|in_progress|waiting_for_input|awaiting_input)$/i.test(t.status))
+  if (!tc) return ''
+  const n = tc.name.toLowerCase()
+  const verb = /browser/.test(n) ? '正在用浏览器' : /shell|command|exec/.test(n) ? '正在运行命令' : /search/.test(n) ? '正在搜索' : /fetch/.test(n) ? '正在读取网页' : /subagent|agent/.test(n) ? '正在派子任务' : /file|write|edit|read/.test(n) ? '正在处理文件' : '正在执行'
+  const what = tc.detail || tc.url || tc.command || ''
+  return what ? `${verb}：${what}` : `${verb}…`
 }
 
 /** GOXF: a one-line "what is it doing" for a tool call, read from its input or progress. */
