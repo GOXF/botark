@@ -1,5 +1,5 @@
 /** One image viewer for chat attachments and markdown images, plus the round button laid over a thumbnail. */
-import { useEffect, useMemo, useState, type ReactNode } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { Check, ChevronLeft, ChevronRight, Copy, Download, X, ZoomIn, ZoomOut } from 'lucide-react'
 import { IconButton } from '@/components/ui/IconButton'
@@ -65,6 +65,15 @@ export function ImageLightbox({
   onClose: () => void
 }) {
   const [zoom, setZoom] = useState(1)
+  // Fitted size at 100%; zoom resizes the box (not a transform) so the scroll area covers all sides.
+  const [base, setBase] = useState<{ w: number; h: number } | null>(null)
+  const scrollRef = useRef<HTMLDivElement>(null)
+  useLayoutEffect(() => {
+    const el = scrollRef.current
+    if (!el) return
+    el.scrollLeft = (el.scrollWidth - el.clientWidth) / 2
+    el.scrollTop = (el.scrollHeight - el.clientHeight) / 2
+  }, [zoom])
   const [copiedImg, setCopiedImg] = useState(false)
   // Snapshot of the chat's images when the viewer opens; ←/→ step through them.
   const gallery = useMemo(() => {
@@ -193,13 +202,14 @@ export function ImageLightbox({
           </button>
         </div>
       </div>
-      <div className="flex max-h-[82vh] max-w-[92vw] items-center justify-center overflow-auto" onClick={(e) => e.stopPropagation()}>
+      <div ref={scrollRef} className="flex max-h-[82vh] max-w-[92vw] overflow-auto" onClick={(e) => e.stopPropagation()}>
         <img
           key={current.src}
           src={current.src}
           alt={current.alt}
-          style={zoom !== 1 ? { transform: `scale(${zoom})`, transformOrigin: 'center center' } : undefined}
-          className="max-h-[80vh] max-w-[88vw] rounded-xl object-contain shadow-dialog transition-transform duration-150"
+          onLoad={(e) => zoom === 1 && setBase({ w: e.currentTarget.offsetWidth, h: e.currentTarget.offsetHeight })}
+          style={zoom !== 1 && base ? { width: base.w * zoom, height: base.h * zoom, maxWidth: 'none', maxHeight: 'none' } : undefined}
+          className="m-auto max-h-[80vh] max-w-[88vw] shrink-0 rounded-xl object-contain shadow-dialog"
         />
       </div>
       {count > 1 && (
