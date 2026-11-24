@@ -259,3 +259,11 @@ git clone <GOXF/botark> && cd botark && git checkout fix/hark-login-sync && npm 
 - 同一个群的多条 brief 排队（submitBrief 会中断群里正在跑的回合）。
 - 未做：命令型上线钩子（需新增主进程执行任意命令的 IPC，安全面大，故意没做）；真实「步骤 3/5·改了 N 个文件」（Bot 没有这类数据，只显示当前活动/群里第几轮）；Bot 开发完成自动识别；构建结果回写卡片；卡片编辑。
 - 验证：typecheck 过，vitest 517/517；网页版假数据截图：六列、关卡、打回输入、上线对话框、新任务、只看要我处理的、切回状态 都正常。未在 Windows/Electron 真机跑。
+## 2026-11-24 16:20–17:05 群组之间交接（Issue #6 / next.md 第 5 项，分支 goxf/feat-handoff，未合并）
+- 按效果图 v14-2 做：[FINAL] 定稿卡下 复制 / 重新生成 / 交给其他群组；选择框列出其他群组（成员数 + 空闲/进行中）、附言、「由X组（管理员）自动开工」开关（手动 @ 且无管理员的组开关置灰：「收到后由你点名」）。
+- 对方组收到「<源组> 交来需求」卡：附言 + 引用（引用 · 源组 bot 的定稿 [FINAL] 时间）+「查看原消息 →」跳回源组并定位高亮；自动开工 = submitBrief 正常派发（管理员组先给管理员）。turnPrompt 把引用当需求原文（isHumanRoomMessage 认 handoff 消息）。
+- 右栏新标签「交接」：交接链 需求(你) → 各组(定稿/待开工/读需求中) → 人工确认(你)，带时间；交接规则 3 条。顶栏左侧 交接链 面包屑。侧栏收到的组显示「新需求」，打开即清。
+- 数据：CollabRoom.handoffChain（链上所有组共享同一数组）/handoffUnread，RoomMessage.handoff {roomId,messageId}，随 rooms 持久化。submitBrief 新增可选 handoff、start=false（只发不开工）。
+- 代码：rooms/handoff.ts(+handoff.test.ts 4 测)、rooms/HandoffViews.tsx；RoomView/RoomInspectorPanel/roomStore/model 只做增量改动（方便和 goxf/feat-pipeline 合并）。
+- 「重新生成」= 用该定稿之前最后一条需求（含交来的引用）重新派发，会在群里再出现一次需求。
+- 已知：右栏 4 个标签后「工作区/Slack」字被截断；链上组被删显示「已删除的群组」。网页版 playwright 假数据目测通过（选择框、交出、对方卡片、查看原消息跳回、右栏链）。未在 Windows/Electron 真机跑，未用真 bot 跑自动开工。

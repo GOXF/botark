@@ -34,9 +34,10 @@ import {
 } from './roomStore'
 import { encodeRoomMemberDrag, ROOM_MEMBER_DRAG_MIME } from './roomDnd'
 import { SlackPanel } from './SlackPanel'
+import { HandoffPanel } from './HandoffViews'
 import { WorkspaceTools } from './WorkspaceTools'
 
-type RoomTab = 'overview' | 'workspace' | 'slack'
+type RoomTab = 'overview' | 'workspace' | 'slack' | 'handoff'
 
 export function exportRoomMarkdownFile(room: CollabRoom, finalId?: string) {
   const url = URL.createObjectURL(new Blob([roomMarkdown(room, finalId)], { type: 'text/markdown' }))
@@ -130,7 +131,8 @@ export function RoomInspectorPanel({ room }: { room: CollabRoom }) {
             options={[
               { value: 'overview', label: '编排', icon: <ArkRelayOrbSvg /> },
               { value: 'workspace', label: '工作区', icon: <ArkWorkspaceVaultSvg /> },
-              ...(room.coordinatorId ? [] : [{ value: 'slack' as const, label: 'Slack', icon: <ArkSlackWeaveSvg /> }])
+              ...(room.coordinatorId ? [] : [{ value: 'slack' as const, label: 'Slack', icon: <ArkSlackWeaveSvg /> }]),
+              { value: 'handoff', label: '交接' }
             ]}
           />
         </div>
@@ -437,6 +439,8 @@ export function RoomInspectorPanel({ room }: { room: CollabRoom }) {
               }
             />
           )}
+
+          {tab === 'handoff' && <HandoffPanel room={room} />}
 
           {tab === 'slack' && !room.coordinatorId &&
             (room.slackParent ? (

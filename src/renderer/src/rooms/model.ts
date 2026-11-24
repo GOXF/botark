@@ -33,6 +33,8 @@ export interface RoomMessage {
   notice?: boolean
   final?: boolean
   createdAt?: number
+  /** Requirement handed over from another group's [FINAL]; points back to it. */
+  handoff?: { roomId: string; messageId: string }
 }
 
 export interface CollabRoom {
@@ -50,6 +52,10 @@ export interface CollabRoom {
   slackThread?: string
   finalId?: string
   createdAt?: number
+  /** Room ids this requirement has passed through, origin first (shared by every room in it). */
+  handoffChain?: string[]
+  /** A handed-over requirement arrived and has not been opened yet. */
+  handoffUnread?: boolean
 }
 
 const escapedName = (name: string) => name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
@@ -122,7 +128,7 @@ function messageWithReferences(message: RoomMessage): string {
 }
 
 export function isHumanRoomMessage(message: RoomMessage): boolean {
-  return !message.authorBotId && (message.author === 'User' || message.author.startsWith('Slack '))
+  return !message.authorBotId && (message.author === 'User' || message.author.startsWith('Slack ') || Boolean(message.handoff))
 }
 
 export function roomRecipient(room: CollabRoom, externalAudience?: string): string {
