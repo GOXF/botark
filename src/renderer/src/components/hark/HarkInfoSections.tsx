@@ -417,6 +417,7 @@ export function HarkHomeCardsSection({ accountId, botId }: { accountId: string; 
   return (
     <Section
       title="智能建议"
+      defaultOpen={false}
       count={cards.length || undefined}
       action={<RefreshButton loading={loading} onClick={() => void refresh()} />}
     >

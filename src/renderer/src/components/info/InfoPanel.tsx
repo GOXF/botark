@@ -84,7 +84,7 @@ import { useBotStore } from '@/store/botStore'
 import type { Bot, BotAccount } from '@/types'
 import { AccountList } from './AccountList'
 import { MemoryEditor } from './MemoryEditor'
-import { EmptyLine, Section, SectionsCollapsed } from './Section'
+import { EmptyLine, Section, SectionsCollapsed, SortableSections } from './Section'
 import {
   getPlatformInspector,
   resolveInspectorTab,
@@ -325,7 +325,7 @@ function OpenInfoPanel({
 
         <div key={`${bot.id}:${activeTab}`} className="animate-veil-in">
           {activeTab === 'overview' ? (
-            <>
+            <SortableSections>
               <Section title="协作调度">
                 <label className="flex items-center gap-2 text-[13px]">
                   <input type="checkbox" checked={Boolean(coordinationRoomId)}
@@ -436,7 +436,7 @@ function OpenInfoPanel({
                   ) : undefined
                 }
               />
-            </>
+            </SortableSections>
           ) : !bot.activeAccountId ? (
             <SignInRequiredSection
               title={t(activeTabLabel)}
