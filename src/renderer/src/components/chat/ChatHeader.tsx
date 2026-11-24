@@ -229,6 +229,7 @@ export function ChatHeader({ bot, accounts: _accounts, compact = false, extra }:
             <Globe />
           </IconButton>
         )}
+        {!compact && extra}
         {!compact && (
           <IconButton
             label={infoOpen ? t('Hide details') : t('Show details')}
@@ -239,7 +240,7 @@ export function ChatHeader({ bot, accounts: _accounts, compact = false, extra }:
             <ArkDrawerToggleSvg active={infoOpen} />
           </IconButton>
         )}
-        {extra}
+        {compact && extra}
       </div>
     </PaneHeader>
   )

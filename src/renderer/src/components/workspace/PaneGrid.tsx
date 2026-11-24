@@ -1,3 +1,4 @@
+import { IconButton } from '@/components/ui/IconButton'
 import { useEffect, useLayoutEffect, useRef, useState, type DragEvent, type PointerEvent as ReactPointerEvent } from 'react'
 import { Maximize2, Minimize2, SquareArrowOutUpRight, X } from 'lucide-react'
 import { ChatArea } from '@/components/chat/ChatArea'
@@ -240,14 +241,24 @@ function Pane({ leaf, rect, multi, focused, hint, box }: {
       )}
     >
       {showTabs && <PaneTabs leaf={leaf} extra={multi ? controls : maximized ? restore : undefined} />}
-      {!multi && !showTabs && (maximized || popOut) && (
-        <div className="no-drag absolute top-2 right-2 z-20 flex items-center gap-1">{popOut}{maximized && restore}</div>
-      )}
+      {!multi && !showTabs && maximized && <div className="no-drag absolute top-2 right-2 z-20">{restore}</div>}
       <ErrorBoundary surface="会话格" resetKey={tab ? `${tab.id}:${mirrorSession ?? ''}` : id}>
         {bot && mirrorSession ? (
           <ConversationMirror bot={bot} conversationId={mirrorSession} />
         ) : (
-          <ChatArea botId={botId} focused={focused} compact={multi} />
+          <ChatArea
+            botId={botId}
+            focused={focused}
+            compact={multi}
+            // Single pane without a tab strip: the pop-out button sits in the chat header's own icon row.
+            headerExtra={
+              !showTabs && !maximized && botId && getBridge()?.goxfPopout ? (
+                <IconButton label="弹出到独立窗口" onClick={() => void getBridge()?.goxfPopout?.open(botId)}>
+                  <SquareArrowOutUpRight />
+                </IconButton>
+              ) : undefined
+            }
+          />
         )}
       </ErrorBoundary>
       {shown && (
