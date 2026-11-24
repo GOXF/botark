@@ -193,3 +193,7 @@ git clone <GOXF/botark> && cd botark && git checkout fix/hark-login-sync && npm 
 - 11:25 追加：状态行/侧栏/气泡不再用 thought（官网不显示的英文内部思考，如 Let me find the logs…）。官网旁白「正在查询数据库记录。」字段仍未对上，等用户发 hark-frames.log。
 - 11:30 根因（hark-frames.log）：narration 是对象 {line, lineKey, live, visible, working, answered, since, messageId}，旧代码只认 label/text，所以一直为空。已改 harkActivityLabel 读 line、answered/working:false 视为结束，working:true 判忙；消息级 narration 同样按对象读。
 - 11:30 用户决定：旁白不翻译，照模型原文显示（不做 lineKey 映射/翻译服务）。
+
+## 2026-11-24 12:40 进度
+- Hark 登录卡原生填写：已抓到接口 POST https://hark.com/api/secrets → POST /api/messages/tool-response；还等用户发两条的 Payload + secrets 的 Response 截图（密码打码），拿到后约 1h 做原生表单。
+- v10 效果图（work/mock/v10-A-card.png / v10-B-full.png）：顶部浏览器条改成对话内卡片（当前步骤/计划/放大/缩小/关闭/需要采取行动），放大=全屏，新增计划常驻右侧、截图记录、保存截图、在网页里接管。等「开工」（约 1.5h）。计划步骤数据源未核实，没有就显示旁白记录。
