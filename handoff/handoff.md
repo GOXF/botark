@@ -217,3 +217,7 @@ git clone <GOXF/botark> && cd botark && git checkout fix/hark-login-sync && npm 
 - 限制：一个格 = 一个 bot（同一 Hark 账号的两个项目不能同时开两格，因为消息按 bot 存）。
 - 待做：侧栏 Hark 项目挂在账号下、格号角标；真机测试；合并到 goxf/portable 出测试包。
 - 下一版（Issue）：格内标签页、弹出窗口、手机分屏、任务流水线（基于管理员调度）、群组之间交接（定稿交给另一个群）。
+- 15:25 网页内验证（playwright + dist/web，假数据）：看板五列、单窗、Ctrl+\ / Ctrl+Shift+\ 切分、360px 拒绝提示、拖到边缘拒绝/向下分、重启后布局还原、启动页看板 都正常。修了 ChatArea hooks 顺序（格子在空/有 bot 间切换会崩）。分屏时格子标题栏只留「新对话」+ 最大化/关闭；侧栏显示格号角标。
+- GitHub：草稿 PR #1（goxf/v12-workspace → goxf/portable）；仓库已开 Issues，下一版 #2–#7（同 handoff/next.md）。
+- 侧栏「Hark 项目挂在账号下」没做：每格标题栏已有 Hark 项目切换下拉，重复；如用户仍要再做。
+- 已合并到 goxf/portable 出测试包（dev.<sha>）。
