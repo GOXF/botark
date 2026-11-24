@@ -1034,6 +1034,13 @@ export class HarkConversationSyncState {
       } else if (op === 'active_activity_set') {
         this.activeActivity = harkActivityLabel(p['value'])
         changed = true
+      } else if (/narration/i.test(op)) {
+        // GOXF: tolerate renamed ops (narration_set / narration_clear …).
+        this.narration = /clear|remove|delete/i.test(op) ? null : harkActivityLabel(p['value'] ?? p['text'])
+        changed = true
+      } else if (/activ(e_)?ity/i.test(op)) {
+        this.activeActivity = /clear|remove|delete/i.test(op) ? null : harkActivityLabel(p['value'] ?? p['text'])
+        changed = true
       }
     }
     return changed
@@ -1045,15 +1052,30 @@ export class HarkConversationSyncState {
       .reverse()
       .map((id) => this.messages.get(id))
       .find((m) => m && m.isStreaming && !/^user$/i.test(m.role))
+    // GOXF: between turns Hark can still be waiting on a background job (「正在等待构建完成」):
+    // the last reply keeps a running tool call, or a browser/task panel stays active.
+    const lastReply = [...this.order]
+      .reverse()
+      .map((id) => this.messages.get(id))
+      .find((m) => m && !/^user$/i.test(m.role))
+    const backgroundLine = streaming ? '' : harkRunningToolLine(lastReply) || this.activePanelLine()
     const text = (
       this.narration ||
       this.activeActivity ||
       streaming?.narration ||
       streaming?.thought ||
       harkRunningToolLine(streaming) ||
+      backgroundLine ||
       ''
     ).trim()
     return { busy: Boolean(text || streaming), text: text.slice(0, 120) }
+  }
+
+  private activePanelLine(): string {
+    const p = this.extractPanels().find((x) => /^(active|running|pending|started|in_progress|waiting)$/i.test(x.status))
+    if (!p) return ''
+    const verb = /browser/i.test(p.kind) ? '正在用浏览器' : /shell|terminal|command/i.test(p.kind) ? '正在运行命令' : '正在执行'
+    return p.title ? `${verb}：${p.title}` : `${verb}…`
   }
 
   orderedMessages(): HarkChatMessage[] {

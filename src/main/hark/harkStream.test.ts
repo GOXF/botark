@@ -49,3 +49,14 @@ it('running tool gives a live line when Hark sends no narration', () => {
   expect(harkRunningToolLine({ toolCalls: [{ name: 'browser', status: 'running', detail: '查看日志' }] })).toBe('正在用浏览器：查看日志')
   expect(harkRunningToolLine({ toolCalls: [{ name: 'shell', status: 'completed' }] })).toBe('')
 })
+
+it('stays busy between turns while a background job keeps running, and reads renamed narration ops', async () => {
+  const { HarkConversationSyncState } = await import('./harkClient')
+  const state = new HarkConversationSyncState()
+  state.applyFrame(JSON.stringify({ type: 'snapshot', data: { messages: [
+    { id: 'a1', role: 'assistant', content: '好了', isStreaming: false, toolCalls: [{ dispatchId: 'd1', toolName: 'shell', status: 'running', input: { command: 'poll ci' } }] }
+  ] } }))
+  expect(state.liveStatus().busy).toBe(true)
+  state.applyFrame(JSON.stringify({ type: 'patches', data: [{ op: 'narration_set', value: '正在等待构建完成。' }] }))
+  expect(state.liveStatus()).toEqual({ busy: true, text: '正在等待构建完成。' })
+})

@@ -47,6 +47,7 @@ import {
   harkRunningToolLine
 } from './harkClient'
 import { harkTurnBusy } from './harkBusy'
+import { logHarkFrame } from './harkFrameLog'
 import { cancelHarkLogin, closeHarkLoginWindow, onHarkLoginEvent, openHarkLoginWindow } from './harkLogin'
 import { loadAccountProxyUrl } from '../muse/accountProxy'
 import { guessMediaMimeFromName } from '../mediaMime'
@@ -162,6 +163,7 @@ function observeProject(event: IpcMainInvokeEvent, req: Extract<HarkRpcRequest, 
     while (!signal.aborted) {
       try {
         await readHarkStream(session, req.conversationId, manager, dial, signal, (frame) => {
+          logHarkFrame(req.conversationId, frame)
           if (state.applyFrame(frame) && !timer) timer = setTimeout(() => {
             timer = undefined
             update(state.orderedMessages(), state.extractPanels(), state.liveStatus(), state.extractAsks())
