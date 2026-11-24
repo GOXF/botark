@@ -84,6 +84,8 @@ export const BotListItem = memo(function BotListItem({
   const groups = useBotStore((s) => s.groups)
   const moveBotToGroup = useBotStore((s) => s.moveBotToGroup)
   const togglePinBot = useBotStore((s) => s.togglePinBot)
+  // GOXF: idle 10+ min, history unloaded to save memory; reloads when opened.
+  const asleep = useBotStore((s) => s.trimmedBots[bot.id] === true)
   const [menuOpen, setMenuOpen] = useState(false)
   const [renaming, setRenaming] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
@@ -222,6 +224,14 @@ export const BotListItem = memo(function BotListItem({
             >
               {bot.name}
             </span>
+            {asleep && !typing && (
+              <span
+                className="mr-auto shrink-0 self-center rounded-full bg-ink/[0.06] px-1.5 text-[10.5px] leading-4 text-ink-faint"
+                title={t('Idle for 10+ minutes; history unloaded to save memory. Opens normally.')}
+              >
+                {t('Asleep')}
+              </span>
+            )}
             {timeLabel && (
               <span className="shrink-0 text-[11px] leading-4 text-ink-faint tabular-nums group-hover:opacity-0">
                 {timeLabel}

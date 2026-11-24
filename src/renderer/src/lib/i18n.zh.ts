@@ -141,6 +141,8 @@ export const ZH: Record<string, string> = {
   "New section": "新建分组",
   "Configure sections": "管理分组",
   "Idle": "空闲",
+  "Asleep": "已休眠",
+  "Idle for 10+ minutes; history unloaded to save memory. Opens normally.": "闲置超过 10 分钟，已卸载聊天记录省内存；点开会自动重新加载。",
   "Running": "运行中",
   "Action required": "需要处理",
   "Offline": "离线",
