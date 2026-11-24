@@ -435,6 +435,7 @@ function WorkspaceImage({
     }
   }, [accountId, part, src, failed, retryNonce])
 
+  const [fitWidth, setFitWidth] = useState<number | null>(null)
   const filename = part.name || (!isHttp(part.path) ? part.path.split('/').pop() : undefined) || 'image.png'
 
   if (src) {
@@ -451,7 +452,14 @@ function WorkspaceImage({
               src={src}
               alt={part.name || part.path}
               {...{ [LIGHTBOX_ATTR]: filename }}
-              className={cn(mine ? 'max-h-56 max-w-64' : 'max-h-72 max-w-full', 'object-contain')}
+              className={cn(mine ? 'max-h-56 max-w-64' : 'max-h-72 max-w-full', 'mx-auto block object-contain')}
+              // Give the image its scaled width up front, so a fit-content card hugs it
+              // instead of reserving the natural width (blank strip beside wide-ish shots).
+              style={fitWidth ? { width: fitWidth } : undefined}
+              onLoad={(e) => {
+                const { naturalWidth: w, naturalHeight: h } = e.currentTarget
+                if (w && h) setFitWidth(Math.round(Math.min(w, (w * (mine ? 224 : 288)) / h)))
+              }}
               onError={() => {
                 if (isHttp(src) && !triedProxy && accountId) {
                   setTriedProxy(true)
@@ -739,7 +747,11 @@ function MediaParts({
         return (
           <li
             key={key}
-            className="overflow-hidden rounded-xl border border-line bg-surface shadow-soft"
+            className={cn(
+              'overflow-hidden rounded-xl border border-line bg-surface shadow-soft',
+              // A lone image hugs its own width instead of stretching the card (blank strip on the right).
+              !allImages && looksLikeImage(part) && 'w-fit max-w-full self-start'
+            )}
           >
             {looksLikeImage(part) ? (
               <WorkspaceImage part={part} accountId={accountId} mine={mine} />
