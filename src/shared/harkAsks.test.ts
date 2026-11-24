@@ -24,3 +24,14 @@ it('formats download progress', () => {
   expect(downloadFileName('https://x.com/a/BotArk%20v1.zip?y=1')).toBe('BotArk v1.zip')
   expect(downloadFileName('https://x.com/', '../a:b.zip')).toBe('_a_b.zip')
 })
+
+it('builds a native login form only for site sign-ins', () => {
+  const [a, b, c] = pendingHarkAsks([
+    { id: 'a', status: 'pending', prompt: 'Sign in to Ciyundata', domain: 'ciyundata.com' },
+    { id: 'b', status: 'pending', prompt: 'Add a payment card', domain: 'shop.com' },
+    { id: 'c', status: 'pending', displayHint: 'login_form', prompt: 'Log in', raw: { request: { scope: 'x.com', fields: [{ name: 'email' }, { name: 'password' }] } } }
+  ])
+  expect(a!.login).toEqual({ scope: 'ciyundata.com', label: 'Login', fields: ['username', 'password'] })
+  expect(b!.login).toBeUndefined()
+  expect(c!.login).toEqual({ scope: 'x.com', label: 'Login', fields: ['email', 'password'] })
+})
