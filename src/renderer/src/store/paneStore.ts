@@ -70,7 +70,7 @@ export const usePanes = create<PaneState>()(
   persist(
     (set, get) => ({
       view: 'board',
-      startView: 'board',
+      startView: 'sessions',
       tree: first,
       focusedId: first.id,
       stash: null,
@@ -164,6 +164,12 @@ export const usePanes = create<PaneState>()(
     }),
     {
       name: 'botark-panes-v1',
+      // v1: the opening view defaults to 会话 (user 2026-11-24); old saves only ever held the 'board' default.
+      version: 1,
+      migrate: (persisted, from) => {
+        const p = (persisted ?? {}) as Partial<PaneState>
+        return (from < 1 && p.startView === 'board' ? { ...p, startView: 'sessions' } : p) as PaneState
+      },
       storage: createJSONStorage(() =>
         createSafeStorage(() => (typeof localStorage === 'undefined' ? undefined : localStorage))
       ),
