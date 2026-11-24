@@ -128,12 +128,13 @@ export function RoomInspectorPanel({ room }: { room: CollabRoom }) {
             fullWidth
             size="xs"
             aria-label="协作设置"
-            options={[
-              { value: 'overview', label: '编排', icon: <ArkRelayOrbSvg /> },
-              { value: 'workspace', label: '工作区', icon: <ArkWorkspaceVaultSvg /> },
+            options={((opts) => (opts.length > 3 ? opts.map(({ icon: _icon, ...o }) => o) : opts))([
+              // Four tabs don't fit the narrow panel with icons ("工…" / "Sla…"), so drop the icons then.
+              { value: 'overview' as const, label: '编排', icon: <ArkRelayOrbSvg /> },
+              { value: 'workspace' as const, label: '工作区', icon: <ArkWorkspaceVaultSvg /> },
               ...(room.coordinatorId ? [] : [{ value: 'slack' as const, label: 'Slack', icon: <ArkSlackWeaveSvg /> }]),
-              { value: 'handoff', label: '交接' }
-            ]}
+              { value: 'handoff' as const, label: '交接', icon: undefined }
+            ])}
           />
         </div>
 
