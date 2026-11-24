@@ -1,6 +1,6 @@
 import { setRoomAdministrator, useRooms } from '@/rooms/roomStore'
 import { useMemo, useState } from 'react'
-import { Pencil, X } from 'lucide-react'
+import { Pencil } from 'lucide-react'
 import { PaneHeader } from '@/components/layout/PaneHeader'
 import { ApprovalsSection } from '@/components/muse/ApprovalsSection'
 import { AgentDiagnosticSection } from '@/components/muse/AgentDiagnosticSection'
@@ -78,7 +78,6 @@ import { InlineEdit } from '@/components/ui/InlineEdit'
 import { useGlide } from '@/hooks/useGlide'
 import { cn } from '@/lib/cn'
 import { getBotAccounts, getBotStatus } from '@/lib/selectors'
-import { shortcutLabel } from '@/lib/shortcuts'
 import { useBotStore } from '@/store/botStore'
 import type { Bot, BotAccount } from '@/types'
 import { AccountList } from './AccountList'
@@ -276,7 +275,6 @@ function SignInRequiredSection({
 export function InfoPanel() {
   const bot = useBotStore((s) => s.bots.find((b) => b.id === s.selectedBotId))
   const accountMap = useBotStore((s) => s.accounts)
-  const toggleInfoPanel = useBotStore((s) => s.toggleInfoPanel)
   const updateNotes = useBotStore((s) => s.updateNotes)
   const [requestedTab, setTab] = useState<InspectorTabId>('overview')
 
@@ -290,16 +288,8 @@ export function InfoPanel() {
 
   return (
     <>
-      <PaneHeader className="pr-3">
-        <IconButton
-          label={t('Close details')}
-          shortcut={shortcutLabel('I')}
-          className="no-drag ml-auto"
-          onClick={toggleInfoPanel}
-        >
-          <X />
-        </IconButton>
-      </PaneHeader>
+      {/* Empty row keeps the hero aligned under the chat header; close via the header's 详情 button or Ctrl+I. */}
+      <PaneHeader className="pr-3">{null}</PaneHeader>
 
       {bot && inspector && (
         <div className="min-h-0 flex-1 overflow-y-auto pb-4">
