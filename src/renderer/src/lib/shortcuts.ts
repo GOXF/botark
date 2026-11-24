@@ -1,5 +1,6 @@
 import { useEffect } from 'react'
 import { useBotStore } from '@/store/botStore'
+import { usePanes } from '@/store/paneStore'
 import { runtimePlatform } from './bridge'
 
 const isMac = runtimePlatform === 'darwin' || (runtimePlatform === 'web' && /Mac/.test(navigator.platform))
@@ -16,7 +17,7 @@ function isEditable(target: EventTarget | null): boolean {
 
 /**
  * App-wide keys:
- * ⌘K search · ⌘N new bot · ⌘I details · ⌘1–9 jump to a bot · ⌥↑/⌥↓ previous/next bot.
+ * ⌘\\ / ⌘⇧\\ split pane · ⌘K search · ⌘N new bot · ⌘I details · ⌘1–9 jump to a bot · ⌥↑/⌥↓ previous/next bot.
  * Dialogs own the keyboard while open (only ⌘K still toggles the palette).
  */
 export function useGlobalShortcuts(): void {
@@ -35,6 +36,16 @@ export function useGlobalShortcuts(): void {
         return
       }
       if (document.querySelector('[role="dialog"][data-state="open"]')) return
+
+      // GOXF v13: split the focused pane (会话 page). Ctrl+\ right, Ctrl+Shift+\ down.
+      if (mod && !event.altKey && event.code === 'Backslash') {
+        event.preventDefault()
+        if (usePanes.getState().view !== 'sessions') usePanes.getState().setView('sessions')
+        void import('@/components/workspace/WorkspaceTopBar').then(({ splitFocused }) => {
+          splitFocused(event.shiftKey ? 'bottom' : 'right')
+        })
+        return
+      }
 
       if (plainMod && key === 'n') {
         event.preventDefault()

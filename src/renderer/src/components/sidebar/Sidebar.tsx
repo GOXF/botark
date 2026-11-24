@@ -15,6 +15,7 @@ import { cn } from '@/lib/cn'
 import { shortcutLabel } from '@/lib/shortcuts'
 import { useBotStore } from '@/store/botStore'
 import { BotList } from './BotList'
+import { usePanes } from '@/store/paneStore'
 
 interface SidebarProps {
   onAddBot: () => void
@@ -30,6 +31,7 @@ function BrandMark() {
 
 export function Sidebar({ onAddBot }: SidebarProps) {
   const openPalette = useBotStore((s) => s.openPalette)
+  const view = usePanes((s) => s.view)
   const sidebarCollapsed = useBotStore((s) => s.sidebarCollapsed)
   const toggleSidebarCollapsed = useBotStore((s) => s.toggleSidebarCollapsed)
   const settingsOpen = useBotStore((s) => s.settingsOpen)
@@ -68,8 +70,7 @@ export function Sidebar({ onAddBot }: SidebarProps) {
       <div className="flex min-h-0 flex-1 flex-col items-center" onKeyDown={typeToSearch}>
         <div className="drag-region h-[42px] w-full shrink-0" />
         <div className="flex min-h-0 w-full flex-1 flex-col items-center px-1.5 pt-1 pb-2">
-          <BotList />
-          <RoomList compact />
+          {view === 'collab' ? <><RoomList compact /><BotList /></> : <><BotList />{view === 'board' && <RoomList compact />}</>}
         </div>
         <div className="no-drag flex shrink-0 flex-col items-center gap-1.5 pb-3 pt-1">
           <IconButton
@@ -137,8 +138,8 @@ export function Sidebar({ onAddBot }: SidebarProps) {
       </header>
 
       <div className="flex min-h-0 flex-1 flex-col px-2 pt-0.5 pb-2">
-        <BotList />
-        <RoomList />
+        {/* GOXF v12: 会话 lists conversations only; 协作 puts group chats first (bots below, to drag in). */}
+        {view === 'collab' ? <><RoomList /><BotList /></> : <><BotList />{view === 'board' && <RoomList />}</>}
       </div>
 
       <footer className="no-drag flex shrink-0 items-center justify-between gap-1.5 border-t border-ink/[0.06] px-2.5 py-2">

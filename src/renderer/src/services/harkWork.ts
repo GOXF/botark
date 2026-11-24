@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import { evaluate, markRun, setPolled, workingFromStatuses, type HarkWorkState } from '@/lib/harkWork'
 import { useBotStore } from '@/store/botStore'
+import { visibleBotIds } from '@/store/paneStore'
 
 /** GOXF: "工作中 / 完成" per Hark project and account (rules in lib/harkWork). */
 export const useHarkWork = create<HarkWorkState>(() => ({ projects: {}, seenAt: {} }))
@@ -32,15 +33,17 @@ async function pollStatuses(): Promise<void> {
 }
 
 function tick(): void {
-  const { bots, selectedBotId } = useBotStore.getState()
+  const { bots } = useBotStore.getState()
   const onScreen = typeof document !== 'undefined' && document.visibilityState === 'visible' && document.hasFocus()
-  const bot = onScreen ? bots.find((b) => b.id === selectedBotId && b.platformId === 'hark') : undefined
+  // GOXF v13: every Hark bot in a pane of the 会话 page counts as on screen.
+  const ids = onScreen ? visibleBotIds() : new Set<string>()
+  const shown = bots.filter((b) => b.platformId === 'hark' && ids.has(b.id))
   useHarkWork.setState((s) =>
     evaluate(
       s,
       Date.now(),
-      (acc, conv) => Boolean(bot && bot.activeAccountId === acc && bot.activeSessionId === conv),
-      bot?.accountIds ?? []
+      (acc, conv) => shown.some((bot) => bot.activeAccountId === acc && bot.activeSessionId === conv),
+      shown.flatMap((bot) => bot.accountIds)
     )
   )
 }

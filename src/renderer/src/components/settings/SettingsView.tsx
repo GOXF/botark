@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { usePanes, type WorkspaceView } from '@/store/paneStore'
 import {
   Activity,
   ArrowLeft,
@@ -2302,6 +2303,14 @@ export function SettingsView() {
 
                   <div className="flex items-center justify-between px-4 py-3.5">
                     <div>
+                      <p className="text-[14px] font-medium text-ink">启动时打开</p>
+                      <p className="text-[12px] text-ink-muted">打开 BotArk 时先看哪一页</p>
+                    </div>
+                    <StartViewPicker />
+                  </div>
+
+                  <div className="flex items-center justify-between px-4 py-3.5">
+                    <div>
                       <p className="text-[14px] font-medium text-ink">当前版本</p>
                       <p className="font-mono text-[12px] text-ink-muted">BotArk {version || '0.11.1'}</p>
                     </div>
@@ -2700,5 +2709,24 @@ export function SettingsView() {
         />
       </Dialog>
     </div>
+  )
+}
+
+/** GOXF v12: which page BotArk opens on. */
+function StartViewPicker() {
+  const startView = usePanes((s) => s.startView)
+  const setStartView = usePanes((s) => s.setStartView)
+  return (
+    <SegmentedControl<WorkspaceView | 'last'>
+      size="sm"
+      value={startView}
+      onValueChange={setStartView}
+      options={[
+        { value: 'board', label: '看板' },
+        { value: 'sessions', label: '会话' },
+        { value: 'collab', label: '协作' },
+        { value: 'last', label: '上次的页面' }
+      ]}
+    />
   )
 }

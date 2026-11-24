@@ -92,12 +92,18 @@ function ConversationIntro({
   )
 }
 
-export function ChatArea() {
-  const bot = useBotStore((s) => s.bots.find((b) => b.id === s.selectedBotId))
-  const sessionError = useBotStore((s) => s.selectedBotId ? s.hermesSessionErrors[s.selectedBotId] : undefined)
+/**
+ * One conversation. Without `botId` it shows the selected bot (single view);
+ * GOXF v13 panes pass their own bot, and only the focused pane (`focused`)
+ * owns the web view, the document canvas and the share dialog.
+ */
+export function ChatArea({ botId: paneBotId, focused = true }: { botId?: string | null; focused?: boolean } = {}) {
+  const shownId = useBotStore((s) => (paneBotId === undefined ? s.selectedBotId : paneBotId))
+  const bot = useBotStore((s) => s.bots.find((b) => b.id === shownId))
+  const sessionError = useBotStore((s) => shownId ? s.hermesSessionErrors[shownId] : undefined)
   const accountMap = useBotStore((s) => s.accounts)
-  const messages = useBotStore((s) => (s.selectedBotId ? s.messages[s.selectedBotId] : undefined) ?? NO_MESSAGES)
-  const typing = useBotStore((s) => (s.selectedBotId ? s.typing[s.selectedBotId] === true : false))
+  const messages = useBotStore((s) => (shownId ? s.messages[shownId] : undefined) ?? NO_MESSAGES)
+  const typing = useBotStore((s) => (shownId ? s.typing[shownId] === true : false))
   const sendMessage = useBotStore((s) => s.sendMessage)
   const retryMessage = useBotStore((s) => s.retryMessage)
   const cancelGeneration = useBotStore((s) => s.cancelGeneration)
@@ -148,6 +154,15 @@ export function ChatArea() {
     [openCueLogin]
   )
 
+  if (!bot && paneBotId !== undefined && hasBots) {
+    return (
+      <div className="flex min-h-0 flex-1 animate-veil-in flex-col items-center justify-center gap-1.5 px-6 text-center">
+        <p className="text-[13px] font-medium text-ink-secondary">空白格</p>
+        <p className="text-[12.5px] text-ink-muted">点左侧会话放进来，或把会话拖到这里</p>
+      </div>
+    )
+  }
+
   if (!bot) {
     return (
       <div className="flex min-h-0 flex-1 flex-col">
@@ -193,7 +208,7 @@ export function ChatArea() {
     activeAccount?.status === 'attention'
   const harkAsks = useHarkAsks(activeAccount?.id ?? '', bot.platformId === 'hark' ? bot.activeSessionId : undefined)
   const showWebSession =
-    webSessionOpen && !!activeAccount && getPlatformInspector(bot.platformId).supportsWebSession
+    focused && webSessionOpen && !!activeAccount && getPlatformInspector(bot.platformId).supportsWebSession
 
   return (
     <div className="flex min-h-0 flex-1 overflow-hidden">
@@ -256,14 +271,14 @@ export function ChatArea() {
           </>
         )}
       </div>
-      {activeDocument && !showWebSession && (
+      {focused && activeDocument && !showWebSession && (
         <DocumentCanvasPane
           target={activeDocument}
           onClose={() => setActiveDocument(null)}
           onOpenNestedDoc={(next) => setActiveDocument(next)}
         />
       )}
-      <ShareConversationDialog bot={bot} messages={messages} />
+      {focused && <ShareConversationDialog bot={bot} messages={messages} />}
     </div>
   )
 }

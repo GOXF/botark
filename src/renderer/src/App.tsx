@@ -3,7 +3,11 @@ import { RoomInspectorPanel } from '@/rooms/RoomInspectorPanel'
 import { useRooms } from '@/rooms/roomStore'
 import { useEffect } from 'react'
 import { AddBotDialog } from '@/components/add-bot/AddBotDialog'
-import { ChatArea } from '@/components/chat/ChatArea'
+import { BoardView } from '@/components/workspace/BoardView'
+import { PaneGrid } from '@/components/workspace/PaneGrid'
+import { WorkspaceTopBar } from '@/components/workspace/WorkspaceTopBar'
+import { startWorkspaceSync } from '@/services/workspaceSync'
+import { usePanes } from '@/store/paneStore'
 import { AppShell } from '@/components/layout/AppShell'
 import { InfoPanel } from '@/components/info/InfoPanel'
 import { hasSeenOnboarding, OnboardingDialog } from '@/components/onboarding/OnboardingGuide'
@@ -22,13 +26,18 @@ export default function App() {
   const settingsOpen = useBotStore((s) => s.settingsOpen)
   const selectedBotId = useBotStore((s) => s.selectedBotId)
   const activeRoom = useRooms((s) => s.rooms.find((r) => r.id === selectedBotId))
+  const view = usePanes((s) => s.view)
+  const firstRoomId = useRooms((s) => s.rooms[0]?.id)
   const roomSelected = selectedBotId === 'room-create' || Boolean(activeRoom)
+  // 协作 shows the selected group chat, else the first one, else the new-group form.
+  const collabRoomId = roomSelected && selectedBotId ? selectedBotId : firstRoomId ?? 'room-create'
   // Details slide open next to a selected bot or active collaboration room (and not while in Settings).
   const infoOpen = useBotStore(
     (s) =>
       !s.settingsOpen &&
       s.infoPanelOpen &&
-      (s.bots.some((b) => b.id === s.selectedBotId) || Boolean(activeRoom))
+      view !== 'board' &&
+      (view === 'collab' ? Boolean(activeRoom) : s.bots.some((b) => b.id === s.selectedBotId))
   )
   const setAddBotOpen = useBotStore((s) => s.setAddBotOpen)
 
@@ -171,6 +180,7 @@ export default function App() {
   }, [])
 
   useEffect(() => startPrefsSync(), [])
+  useEffect(() => startWorkspaceSync(), [])
   useEffect(() => {
     // Only resume an explicitly connected bridge after a renderer reload.
     if (sessionStorage.getItem('botark.slack.connected') !== '1') return
@@ -210,13 +220,24 @@ export default function App() {
           asideOpen={infoOpen}
           sidebar={<Sidebar onAddBot={() => setAddBotOpen(true)} />}
           main={
-            <ErrorBoundary surface={settingsOpen ? '管理控制台' : '对话区'} resetKey={settingsOpen ? 'settings' : selectedBotId}>
-              {settingsOpen ? <SettingsView /> : roomSelected && selectedBotId ? <RoomView key={selectedBotId} id={selectedBotId} /> : <ChatArea />}
-            </ErrorBoundary>
+            <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+              <WorkspaceTopBar />
+              <ErrorBoundary surface={settingsOpen ? '管理控制台' : '对话区'} resetKey={settingsOpen ? 'settings' : `${view}:${view === 'sessions' ? '' : selectedBotId}`}>
+                {settingsOpen ? (
+                  <SettingsView />
+                ) : view === 'board' ? (
+                  <BoardView />
+                ) : view === 'collab' ? (
+                  <RoomView key={collabRoomId} id={collabRoomId} />
+                ) : (
+                  <PaneGrid />
+                )}
+              </ErrorBoundary>
+            </div>
           }
           aside={
             <ErrorBoundary surface="右侧面板" resetKey={selectedBotId}>
-              {activeRoom ? <RoomInspectorPanel room={activeRoom} /> : <InfoPanel />}
+              {view === 'collab' && activeRoom ? <RoomInspectorPanel room={activeRoom} /> : <InfoPanel />}
             </ErrorBoundary>
           }
         />

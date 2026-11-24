@@ -1,3 +1,4 @@
+import { usePanes } from '@/store/paneStore'
 import { Fragment, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { ArrowDown } from 'lucide-react'
 import { BotAvatar } from '@/components/ui/Avatar'
@@ -36,6 +37,7 @@ export function MessageList({ bot, messages, accounts, typing, onRetry }: Messag
   const scrollRef = useRef<HTMLDivElement>(null)
   const stickToBottom = useRef(true)
   const lastBotId = useRef<string | null>(null)
+  const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const accountNames = new Map(accounts.map((a) => [a.id, a.displayName]))
   const showAccount = bot.accountIds.length > 1
@@ -47,6 +49,13 @@ export function MessageList({ bot, messages, accounts, typing, onRetry }: Messag
     if (!el) return
     const switched = lastBotId.current !== bot.id
     lastBotId.current = bot.id
+    // GOXF v13: come back to where the reader left this conversation (layout change, restart).
+    const saved = switched ? usePanes.getState().scroll[bot.id] : null
+    if (typeof saved === 'number' && saved < el.scrollHeight - el.clientHeight - STICKY_THRESHOLD_PX) {
+      el.scrollTop = saved
+      stickToBottom.current = false
+      return
+    }
     if (switched || stickToBottom.current || lastMessage?.role === 'user') {
       el.scrollTo({ top: el.scrollHeight, behavior: switched ? 'instant' : 'smooth' })
     }
@@ -82,6 +91,10 @@ export function MessageList({ bot, messages, accounts, typing, onRetry }: Messag
         const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < STICKY_THRESHOLD_PX
         stickToBottom.current = atBottom
         setAway(!atBottom)
+        const top = atBottom ? null : el.scrollTop
+        const id = bot.id
+        if (saveTimer.current) clearTimeout(saveTimer.current)
+        saveTimer.current = setTimeout(() => usePanes.getState().saveScroll(id, top), 250)
         if (atBottom) setUnseen(0)
       }}
       className="min-h-0 flex-1 overflow-y-auto"

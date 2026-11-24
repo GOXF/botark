@@ -27,7 +27,7 @@ interface BotListItemProps {
   onSelect: (botId: string) => void
 }
 
-function activityPhrase(activity: BotActivity | undefined): string {
+export function activityPhrase(activity: BotActivity | undefined): string {
   if (!activity) return ''
   const emoji = activity.emoji ? `${activity.emoji} ` : ''
   if (activity.text) return `${emoji}${activity.text}`
@@ -35,7 +35,7 @@ function activityPhrase(activity: BotActivity | undefined): string {
   return ''
 }
 
-function formatShortTime(ts?: number): string {
+export function formatShortTime(ts?: number): string {
   if (!ts) return ''
   const diff = Date.now() - ts
   const min = Math.floor(diff / 60_000)
@@ -49,7 +49,7 @@ function formatShortTime(ts?: number): string {
 }
 
 /** One line under the name: live activity, else latest message. */
-function previewText(
+export function previewText(
   last: ChatMessage | undefined,
   typing: boolean,
   activity: BotActivity | undefined
