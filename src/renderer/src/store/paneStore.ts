@@ -44,6 +44,9 @@ interface PaneState {
   toggleMaximize: (leafId: string) => void
   prune: (alive: (botId: string) => boolean) => void
   saveScroll: (botId: string, top: number | null) => void
+  /** One-line notice in the top bar (e.g. why a split was refused). */
+  notice?: string
+  say: (notice?: string) => void
 }
 
 const first = leaf(null)
@@ -122,6 +125,11 @@ export const usePanes = create<PaneState>()(
         const next = pruneBots(tree, alive)
         const nextStash = stash ? { ...stash, tree: pruneBots(stash.tree, alive) } : null
         if (next !== tree || nextStash?.tree !== stash?.tree) set({ tree: next, stash: nextStash })
+      },
+      notice: undefined,
+      say: (notice) => {
+        set({ notice })
+        if (notice) setTimeout(() => { if (get().notice === notice) set({ notice: undefined }) }, 2600)
       },
       saveScroll: (botId, top) => {
         if (get().scroll[botId] === top) return

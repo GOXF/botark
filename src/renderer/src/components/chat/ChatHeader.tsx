@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react'
 import { HarkProjects } from '../hark/HarkProjects'
 import { ChevronRight, Globe, Pin, PinOff, RefreshCw } from 'lucide-react'
 import { useEffect, useState } from 'react'
@@ -20,6 +21,9 @@ import { t } from '@/lib/i18n'
 interface ChatHeaderProps {
   bot: Bot
   accounts: BotAccount[]
+  /** GOXF v13: a pane in a split keeps only "new conversation"; the pane's own buttons go in `extra`. */
+  compact?: boolean
+  extra?: ReactNode
 }
 
 interface AgentOption {
@@ -60,7 +64,7 @@ function useEnsureGrokAgentBound(bot: Bot): void {
   }, [bot.id, bot.platformId, bot.selectedAgentId, account?.id, account?.status, setSelectedAgent])
 }
 
-export function ChatHeader({ bot, accounts: _accounts }: ChatHeaderProps) {
+export function ChatHeader({ bot, accounts: _accounts, compact = false, extra }: ChatHeaderProps) {
   const allAccounts = useBotStore((s) => s.accounts)
   const hasMessages = useBotStore((s) => (s.messages[bot.id]?.length ?? 0) > 0)
   const infoOpen = useBotStore((s) => s.infoPanelOpen)
@@ -196,7 +200,7 @@ export function ChatHeader({ bot, accounts: _accounts }: ChatHeaderProps) {
             <ArkComposeNewSvg />
           </IconButton>
         )}
-        {bot.activeAccountId && (
+        {!compact && bot.activeAccountId && (
           <IconButton
             label={t('Sync conversation')}
             disabled={activeAccount?.pending}
@@ -205,7 +209,7 @@ export function ChatHeader({ bot, accounts: _accounts }: ChatHeaderProps) {
             <RefreshCw className={cn(activeAccount?.pending && 'animate-spin')} />
           </IconButton>
         )}
-        {hasMessages && (
+        {!compact && hasMessages && (
           <IconButton
             label="共享对话页面"
             onClick={() => triggerShareConversation({ botId: bot.id })}
@@ -213,10 +217,10 @@ export function ChatHeader({ bot, accounts: _accounts }: ChatHeaderProps) {
             <ArkExportDocSvg />
           </IconButton>
         )}
-        <IconButton label={bot.pinned ? t('Unpin from sidebar') : t('Pin to sidebar')} active={bot.pinned === true} onClick={() => togglePinBot(bot.id)}>
+        {!compact && <IconButton label={bot.pinned ? t('Unpin from sidebar') : t('Pin to sidebar')} active={bot.pinned === true} onClick={() => togglePinBot(bot.id)}>
           {bot.pinned ? <PinOff /> : <Pin />}
-        </IconButton>
-        {inspector.supportsWebSession && (
+        </IconButton>}
+        {!compact && inspector.supportsWebSession && (
           <IconButton
             label={webSessionOpen ? t('Back to conversation') : t('Show web session')}
             active={webSessionOpen}
@@ -225,14 +229,17 @@ export function ChatHeader({ bot, accounts: _accounts }: ChatHeaderProps) {
             <Globe />
           </IconButton>
         )}
-        <IconButton
-          label={infoOpen ? t('Hide details') : t('Show details')}
-          shortcut={shortcutLabel('I')}
-          active={infoOpen}
-          onClick={toggleInfoPanel}
-        >
-          <ArkDrawerToggleSvg active={infoOpen} />
-        </IconButton>
+        {!compact && (
+          <IconButton
+            label={infoOpen ? t('Hide details') : t('Show details')}
+            shortcut={shortcutLabel('I')}
+            active={infoOpen}
+            onClick={toggleInfoPanel}
+          >
+            <ArkDrawerToggleSvg active={infoOpen} />
+          </IconButton>
+        )}
+        {extra}
       </div>
     </PaneHeader>
   )

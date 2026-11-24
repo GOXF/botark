@@ -1,4 +1,3 @@
-import { useState } from 'react'
 import { Columns2, Rows2, Equal } from 'lucide-react'
 import { SegmentedControl } from '@/components/ui/SegmentedControl'
 import { cn } from '@/lib/cn'
@@ -17,7 +16,10 @@ const VIEWS: ReadonlyArray<{ value: WorkspaceView; label: string }> = [
 /** Split the focused pane; returns why not when it would go under the minimum. */
 export function splitFocused(side: SplitSide): string | undefined {
   const check = canSplitFocused(side, paneArea.box)
-  if (!check.ok) return check.reason
+  if (!check.ok) {
+    usePanes.getState().say(check.reason)
+    return check.reason
+  }
   const panes = usePanes.getState()
   if (panes.stash) panes.toggleMaximize(panes.focusedId)
   panes.split(usePanes.getState().focusedId, side, null)
@@ -50,13 +52,8 @@ export function WorkspaceTopBar() {
   const equalizeAll = usePanes((s) => s.equalizeAll)
   const settingsOpen = useBotStore((s) => s.settingsOpen)
   const setSettingsOpen = useBotStore((s) => s.setSettingsOpen)
-  const [notice, setNotice] = useState<string>()
-
-  const split = (side: SplitSide) => {
-    const why = splitFocused(side)
-    setNotice(why)
-    if (why) setTimeout(() => setNotice(undefined), 2600)
-  }
+  const notice = usePanes((s) => s.notice)
+  const split = (side: SplitSide) => void splitFocused(side)
 
   return (
     <div className="drag-region relative flex h-[46px] shrink-0 items-center gap-2 border-b border-line px-3">
@@ -75,7 +72,7 @@ export function WorkspaceTopBar() {
       {view === 'sessions' && !settingsOpen && (
         <div className="ml-auto flex items-center gap-1.5">
           {notice && (
-            <span role="status" className="rounded-full bg-ink px-2.5 py-1 text-[12px] text-white">
+            <span role="status" className="absolute top-full right-3 z-40 mt-2 rounded-full bg-ink px-3 py-1.5 text-[12px] text-white shadow-soft">
               {notice}
             </span>
           )}

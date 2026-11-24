@@ -126,6 +126,31 @@ function Pane({ id, botId, rect, multi, focused, hint, box }: {
   const [localHint, setLocalHint] = useState<DropHint | null>(null)
   const shown = localHint ?? hint
 
+  const controls = (
+    <span className="no-drag flex items-center gap-0.5 border-l border-line pl-1">
+      <button
+        type="button"
+        title={maximized ? '还原分屏' : '最大化这一格'}
+        aria-label={maximized ? '还原分屏' : '最大化这一格'}
+        onClick={() => toggleMaximize(id)}
+        className="grid size-7 place-items-center rounded-full text-ink-secondary hover:bg-hover hover:text-ink"
+      >
+        {maximized ? <Minimize2 className="size-3.5" /> : <Maximize2 className="size-3.5" />}
+      </button>
+      {!maximized && (
+        <button
+          type="button"
+          title="关闭这一格"
+          aria-label="关闭这一格"
+          onClick={() => close(id)}
+          className="grid size-7 place-items-center rounded-full text-ink-secondary hover:bg-hover hover:text-ink"
+        >
+          <X className="size-3.5" />
+        </button>
+      )}
+    </span>
+  )
+
   const evaluate = (e: DragEvent): DropHint => {
     const el = e.currentTarget.getBoundingClientRect()
     const zone = dropZone({ x: el.left, y: el.top, w: el.width, h: el.height }, e.clientX, e.clientY)
@@ -166,30 +191,7 @@ function Pane({ id, botId, rect, multi, focused, hint, box }: {
         multi && (focused ? 'border-accent-600 ring-1 ring-accent-600' : 'border-line')
       )}
     >
-      {multi && (
-        <div className="no-drag absolute top-2 right-2 z-20 flex items-center gap-0.5 rounded-full bg-main/90 p-0.5 opacity-60 transition-opacity hover:opacity-100">
-          <button
-            type="button"
-            title={maximized ? '还原分屏' : '最大化这一格'}
-            aria-label={maximized ? '还原分屏' : '最大化这一格'}
-            onClick={() => toggleMaximize(id)}
-            className="grid size-6 place-items-center rounded-full text-ink-secondary hover:bg-hover hover:text-ink"
-          >
-            {maximized ? <Minimize2 className="size-3.5" /> : <Maximize2 className="size-3.5" />}
-          </button>
-          {!maximized && (
-            <button
-              type="button"
-              title="关闭这一格"
-              aria-label="关闭这一格"
-              onClick={() => close(id)}
-              className="grid size-6 place-items-center rounded-full text-ink-secondary hover:bg-hover hover:text-ink"
-            >
-              <X className="size-3.5" />
-            </button>
-          )}
-        </div>
-      )}
+      {multi && !botId && <div className="no-drag absolute top-2 right-2 z-20">{controls}</div>}
       {!multi && maximized && (
         <button
           type="button"
@@ -200,7 +202,7 @@ function Pane({ id, botId, rect, multi, focused, hint, box }: {
         </button>
       )}
       <ErrorBoundary surface="会话格" resetKey={botId ?? id}>
-        <ChatArea botId={botId} focused={focused} />
+        <ChatArea botId={botId} focused={focused} compact={multi} headerExtra={multi ? controls : undefined} />
       </ErrorBoundary>
       {shown && (
         <div className="pointer-events-none absolute inset-0 z-30">

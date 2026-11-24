@@ -1,6 +1,6 @@
 import { HarkBrowserCard } from '../hark/HarkBrowserCard'
 import { HarkAskCards, useHarkAsks } from '../hark/HarkAskCard'
-import { useCallback, useMemo } from 'react'
+import { useCallback, useMemo, type ReactNode } from 'react'
 import type { AttachmentMeta, PlatformId } from '@adapters/types'
 import { ArkDrawerToggleSvg } from '@/components/ui/ArkGlyphs'
 import { BotAvatar } from '@/components/ui/Avatar'
@@ -97,7 +97,7 @@ function ConversationIntro({
  * GOXF v13 panes pass their own bot, and only the focused pane (`focused`)
  * owns the web view, the document canvas and the share dialog.
  */
-export function ChatArea({ botId: paneBotId, focused = true }: { botId?: string | null; focused?: boolean } = {}) {
+export function ChatArea({ botId: paneBotId, focused = true, compact = false, headerExtra }: { botId?: string | null; focused?: boolean; compact?: boolean; headerExtra?: ReactNode } = {}) {
   const shownId = useBotStore((s) => (paneBotId === undefined ? s.selectedBotId : paneBotId))
   const bot = useBotStore((s) => s.bots.find((b) => b.id === shownId))
   const sessionError = useBotStore((s) => shownId ? s.hermesSessionErrors[shownId] : undefined)
@@ -154,6 +154,9 @@ export function ChatArea({ botId: paneBotId, focused = true }: { botId?: string 
     [openCueLogin]
   )
 
+  // Hooks stay above the early returns: a pane switches between empty and a bot.
+  const harkAsks = useHarkAsks(activeAccount?.id ?? '', bot?.platformId === 'hark' ? bot.activeSessionId : undefined)
+
   if (!bot && paneBotId !== undefined && hasBots) {
     return (
       <div className="flex min-h-0 flex-1 animate-veil-in flex-col items-center justify-center gap-1.5 px-6 text-center">
@@ -206,14 +209,13 @@ export function ChatArea({ botId: paneBotId, focused = true }: { botId?: string 
     activeAccount?.status === 'online' ||
     activeAccount?.status === 'busy' ||
     activeAccount?.status === 'attention'
-  const harkAsks = useHarkAsks(activeAccount?.id ?? '', bot.platformId === 'hark' ? bot.activeSessionId : undefined)
   const showWebSession =
     focused && webSessionOpen && !!activeAccount && getPlatformInspector(bot.platformId).supportsWebSession
 
   return (
     <div className="flex min-h-0 flex-1 overflow-hidden">
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-        <ChatHeader bot={bot} accounts={accounts} />
+        <ChatHeader bot={bot} accounts={accounts} compact={compact} extra={headerExtra} />
         {sessionError && (
           <p role="alert" className="mx-6 my-2 text-[13px] text-status-error">
             {t('Could not start a new conversation. {reason}', { reason: sessionError })}

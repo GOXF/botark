@@ -51,6 +51,8 @@ function botName(botId: string): string {
 
 export function startWorkspaceSync(): () => void {
   const stops: Array<() => void> = []
+  // Startup reconnects may select bots; keep the chosen start page for the first moments.
+  const settleUntil = Date.now() + 2500
 
   // First launch with an empty layout: show the selected bot.
   {
@@ -67,12 +69,13 @@ export function startWorkspaceSync(): () => void {
       if (s.selectedBotId === prev.selectedBotId || !s.selectedBotId) return
       const id = s.selectedBotId
       const panes = usePanes.getState()
+      const settling = Date.now() < settleUntil
       if (isRoom(id)) {
-        if (panes.view !== 'collab') panes.setView('collab')
+        if (panes.view !== 'collab' && !settling) panes.setView('collab')
         return
       }
       if (!s.bots.some((b) => b.id === id)) return
-      if (panes.view !== 'sessions') panes.setView('sessions')
+      if (panes.view !== 'sessions' && !settling) panes.setView('sessions')
       panes.place(id)
     })
   )

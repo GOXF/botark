@@ -9,6 +9,8 @@ import { Menu, MenuContent, MenuItem, MenuLabel, MenuSeparator, MenuTrigger } fr
 import { cn } from '@/lib/cn'
 import { useShallow } from 'zustand/react/shallow'
 import { useBotStore } from '@/store/botStore'
+import { usePanes } from '@/store/paneStore'
+import { leaves } from '@/lib/paneTree'
 import { accountWork } from '@/lib/harkWork'
 import { useHarkWork } from '@/services/harkWork'
 import type { Bot, BotActivity, ChatMessage } from '@/types'
@@ -110,6 +112,12 @@ export const BotListItem = memo(function BotListItem({
   const doneDot = done && bot.unread === 0 && (
     <StatusDot status="attention" className="absolute -top-0.5 -right-0.5 ring-2 ring-canvas" />
   )
+  // GOXF v13: which split pane shows this bot (only with 2+ panes on 会话).
+  const paneNo = usePanes((s) => {
+    if (s.view !== 'sessions') return 0
+    const all = leaves(s.tree)
+    return all.length > 1 ? all.findIndex((l) => l.botId === bot.id) + 1 : 0
+  })
   const timeLabel = !isWorking && last?.createdAt ? formatShortTime(last.createdAt) : ''
   // Only a bot created a moment ago rises into the list; startup stays still.
   const [fresh] = useState(() => Date.now() - bot.createdAt < 3000)
@@ -230,6 +238,14 @@ export const BotListItem = memo(function BotListItem({
                 title={t('Idle for 10+ minutes; history unloaded to save memory. Opens normally.')}
               >
                 {t('Asleep')}
+              </span>
+            )}
+            {paneNo > 0 && (
+              <span
+                title={`在第 ${paneNo} 格`}
+                className="shrink-0 rounded-[4px] bg-accent-600/12 px-1 text-[10px] leading-4 font-semibold text-accent-700 tabular-nums"
+              >
+                {paneNo}
               </span>
             )}
             {timeLabel && (
