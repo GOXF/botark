@@ -208,10 +208,6 @@ export function ChatArea() {
           <WebSessionPane key={`${bot.id}:${activeAccount.id}`} bot={bot} account={activeAccount} />
         ) : (
           <>
-            {bot.platformId === 'hark' && activeAccount && canSend && (
-              <HarkBrowserCard key={JSON.stringify([activeAccount.id, bot.activeSessionId])}
-                accountId={activeAccount.id} sessionId={bot.activeSessionId} attention={harkAsks.length > 0} />
-            )}
             {messages.length === 0 && !typing ? (
               <ConversationIntro
                 bot={bot}
@@ -225,6 +221,11 @@ export function ChatArea() {
               />
             ) : (
               <MessageList bot={bot} messages={messages} accounts={accounts} typing={typing} onRetry={onRetry} />
+            )}
+            {/* GOXF v10: Hark's browser sits at the end of the conversation, like hark.com. */}
+            {bot.platformId === 'hark' && activeAccount && canSend && (
+              <HarkBrowserCard key={JSON.stringify([activeAccount.id, bot.activeSessionId])}
+                accountId={activeAccount.id} sessionId={bot.activeSessionId} attention={harkAsks.length > 0} />
             )}
             {(bot.platformId === 'meta-muse' || bot.platformId === 'grok') && activeAccount && (
               <ChatApprovals
