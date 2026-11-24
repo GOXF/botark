@@ -75,7 +75,8 @@ export interface HandoffStep {
   roomId?: string
 }
 
-const firstLine = (text: string) => stripFinalPrefix(text).split('\n').find((l) => l.trim())?.trim() ?? ''
+const firstLine = (text: string) =>
+  (stripFinalPrefix(text).split('\n').find((l) => l.trim()) ?? '').replace(/\*\*|__|`/g, '').replace(/^[\s#>*-]+/, '').trim()
 
 /** 交接链 for the right panel: 需求 → each group → 人工确认. */
 export function handoffSteps(

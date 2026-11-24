@@ -132,7 +132,7 @@ export function RoomInspectorPanel({ room }: { room: CollabRoom }) {
               { value: 'overview', label: '编排', icon: <ArkRelayOrbSvg /> },
               { value: 'workspace', label: '工作区', icon: <ArkWorkspaceVaultSvg /> },
               ...(room.coordinatorId ? [] : [{ value: 'slack' as const, label: 'Slack', icon: <ArkSlackWeaveSvg /> }]),
-              { value: 'handoff', label: '交接', icon: <ArrowRightLeft /> }
+              { value: 'handoff', label: '交接' }
             ]}
           />
         </div>

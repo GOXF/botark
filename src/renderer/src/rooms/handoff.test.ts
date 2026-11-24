@@ -9,7 +9,7 @@ import { useRooms } from './roomStore'
 
 const member = (name: string) => ({ name, botId: name, platform: 'dot' as const, accountId: name, cursor: 0 })
 const brief: RoomMessage = { id: 'b', author: 'User', text: '把群聊改成并发派发', createdAt: 1 }
-const final: RoomMessage = { id: 'f', author: 'Dot', authorBotId: 'Dot', text: '[FINAL]\n并发派发 · 定稿', final: true, createdAt: 2 }
+const final: RoomMessage = { id: 'f', author: 'Dot', authorBotId: 'Dot', text: '[FINAL]\n**并发派发 · 定稿**', final: true, createdAt: 2 }
 const draft: RoomMessage = { id: 'd', author: 'Muse', authorBotId: 'Muse', text: '补了 6 个测试', createdAt: 2 }
 
 function setup() {
@@ -35,7 +35,7 @@ it('posts a quoted requirement that points back to the source final and links th
   expect(posted.author).toBe('开发组 交来需求')
   expect(posted.text).toBe('重点看并发竞态')
   expect(posted.handoff).toEqual({ roomId: 'dev', messageId: 'f' })
-  expect(posted.references?.[0]?.text).toBe('并发派发 · 定稿')
+  expect(posted.references?.[0]?.text).toBe('**并发派发 · 定稿**')
   expect(posted.references?.[0]?.label).toContain('开发组 Dot 的定稿 [FINAL]')
   expect(room('review').handoffUnread).toBe(true)
   expect(room('dev').handoffChain).toEqual(['dev', 'review'])
@@ -49,6 +49,7 @@ it('posts a quoted requirement that points back to the source final and links th
   ])
   expect(steps[0]!.note).toBe('把群聊改成并发派发')
   expect(steps[1]!.who).toBe('Dot 定稿')
+  expect(steps[1]!.note).toBe('并发派发 · 定稿')
 })
 
 it('the receiving group sees the quoted final as its brief, and its own final can be handed on', () => {

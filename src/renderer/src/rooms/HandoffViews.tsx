@@ -25,9 +25,11 @@ export function HandoffPicker({ room, message, onClose }: {
   const [autoStart, setAutoStart] = useState(true)
   const [error, setError] = useState('')
   const target = others.find((r) => r.id === targetId)
+  // A manual-@ group without an administrator has nobody to route an unaddressed requirement to.
+  const canAutoStart = Boolean(target && (target.coordinatorId || target.mode === 'auto'))
 
   const submit = () => {
-    const res = handOffFinal(room.id, message.id, targetId, { note, autoStart })
+    const res = handOffFinal(room.id, message.id, targetId, { note, autoStart: autoStart && canAutoStart })
     if (res.ok) onClose()
     else setError(res.error ?? '交接失败')
   }
@@ -82,8 +84,10 @@ export function HandoffPicker({ room, message, onClose }: {
         className="h-8 text-[12.5px]"
       />
       <label className="flex items-center gap-2 text-[12px] text-ink-secondary">
-        <SwitchPill size="sm" checked={autoStart} onCheckedChange={setAutoStart} aria-label="自动开工" />
-        由{target?.title ?? '对方'}{target?.coordinatorId ? '管理员' : ''}自动开工
+        <SwitchPill size="sm" checked={autoStart && canAutoStart} disabled={!canAutoStart} onCheckedChange={setAutoStart} aria-label="自动开工" />
+        {target && !canAutoStart
+          ? `${target.title}是手动 @ 模式，收到后由你点名`
+          : `由${target?.title ?? '对方'}${target?.coordinatorId ? '管理员' : ''}自动开工`}
       </label>
       {error && <p role="alert" className="text-[12px] text-status-error">{error}</p>}
       <div className="flex justify-end gap-2">
