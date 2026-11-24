@@ -129,6 +129,15 @@ export function roomRecipient(room: CollabRoom, externalAudience?: string): stri
   return [room.title, room.members.map((m) => m.name).join(', '), externalAudience].filter(Boolean).join(' · ')
 }
 
+/**
+ * Members whose platform refuses to run behind another application's tool
+ * protocol. Hark's policy rejects a multi-agent room frame outright, so it
+ * gets a plain assistant frame instead of the room frame.
+ */
+export function refusesRoomFrame(platform: PlatformId): boolean {
+  return platform === 'hark'
+}
+
 export function turnPrompt(room: CollabRoom, member: RoomMember): string {
   const start = Math.max(member.cursor, room.messages.length - 20)
   const briefIndex = room.messages.findLastIndex(isHumanRoomMessage)
@@ -146,6 +155,24 @@ export function turnPrompt(room: CollabRoom, member: RoomMember): string {
         : 'Answer the administrator’s request. Your reply returns to the administrator for review.'
       : 'Review, revise and choose a writer as needed. Mention a peer only to request their next turn. Start the final deliverable with [FINAL] on its own line.',
     `Human brief: ${missedBrief?.references?.length ? messageWithReferences(missedBrief) : room.brief}`,
+    context
+  ].join('\n\n')
+}
+
+/**
+ * Assistant frame for a member that will not accept the collaboration-room
+ * frame. It keeps the shared context (so the member still sees what the room
+ * said) but drops the room/member/brief scaffolding that triggers a refusal.
+ */
+export function assistantTurnPrompt(room: CollabRoom, member: RoomMember): string {
+  const context = room.messages
+    .slice(Math.max(member.cursor, room.messages.length - 20))
+    .map((m) => `[${m.author}] ${messageWithReferences(m)}`)
+    .join('\n')
+  return [
+    '你是一个独立的助手，负责处理我发来的资料。',
+    `Task: ${room.brief || `给 @${member.name} 的请求`}`,
+    'Shared context:',
     context
   ].join('\n\n')
 }

@@ -275,6 +275,44 @@ async function approve(win: BrowserWindow, message: string, detail: string) {
   if (choice.response !== 1) throw new Error('用户已取消本次操作')
 }
 
+const rootChangeListeners = new Set<(scopeId: string) => void>()
+
+export function onWorkspaceRootChanged(listener: (scopeId: string) => void): () => void {
+  rootChangeListeners.add(listener)
+  return () => {
+    rootChangeListeners.delete(listener)
+  }
+}
+
+function notifyWorkspaceRootChanged(scopeId: string): void {
+  for (const listener of rootChangeListeners) {
+    try {
+      listener(scopeId)
+    } catch {
+      /* ignore listener errors */
+    }
+  }
+}
+
+/**
+ * The workspace root bound to a scope, if any. The workspace portal uses it
+ * to serve the same directory the `[TOOL]` protocol would reach.
+ */
+export function workspaceRootFor(scopeId: string): string | undefined {
+  const binding = scopes.get((scopeId || '').trim() || GLOBAL_SCOPE)
+  return binding?.root
+}
+
+/**
+ * Same as {@link workspaceRootFor} but waits for the persisted scope state to
+ * be loaded first, so a caller that runs right after startup still sees the
+ * directory the user bound earlier.
+ */
+export async function resolveWorkspaceRootFor(scopeId: string): Promise<string | undefined> {
+  await ensureHydrated()
+  return workspaceRootFor(scopeId)
+}
+
 async function invoke(
   win: BrowserWindow,
   scopeId: string,
@@ -1007,17 +1045,22 @@ async function bindDirectory(
   }
 
   let binding!: Binding
+  let rootChanged = false
   await withStateLock(async () => {
     binding = getOrCreateBinding(scopeId)
-    if (binding.root && binding.root !== realRoot && binding.endpoint) {
-      binding.endpoint.server.closeAllConnections()
-      binding.endpoint.server.close()
-      binding.endpoint = undefined
+    if (binding.root && binding.root !== realRoot) {
+      rootChanged = true
+      if (binding.endpoint) {
+        binding.endpoint.server.closeAllConnections()
+        binding.endpoint.server.close()
+        binding.endpoint = undefined
+      }
     }
     binding.root = realRoot
     binding.trusted = true
     await saveScopeDirectory({ scopeId, directory: realRoot, optimizedAtMs })
   })
+  if (rootChanged) notifyWorkspaceRootChanged(scopeId)
 
   return { canceled: false, binding }
 }
@@ -1145,6 +1188,7 @@ export function registerWorkspaceIpc(owner: () => BrowserWindow | null) {
             binding.endpoint = undefined
             await saveScopeDirectory({ scopeId, directory: undefined })
           })
+          notifyWorkspaceRootChanged(scopeId)
         }
         return view(scopeId, binding)
       }

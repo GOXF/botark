@@ -2,6 +2,7 @@
 import { isPortable } from './goxfPortable'
 import { registerSlackIpc, stopSlack } from './slack/slackIpc'
 import { registerWorkspaceIpc, stopWorkspaces } from './mcp/hub'
+import { registerWorkspacePortalIpc, stopWorkspacePortals } from './mcp/workspacePortal'
 import { appendFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { app, BrowserWindow, shell, type Rectangle } from 'electron'
@@ -279,6 +280,7 @@ app.on('before-quit', (event) => {
   }
   void stopSlack()
   stopWorkspaces()
+  void stopWorkspacePortals()
   stopGrokAccountWatch('*')
   closeCelsiusWatcher('*')
   cancelHarkWatch('*')
@@ -310,6 +312,7 @@ app.whenReady().then(async () => {
   registerMobileSyncIpc()
   registerVaultIpc()
   registerWorkspaceIpc(() => mainWindow)
+  registerWorkspacePortalIpc(() => mainWindow)
   registerSlackIpc(() => mainWindow)
   registerPopoutIpc(() => mainWindow, createPopoutWindow)
   mainWindow = createMainWindow()

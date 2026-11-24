@@ -8,9 +8,11 @@ import { cancelPlatformTurn, useBotStore } from '@/store/botStore'
 import { createSafeStorage } from '@/store/delivery'
 import type { Bot } from '@/types'
 import {
+  assistantTurnPrompt,
   freshRoomSession,
   isFinal,
   mentions,
+  refusesRoomFrame,
   roomRecipient,
   turnPrompt,
   type CollabRoom,
@@ -82,6 +84,30 @@ const isConnectedStatus = (status?: ConnectionStatus) =>
 
 function turnLockKey(member: Pick<RoomMember, 'accountId' | 'agentId'>): string {
   return member.agentId ? `${member.accountId}::${member.agentId}` : member.accountId
+}
+
+/**
+ * Publish the workspace over HTTP so a member that refuses the external
+ * `[TOOL]` protocol can still read and write it with its own web tools.
+ * Returns the prompt fragment to append, or an empty string when the portal
+ * could not be started.
+ */
+async function openWorkspacePortal(scope: string): Promise<string> {
+  const bridge = getBridge()?.workspacePortal
+  if (!bridge) return ''
+  try {
+    const state = await bridge.manage({ op: 'open', scope })
+    if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function' && typeof CustomEvent === 'function') {
+      window.dispatchEvent(new CustomEvent('botark:workspace-portal-updated', { detail: { scope } }))
+    }
+    if (!state.running || !state.entryUrl) return ''
+    return (
+      `\n\n本机工作区已挂载为在线文档：${state.entryUrl}\n` +
+      '需要查看、搜索或修改工作区时，用你的网页抓取工具打开这个地址，按页面上的说明操作即可。'
+    )
+  } catch {
+    return ''
+  }
 }
 
 function findBotForMember(member: RoomMember, bots: Bot[]): Bot | undefined {
@@ -564,13 +590,30 @@ async function memberReply(room: CollabRoom, member: RoomMember, signal: AbortSi
         ...r,
         members: r.members.map((m) => (m.botId === member.botId ? { ...m, sessionId } : m))
       }))
-    let prompt = turnPrompt(room, member)
-    const hub = getBridge()?.workspace
-    const workspace = hub ? await hub.manage(room.id, { op: 'status' }) : undefined
-    if (workspace?.tools.length) {
-      prompt +=
-        '\n\nTo request one workspace tool, reply with [TOOL] followed by JSON {"name":"…","args":{…}}. A person approves each call. Available tools: ' +
-        JSON.stringify(workspace.tools.map((t) => ({ name: t.name, description: t.description, schema: t.inputSchema })))
+    let prompt: string
+    if (refusesRoomFrame(member.platform)) {
+      // This member will not act behind another application's tool protocol,
+      // and it rejects the collaboration-room frame itself. Give it a plain
+      // assistant frame plus a workspace portal it can reach with its own web
+      // tools instead.
+      prompt = assistantTurnPrompt(room, member)
+      const portal = await openWorkspacePortal(room.id)
+      if (portal) prompt += portal
+    } else {
+      prompt = turnPrompt(room, member)
+      const hub = getBridge()?.workspace
+      const workspace = hub ? await hub.manage(room.id, { op: 'status' }) : undefined
+      if (workspace?.tools.length) {
+        prompt +=
+          '\n\nTo request one workspace tool, reply with [TOOL] followed by JSON {"name":"…","args":{…}}. Use "." for the workspace root and relative paths like "README.md" (never "/workspace" or "~/workspace"). A person approves each call. Available tools: ' +
+          JSON.stringify(
+            workspace.tools.map((t) => ({
+              name: t.name,
+              ...(t.description ? { description: t.description } : {}),
+              schema: t.inputSchema
+            }))
+          )
+      }
     }
     signal.throwIfAborted()
     signal.addEventListener('abort', cancel, { once: true })
