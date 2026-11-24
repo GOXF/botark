@@ -189,3 +189,4 @@ git clone <GOXF/botark> && cd botark && git checkout fix/hark-login-sync && npm 
 ## 2026-11-24 11:10 已做（测试通道增量）
 - 「处理中…」不变：发送尾流和项目流两路写同一状态行，项目流读数为空时把进度文字覆盖成 null。HarkProjects 空读数保留上一句；liveStatus/livePhrase 无旁白时用正在运行工具生成「正在用浏览器：…」（harkRunningToolLine）。未真机验证；若仍只显示处理中，需抓 /sync/conversation 帧看旁白字段名。
 - 输入框待发送图片缩略图可点开 ImageLightbox 预览（已发出的图原本就能点）。
+- 11:15 追加：回合结束后 Hark 仍在等后台任务（官网「正在等待构建完成」），原生不显示。liveStatus 对最后一条回复里仍 running 的工具 / 活动面板也判忙并出文字；narration_*/activity_* 改名操作兼容；便携版写 BotArk-Data/hark-frames.log（1 MB 轮转）记录帧字段。若仍不显示，让用户发 hark-frames.log。
