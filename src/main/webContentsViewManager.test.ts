@@ -72,3 +72,24 @@ describe('WebContentsViewManager.reloadAccount', () => {
     expect(a.reload).toHaveBeenCalledTimes(1)
   })
 })
+
+describe('WebContentsViewManager.transferBot', () => {
+  it('moves one bot\'s views (same webContents) to another window and leaves the rest', () => {
+    const fromWin = fakeWindow()
+    const from = new WebContentsViewManager(fromWin as never)
+    const to = new WebContentsViewManager(fakeWindow() as never)
+    from.create({ botId: 'b1', accountId: 'acc_a', url: 'https://app.hark.com/' })
+    from.attach('b1::acc_a', { x: 0, y: 0, width: 100, height: 100 })
+    from.create({ botId: 'b2', accountId: 'acc_b', url: 'https://app.hark.com/' })
+    const view = from.getView('b1::acc_a')
+
+    from.transferBot('b1', to)
+
+    expect(from.getView('b1::acc_a')).toBeUndefined()
+    expect(to.getView('b1::acc_a')).toBe(view)
+    expect(fromWin.contentView.removeChildView).toHaveBeenCalledWith(view)
+    expect(from.getView('b2::acc_b')).toBeDefined()
+    expect(to.create({ botId: 'b1', accountId: 'acc_a' }).viewId).toBe('b1::acc_a')
+    expect(to.list()).toHaveLength(1)
+  })
+})

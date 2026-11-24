@@ -236,3 +236,9 @@ git clone <GOXF/botark> && cd botark && git checkout fix/hark-login-sync && npm 
 - 聚焦标签决定 bot 当前对话（switchConversation）；在聚焦格切对话会把标签钉到新对话。非当前对话的标签显示只读镜像（ConversationMirror），Hark 实时（observeProject 改为按 subscription 并存），其他平台打开时读一次历史；点一下该格即切过去可发送。
 - 不支持多对话（退回只按 bot）：Grok（会话绑定 agent，无会话列表）、Cue、Dot；群聊在「协作」页，不进会话格。
 - 未真机/未网页目测（沙箱缺 chromium 依赖 libatk）。
+## 2026-11-24 15:50 弹出独立窗口（next.md #2，分支 goxf/feat-popout，未合并）
+- b7c9128：格子标题栏「弹出到独立窗口」→ 独立 BrowserWindow（同一渲染包 `?popout=<botId>`，只有聊天+输入框）；「放回主窗口」或关窗=放回（能右分就右分，否则进当前格）；侧栏点已弹出的会话=聚焦那个窗口。
+- 同步：主窗口是唯一真实 store（适配器/持久化只在主窗口），节流 100ms 推补丁给弹出窗口；弹出窗口的 store 动作经主进程转发到主窗口执行（同手机同步 sendCommand 的按 id 应答）。弹出窗口不写 localStorage。
+- 内嵌网页（WebContentsView）随会话移到弹出窗口、放回时移回（Muse pinned 辅助视图不动）。
+- 位置大小存 userData/goxf-popouts.json，退出时开着的下次启动恢复（显示器不在就用默认位置）。Windows 上关主窗口=退出（弹出窗口保留到下次）。
+- 验证：typecheck 过，vitest 479/479；网页版双页面 + BroadcastChannel 模拟主进程中继：弹出、主→弹实时消息、弹→主发送、放回都通过。未在 Windows/Electron 真机跑。

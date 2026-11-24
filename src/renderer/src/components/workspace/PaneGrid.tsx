@@ -1,7 +1,8 @@
 import { useEffect, useLayoutEffect, useRef, useState, type DragEvent, type PointerEvent as ReactPointerEvent } from 'react'
-import { Maximize2, Minimize2, X } from 'lucide-react'
+import { Maximize2, Minimize2, SquareArrowOutUpRight, X } from 'lucide-react'
 import { ChatArea } from '@/components/chat/ChatArea'
 import { ErrorBoundary } from '@/components/ui/ErrorBoundary'
+import { getBridge } from '@/lib/bridge'
 import { cn } from '@/lib/cn'
 import {
   PANE_MIN_H,
@@ -143,8 +144,21 @@ function Pane({ leaf, rect, multi, focused, hint, box }: {
       : undefined
   const showTabs = multi || leaf.tabs.length > 1
 
+  const popOut = botId && getBridge()?.goxfPopout ? (
+    <button
+      type="button"
+      title="弹出到独立窗口"
+      aria-label="弹出到独立窗口"
+      onClick={() => void getBridge()?.goxfPopout?.open(botId)}
+      className="grid size-7 place-items-center rounded-full text-ink-secondary hover:bg-hover hover:text-ink"
+    >
+      <SquareArrowOutUpRight className="size-3.5" />
+    </button>
+  ) : null
+
   const controls = (
     <span className="no-drag flex items-center gap-0.5 border-l border-line pl-1">
+      {popOut}
       <button
         type="button"
         title={maximized ? '还原分屏' : '最大化这一格'}
@@ -226,7 +240,9 @@ function Pane({ leaf, rect, multi, focused, hint, box }: {
       )}
     >
       {showTabs && <PaneTabs leaf={leaf} extra={multi ? controls : maximized ? restore : undefined} />}
-      {!multi && maximized && !showTabs && <div className="no-drag absolute top-2 right-2 z-20">{restore}</div>}
+      {!multi && !showTabs && (maximized || popOut) && (
+        <div className="no-drag absolute top-2 right-2 z-20 flex items-center gap-1">{popOut}{maximized && restore}</div>
+      )}
       <ErrorBoundary surface="会话格" resetKey={tab ? `${tab.id}:${mirrorSession ?? ''}` : id}>
         {bot && mirrorSession ? (
           <ConversationMirror bot={bot} conversationId={mirrorSession} />

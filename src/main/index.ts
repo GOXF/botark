@@ -4,7 +4,7 @@ import { registerSlackIpc, stopSlack } from './slack/slackIpc'
 import { registerWorkspaceIpc, stopWorkspaces } from './mcp/hub'
 import { appendFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
-import { app, BrowserWindow, shell } from 'electron'
+import { app, BrowserWindow, shell, type Rectangle } from 'electron'
 import { attachWebViewManager, registerWebViewIpc } from './webViewIpc'
 import { attachMuseSessionManager, disposeAllMuseManagers, registerMuseIpc } from './muse/museIpc'
 // GOXF fork: fork-aware updater (upstream + portable prompts) instead of electron-updater.
@@ -30,6 +30,7 @@ import { applyAllStoredProxies } from './muse/accountProxy'
 import { closeAllLocalProxyBridges } from './localProxyBridge'
 import { hardenVaultFilePermissions, registerVaultIpc } from './securityVault'
 import { getAppWindowIcon } from './appIcon'
+import { hasPopouts, registerPopoutIpc, restorePopouts } from './goxfPopout'
 
 try {
   app.commandLine?.appendSwitch?.('disable-blink-features', 'AutomationControlled')
@@ -187,6 +188,8 @@ function createMainWindow(): BrowserWindow {
   })
   win.on('closed', () => {
     if (mainWindow === win) mainWindow = null
+    // GOXF: popped-out panes are mirrors of this window; quitting keeps them for the next launch.
+    if (!isMac && !quitting && hasPopouts()) app.quit()
   })
 
   // Never open new Electron windows from the renderer; hand http(s) links to the OS.
@@ -213,19 +216,54 @@ function createMainWindow(): BrowserWindow {
   })
 
   const wantGrokLogin = process.argv.includes('--open-grok-login')
+  loadRenderer(win, wantGrokLogin ? { openGrokLogin: '1' } : undefined)
+  win.webContents.once('did-finish-load', restorePopouts)
+
+  return win
+}
+
+function loadRenderer(win: BrowserWindow, query?: Record<string, string>): void {
   const devUrl = process.env['ELECTRON_RENDERER_URL']
   if (!app.isPackaged && devUrl) {
-    const targetUrl = wantGrokLogin
-      ? `${devUrl}${devUrl.includes('?') ? '&' : '?'}openGrokLogin=1`
-      : devUrl
-    void win.loadURL(targetUrl)
+    const search = query ? new URLSearchParams(query).toString() : ''
+    void win.loadURL(search ? `${devUrl}${devUrl.includes('?') ? '&' : '?'}${search}` : devUrl)
   } else {
-    void win.loadFile(
-      join(__dirname, '../renderer/index.html'),
-      wantGrokLogin ? { query: { openGrokLogin: '1' } } : undefined
-    )
+    void win.loadFile(join(__dirname, '../renderer/index.html'), query ? { query } : undefined)
   }
+}
 
+/** GOXF: one session pane in its own window (same renderer bundle, `?popout=<botId>`). */
+function createPopoutWindow(query: Record<string, string>, bounds?: Rectangle): BrowserWindow {
+  const windowIcon = getAppWindowIcon()
+  const win = new BrowserWindow({
+    width: 560,
+    height: 780,
+    ...bounds,
+    minWidth: 380,
+    minHeight: 420,
+    title: 'BotArk',
+    backgroundColor: '#f7f7f8',
+    autoHideMenuBar: true,
+    ...(windowIcon ? { icon: windowIcon } : {}),
+    webPreferences: {
+      preload: join(__dirname, '../preload/index.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true
+    }
+  })
+  win.webContents.on('before-input-event', (event, input) => {
+    if (input.type === 'keyDown' && input.key === 'F12' && !input.control && !input.alt && !input.meta && !input.shift) {
+      event.preventDefault()
+      win.webContents.toggleDevTools()
+    }
+  })
+  win.webContents.setWindowOpenHandler(({ url }) => {
+    if (/^https?:\/\//.test(url)) void shell.openExternal(url)
+    return { action: 'deny' }
+  })
+  win.webContents.on('will-navigate', (event) => event.preventDefault())
+  loadRenderer(win, query)
   return win
 }
 
@@ -273,6 +311,7 @@ app.whenReady().then(async () => {
   registerVaultIpc()
   registerWorkspaceIpc(() => mainWindow)
   registerSlackIpc(() => mainWindow)
+  registerPopoutIpc(() => mainWindow, createPopoutWindow)
   mainWindow = createMainWindow()
   startPerfLog(mainWindow)
   readyForDeepLinks = true

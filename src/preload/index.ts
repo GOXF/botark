@@ -4,6 +4,7 @@ import { contextBridge, ipcRenderer } from 'electron'
 import type { BotHubBridge } from '@shared/bridge'
 import { GOXF_UPDATE_CHANNELS, type GoxfUpdateEvent } from '@shared/goxfUpdate'
 import { GOXF_DOWNLOAD_CHANNELS, type GoxfDownloadEvent } from '@shared/goxfDownload'
+import { GOXF_POPOUT_CHANNELS, type PopoutPatch } from '@shared/goxfPopout'
 import {
   ANTIGRAVITY_CHANNELS,
   CUE_CHANNELS,
@@ -142,6 +143,48 @@ const bridge: BotHubBridge = {
       ipcRenderer.on(GOXF_DOWNLOAD_CHANNELS.event, handler)
       return () => ipcRenderer.removeListener(GOXF_DOWNLOAD_CHANNELS.event, handler)
     }
+  },
+  goxfPopout: {
+    open: (botId) => ipcRenderer.invoke(GOXF_POPOUT_CHANNELS.open, botId),
+    dock: (botId) => ipcRenderer.invoke(GOXF_POPOUT_CHANNELS.dock, botId),
+    focus: (botId) => ipcRenderer.invoke(GOXF_POPOUT_CHANNELS.focus, botId),
+    list: () => ipcRenderer.invoke(GOXF_POPOUT_CHANNELS.list),
+    onChanged: (listener) => {
+      const handler = (_event: unknown, ids: string[]) => listener(ids)
+      ipcRenderer.on(GOXF_POPOUT_CHANNELS.changed, handler)
+      return () => ipcRenderer.removeListener(GOXF_POPOUT_CHANNELS.changed, handler)
+    },
+    pushState: (patch) => ipcRenderer.send(GOXF_POPOUT_CHANNELS.state, patch),
+    onResync: (listener) => {
+      const handler = () => listener()
+      ipcRenderer.on(GOXF_POPOUT_CHANNELS.resync, handler)
+      return () => ipcRenderer.removeListener(GOXF_POPOUT_CHANNELS.resync, handler)
+    },
+    onAction: (run) => {
+      const handler = async (_event: unknown, id: string, name: string, args: unknown[]) => {
+        let result
+        try {
+          result = { ok: true, value: await run(name, args) }
+        } catch (err) {
+          result = { ok: false, error: err instanceof Error ? err.message : String(err) }
+        }
+        try {
+          ipcRenderer.send(GOXF_POPOUT_CHANNELS.actionResult, id, result)
+        } catch {
+          // Return value not cloneable: callers in the popped window only await completion.
+          ipcRenderer.send(GOXF_POPOUT_CHANNELS.actionResult, id, { ok: result.ok })
+        }
+      }
+      ipcRenderer.on(GOXF_POPOUT_CHANNELS.action, handler)
+      return () => ipcRenderer.removeListener(GOXF_POPOUT_CHANNELS.action, handler)
+    },
+    ready: () => ipcRenderer.send(GOXF_POPOUT_CHANNELS.ready),
+    onState: (listener) => {
+      const handler = (_event: unknown, patch: PopoutPatch) => listener(patch)
+      ipcRenderer.on(GOXF_POPOUT_CHANNELS.state, handler)
+      return () => ipcRenderer.removeListener(GOXF_POPOUT_CHANNELS.state, handler)
+    },
+    invoke: (name, args) => ipcRenderer.invoke(GOXF_POPOUT_CHANNELS.action, name, args)
   },
   grok: {
     openLogin: (request) => ipcRenderer.invoke(GROK_CHANNELS.openLogin, request),

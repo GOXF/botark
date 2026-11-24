@@ -2,6 +2,7 @@ import { create } from 'zustand'
 import { evaluate, markRun, setPolled, workingFromStatuses, type HarkWorkState } from '@/lib/harkWork'
 import { useBotStore } from '@/store/botStore'
 import { visibleBotIds } from '@/store/paneStore'
+import { usePopped } from './popoutSync'
 
 /** GOXF: "工作中 / 完成" per Hark project and account (rules in lib/harkWork). */
 export const useHarkWork = create<HarkWorkState>(() => ({ projects: {}, seenAt: {} }))
@@ -37,6 +38,7 @@ function tick(): void {
   const onScreen = typeof document !== 'undefined' && document.visibilityState === 'visible' && document.hasFocus()
   // GOXF v13: every Hark bot in a pane of the 会话 page counts as on screen.
   const ids = onScreen ? visibleBotIds() : new Set<string>()
+  for (const id of usePopped.getState().ids) ids.add(id)
   const shown = bots.filter((b) => b.platformId === 'hark' && ids.has(b.id))
   useHarkWork.setState((s) =>
     evaluate(

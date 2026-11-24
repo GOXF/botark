@@ -1,5 +1,6 @@
 import type { GoxfUpdateBridge } from './goxfUpdate'
 import type { GoxfDownloadBridge } from './goxfDownload'
+import type { GoxfPopoutBridge } from './goxfPopout'
 import type { SlackBridge } from './slack'
 import type { WorkspaceBridge } from './workspace'
 import type { MuseAutoLoginRequest, MuseAutoLoginResult } from './museBatch'
@@ -307,4 +308,6 @@ export interface BotHubBridge {
   readonly goxfUpdates?: GoxfUpdateBridge
   /** GOXF fork: streamed file downloads with progress. */
   readonly goxfDownloads?: GoxfDownloadBridge
+  /** GOXF fork: session panes popped out into their own windows. */
+  readonly goxfPopout?: GoxfPopoutBridge
 }
