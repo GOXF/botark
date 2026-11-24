@@ -866,7 +866,7 @@ export const useBotStore = create<BotHubState>()(
     try {
       const outboundText =
         message.replyQuote && bot.platformId !== 'grok'
-          ? `> ${message.replyQuote.replace(/\n/g, '\n> ')}\n\n${message.text}`
+          ? `> ${quoteForBot(message).replace(/\n/g, '\n> ')}\n\n${message.text}`
           : message.text
       const receipt = await withTimeout(
         adapter.sendMessage({
@@ -899,6 +899,10 @@ export const useBotStore = create<BotHubState>()(
     }
   }
 
+  // A quoted picture reaches the bot as its web address, so it can tell which image was meant.
+  const quoteForBot = (m: ChatMessage) =>
+    m.replyThumb && /^https?:/i.test(m.replyThumb) ? `${m.replyQuote} ${m.replyThumb}` : m.replyQuote ?? ''
+
   const enqueueUserMessage = (bot: Bot, text: string, attachments?: AttachmentMeta[], clientMessageId?: string) => {
     const botId = bot.id
     const replyTarget = clientMessageId ? undefined : get().replyingTo[botId]
@@ -911,7 +915,9 @@ export const useBotStore = create<BotHubState>()(
       text,
       createdAt: Date.now(),
       delivery: 'sending',
-      ...(replyTarget ? { replyToId: replyTarget.entryId, replyQuote: replyTarget.quote } : {}),
+      ...(replyTarget
+        ? { replyToId: replyTarget.entryId, replyQuote: replyTarget.quote, ...(replyTarget.thumb ? { replyThumb: replyTarget.thumb } : {}) }
+        : {}),
       attachments: attachments?.length ? attachments : undefined
     }
     set((state) => {

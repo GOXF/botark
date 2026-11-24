@@ -285,6 +285,7 @@ export function Composer({ bot, account, typing = false, onSend, onCancel, onCon
             <div className="mb-1.5 flex items-center justify-between gap-2 rounded-xl border border-line bg-sunken/50 px-2.5 py-1.5 text-[12px]">
               <div className="flex min-w-0 items-center gap-1.5">
                 <CornerDownRight className="size-3.5 shrink-0 text-accent-600" aria-hidden />
+                {replyTarget.thumb && <img src={replyTarget.thumb} alt="" className="size-7 shrink-0 rounded-md object-cover" />}
                 <span className="shrink-0 font-medium text-ink-secondary">
                   {replyTarget.role === 'user' ? '引用自己' : `引用 ${bot.name}`}：
                 </span>

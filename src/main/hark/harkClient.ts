@@ -1443,7 +1443,7 @@ export function harkReplyRef(raw: Record<string, unknown>): HarkChatMessage['rep
 /** One-line quote of a reply target: its text, else what it carried. */
 export function harkReplySnippet(text: string, media?: Array<{ kind: string; name?: string }>): string {
   const flat = text.replace(/\s+/g, ' ').trim()
-  if (flat) return flat.length > 140 ? `${flat.slice(0, 140)}…` : flat
+  if (flat) return flat
   const part = media?.[0]
   if (!part) return ''
   return part.kind === 'image' ? '[图片]' : `[文件] ${part.name ?? ''}`.trim()

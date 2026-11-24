@@ -211,6 +211,8 @@ export interface ChatReplyTarget {
   entryId: string
   quote: string
   role: MessageRole
+  /** Picture of the quoted message, when an image was quoted. */
+  thumb?: string
 }
 
 export interface ChatMessage {

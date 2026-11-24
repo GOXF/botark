@@ -1957,7 +1957,7 @@ export const MessageBubble = memo(function MessageBubble({
   const quoteReplyMessage = () => {
     const entryId = message.id.replace(/^grok_(u_)?/, '')
     const rawSnippet = (message.text || '').replace(/\s+/g, ' ').trim()
-    const quote = rawSnippet.length > 140 ? `${rawSnippet.slice(0, 140)}…` : rawSnippet || '引用消息'
+    const quote = rawSnippet || '引用消息'
     setReplyTarget(message.botId, {
       messageId: message.id,
       entryId,
@@ -1987,6 +1987,16 @@ export const MessageBubble = memo(function MessageBubble({
       /* clipboard refused: nothing to do */
     }
   }
+  const quoteImage = (src: string) => {
+    setReplyTarget(message.botId, {
+      messageId: message.id,
+      entryId: message.id.replace(/^grok_(u_)?/, ''),
+      quote: '[图片]',
+      role: message.role,
+      thumb: src
+    })
+    window.dispatchEvent(new CustomEvent('bothub:focus-composer'))
+  }
   const saveImage = (src: string) => {
     const a = document.createElement('a')
     a.href = src
@@ -2012,6 +2022,10 @@ export const MessageBubble = memo(function MessageBubble({
             </MenuLabel>
             {ctx.img ? (
               <>
+                <MenuItem onSelect={() => quoteImage(ctx.img!)}>
+                  <CornerDownRight aria-hidden />
+                  引用回复
+                </MenuItem>
                 <MenuItem onSelect={() => void copyImage(ctx.img!)}>
                   <Copy aria-hidden />
                   复制图片
