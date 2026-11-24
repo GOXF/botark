@@ -28,6 +28,7 @@ import { MULTI_CONVERSATION, useConversationTitles } from '@/services/workspaceS
 import { ConversationMirror } from './ConversationMirror'
 import { CONVERSATION_DRAG_MIME, readConversationDrag } from './conversationDnd'
 import { PANE_TAB_MIME, PaneTabs, readTabDrag } from './PaneTabs'
+import { SplitTools, useMergedHeader } from './WorkspaceTopBar'
 
 interface DropHint {
   leafId: string
@@ -144,6 +145,7 @@ function Pane({ leaf, rect, multi, focused, hint, box }: {
       ? tab.conversationId
       : undefined
   const showTabs = multi || leaf.tabs.length > 1
+  const merged = useMergedHeader()
 
   const popOut = botId && getBridge()?.goxfPopout ? (
     <button
@@ -250,6 +252,8 @@ function Pane({ leaf, rect, multi, focused, hint, box }: {
             botId={botId}
             focused={focused}
             compact={multi}
+            merged={merged}
+            headerLeading={merged ? <SplitTools fold /> : undefined}
             // Single pane without a tab strip: the pop-out button sits in the chat header's own icon row.
             headerExtra={
               !showTabs && !maximized && botId && getBridge()?.goxfPopout ? (

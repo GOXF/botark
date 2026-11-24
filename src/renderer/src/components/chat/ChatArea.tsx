@@ -97,7 +97,14 @@ function ConversationIntro({
  * GOXF v13 panes pass their own bot, and only the focused pane (`focused`)
  * owns the web view, the document canvas and the share dialog.
  */
-export function ChatArea({ botId: paneBotId, focused = true, compact = false, headerExtra }: { botId?: string | null; focused?: boolean; compact?: boolean; headerExtra?: ReactNode } = {}) {
+export function ChatArea({
+  botId: paneBotId,
+  focused = true,
+  compact = false,
+  headerExtra,
+  merged = false,
+  headerLeading
+}: { botId?: string | null; focused?: boolean; compact?: boolean; headerExtra?: ReactNode; merged?: boolean; headerLeading?: ReactNode } = {}) {
   const shownId = useBotStore((s) => (paneBotId === undefined ? s.selectedBotId : paneBotId))
   const bot = useBotStore((s) => s.bots.find((b) => b.id === shownId))
   const sessionError = useBotStore((s) => shownId ? s.hermesSessionErrors[shownId] : undefined)
@@ -215,7 +222,7 @@ export function ChatArea({ botId: paneBotId, focused = true, compact = false, he
   return (
     <div className="flex min-h-0 flex-1 overflow-hidden">
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-        <ChatHeader bot={bot} accounts={accounts} compact={compact} extra={headerExtra} />
+        <ChatHeader bot={bot} accounts={accounts} compact={compact} extra={headerExtra} merged={merged} leading={headerLeading} />
         {sessionError && (
           <p role="alert" className="mx-6 my-2 text-[13px] text-status-error">
             {t('Could not start a new conversation. {reason}', { reason: sessionError })}

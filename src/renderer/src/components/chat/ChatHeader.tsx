@@ -14,6 +14,7 @@ import { cn } from '@/lib/cn'
 import { getBotStatus } from '@/lib/selectors'
 import { shortcutLabel } from '@/lib/shortcuts'
 import { useBotStore } from '@/store/botStore'
+import { usePanes, type WorkspaceView } from '@/store/paneStore'
 import { adapterRegistry } from '@adapters/registry'
 import type { Bot, BotAccount } from '@/types'
 import { t } from '@/lib/i18n'
@@ -24,6 +25,24 @@ interface ChatHeaderProps {
   /** GOXF v13: a pane in a split keeps only "new conversation"; the pane's own buttons go in `extra`. */
   compact?: boolean
   extra?: ReactNode
+  /** GOXF v22: single plain pane — the top bar folds into this header (`leading` = split tools). */
+  merged?: boolean
+  leading?: ReactNode
+}
+
+function ViewTab({ view, label }: { view: WorkspaceView; label: string }) {
+  const setView = usePanes((s) => s.setView)
+  return (
+    <button
+      type="button"
+      role="tab"
+      aria-selected={false}
+      onClick={() => setView(view)}
+      className="no-drag press h-10 shrink-0 rounded-full px-3.5 text-[13px] font-medium text-ink-muted hover:text-ink"
+    >
+      {label}
+    </button>
+  )
 }
 
 interface AgentOption {
@@ -64,7 +83,7 @@ function useEnsureGrokAgentBound(bot: Bot): void {
   }, [bot.id, bot.platformId, bot.selectedAgentId, account?.id, account?.status, setSelectedAgent])
 }
 
-export function ChatHeader({ bot, accounts: _accounts, compact = false, extra }: ChatHeaderProps) {
+export function ChatHeader({ bot, accounts: _accounts, compact = false, extra, merged = false, leading }: ChatHeaderProps) {
   const allAccounts = useBotStore((s) => s.accounts)
   const hasMessages = useBotStore((s) => (s.messages[bot.id]?.length ?? 0) > 0)
   const infoOpen = useBotStore((s) => s.infoPanelOpen)
@@ -128,9 +147,58 @@ export function ChatHeader({ bot, accounts: _accounts, compact = false, extra }:
 
   useEnsureGrokAgentBound(bot)
 
+  // The capsule: avatar + name; hovering reveals the way into details.
+  const capsuleEl = (
+    <button
+      type="button"
+      data-capsule
+      onClick={toggleInfoPanel}
+      aria-expanded={infoOpen}
+      title={`${bot.name} · ${STATUS_LABEL[status]}`}
+      className={cn(
+        'no-drag group press flex h-10 min-w-0 items-center gap-2 rounded-full pr-3.5 pl-2',
+        merged ? 'max-w-[300px]' : 'max-w-[min(420px,50%)]',
+        'border-[0.5px] border-line-strong bg-main shadow-float hover:bg-surface'
+      )}
+    >
+      <BotAvatar
+        emoji={bot.emoji}
+        seed={bot.id}
+        avatar={bot.avatar}
+        avatarShape={bot.avatarShape}
+        avatarColor={bot.avatarColor}
+        platformId={bot.platformId}
+        status={status}
+        isWorking={typing || Boolean(activity?.busy)}
+        followPointer
+        size="xs"
+        ringClassName="ring-main"
+      />
+      <span className="flex min-w-0 flex-col items-start">
+        <h1 className="max-w-full min-w-0 truncate text-[14px] leading-[18px] font-medium text-ink">{bot.name}</h1>
+        {status !== 'online' && (
+          <span className="-mt-0.5 max-w-full truncate text-[10.5px] leading-[13px] text-ink-muted" data-capsule-status>
+            {STATUS_LABEL[status]}
+          </span>
+        )}
+      </span>
+      <ChevronRight
+        aria-hidden
+        className={cn(
+          '-ml-2 size-4 w-0 shrink-0 -translate-x-1.5 text-ink-muted opacity-0 blur-[3px]',
+          'transition-[width,margin,opacity,filter,translate] duration-[290ms] ease-spring-tap',
+          'group-hover:ml-0 group-hover:w-4 group-hover:translate-x-0 group-hover:opacity-100 group-hover:blur-none',
+          'group-focus-visible:ml-0 group-focus-visible:w-4 group-focus-visible:translate-x-0 group-focus-visible:opacity-100 group-focus-visible:blur-none'
+        )}
+      />
+    </button>
+  )
+
   return (
     <PaneHeader className="gap-3 pr-3">
-      <div className="flex min-w-0 flex-1 items-center gap-2">
+      <div className={cn('flex min-w-0 flex-1 items-center gap-2', merged && '@container')}>
+        {merged && leading}
+        {merged && leading && <span aria-hidden className="mx-1 h-5 w-px shrink-0 bg-line" />}
         {bot.platformId === 'hark' && <HarkProjects key={bot.activeAccountId} botId={bot.id} compact />}
         {activityLine ? (
           <span
@@ -143,49 +211,15 @@ export function ChatHeader({ bot, accounts: _accounts, compact = false, extra }:
         ) : null}
       </div>
 
-      {/* The capsule: avatar + name; hovering reveals the way into details. */}
-      <button
-        type="button"
-        data-capsule
-        onClick={toggleInfoPanel}
-        aria-expanded={infoOpen}
-        title={`${bot.name} · ${STATUS_LABEL[status]}`}
-        className={cn(
-          'no-drag group press flex h-10 max-w-[min(420px,50%)] min-w-0 items-center gap-2 rounded-full pr-3.5 pl-2',
-          'border-[0.5px] border-line-strong bg-main shadow-float hover:bg-surface'
-        )}
-      >
-        <BotAvatar
-          emoji={bot.emoji}
-          seed={bot.id}
-          avatar={bot.avatar}
-          avatarShape={bot.avatarShape}
-          avatarColor={bot.avatarColor}
-          platformId={bot.platformId}
-          status={status}
-          isWorking={typing || Boolean(activity?.busy)}
-          followPointer
-          size="xs"
-          ringClassName="ring-main"
-        />
-        <span className="flex min-w-0 flex-col items-start">
-          <h1 className="max-w-full min-w-0 truncate text-[14px] leading-[18px] font-medium text-ink">{bot.name}</h1>
-          {status !== 'online' && (
-            <span className="-mt-0.5 max-w-full truncate text-[10.5px] leading-[13px] text-ink-muted" data-capsule-status>
-              {STATUS_LABEL[status]}
-            </span>
-          )}
-        </span>
-        <ChevronRight
-          aria-hidden
-          className={cn(
-            '-ml-2 size-4 w-0 shrink-0 -translate-x-1.5 text-ink-muted opacity-0 blur-[3px]',
-            'transition-[width,margin,opacity,filter,translate] duration-[290ms] ease-spring-tap',
-            'group-hover:ml-0 group-hover:w-4 group-hover:translate-x-0 group-hover:opacity-100 group-hover:blur-none',
-            'group-focus-visible:ml-0 group-focus-visible:w-4 group-focus-visible:translate-x-0 group-focus-visible:opacity-100 group-focus-visible:blur-none'
-          )}
-        />
-      </button>
+      {merged ? (
+        <div role="tablist" aria-label="页面" className="no-drag flex max-w-[50%] min-w-0 items-center rounded-full bg-hover p-0.5">
+          <ViewTab view="board" label="看板" />
+          {capsuleEl}
+          <ViewTab view="collab" label="协作" />
+        </div>
+      ) : (
+        capsuleEl
+      )}
 
       <div className="flex min-w-0 flex-1 items-center justify-end gap-1">
         {inspector.supportsQuickNewConversation && (
