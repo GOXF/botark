@@ -5,7 +5,7 @@
  */
 import { appendFileSync, statSync, renameSync } from 'node:fs'
 import { join } from 'node:path'
-import { app, type BrowserWindow } from 'electron'
+import { app, BrowserWindow, webContents } from 'electron'
 import { PORTABLE_DATA_DIR } from './goxfPortable'
 
 const MEMORY_INTERVAL_MS = 10 * 60 * 1000
@@ -41,7 +41,40 @@ export function memorySummary(): string {
     totalKb += kb
     parts.push(`${type}x${count}=${Math.round(kb / 1024)}MB`)
   }
-  return `total=${Math.round(totalKb / 1024)}MB ${parts.join(' ')}`
+  const utility = app
+    .getAppMetrics()
+    .filter((m) => m.type === 'Utility')
+    .map((m) => `${m.serviceName ?? m.name ?? '?'}=${Math.round(m.memory.workingSetSize / 1024)}MB`)
+  return `total=${Math.round(totalKb / 1024)}MB ${parts.join(' ')}${utility.length ? ` utility[${utility.join(',')}]` : ''}`
+}
+
+/**
+ * What the main window's page holds: JS heap, DOM size, and how much image
+ * bitmap the visible <img>s could decode to. Tells us whether renderer growth
+ * is script memory or pictures/DOM.
+ */
+const RENDERER_PROBE = `(() => {
+  const mb = (b) => Math.round(b / 1048576)
+  const m = performance.memory || {}
+  const imgs = Array.from(document.images)
+  let px = 0, blobs = 0
+  for (const i of imgs) { px += (i.naturalWidth || 0) * (i.naturalHeight || 0); if (i.src.startsWith('blob:')) blobs++ }
+  return 'heap=' + mb(m.usedJSHeapSize || 0) + '/' + mb(m.totalJSHeapSize || 0) + 'MB'
+    + ' nodes=' + document.getElementsByTagName('*').length
+    + ' imgs=' + imgs.length + ' imgBitmap~' + mb(px * 4) + 'MB blobImgs=' + blobs
+    + ' iframes=' + document.querySelectorAll('iframe,webview').length
+})()`
+
+async function rendererSummary(win: BrowserWindow): Promise<string> {
+  const others = webContents.getAllWebContents().length
+  const wins = BrowserWindow.getAllWindows().length
+  if (win.isDestroyed()) return `windows=${wins} webContents=${others}`
+  try {
+    const page = (await win.webContents.executeJavaScript(RENDERER_PROBE, true)) as string
+    return `${page} windows=${wins} webContents=${others}`
+  } catch {
+    return `probe-failed windows=${wins} webContents=${others}`
+  }
 }
 
 export function startPerfLog(win: BrowserWindow): void {
@@ -50,5 +83,7 @@ export function startPerfLog(win: BrowserWindow): void {
   win.once('ready-to-show', () => {
     logLine(`window-shown=${process.uptime().toFixed(2)}s ${memorySummary()}`)
   })
-  setInterval(() => logLine(`mem ${memorySummary()}`), MEMORY_INTERVAL_MS).unref()
+  setInterval(() => {
+    void rendererSummary(win).then((page) => logLine(`mem ${memorySummary()} ${page}`))
+  }, MEMORY_INTERVAL_MS).unref()
 }
