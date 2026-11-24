@@ -60,3 +60,16 @@ it('stays busy between turns while a background job keeps running, and reads ren
   state.applyFrame(JSON.stringify({ type: 'patches', data: [{ op: 'narration_set', value: '正在等待构建完成。' }] }))
   expect(state.liveStatus()).toEqual({ busy: true, text: '正在等待构建完成。' })
 })
+
+it('reads Hark narration objects ({ line, working, answered }) like the web app', async () => {
+  const { HarkConversationSyncState } = await import('./harkClient')
+  const state = new HarkConversationSyncState()
+  state.applyFrame(JSON.stringify({ type: 'snapshot', data: { messages: [], narration: { line: '正在查询订单文件。', live: true, visible: true, working: true } } }))
+  expect(state.liveStatus()).toEqual({ busy: true, text: '正在查询订单文件。' })
+  state.applyFrame(JSON.stringify({ type: 'patches', data: [{ op: 'narration_update', value: { line: '正在查询数据库记录。' } }] }))
+  expect(state.liveStatus()).toEqual({ busy: true, text: '正在查询数据库记录。' })
+  state.applyFrame(JSON.stringify({ type: 'patches', data: [{ op: 'narration_update', value: { visible: true, answered: true } }] }))
+  expect(state.liveStatus()).toEqual({ busy: false, text: '' })
+  state.applyFrame(JSON.stringify({ type: 'snapshot', data: { messages: [], narration: JSON.stringify({ live: true, working: true }) } }))
+  expect(state.liveStatus().busy).toBe(true)
+})

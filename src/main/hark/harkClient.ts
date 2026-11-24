@@ -779,6 +779,8 @@ export class HarkConversationSyncState {
   readonly order: string[] = []
   activeActivity: string | null = null
   narration: string | null = null
+  /** GOXF: Hark's narration says `working: true` while a turn runs, even before it has a line. */
+  narrationWorking = false
 
   applyFrame(rawFrame: string): boolean {
     let parsed: Record<string, unknown>
@@ -799,6 +801,7 @@ export class HarkConversationSyncState {
       // Joining mid-run: the snapshot carries the same shapes the patches do (string or {label/type}).
       this.activeActivity = harkActivityLabel(data['activeActivity'])
       this.narration = harkActivityLabel(data['narration'])
+      this.narrationWorking = harkNarrationWorking(data['narration'], false)
 
       if (data['windows'] && typeof data['windows'] === 'object') {
         for (const [wid, wval] of Object.entries(data['windows'] as Record<string, unknown>)) {
@@ -926,7 +929,7 @@ export class HarkConversationSyncState {
             ...(typeof fields['jobStatus'] === 'string' ? { jobStatus: fields['jobStatus'] } : {}),
             ...(typeof fields['error'] === 'string' ? { error: fields['error'] } : {}),
             ...(typeof fields['thought'] === 'string' ? { thought: fields['thought'] } : {}),
-            ...(typeof fields['narration'] === 'string' ? { narration: fields['narration'] } : {}),
+            ...(fields['narration'] !== undefined ? { narration: harkActivityLabel(fields['narration']) ?? undefined } : {}),
             ...(patched.actions?.length ? { actions: patched.actions } : {}),
             ...(patched.artifacts?.length
               ? {
@@ -1031,6 +1034,7 @@ export class HarkConversationSyncState {
         }
       } else if (op === 'narration_update') {
         this.narration = harkActivityLabel(p['value'])
+        this.narrationWorking = harkNarrationWorking(p['value'], Boolean(this.narration) || this.narrationWorking)
         changed = true
       } else if (op === 'active_activity_set') {
         this.activeActivity = harkActivityLabel(p['value'])
@@ -1068,7 +1072,7 @@ export class HarkConversationSyncState {
       backgroundLine ||
       ''
     ).trim()
-    return { busy: Boolean(text || streaming), text: text.slice(0, 120) }
+    return { busy: Boolean(text || streaming || this.narrationWorking), text: text.slice(0, 120) }
   }
 
   private activePanelLine(): string {
@@ -1533,7 +1537,7 @@ function normalizeSyncMessage(id: string, raw: Record<string, unknown>): HarkCha
     ...(jobStatus ? { jobStatus } : {}),
     ...(errorText ? { error: errorText } : {}),
     thought: typeof raw['thought'] === 'string' ? raw['thought'] : undefined,
-    narration: typeof raw['narration'] === 'string' ? raw['narration'] : undefined,
+    narration: harkActivityLabel(raw['narration']) ?? undefined,
     createdAt: (raw['timestamp'] ?? raw['createdAt'] ?? raw['created_at'] ?? raw['createdAtMs'] ?? null) as
       | string
       | number
@@ -1565,12 +1569,48 @@ export function isHarkReplyDone(msg: HarkChatMessage): boolean {
   return hasPayload
 }
 
-/** Hark sends activity / narration as a plain string or as `{ label | text | type }`. */
+/** GOXF: whether Hark's narration object says a turn is still working (string forms keep `fallback`). */
+export function harkNarrationWorking(v: unknown, fallback: boolean): boolean {
+  if (v === null || v === undefined || v === '') return false
+  let o: unknown = v
+  if (typeof v === 'string' && v.startsWith('{')) {
+    try {
+      o = JSON.parse(v)
+    } catch {
+      return fallback
+    }
+  }
+  if (!o || typeof o !== 'object' || Array.isArray(o)) return fallback
+  const r = o as Record<string, unknown>
+  if (r['answered'] === true || r['working'] === false) return false
+  if (r['working'] === true || r['live'] === true) return true
+  return fallback
+}
+
+/** Hark sends activity / narration as a plain string or as `{ line | label | text | type }`. */
 export function harkActivityLabel(v: unknown): string | null {
-  if (typeof v === 'string') return v || null
+  if (typeof v === 'string') {
+    if (/^\s*[[{]/.test(v)) {
+      try {
+        return harkActivityLabel(JSON.parse(v))
+      } catch {
+        // a plain sentence that happens to start with a bracket
+      }
+    }
+    return v || null
+  }
+  if (Array.isArray(v)) {
+    for (const item of v) {
+      const label = harkActivityLabel(item)
+      if (label) return label
+    }
+    return null
+  }
   if (!v || typeof v !== 'object') return null
   const o = v as Record<string, unknown>
-  const s = o['label'] ?? o['text'] ?? o['value'] ?? o['type']
+  // Hark's narration is { line, lineKey, live, visible, working, answered, since, messageId }.
+  if (o['answered'] === true || o['working'] === false) return null
+  const s = o['line'] ?? o['label'] ?? o['text'] ?? o['value'] ?? o['type']
   return typeof s === 'string' && s ? s : null
 }
 
