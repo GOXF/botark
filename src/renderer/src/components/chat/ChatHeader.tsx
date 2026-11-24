@@ -117,12 +117,6 @@ export const ChatHeader = memo(function ChatHeader({ bot, compact = false, extra
 
   const status = useBotStore((s) => getBotStatus(bot, s.accounts))
   const activity = useBotStore((s) => s.activity[bot.activeAccountId])
-  const activityLine = activity
-    ? `${activity.emoji ? activity.emoji + ' ' : ''}${activity.text || (activity.busy ? t('Working…') : '')}${
-        activity.subagents && activity.subagents > 0 ? ` · ${activity.subagents} subagents` : ''
-      }`.trim()
-    : ''
-
   useEnsureGrokAgentBound(bot)
 
   // The capsule: avatar + name; hovering reveals the way into details.
@@ -180,15 +174,6 @@ export const ChatHeader = memo(function ChatHeader({ bot, compact = false, extra
         {merged && leading}
         {merged && leading && <span aria-hidden className="mx-1 h-5 w-px shrink-0 bg-line" />}
         {bot.platformId === 'hark' && <HarkProjects key={bot.activeAccountId} botId={bot.id} compact />}
-        {activityLine ? (
-          <span
-            className="hidden min-w-0 truncate text-[12px] text-ink-muted shimmer-text sm:inline"
-            title={activityLine}
-            data-muse-activity
-          >
-            {activityLine}
-          </span>
-        ) : null}
       </div>
 
       {merged ? (
