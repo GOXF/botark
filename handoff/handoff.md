@@ -228,3 +228,10 @@ git clone <GOXF/botark> && cd botark && git checkout fix/hark-login-sync && npm 
 3. 已知：src/main/mcp/hub.test.ts 全量跑偶发 3 个超时，单跑 7/7 通过（负载问题，非本次改动）。
 4. 本地看界面：npx vite build -c vite.web.config.mts → 起静态服务 → playwright 打开 ?e2e=1，用 window.__bothub.store 灌假数据。
 5. 推送：只推 origin 的 goxf/*；作者 GOXF <785937070@qq.com>；PR/Issue 用网页（PAT 无权限）。
+
+## 2026-11-24 15:50 弹出独立窗口（next.md #2，分支 goxf/feat-popout，未合并）
+- b7c9128：格子标题栏「弹出到独立窗口」→ 独立 BrowserWindow（同一渲染包 `?popout=<botId>`，只有聊天+输入框）；「放回主窗口」或关窗=放回（能右分就右分，否则进当前格）；侧栏点已弹出的会话=聚焦那个窗口。
+- 同步：主窗口是唯一真实 store（适配器/持久化只在主窗口），节流 100ms 推补丁给弹出窗口；弹出窗口的 store 动作经主进程转发到主窗口执行（同手机同步 sendCommand 的按 id 应答）。弹出窗口不写 localStorage。
+- 内嵌网页（WebContentsView）随会话移到弹出窗口、放回时移回（Muse pinned 辅助视图不动）。
+- 位置大小存 userData/goxf-popouts.json，退出时开着的下次启动恢复（显示器不在就用默认位置）。Windows 上关主窗口=退出（弹出窗口保留到下次）。
+- 验证：typecheck 过，vitest 479/479；网页版双页面 + BroadcastChannel 模拟主进程中继：弹出、主→弹实时消息、弹→主发送、放回都通过。未在 Windows/Electron 真机跑。
