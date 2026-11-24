@@ -19,9 +19,9 @@ describe('harkReplyRef', () => {
 })
 
 describe('harkReplySnippet', () => {
-  it('flattens and clips text to 140 chars', () => {
+  it('flattens text and keeps all of it', () => {
     expect(harkReplySnippet('  a\n\n b  ')).toBe('a b')
-    expect(harkReplySnippet('x'.repeat(200))).toBe(`${'x'.repeat(140)}…`)
+    expect(harkReplySnippet('x'.repeat(200))).toBe('x'.repeat(200))
   })
   it('names attachments when there is no text', () => {
     expect(harkReplySnippet('', [{ kind: 'image', name: 'p.png' }])).toBe('[图片]')
