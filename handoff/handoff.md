@@ -247,3 +247,4 @@ git clone <GOXF/botark> && cd botark && git checkout fix/hark-login-sync && npm 
 - ed80895：合并 feat-pane-tabs（1d0ce7d，格内标签 + 任意 bot 的会话单开一格）和 feat-popout（b7c9128，弹出独立窗口）；弹出时关掉该 bot 所有标签；ChatArea 恢复 headerExtra（PopoutApp 用）。typecheck ok，vitest 497/497。
 - 效果图 v14（/workspace/work/mock/v14.py → v14-1-pipeline.png 流水线、v14-2-group-handoff.png 群组交接）已发，等「开工」（流水线约 1–1.5 天，交接约 2h）。
 - 已知坑：回复中途切会话后半段落到新会话；恢复时账号未上线标签可能跟随当前会话；只读格滚动位置按 bot 存；弹出窗口里 Muse/Grok 授权卡未验证；主题不实时同步到弹出窗。
+- 3d002c5：聊天里单张图片卡片贴合图片宽度（原来右侧留白）。未截图验证，等真机看。
