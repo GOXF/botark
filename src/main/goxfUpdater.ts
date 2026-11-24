@@ -232,8 +232,9 @@ async function check(manual: boolean): Promise<boolean> {
   const reachable = up.ok || fork.ok
   if (!manual) return reachable
   if (decision.upstream || decision.portable) {
-    // Ends the "checking…" spinner without a toast (UpdateBanner ignores 'dev-skip').
-    broadcast({ type: 'error', message: 'dev-skip' })
+    // Always say a manual check found something; whether it can install now is the card's own note.
+    const found = decision.portable?.version ?? decision.upstream?.version
+    broadcast({ type: 'error', message: `found:${found ?? ''}` })
   } else if (!up.ok && !fork.ok) {
     broadcast({ type: 'error', message: fork.message })
   } else {

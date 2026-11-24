@@ -146,7 +146,8 @@ export function GoxfUpdateBanner() {
       {showPortable && portable.kind === 'available' && (
         <Notice
           icon={<Download className="size-4" aria-hidden />}
-          title={queued ? '已排队 · 回复完自动更新' : botBusy && portable.prompt.canSelfUpdate ? '新版本 · 正在回复中' : '新版本可更新'}
+          title="发现新版本"
+          note={!portable.prompt.canSelfUpdate ? undefined : queued ? '已排队：机器人回复完会自动更新' : botBusy ? '有机器人正在回复：现在点更新会等它回复完再装' : undefined}
           desc={`${shortVersion(portable.prompt.version)}，${portable.prompt.canSelfUpdate ? '点更新自动下载并重启' : '点下载打开发布页'}`}
           tip={`GOXF 自用版 v${portable.prompt.version}`}
           action={

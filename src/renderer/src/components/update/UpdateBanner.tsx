@@ -49,6 +49,11 @@ export function UpdateBanner() {
         case 'error':
           setChecking(false)
           if (event.message === 'dev-skip') break
+          if (event.message.startsWith('found:')) {
+            const v = event.message.slice(6)
+            setState({ kind: 'message', text: v ? `发现新版本 ${v.replace(/^0\.\d+\.\d+-goxf\.dev\./, '测试版 ')}，见右下角更新卡` : '发现新版本，见右下角更新卡' })
+            break
+          }
           setState({ kind: 'message', text: event.message, error: true })
           break
       }
