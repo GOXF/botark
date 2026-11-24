@@ -248,3 +248,6 @@ git clone <GOXF/botark> && cd botark && git checkout fix/hark-login-sync && npm 
 - 效果图 v14（/workspace/work/mock/v14.py → v14-1-pipeline.png 流水线、v14-2-group-handoff.png 群组交接）已发，等「开工」（流水线约 1–1.5 天，交接约 2h）。
 - 已知坑：回复中途切会话后半段落到新会话；恢复时账号未上线标签可能跟随当前会话；只读格滚动位置按 bot 存；弹出窗口里 Muse/Grok 授权卡未验证；主题不实时同步到弹出窗。
 - 3d002c5：聊天里单张图片卡片贴合图片宽度（原来右侧留白）。未截图验证，等真机看。
+- e78e1b1：默认打开「会话」（旧存档的看板自动迁移）。
+- 131d132：合入上游 PR #50（6be4cba，Hark 工作区网页门户 + cloudflared 隧道 + 写入审批 + 相对路径提示；Grok rendered_card_kinds 部分不取，v0.14.1 #54 已修）。511 测试过。待真机：cloudflared.exe 放 BotArk-Data\bin、开门户/写入审批弹窗、Windows 路径、Hark 成员实跑、Grok 发送。
+- 盘点第 4 项（Hark 验证码卡）其实 11-23 已做，只待真机。
