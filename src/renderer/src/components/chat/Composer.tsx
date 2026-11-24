@@ -11,6 +11,7 @@ import type { Bot, BotAccount } from '@/types'
 import { t } from '@/lib/i18n'
 import type { DraftAttachment } from './attachmentDraft'
 import { composerDraft } from './goxfComposerDrafts'
+import { clearIgnoreNote, useRecall, withIgnoreNote } from './goxfRecall'
 import { ImageLightbox } from './ImageLightbox'
 
 interface ComposerProps {
@@ -180,9 +181,26 @@ export function Composer({ bot, account, typing = false, onSend, onCancel, onCon
 
   const connected = account?.status === 'online' || account?.status === 'busy' || account?.status === 'attention'
   const [multiline, setMultiline] = useState(false)
-  const expanded = multiline || attachments.length > 0 || Boolean(replyTarget)
+  const ignoreNext = useRecall((s) => Boolean(s.pending[bot.id]))
+  const expanded = multiline || attachments.length > 0 || Boolean(replyTarget) || ignoreNext
   const hasContent = text.trim().length > 0 || attachments.length > 0
   const canSend = connected && hasContent && attachments.every((entry) => entry.status === 'ready')
+
+  // GOXF 撤回: the recalled text comes back here.
+  useEffect(() => {
+    const refill = (e: Event) => {
+      const { botId, text: next } = (e as CustomEvent<{ botId: string; text: string }>).detail
+      if (botId !== bot.id) return
+      setText(next)
+      requestAnimationFrame(() => {
+        resize()
+        textareaRef.current?.focus()
+      })
+    }
+    window.addEventListener('goxf:composer-refill', refill)
+    return () => window.removeEventListener('goxf:composer-refill', refill)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bot.id])
 
   // The palette asks for focus after jumping to a bot.
   useEffect(() => {
@@ -206,7 +224,7 @@ export function Composer({ bot, account, typing = false, onSend, onCancel, onCon
   const submit = () => {
     const sendable = draft.forSend()
     if (!connected || !sendable || (!text.trim() && sendable.length === 0)) return
-    onSend(text, sendable)
+    onSend(withIgnoreNote(bot.id, text), sendable)
     setText('')
     draft.clear()
     requestAnimationFrame(resize)
@@ -281,6 +299,19 @@ export function Composer({ bot, account, typing = false, onSend, onCancel, onCon
             dragging && 'border-accent-600 ring-4 ring-accent-100'
           )}
         >
+          {ignoreNext && (
+            <div className="mb-1.5 flex w-fit max-w-full items-center gap-1.5 rounded-full bg-hover py-0.5 pr-1 pl-2.5 text-[12px] text-ink-muted">
+              <span className="truncate">发送时会先告诉 bot：忽略我上一条消息</span>
+              <button
+                type="button"
+                aria-label="不附上"
+                onClick={() => clearIgnoreNote(bot.id)}
+                className="press-icon grid size-5 shrink-0 place-items-center rounded-full hover:bg-active hover:text-ink"
+              >
+                <X className="size-3" />
+              </button>
+            </div>
+          )}
           {replyTarget && (
             <div className="mb-1.5 flex items-center justify-between gap-2 rounded-xl border border-line bg-sunken/50 px-2.5 py-1.5 text-[12px]">
               <div className="flex min-w-0 items-center gap-1.5">

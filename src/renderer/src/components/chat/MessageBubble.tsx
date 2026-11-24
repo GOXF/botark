@@ -1,7 +1,7 @@
 import { computerPreviewRef, hasComputerContext, loadComputerPreview, matchesComputerPreview, readComputerContext, type ComputerContextSnap } from '@/components/muse/computerContext'
 import { MusePreviewImage } from '@/components/muse/MuseBrowserCard'
 import { memo, useEffect, useMemo, useState } from 'react'
-import { AlertCircle, Check, Clock3, Copy, CornerDownRight, Download, ExternalLink, FileText, Film, FolderOpen, Globe, Image as ImageIcon, KeyRound, Loader2, Maximize2, Monitor, Music, RotateCw, Wrench, X, ZoomIn } from 'lucide-react'
+import { AlertCircle, Check, Clock3, Copy, CornerDownRight, Download, ExternalLink, FileText, Film, FolderOpen, Globe, Image as ImageIcon, KeyRound, Loader2, Maximize2, Monitor, Music, RotateCw, Undo2, Wrench, X, ZoomIn } from 'lucide-react'
 import { cn } from '@/lib/cn'
 import { formatBytes, formatClock } from '@/lib/format'
 import { useBotStore } from '@/store/botStore'
@@ -19,6 +19,7 @@ import { MarkdownText } from './MarkdownText'
 import { NativeDocumentDialog, type NativeDocumentTarget } from './NativeDocumentDialog'
 import { triggerShareConversation } from './ShareConversationDialog'
 import { t } from '@/lib/i18n'
+import { isRecalled, recallMessage, refillComposer, stripIgnoreNote, useRecall } from './goxfRecall'
 import { Menu, MenuContent, MenuItem, MenuLabel, MenuSeparator, MenuTrigger } from '@/components/ui/Menu'
 
 type SessionCardWidget = Extract<ChatRichWidget, { kind: 'session_card' }> & { previewSrc?: string }
@@ -1851,7 +1852,32 @@ function jumpToMessage(id: string): void {
   el.animate([{ backgroundColor: 'var(--color-accent-100)' }, { backgroundColor: 'transparent' }], { duration: 1400, easing: 'ease-out' })
 }
 
-export const MessageBubble = memo(function MessageBubble({
+/** GOXF 撤回: a recalled message shows as a one-line notice. */
+export const MessageBubble = memo(function MessageBubble(props: MessageBubbleProps) {
+  const { message } = props
+  const recalled = useRecall((s) => isRecalled(s.recalled[message.botId], message))
+  const shown = useMemo(
+    () => (message.role === 'user' && message.text.startsWith('（') ? { ...message, text: stripIgnoreNote(message.text) } : message),
+    [message]
+  )
+  if (recalled) {
+    return (
+      <div className="flex justify-center py-1 text-[12px] text-ink-muted">
+        你撤回了一条消息
+        <button
+          type="button"
+          className="ml-2 text-accent-600 hover:underline"
+          onClick={() => refillComposer(message.botId, stripIgnoreNote(message.text).trim())}
+        >
+          重新编辑
+        </button>
+      </div>
+    )
+  }
+  return <MessageBubbleBody {...props} message={shown} />
+})
+
+const MessageBubbleBody = memo(function MessageBubbleBody({
   message,
   isFirstInRun: _isFirstInRun,
   isLastInRun,
@@ -2064,6 +2090,15 @@ export const MessageBubble = memo(function MessageBubble({
                     <Copy aria-hidden />
                     复制选中的文字
                   </MenuItem>
+                )}
+                {mine && botMeta && (
+                  <>
+                    <MenuSeparator />
+                    <MenuItem danger title="停止这轮回复，原文放回输入框" onSelect={() => recallMessage(message)}>
+                      <Undo2 aria-hidden />
+                      撤回
+                    </MenuItem>
+                  </>
                 )}
                 {mine && message.delivery === 'failed' && onRetry && (
                   <MenuItem onSelect={() => onRetry(message.id)}>
