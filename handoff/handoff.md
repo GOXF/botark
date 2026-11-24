@@ -220,4 +220,11 @@ git clone <GOXF/botark> && cd botark && git checkout fix/hark-login-sync && npm 
 - 15:25 网页内验证（playwright + dist/web，假数据）：看板五列、单窗、Ctrl+\ / Ctrl+Shift+\ 切分、360px 拒绝提示、拖到边缘拒绝/向下分、重启后布局还原、启动页看板 都正常。修了 ChatArea hooks 顺序（格子在空/有 bot 间切换会崩）。分屏时格子标题栏只留「新对话」+ 最大化/关闭；侧栏显示格号角标。
 - GitHub：草稿 PR #1（goxf/v12-workspace → goxf/portable）；仓库已开 Issues，下一版 #2–#7（同 handoff/next.md）。
 - 侧栏「Hark 项目挂在账号下」没做：每格标题栏已有 Hark 项目切换下拉，重复；如用户仍要再做。
-- 已合并到 goxf/portable 出测试包（dev.<sha>）。
+- 已快进合并到 goxf/portable（a3c1a43），测试包 v0.14.1-goxf.dev.a3c1a43（CI 出包后在 Releases 预发布里，未核实是否已发布）。
+
+### 换账号接手从这里开始（15:28）
+1. 先读 handoff/README.md 规则，再读本节；下一版待办 = handoff/next.md = GitHub Issue #2–#7；进行中 = 草稿 PR #1（已快进进 goxf/portable，PR 可直接关或留作记录）。
+2. 等用户回答：① 默认打开 看板 还是 会话（现为看板，设置可改）；② 装 dev.a3c1a43 真机测：看板、切分/拖放/360px、重启还原、格号角标、后台通知；③ 早先未回：登录表单、浏览器卡、「已休眠」、更新卡、Windows 检查；④ 任务流水线（Issue #5，估 1–1.5 天）要不要开工。
+3. 已知：src/main/mcp/hub.test.ts 全量跑偶发 3 个超时，单跑 7/7 通过（负载问题，非本次改动）。
+4. 本地看界面：npx vite build -c vite.web.config.mts → 起静态服务 → playwright 打开 ?e2e=1，用 window.__bothub.store 灌假数据。
+5. 推送：只推 origin 的 goxf/*；作者 GOXF <785937070@qq.com>；PR/Issue 用网页（PAT 无权限）。
