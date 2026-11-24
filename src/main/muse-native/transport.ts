@@ -5,6 +5,14 @@ import { PbWriter, pbDecode, pbGet, utf8, type PbField } from './protobuf'
 
 const EMPTY = new Uint8Array(0)
 const MAX_CHUNK = 65489
+const MAX_CHUNKS = 256
+
+export class NoisePayloadTooLargeError extends Error {
+  constructor() {
+    super('payload too large for noise framing')
+    this.name = 'NoisePayloadTooLargeError'
+  }
+}
 
 export const SERVICE = { daemon: 0, sentinel: 1, vault: 2, authd: 3, ssh_access: 4 } as const
 export type ServiceName = keyof typeof SERVICE
@@ -61,24 +69,23 @@ export class NoiseTransport {
 
   /** Returns encrypted WS messages for a unary request. */
   encryptRequest(req: HttpRequest): { streamId: bigint; frames: Uint8Array[] } {
-    return this.guard(() => {
-      const streamId = this.nextStreamId++
-      const app = new PbWriter().string(1, req.verb).string(2, req.path)
-      encodeHeaders(app, 3, req.headers)
-      if (req.body.length) app.bytes(4, req.body)
-      app.bool(5, true)
-      const frame = new PbWriter().uint(1, streamId).bytes(2, app.finish()).finish()
-      return { streamId, frames: this.wrap(req.service, frame) }
-    })
+    if (req.body.length > MAX_CHUNK * MAX_CHUNKS) throw new NoisePayloadTooLargeError()
+    const streamId = this.nextStreamId
+    const app = new PbWriter().string(1, req.verb).string(2, req.path)
+    encodeHeaders(app, 3, req.headers)
+    if (req.body.length) app.bytes(4, req.body)
+    app.bool(5, true)
+    const frame = new PbWriter().uint(1, streamId).bytes(2, app.finish()).finish()
+    const frames = this.wrap(req.service, frame)
+    this.nextStreamId++
+    return { streamId, frames }
   }
 
   encryptReset(service: ServiceName, streamId: bigint, reason = ''): Uint8Array[] {
-    return this.guard(() => {
-      const reset = new PbWriter().uint(1, 1 /* CANCELLED */)
-      if (reason) reset.string(2, reason)
-      const frame = new PbWriter().uint(1, streamId).bytes(5, reset.finish()).finish()
-      return this.wrap(service, frame)
-    })
+    const reset = new PbWriter().uint(1, 1 /* CANCELLED */)
+    if (reason) reset.string(2, reason)
+    const frame = new PbWriter().uint(1, streamId).bytes(5, reset.finish()).finish()
+    return this.wrap(service, frame)
   }
 
   private wrap(service: ServiceName, serviceFrame: Uint8Array): Uint8Array[] {
@@ -86,16 +93,18 @@ export class NoiseTransport {
     if (SERVICE[service] !== 0) sr.uint(1, SERVICE[service])
     sr.bytes(2, serviceFrame)
     const payload = sr.finish()
-    const chunkId = BigInt.asIntN(64, randomBytes(8).readBigUInt64LE())
     const total = Math.max(1, Math.ceil(payload.length / MAX_CHUNK))
-    if (total > 256) throw new Error('payload too large for noise framing')
-    const out: Uint8Array[] = []
-    for (let i = 0; i < total; i++) {
-      const part = payload.subarray(i * MAX_CHUNK, Math.min((i + 1) * MAX_CHUNK, payload.length))
-      const f = new PbWriter().uint(1, chunkId).uint(2, i).uint(3, total).bytes(4, part).finish()
-      out.push(this.send.encryptWithAd(EMPTY, f))
-    }
-    return out
+    if (total > MAX_CHUNKS) throw new NoisePayloadTooLargeError()
+    return this.guard(() => {
+      const chunkId = BigInt.asIntN(64, randomBytes(8).readBigUInt64LE())
+      const out: Uint8Array[] = []
+      for (let i = 0; i < total; i++) {
+        const part = payload.subarray(i * MAX_CHUNK, (i + 1) * MAX_CHUNK)
+        const f = new PbWriter().uint(1, chunkId).uint(2, i).uint(3, total).bytes(4, part).finish()
+        out.push(this.send.encryptWithAd(EMPTY, f))
+      }
+      return out
+    })
   }
 
   /** Decrypt one WS message; null while a multi-chunk assembly is incomplete. */
@@ -107,7 +116,7 @@ export class NoiseTransport {
       const index = Number(pbGet(nf, 2)?.int ?? 0n)
       const total = Number(pbGet(nf, 3)?.int ?? 1n)
       const payload = pbGet(nf, 4)?.bytes ?? EMPTY
-      if (total < 1 || total > 256 || index < 0 || index >= total) throw new Error('bad noise chunk header')
+      if (total < 1 || total > MAX_CHUNKS || index < 0 || index >= total) throw new Error('bad noise chunk header')
       let whole: Uint8Array
       if (total === 1) whole = payload
       else {

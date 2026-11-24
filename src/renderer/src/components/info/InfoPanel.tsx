@@ -1,6 +1,7 @@
 import { setRoomAdministrator, useRooms } from '@/rooms/roomStore'
-import { useMemo, useState } from 'react'
+import { useState } from 'react'
 import { Pencil, X } from 'lucide-react'
+import { useShallow } from 'zustand/react/shallow'
 import { PaneHeader } from '@/components/layout/PaneHeader'
 import { ApprovalsSection } from '@/components/muse/ApprovalsSection'
 import { AgentDiagnosticSection } from '@/components/muse/AgentDiagnosticSection'
@@ -77,7 +78,7 @@ import { IconButton } from '@/components/ui/IconButton'
 import { InlineEdit } from '@/components/ui/InlineEdit'
 import { useGlide } from '@/hooks/useGlide'
 import { cn } from '@/lib/cn'
-import { getBotAccounts, getBotStatus } from '@/lib/selectors'
+import { getBotAccounts } from '@/lib/selectors'
 import { shortcutLabel } from '@/lib/shortcuts'
 import { useBotStore } from '@/store/botStore'
 import type { Bot, BotAccount } from '@/types'
@@ -108,14 +109,13 @@ const STATUS_DOT: Record<string, string> = {
 }
 
 /** Compact header row: avatar (click: appearance editor), name (click: rename), status, platform & protocol badge. */
-function BotHero({ bot }: { bot: Bot }) {
-  const accounts = useBotStore((s) => s.accounts)
+function BotHero({ bot, account }: { bot: Bot; account?: BotAccount }) {
   const renameBot = useBotStore((s) => s.renameBot)
   const typing = useBotStore((s) => s.typing[bot.id] === true)
   const [editing, setEditing] = useState(false)
   const [avatarEditorOpen, setAvatarEditorOpen] = useState(false)
   const inspector = getPlatformInspector(bot.platformId)
-  const status = getBotStatus(bot, accounts)
+  const status = account?.status ?? 'offline'
 
   return (
     <div className="flex items-center gap-3 px-4 pb-3">
@@ -274,19 +274,32 @@ function SignInRequiredSection({
 }
 
 export function InfoPanel() {
-  const bot = useBotStore((s) => s.bots.find((b) => b.id === s.selectedBotId))
-  const accountMap = useBotStore((s) => s.accounts)
-  const toggleInfoPanel = useBotStore((s) => s.toggleInfoPanel)
-  const updateNotes = useBotStore((s) => s.updateNotes)
+  const bot = useBotStore((s) =>
+    s.infoPanelOpen && !s.settingsOpen ? s.bots.find((b) => b.id === s.selectedBotId) : undefined
+  )
   const [requestedTab, setTab] = useState<InspectorTabId>('overview')
 
-  const coordinationRoom = useRooms((s) => s.rooms.find((r) => r.coordinatorId === bot?.id && r.coordinatorId))
+  return bot ? <OpenInfoPanel bot={bot} requestedTab={requestedTab} setTab={setTab} /> : null
+}
 
-  const accounts = useMemo(() => (bot ? getBotAccounts(bot, accountMap) : []), [bot, accountMap])
-  const inspector = bot ? getPlatformInspector(bot.platformId) : null
-  const activeTab = bot ? resolveInspectorTab(bot.platformId, requestedTab) : 'overview'
-  const activeTabLabel =
-    inspector?.tabs.find((item) => item.id === activeTab)?.label ?? 'Overview'
+function OpenInfoPanel({
+  bot,
+  requestedTab,
+  setTab
+}: {
+  bot: Bot
+  requestedTab: InspectorTabId
+  setTab: (tab: InspectorTabId) => void
+}) {
+  const [activeAccount, ...accounts] = useBotStore(
+    useShallow((s) => [s.accounts[bot.activeAccountId], ...getBotAccounts(bot, s.accounts)] as const)
+  )
+  const toggleInfoPanel = useBotStore((s) => s.toggleInfoPanel)
+  const updateNotes = useBotStore((s) => s.updateNotes)
+  const coordinationRoomId = useRooms((s) => s.rooms.find((r) => r.coordinatorId === bot.id)?.id)
+  const inspector = getPlatformInspector(bot.platformId)
+  const activeTab = resolveInspectorTab(bot.platformId, requestedTab)
+  const activeTabLabel = inspector.tabs.find((item) => item.id === activeTab)?.label ?? 'Overview'
 
   return (
     <>
@@ -301,242 +314,240 @@ export function InfoPanel() {
         </IconButton>
       </PaneHeader>
 
-      {bot && inspector && (
-        <div className="min-h-0 flex-1 overflow-y-auto pb-4">
-          <BotHero key={bot.id} bot={bot} />
-          <Tabs
-            tabs={inspector.tabs}
-            platformKey={bot.platformId}
-            tab={activeTab}
-            onChange={setTab}
-          />
+      <div className="min-h-0 flex-1 overflow-y-auto pb-4">
+        <BotHero key={bot.id} bot={bot} account={activeAccount} />
+        <Tabs
+          tabs={inspector.tabs}
+          platformKey={bot.platformId}
+          tab={activeTab}
+          onChange={setTab}
+        />
 
-          <div key={`${bot.id}:${activeTab}`} className="animate-veil-in">
-            {activeTab === 'overview' ? (
-              <>
-                <Section title="协作调度">
-                  <label className="flex items-center gap-2 text-[13px]">
-                    <input type="checkbox" checked={Boolean(coordinationRoom)}
-                      onChange={(e) => setRoomAdministrator(bot.id, e.target.checked)} />
-                    设为管理员
-                  </label>
-                  {coordinationRoom && (
-                    <button type="button" className="mt-2 text-[12px] text-accent-600"
-                      onClick={() => useBotStore.getState().selectBot(coordinationRoom.id)}>
-                      打开调度对话
-                    </button>
-                  )}
-                </Section>
-                {bot.platformId === 'meta-muse' && bot.activeAccountId && (
-                  <>
-                    <QuotaSection accountId={bot.activeAccountId} />
-                    <ApprovalsSection accountId={bot.activeAccountId} />
-                    <SessionsSection accountId={bot.activeAccountId} />
-                    <SchedulesSection accountId={bot.activeAccountId} />
-                  </>
+        <div key={`${bot.id}:${activeTab}`} className="animate-veil-in">
+          {activeTab === 'overview' ? (
+            <>
+              <Section title="协作调度">
+                <label className="flex items-center gap-2 text-[13px]">
+                  <input type="checkbox" checked={Boolean(coordinationRoomId)}
+                    onChange={(e) => setRoomAdministrator(bot.id, e.target.checked)} />
+                  设为管理员
+                </label>
+                {coordinationRoomId && (
+                  <button type="button" className="mt-2 text-[12px] text-accent-600"
+                    onClick={() => useBotStore.getState().selectBot(coordinationRoomId)}>
+                    打开调度对话
+                  </button>
                 )}
-                {bot.platformId === 'grok' && bot.activeAccountId && (
-                  <>
-                    <GrokAccountAuthSection accountId={bot.activeAccountId} />
-                    <ApprovalsSection accountId={bot.activeAccountId} platformId="grok" />
-                    <GrokSessionsSection
-                      accountId={bot.activeAccountId}
-                      agentId={bot.selectedAgentId}
-                      botId={bot.id}
-                    />
-                    <GrokTasksAndSubagentsSection
-                      accountId={bot.activeAccountId}
-                      agentId={bot.selectedAgentId}
-                    />
-                    <GrokAutomationsSection
-                      accountId={bot.activeAccountId}
-                      agentId={bot.selectedAgentId}
-                    />
-                    <GrokMemoriesAndSkillsSection
-                      accountId={bot.activeAccountId}
-                      agentId={bot.selectedAgentId}
-                    />
-                  </>
-                )}
-                {bot.platformId === 'hark' && bot.activeAccountId && (
-                  <>
-                    <HarkBillingSection accountId={bot.activeAccountId} />
-                    <HarkHomeCardsSection accountId={bot.activeAccountId} botId={bot.id} />
-                    <HarkConversationsSection accountId={bot.activeAccountId} botId={bot.id} />
-                    <HarkScheduledTasksSection accountId={bot.activeAccountId} />
-                  </>
-                )}
-                {bot.platformId === 'dot' && bot.activeAccountId && (
-                  <>
-                    <DotCredentialsAndQuotaSection accountId={bot.activeAccountId} botId={bot.id} />
-                    <DotOrbitProfilesSection accountId={bot.activeAccountId} botId={bot.id} />
-                  </>
-                )}
-                {bot.platformId === 'hermes' && bot.activeAccountId && (
-                  <>
-                    <HermesServerSection accountId={bot.activeAccountId} />
-                    <ApprovalsSection accountId={bot.activeAccountId} platformId="hermes" />
-                    <HermesSessionsSection accountId={bot.activeAccountId} botId={bot.id} />
-                    <HermesJobsSection accountId={bot.activeAccountId} />
-                  </>
-                )}
-                {bot.platformId === 'antigravity' && bot.activeAccountId && (
-                  <>
-                    <AntigravityAccountAndModelSection accountId={bot.activeAccountId} />
-                    <AntigravityConversationsSection
-                      botId={bot.id}
-                      accountId={bot.activeAccountId}
-                      activeSessionId={bot.activeSessionId}
-                    />
-                  </>
-                )}
-                {bot.platformId === 'cue' && bot.activeAccountId && (
-                  <>
-                    <CueAccountAuthSection accountId={bot.activeAccountId} />
-                    <CueOverviewSection bot={bot} account={accountMap[bot.activeAccountId]} />
-                    <CueSessionsSection accountId={bot.activeAccountId} bot={bot} />
-                    <CueAutomationsSection accountId={bot.activeAccountId} />
-                    <CueSkillsSection accountId={bot.activeAccountId} />
-                  </>
-                )}
+              </Section>
+              {bot.platformId === 'meta-muse' && bot.activeAccountId && (
+                <>
+                  <QuotaSection accountId={bot.activeAccountId} />
+                  <ApprovalsSection accountId={bot.activeAccountId} />
+                  <SessionsSection accountId={bot.activeAccountId} />
+                  <SchedulesSection accountId={bot.activeAccountId} />
+                </>
+              )}
+              {bot.platformId === 'grok' && bot.activeAccountId && (
+                <>
+                  <GrokAccountAuthSection accountId={bot.activeAccountId} />
+                  <ApprovalsSection accountId={bot.activeAccountId} platformId="grok" />
+                  <GrokSessionsSection
+                    accountId={bot.activeAccountId}
+                    agentId={bot.selectedAgentId}
+                    botId={bot.id}
+                  />
+                  <GrokTasksAndSubagentsSection
+                    accountId={bot.activeAccountId}
+                    agentId={bot.selectedAgentId}
+                  />
+                  <GrokAutomationsSection
+                    accountId={bot.activeAccountId}
+                    agentId={bot.selectedAgentId}
+                  />
+                  <GrokMemoriesAndSkillsSection
+                    accountId={bot.activeAccountId}
+                    agentId={bot.selectedAgentId}
+                  />
+                </>
+              )}
+              {bot.platformId === 'hark' && bot.activeAccountId && (
+                <>
+                  <HarkBillingSection accountId={bot.activeAccountId} />
+                  <HarkHomeCardsSection accountId={bot.activeAccountId} botId={bot.id} />
+                  <HarkConversationsSection accountId={bot.activeAccountId} botId={bot.id} />
+                  <HarkScheduledTasksSection accountId={bot.activeAccountId} />
+                </>
+              )}
+              {bot.platformId === 'dot' && bot.activeAccountId && (
+                <>
+                  <DotCredentialsAndQuotaSection accountId={bot.activeAccountId} botId={bot.id} />
+                  <DotOrbitProfilesSection accountId={bot.activeAccountId} botId={bot.id} />
+                </>
+              )}
+              {bot.platformId === 'hermes' && bot.activeAccountId && (
+                <>
+                  <HermesServerSection accountId={bot.activeAccountId} />
+                  <ApprovalsSection accountId={bot.activeAccountId} platformId="hermes" />
+                  <HermesSessionsSection accountId={bot.activeAccountId} botId={bot.id} />
+                  <HermesJobsSection accountId={bot.activeAccountId} />
+                </>
+              )}
+              {bot.platformId === 'antigravity' && bot.activeAccountId && (
+                <>
+                  <AntigravityAccountAndModelSection accountId={bot.activeAccountId} />
+                  <AntigravityConversationsSection
+                    botId={bot.id}
+                    accountId={bot.activeAccountId}
+                    activeSessionId={bot.activeSessionId}
+                  />
+                </>
+              )}
+              {bot.platformId === 'cue' && bot.activeAccountId && (
+                <>
+                  <CueAccountAuthSection accountId={bot.activeAccountId} />
+                  <CueOverviewSection bot={bot} account={activeAccount} />
+                  <CueSessionsSection accountId={bot.activeAccountId} bot={bot} />
+                  <CueAutomationsSection accountId={bot.activeAccountId} />
+                  <CueSkillsSection accountId={bot.activeAccountId} />
+                </>
+              )}
 
-                <Section title={t('Accounts')} flush>
-                  <AccountList bot={bot} accounts={accounts} />
-                </Section>
+              <Section title={t('Accounts')} flush>
+                <AccountList bot={bot} accounts={accounts} />
+              </Section>
 
-                {bot.platformId === 'meta-muse' && bot.activeAccountId && (
-                  <ConnectorsSection accountId={bot.activeAccountId} />
-                )}
-                {bot.platformId === 'hark' && bot.activeAccountId && (
-                  <HarkConnectorsSection accountId={bot.activeAccountId} />
-                )}
+              {bot.platformId === 'meta-muse' && bot.activeAccountId && (
+                <ConnectorsSection accountId={bot.activeAccountId} />
+              )}
+              {bot.platformId === 'hark' && bot.activeAccountId && (
+                <HarkConnectorsSection accountId={bot.activeAccountId} />
+              )}
 
-                <NotesAndProxyCollapsed
-                  bot={bot}
-                  onUpdateNotes={updateNotes}
-                  extraBeforeProxy={
-                    bot.platformId === 'meta-muse' && bot.activeAccountId ? (
-                      <>
-                        <GoalsSection accountId={bot.activeAccountId} />
-                        <MemorySection accountId={bot.activeAccountId} />
-                        <SkillsSection accountId={bot.activeAccountId} />
-                      </>
-                    ) : undefined
-                  }
-                />
-              </>
-            ) : !bot.activeAccountId ? (
-              <SignInRequiredSection
-                title={t(activeTabLabel)}
-                platformName={inspector.displayName}
+              <NotesAndProxyCollapsed
                 bot={bot}
-                accounts={accounts}
+                onUpdateNotes={updateNotes}
+                extraBeforeProxy={
+                  bot.platformId === 'meta-muse' && bot.activeAccountId ? (
+                    <>
+                      <GoalsSection accountId={bot.activeAccountId} />
+                      <MemorySection accountId={bot.activeAccountId} />
+                      <SkillsSection accountId={bot.activeAccountId} />
+                    </>
+                  ) : undefined
+                }
               />
-            ) : activeTab === 'memory' ? (
-              <DotGoalAndThreadsSection accountId={bot.activeAccountId} />
-            ) : activeTab === 'library' ? (
-              bot.platformId === 'meta-muse' ? (
-                <FilesSection accountId={bot.activeAccountId} />
-              ) : bot.platformId === 'grok' ? (
-                <GrokFilesSection
+            </>
+          ) : !bot.activeAccountId ? (
+            <SignInRequiredSection
+              title={t(activeTabLabel)}
+              platformName={inspector.displayName}
+              bot={bot}
+              accounts={accounts}
+            />
+          ) : activeTab === 'memory' ? (
+            <DotGoalAndThreadsSection accountId={bot.activeAccountId} />
+          ) : activeTab === 'library' ? (
+            bot.platformId === 'meta-muse' ? (
+              <FilesSection accountId={bot.activeAccountId} />
+            ) : bot.platformId === 'grok' ? (
+              <GrokFilesSection
+                accountId={bot.activeAccountId}
+                agentId={bot.selectedAgentId}
+              />
+            ) : bot.platformId === 'cue' ? (
+              <CueFilesSection
+                accountId={bot.activeAccountId}
+                sessionId={bot.activeSessionId}
+              />
+            ) : bot.platformId === 'hark' ? (
+              <HarkLibrarySection botId={bot.id} key={bot.activeAccountId + (bot.activeSessionId ?? '')} accountId={bot.activeAccountId} />
+            ) : (
+              <DotLibrarySection accountId={bot.activeAccountId} />
+            )
+          ) : activeTab === 'computer' ? (
+            bot.platformId === 'meta-muse' ? (
+              <>
+                <ComputerSection accountId={bot.activeAccountId} />
+                <PermissionsSection accountId={bot.activeAccountId} />
+                <SectionsCollapsed>
+                  <AgentDiagnosticSection accountId={bot.activeAccountId} />
+                </SectionsCollapsed>
+              </>
+            ) : bot.platformId === 'grok' ? (
+              <>
+                <GrokComputerSection
                   accountId={bot.activeAccountId}
                   agentId={bot.selectedAgentId}
                 />
-              ) : bot.platformId === 'cue' ? (
-                <CueFilesSection
+                <GrokConnectorsAndMcpSection
                   accountId={bot.activeAccountId}
+                  agentId={bot.selectedAgentId}
+                />
+              </>
+            ) : bot.platformId === 'cue' ? (
+              <>
+                <CueComputerSection
+                  accountId={bot.activeAccountId}
+                  agentId={bot.selectedAgentId}
                   sessionId={bot.activeSessionId}
                 />
-              ) : bot.platformId === 'hark' ? (
-                <HarkLibrarySection botId={bot.id} key={bot.activeAccountId + (bot.activeSessionId ?? '')} accountId={bot.activeAccountId} />
-              ) : (
-                <DotLibrarySection accountId={bot.activeAccountId} />
-              )
-            ) : activeTab === 'computer' ? (
-              bot.platformId === 'meta-muse' ? (
+                <CueConnectorsSection accountId={bot.activeAccountId} />
+              </>
+            ) : bot.platformId === 'hermes' ? (
+              <>
+                <HermesSkillsSection accountId={bot.activeAccountId} />
+                <HermesToolsetsSection accountId={bot.activeAccountId} />
+              </>
+            ) : bot.platformId === 'antigravity' ? (
+              <AntigravityEnvironmentsSection accountId={bot.activeAccountId} />
+            ) : (
+              <HarkComputerSection key={bot.activeAccountId + (bot.activeSessionId ?? '')} accountId={bot.activeAccountId} botId={bot.id} />
+            )
+          ) : (
+            /* activeTab === 'members' — Muse Sharing / Grok & Cue Agents / Hark Devices / Antigravity Agents */
+            <>
+              {bot.platformId === 'meta-muse' ? (
                 <>
-                  <ComputerSection accountId={bot.activeAccountId} />
-                  <PermissionsSection accountId={bot.activeAccountId} />
+                  <SharedAgentsSection accountId={bot.activeAccountId} />
+                  <InviteSection accountId={bot.activeAccountId} />
                   <SectionsCollapsed>
-                    <AgentDiagnosticSection accountId={bot.activeAccountId} />
+                    <PeersSection accountId={bot.activeAccountId} />
                   </SectionsCollapsed>
                 </>
               ) : bot.platformId === 'grok' ? (
                 <>
-                  <GrokComputerSection
+                  <GrokAgentsAndRoomsSection
                     accountId={bot.activeAccountId}
                     agentId={bot.selectedAgentId}
+                    botId={bot.id}
                   />
-                  <GrokConnectorsAndMcpSection
+                  <GrokMembersSection
                     accountId={bot.activeAccountId}
                     agentId={bot.selectedAgentId}
                   />
                 </>
               ) : bot.platformId === 'cue' ? (
                 <>
-                  <CueComputerSection
+                  <CueAgentsSection
+                    accountId={bot.activeAccountId}
+                    agentId={bot.selectedAgentId}
+                    botId={bot.id}
+                  />
+                  <CueAgentContactsSection
                     accountId={bot.activeAccountId}
                     agentId={bot.selectedAgentId}
                     sessionId={bot.activeSessionId}
                   />
-                  <CueConnectorsSection accountId={bot.activeAccountId} />
-                </>
-              ) : bot.platformId === 'hermes' ? (
-                <>
-                  <HermesSkillsSection accountId={bot.activeAccountId} />
-                  <HermesToolsetsSection accountId={bot.activeAccountId} />
                 </>
               ) : bot.platformId === 'antigravity' ? (
-                <AntigravityEnvironmentsSection accountId={bot.activeAccountId} />
+                <AntigravityAgentsSection accountId={bot.activeAccountId} />
               ) : (
-                <HarkComputerSection key={bot.activeAccountId + (bot.activeSessionId ?? '')} accountId={bot.activeAccountId} botId={bot.id} />
-              )
-            ) : (
-              /* activeTab === 'members' — Muse Sharing / Grok & Cue Agents / Hark Devices / Antigravity Agents */
-              <>
-                {bot.platformId === 'meta-muse' ? (
-                  <>
-                    <SharedAgentsSection accountId={bot.activeAccountId} />
-                    <InviteSection accountId={bot.activeAccountId} />
-                    <SectionsCollapsed>
-                      <PeersSection accountId={bot.activeAccountId} />
-                    </SectionsCollapsed>
-                  </>
-                ) : bot.platformId === 'grok' ? (
-                  <>
-                    <GrokAgentsAndRoomsSection
-                      accountId={bot.activeAccountId}
-                      agentId={bot.selectedAgentId}
-                      botId={bot.id}
-                    />
-                    <GrokMembersSection
-                      accountId={bot.activeAccountId}
-                      agentId={bot.selectedAgentId}
-                    />
-                  </>
-                ) : bot.platformId === 'cue' ? (
-                  <>
-                    <CueAgentsSection
-                      accountId={bot.activeAccountId}
-                      agentId={bot.selectedAgentId}
-                      botId={bot.id}
-                    />
-                    <CueAgentContactsSection
-                      accountId={bot.activeAccountId}
-                      agentId={bot.selectedAgentId}
-                      sessionId={bot.activeSessionId}
-                    />
-                  </>
-                ) : bot.platformId === 'antigravity' ? (
-                  <AntigravityAgentsSection accountId={bot.activeAccountId} />
-                ) : (
-                  <HarkInviteAndSessionsSection accountId={bot.activeAccountId} />
-                )}
-              </>
-            )}
-          </div>
+                <HarkInviteAndSessionsSection accountId={bot.activeAccountId} />
+              )}
+            </>
+          )}
         </div>
-      )}
+      </div>
     </>
   )
 }

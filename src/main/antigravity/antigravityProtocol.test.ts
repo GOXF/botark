@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   ANTIGRAVITY_ORIGIN,
   buildSapisidAuthHeader,
@@ -10,14 +10,27 @@ import {
   CORTEX_STEP_TYPE,
   extractTranscriptFromSteps,
   extractTurnProgress,
+  findAntigravityTurn,
   isAllowedAntigravityUrl,
   JspbStreamBodyParser,
   mergeTrajectorySteps,
   parseAgentStateUpdate,
   parseAvailableModels,
   parseConversationsList,
-  parseUserProfile
+  parseUserProfile,
+  type AntigravityParsedStep
 } from './antigravityProtocol'
+
+const fetchRpc = vi.hoisted(() => vi.fn<(_url: string, _opts: RequestInit) => Promise<Response>>())
+vi.mock('electron', () => ({
+  session: { fromPartition: () => ({
+    fetch: fetchRpc,
+    getUserAgent: () => '', setUserAgent: () => undefined,
+    cookies: { get: async () => [{ name: 'SAPISID', value: 'fixture-cookie' }] }
+  }) }
+}))
+vi.mock('../muse/accountProxy', () => ({ applyProxyToPartition: async () => undefined }))
+vi.mock('../webContentsViewManager', () => ({ partitionForAccount: (id: string) => id }))
 
 describe('antigravityProtocol auth & URL helpers', () => {
   it('computes SAPISIDHASH, SAPISID1PHASH, and SAPISID3PHASH headers deterministically', () => {
@@ -179,6 +192,24 @@ describe('antigravityProtocol JSPB builders & parsers', () => {
     expect(progress.text).toBe('All tests passed!')
     expect(progress.tools).toHaveLength(1)
   })
+
+  it('extracts a reply only between its matching user step and the next user step', () => {
+    const step = (index: number, type: number, data: Partial<AntigravityParsedStep>): AntigravityParsedStep => ({
+      index, type, status: CORTEX_STEP_STATUS.DONE, createdAtMs: 0, ...data
+    })
+    const steps = new Map([
+      step(1, CORTEX_STEP_TYPE.USER_INPUT, { userText: 'same prompt', clientMessageId: 'old' }),
+      step(2, CORTEX_STEP_TYPE.PLANNER_RESPONSE, { assistantText: 'old response' }),
+      step(5, CORTEX_STEP_TYPE.USER_INPUT, { userText: 'same prompt', clientMessageId: 'current' }),
+      step(6, CORTEX_STEP_TYPE.PLANNER_RESPONSE, { assistantText: 'current response' }),
+      step(9, CORTEX_STEP_TYPE.USER_INPUT, { clientMessageId: 'later' }),
+      step(10, CORTEX_STEP_TYPE.PLANNER_RESPONSE, { assistantText: 'later response' })
+    ].map((value) => [value.index, value]))
+    expect(findAntigravityTurn(steps, 'unknown')).toBeUndefined()
+    const turn = findAntigravityTurn(steps, 'current')!
+    expect(turn).toEqual({ userStepIndex: 5, nextUserStepIndex: 9 })
+    expect(extractTurnProgress(steps, turn.userStepIndex, turn.nextUserStepIndex).text).toBe('current response')
+  })
 })
 
 describe('JspbStreamBodyParser', () => {
@@ -192,5 +223,79 @@ describe('JspbStreamBodyParser', () => {
     expect(e2).toHaveLength(2)
     expect(e2[0]).toEqual({ kind: 'message', payload: [['conv-1', 'done'], 'tok2'] })
     expect(e2[1]).toEqual({ kind: 'status', code: 0, message: 'OK' })
+    expect(() => parser.finish()).not.toThrow()
+  })
+
+  it('preserves a terminal gRPC error after a message in the same chunk', () => {
+    const parser = new JspbStreamBodyParser()
+    expect(parser.push('[[["last update"]],[7,"Permission denied"]]')).toEqual([
+      { kind: 'message', payload: ['last update'] },
+      { kind: 'status', code: 7, message: 'Permission denied' }
+    ])
+    parser.finish()
+  })
+
+  it('rejects truncated and oversized unfinished frames', () => {
+    const truncated = new JspbStreamBodyParser()
+    truncated.push('[[["abc')
+    expect(() => truncated.finish()).toThrow('Truncated')
+
+    const missingWrapper = new JspbStreamBodyParser()
+    missingWrapper.push('[[["abc"]],[0,"OK"]')
+    expect(() => missingWrapper.finish()).toThrow('Truncated')
+
+    const oversized = new JspbStreamBodyParser(16)
+    oversized.push('[[["partial')
+    expect(() => oversized.push(' frame spilling over the limit')).toThrow('size limit')
+  })
+})
+
+describe('Antigravity turn streaming', () => {
+  afterEach(() => {
+    fetchRpc.mockReset()
+    vi.unstubAllGlobals()
+  })
+
+  it.each([7, 0])('verifies the trailing gRPC status (%s) and releases the stream reader', async (status) => {
+    const { sendAndStreamAntigravityMessage } = await import('./antigravityClient')
+    const messageId = 'client-message-id'
+    const input: unknown[] = [CORTEX_STEP_TYPE.USER_INPUT]
+    const userInput: unknown[] = ['Same prompt']
+    userInput[18] = messageId
+    input[18] = userInput
+    const reply: unknown[] = [CORTEX_STEP_TYPE.PLANNER_RESPONSE]
+    reply[19] = ['Partial reply']
+    const update: unknown[] = ['cascade', 'trajectory', CASCADE_RUN_STATUS.IDLE]
+    update[6] = [[[0, 1], [input, reply], 2]]
+
+    const cancelReader = vi.fn()
+    const releaseReader = vi.fn()
+    const frames = [
+      new TextEncoder().encode(JSON.stringify([[[update]], [status, status ? 'Permission denied' : 'OK']]))
+    ]
+    fetchRpc.mockResolvedValueOnce(Response.json(['cascade']))
+    fetchRpc.mockResolvedValueOnce({
+      ok: true,
+      headers: new Headers(),
+      body: { getReader: () => ({
+        read: async () => {
+          const value = frames.shift()
+          return { done: !value, value }
+        },
+        cancel: async () => { cancelReader() },
+        releaseLock: releaseReader
+      }) }
+    } as unknown as Response)
+    const events = vi.fn<(_event: import('./antigravityProtocol').AntigravityTurnEvent) => void>()
+    expect(await sendAndStreamAntigravityMessage({
+      accountId: 'account', conversationId: 'bot', clientMessageId: messageId, text: 'Same prompt', onEvent: events
+    })).toEqual({ cascadeId: 'cascade', messageId })
+    await vi.waitFor(() => expect(events.mock.lastCall?.[0]).toMatchObject(status ? {
+      type: 'stream', messageId, done: true, text: '', error: { status: 403, message: 'Permission denied' }
+    } : { type: 'stream', messageId, done: true, text: 'Partial reply' }))
+    expect(events.mock.calls.every(([event]) => event.messageId === messageId)).toBe(true)
+    expect(cancelReader).toHaveBeenCalledOnce()
+    expect(releaseReader).toHaveBeenCalledOnce()
+    expect(fetchRpc).toHaveBeenCalledTimes(2)
   })
 })

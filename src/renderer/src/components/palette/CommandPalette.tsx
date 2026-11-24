@@ -123,8 +123,10 @@ function PaletteBody({ onClose }: { onClose: () => void }) {
     if (wanted.length >= 2) {
       const hits: Row[] = []
       for (const bot of bots) {
-        for (const message of [...(messages[bot.id] ?? [])].reverse()) {
-          if (hits.length >= MAX_MESSAGE_HITS) break
+        const history = messages[bot.id]
+        if (!history) continue
+        for (let i = history.length - 1; i >= 0; i--) {
+          const message = history[i]!
           if (!message.text.toLowerCase().includes(wanted)) continue
           hits.push({
             key: `msg:${message.id}`,
@@ -133,7 +135,9 @@ function PaletteBody({ onClose }: { onClose: () => void }) {
             lead: <BotAvatar emoji={bot.emoji} seed={bot.id} avatar={bot.avatar} platformId={bot.platformId} size="xs" />,
             run: openBot(bot.id)
           })
+          if (hits.length === MAX_MESSAGE_HITS) break
         }
+        if (hits.length === MAX_MESSAGE_HITS) break
       }
       if (hits.length) out.push([t('Messages'), hits])
     }

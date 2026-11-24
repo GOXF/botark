@@ -82,6 +82,13 @@ export function sniffMediaMimeFromBytes(bytes: Uint8Array): string | undefined {
   ) {
     return 'audio/flac'
   }
+  // AAC ADTS uses a 12-bit sync word followed by a zero layer field.
+  if (
+    bytes.byteLength >= 7 && bytes[0] === 0xff && (bytes[1]! & 0xf6) === 0xf0 &&
+    ((bytes[2]! >> 2) & 0x0f) <= 12
+  ) {
+    return 'audio/aac'
+  }
   // MP3 (ID3 tag or MPEG sync frame)
   if (
     (bytes.byteLength >= 3 && bytes[0] === 0x49 && bytes[1] === 0x44 && bytes[2] === 0x33) ||
@@ -126,7 +133,8 @@ export function guessMediaMimeFromName(nameOrPath?: string): string | undefined 
   if (clean.endsWith('.mkv')) return 'video/x-matroska'
   if (clean.endsWith('.avi')) return 'video/x-msvideo'
   if (clean.endsWith('.mp3')) return 'audio/mpeg'
-  if (clean.endsWith('.m4a') || clean.endsWith('.aac')) return 'audio/mp4'
+  if (clean.endsWith('.m4a')) return 'audio/mp4'
+  if (clean.endsWith('.aac')) return 'audio/aac'
   if (clean.endsWith('.wav')) return 'audio/wav'
   if (clean.endsWith('.ogg') || clean.endsWith('.oga')) return 'audio/ogg'
   if (clean.endsWith('.flac')) return 'audio/flac'

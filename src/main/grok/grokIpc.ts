@@ -1,28 +1,24 @@
 import { BrowserWindow, ipcMain, type IpcMainInvokeEvent } from 'electron'
+import type { GrokRequest } from '../../adapters/grokbot/grokRequests'
 import {
   GROK_CHANNELS,
   type GrokAuthSessionPayload,
   type GrokAuthStatus,
   type GrokOpenLoginRequest,
-  type GrokRpcRequest,
   type GrokSetAccessTokenRequest
 } from '@shared/ipc'
 import { loadAccountProxyUrl } from '../muse/accountProxy'
-import { clearGrokMainAuth, getGrokMainAuth, setGrokMainAuth } from './grokAuthStore'
-import { cancelGrokLogin, onGrokAuthCaptured, openGrokLoginWindow } from './grokLogin'
+import { cancelAllGrokLogins, cancelGrokLogin, onGrokAuthCaptured, openGrokLoginWindow } from './grokLogin'
 import { getOrCreateGrokMachineId } from './grokMachineId'
 import { runGrokRpc } from './grokRpc'
 import {
-  clearAllSandTokens,
-  clearSandTokens,
-  extractAccountHandleFromJwt,
-  listPersistedSandAccountIds,
-  loadSandTokens,
+  clearGrokCredentials,
+  loadGrokCredential,
   parseAnyGrokCredentialInput,
-  persistSandTokens,
-  type SandTokens
+  replaceGrokCredentials
 } from './grokSandAuth'
-import { stopGrokAccountWatch } from './grokWatchManager'
+
+const activeRequests = new Map<string, { accountId: string; controller: AbortController }>()
 
 function ownerWindow(event: IpcMainInvokeEvent): BrowserWindow | undefined {
   return BrowserWindow.fromWebContents(event.sender) ?? undefined
@@ -59,36 +55,23 @@ function broadcastAuthEvent(payload: {
   }
 }
 
-async function hydrateFromDisk(accountId: string): Promise<SandTokens | null> {
-  const sand = await loadSandTokens(accountId)
-  if (!sand?.accessToken) return null
-  if (!getGrokMainAuth(accountId)?.accessToken) {
-    const slot =
-      extractAccountHandleFromJwt(sand.accessToken) ?? sand.authId ?? sand.selectedTeamId
-    setGrokMainAuth({
-      accountId,
-      accessToken: sand.accessToken,
-      accountSlot: slot,
-      teamId: sand.selectedTeamId,
-      machineId: getOrCreateGrokMachineId(accountId)
-    })
-  }
-  return sand
+async function statusFor(accountId: string): Promise<GrokAuthStatus> {
+  const hasProxy = Boolean(await loadAccountProxyUrl(accountId).catch(() => true))
+  return { ...await sessionFor(accountId), hasProxy }
 }
 
-async function statusFor(accountId: string): Promise<GrokAuthStatus> {
-  const sand = await hydrateFromDisk(accountId)
-  const auth = getGrokMainAuth(accountId)
-  const hasProxy = Boolean(await loadAccountProxyUrl(accountId).catch(() => true))
+async function sessionFor(accountId: string): Promise<GrokAuthStatus> {
+  const auth = await loadGrokCredential(accountId)
+  if (!auth) return { accountId, signedIn: false }
+  const sand = auth.tokens
   return {
     accountId,
-    signedIn: Boolean(auth?.accessToken),
-    accountSlot: auth?.accountSlot,
-    teamId: auth?.teamId,
-    machineId: auth?.machineId,
-    hasRefreshToken: Boolean(sand?.refreshToken),
-    authKind: sand?.authKind ?? (auth?.accessToken ? 'web' : undefined),
-    hasProxy
+    signedIn: true,
+    accountSlot: sand.authId ?? sand.selectedTeamId,
+    teamId: sand.selectedTeamId,
+    machineId: auth.machineId ?? getOrCreateGrokMachineId(accountId),
+    hasRefreshToken: Boolean(sand.refreshToken),
+    authKind: sand.authKind ?? 'cursor'
   }
 }
 
@@ -147,73 +130,38 @@ export function registerGrokIpc(): void {
       throw new TypeError('accountId and accessToken required')
     }
     const machineId = req.machineId?.trim() || getOrCreateGrokMachineId(req.accountId)
-    const existing = await loadSandTokens(req.accountId)
-
-    const resolved = await parseAnyGrokCredentialInput(req.accessToken, {
-      refreshToken: req.refreshToken,
-      accountSlot: req.accountSlot,
-      teamId: req.teamId,
-      existing,
-      accountId: req.accountId
+    const resolved = await replaceGrokCredentials(req.accountId, (existing) => parseAnyGrokCredentialInput(req.accessToken, {
+      refreshToken: req.refreshToken, accountSlot: req.accountSlot, teamId: req.teamId, existing, accountId: req.accountId
+    }), {
+      machineId,
+      committed: ({ tokens }) => {
+        cancelGrokLogin(req.accountId)
+        broadcastAuthEvent({
+          accountId: req.accountId, signedIn: true, accountSlot: tokens.authId, teamId: tokens.selectedTeamId, machineId
+        })
+      }
     })
-    if (!resolved?.accessToken) {
+    if (!resolved) {
       throw new Error(
         '无法识别该凭据：请粘贴有效的 Grok/Sand Access Token (eyJ...)、WorkosCursorSessionToken Cookie、JSON 或 API Key'
       )
     }
-
-    cancelGrokLogin(req.accountId)
-
-    const resolvedSlot =
-      extractAccountHandleFromJwt(resolved.accessToken) ?? resolved.authId ?? req.accountSlot
-
-    setGrokMainAuth({
-      accountId: req.accountId,
-      accessToken: resolved.accessToken,
-      accountSlot: resolvedSlot,
-      teamId: resolved.selectedTeamId ?? req.teamId,
-      machineId
-    })
-
-    try {
-      await persistSandTokens(req.accountId, {
-        ...resolved,
-        authId: resolvedSlot
-      })
-    } catch (error) {
-      console.warn(
-        '[grok] safeStorage persist failed; session is memory-only until restart',
-        error
-      )
-    }
-
-    broadcastAuthEvent({
-      accountId: req.accountId,
-      signedIn: true,
-      accountSlot: resolvedSlot,
-      teamId: resolved.selectedTeamId ?? req.teamId,
-      machineId
-    })
 
     return statusFor(req.accountId)
   })
 
   ipcMain.handle(GROK_CHANNELS.clearAuth, async (_event, accountId: unknown) => {
     if (typeof accountId !== 'string') throw new TypeError('Invalid accountId')
-    if (accountId === '*') {
-      stopGrokAccountWatch('*')
-      for (const id of listPersistedSandAccountIds()) {
-        cancelGrokLogin(id)
-        clearGrokMainAuth(id)
-      }
-      clearAllSandTokens()
-      return { accountId: '*', signedIn: false }
+    const cancelLogins = () => accountId === '*' ? cancelAllGrokLogins() : cancelGrokLogin(accountId)
+    cancelLogins()
+    for (const request of activeRequests.values()) {
+      if (accountId === '*' || request.accountId === accountId) request.controller.abort()
     }
-    cancelGrokLogin(accountId)
-    stopGrokAccountWatch(accountId)
-    clearGrokMainAuth(accountId)
-    clearSandTokens(accountId)
-    return statusFor(accountId)
+    await clearGrokCredentials(accountId, () => {
+      cancelLogins()
+      if (accountId !== '*') broadcastAuthEvent({ accountId, signedIn: false })
+    })
+    return { accountId, signedIn: false }
   })
 
   ipcMain.handle(GROK_CHANNELS.authStatus, async (_event, accountId: unknown) => {
@@ -225,33 +173,39 @@ export function registerGrokIpc(): void {
     GROK_CHANNELS.getSession,
     async (_event, accountId: unknown): Promise<GrokAuthSessionPayload> => {
       if (typeof accountId !== 'string') throw new TypeError('Invalid accountId')
-      const sand = await hydrateFromDisk(accountId)
-      const auth = getGrokMainAuth(accountId)
-      if (!auth?.accessToken) {
-        return { accountId, signedIn: false as const }
-      }
-      // Security: omit raw `accessToken` from renderer IPC payload.
-      return {
-        accountId,
-        signedIn: true as const,
-        accountSlot: auth.accountSlot,
-        teamId: auth.teamId,
-        machineId: auth.machineId,
-        hasRefreshToken: Boolean(sand?.refreshToken),
-        authKind: sand?.authKind ?? 'cursor'
-      }
+      return sessionFor(accountId)
     }
   )
 
-  ipcMain.handle(GROK_CHANNELS.rpc, async (_event, request: unknown) => {
+  ipcMain.handle(GROK_CHANNELS.rpc, async (event, request: unknown) => {
     if (typeof request !== 'object' || request === null) {
       return { ok: false as const, status: 0, message: 'Invalid grok rpc request' }
     }
-    const req = request as GrokRpcRequest
+    const req = request as GrokRequest
     if (typeof req.accountId !== 'string' || typeof req.op !== 'string') {
       return { ok: false as const, status: 0, message: 'accountId and op required' }
     }
-    return runGrokRpc(req)
+    const key = typeof req.requestId === 'string' && req.requestId
+      ? JSON.stringify([event.sender.id, req.accountId, req.requestId]) : undefined
+    if (req.op === 'cancelRequest') {
+      if (key) activeRequests.get(key)?.controller.abort()
+      return { ok: true, data: null }
+    }
+    if (!key || !['sendUserMessage', 'watchUntilReply', 'listTranscriptEntries'].includes(req.op)) return runGrokRpc(req)
+    if (activeRequests.has(key)) return { ok: false, status: 409, message: 'Grok request already active' }
+    const controller = new AbortController()
+    const abort = () => controller.abort()
+    activeRequests.set(key, { accountId: req.accountId, controller })
+    event.sender.once('destroyed', abort)
+    event.sender.once('did-navigate', abort)
+    try {
+      return await runGrokRpc(req, controller.signal)
+    } finally {
+      controller.abort()
+      activeRequests.delete(key)
+      event.sender.off('destroyed', abort)
+      event.sender.off('did-navigate', abort)
+    }
   })
 }
 

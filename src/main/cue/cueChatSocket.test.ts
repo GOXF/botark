@@ -2,7 +2,7 @@ import type { AddressInfo } from 'node:net'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { WebSocketServer } from 'ws'
 
-const { watchEvents, loadCueTokens } = vi.hoisted(() => ({
+const { watchEvents, loadCueTokens, createProxyAgent, credentialRevision } = vi.hoisted(() => ({
   watchEvents: [] as unknown[],
   loadCueTokens: vi.fn(async (accountId: string) => ({
     accountId,
@@ -10,19 +10,22 @@ const { watchEvents, loadCueTokens } = vi.hoisted(() => ({
     deviceId: 'dev_socket_1',
     authKind: 'session' as const,
     accountFingerprint: 'fp_1'
-  }))
+  })),
+  createProxyAgent: vi.fn(async () => undefined),
+  credentialRevision: Symbol()
 }))
 
 vi.mock('./cueAuth', () => ({
   CUE_CONNECT_BASE: 'https://api.manus.im',
   CUE_ORIGIN: 'https://cue.im',
+  getCueCredentialRevision: () => credentialRevision,
   loadCueTokens
 }))
 vi.mock('./cueDeviceId', () => ({
   getOrCreateCueDeviceId: () => 'dev_socket_1'
 }))
 vi.mock('../muse/accountProxy', () => ({
-  createProxyAgent: vi.fn(async () => undefined)
+  createProxyAgent
 }))
 vi.mock('./cueWatchManager', () => ({
   emitCueWatchEvent: (ev: unknown) => watchEvents.push(ev)
@@ -42,6 +45,7 @@ describe('Cue native Engine.IO / Socket.IO chat client', () => {
 
   afterEach(async () => {
     stopCueChatSocket('*')
+    createProxyAgent.mockClear()
     watchEvents.length = 0
     await Promise.all(
       servers.splice(0).map(
@@ -230,6 +234,81 @@ describe('Cue native Engine.IO / Socket.IO chat client', () => {
         timeoutMs: 5_000
       })
     ).rejects.toThrow('Insufficient Cue credits')
+  })
+
+  it('registers one connection before proxy lookup and expires it when Engine.IO pings stop', async () => {
+    let releaseProxy!: () => void
+    createProxyAgent.mockImplementationOnce(() => new Promise((resolve) => { releaseProxy = () => resolve(undefined) }))
+    const wss = new WebSocketServer({ port: 0 })
+    servers.push(wss)
+    const connections = vi.fn()
+    wss.on('connection', (ws) => {
+      connections()
+      ws.send('0{"pingInterval":30,"pingTimeout":30}')
+      ws.on('message', (data) => {
+        if (data.toString().startsWith('40')) ws.send('40{}')
+      })
+    })
+    const opts = {
+      accountId: 'heartbeat-fixture', text: 'test',
+      wsBaseUrl: `http://127.0.0.1:${(wss.address() as AddressInfo).port}`, timeoutMs: 2_000
+    }
+    const results = Promise.allSettled([
+      sendCueNativeMessage({ ...opts, sessionId: 'first' }),
+      sendCueNativeMessage({ ...opts, sessionId: 'second' })
+    ])
+    await vi.waitFor(() => expect(createProxyAgent).toHaveBeenCalledOnce())
+    releaseProxy()
+    expect(await results).toEqual([
+      { status: 'rejected', reason: expect.objectContaining({ message: expect.stringContaining('心跳') }) },
+      { status: 'rejected', reason: expect.objectContaining({ message: expect.stringContaining('心跳') }) }
+    ])
+    expect(connections).toHaveBeenCalledOnce()
+  })
+
+  it('serializes the same session, acknowledges its user echo, and keeps each final snapshot', async () => {
+    const wss = new WebSocketServer({ port: 0 })
+    servers.push(wss)
+    const dispatched = vi.fn()
+    let finishFirst!: () => void
+    wss.on('connection', (ws) => {
+      const emit = (event: object) => ws.send(encodeSocketIoEvent('message', {
+        type: 'event', sessionId: 'serial-session', event
+      }))
+      const finish = () => emit({ type: 'statusUpdate', agentStatus: 'completed' })
+      ws.send('0{}')
+      ws.on('message', (data) => {
+        const packet = parseSocketIoPacket(data.toString())
+        if (packet.kind === 'connect') ws.send('40{}')
+        if (packet.kind !== 'event') return
+        const payload = packet.payload as { type: string; id: string; content: string }
+        if (payload.type !== 'user_message') return
+        dispatched(payload.content)
+        emit({ type: 'chat', sender: 'user', id: payload.id })
+        emit({ type: 'statusUpdate', agentStatus: 'running' })
+        if (payload.content === 'First') {
+          emit({ type: 'chatDelta', sender: 'assistant', targetEventId: 'one', content: 'Long draft' })
+          emit({ type: 'chat', sender: 'assistant', id: 'one', content: 'Fixed' })
+          emit({ type: 'chatDelta', sender: 'assistant', targetEventId: 'one', content: 'stale' })
+          emit({ type: 'chat', sender: 'assistant', id: 'two', content: 'B' })
+          finishFirst = finish
+        } else {
+          emit({ type: 'chat', sender: 'assistant', id: 'three', content: 'Second' })
+          finish()
+        }
+      })
+    })
+    const opts = {
+      accountId: 'serial-fixture', sessionId: 'serial-session',
+      wsBaseUrl: `http://127.0.0.1:${(wss.address() as AddressInfo).port}`, timeoutMs: 2_000
+    }
+    const first = sendCueNativeMessage({ ...opts, text: 'First', requestId: 'req-1' })
+    const second = sendCueNativeMessage({ ...opts, text: 'Second', requestId: 'req-2' })
+    await vi.waitFor(() => expect(watchEvents).toContainEqual(expect.objectContaining({ type: 'accepted', requestId: 'req-1' })))
+    expect(dispatched.mock.calls).toEqual([['First']])
+    finishFirst()
+    expect((await first).replies).toEqual([{ id: 'one', text: 'Fixed' }, { id: 'two', text: 'B' }])
+    expect((await second).reply).toEqual({ id: 'three', text: 'Second' })
   })
 
   it('ignores historical join_session replay and initial stopped status until the new turn responds', async () => {

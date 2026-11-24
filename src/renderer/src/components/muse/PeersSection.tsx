@@ -1,11 +1,11 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { EmptyLine, Section } from '@/components/info/Section'
 import { Button } from '@/components/ui/Button'
 import { TextInput } from '@/components/ui/Field'
 import { Select } from '@/components/ui/Select'
 import { RefreshButton } from '@/components/muse/RefreshButton'
 import { getBridge } from '@/lib/bridge'
-import { cleanSidebarError, isIncompatibleApiError } from '@/lib/sidebarCompat'
+import { cleanSidebarError, isIncompatibleApiError, isOnlineAccountStatus } from '@/lib/sidebarCompat'
 import { useBotStore } from '@/store/botStore'
 import { t } from '@/lib/i18n'
 
@@ -76,10 +76,7 @@ function str(v: unknown): string {
 function parseStatus(raw: unknown): PeersStatus {
   const root = asObj(raw) || {}
   const nested = asObj(root['status']) || asObj(root['result']) || root
-  const supported =
-    nested['supported'] === true ||
-    nested['availability'] === 'enabled' ||
-    nested['availability'] === 'available'
+  const availability = str(nested['availability'])
   const opsRaw = nested['allowed_operations'] ?? nested['allowedOperations']
   const allowedOperations = Array.isArray(opsRaw) ? opsRaw.map((x) => str(x)).filter(Boolean) : []
   const presetsRaw = nested['trust_presets'] ?? nested['trustPresets']
@@ -87,8 +84,9 @@ function parseStatus(raw: unknown): PeersStatus {
     ? presetsRaw.map((x) => (typeof x === 'string' ? x : str(asObj(x)?.['id'] ?? asObj(x)?.['name']))).filter(Boolean)
     : ['restricted', 'collaborator', 'trusted']
   return {
-    supported: supported || allowedOperations.length > 0 || Object.keys(nested).length > 0,
-    availability: str(nested['availability']) || undefined,
+    supported: typeof nested['supported'] === 'boolean' ? nested['supported'] :
+      !/disabled|unavailable|unsupported/i.test(availability) && Object.keys(nested).length > 0,
+    availability: availability || undefined,
     chatPairing: Boolean(nested['chat_pairing'] ?? nested['chatPairing']),
     allowedOperations,
     trustPresets: trustPresets.length ? trustPresets : ['restricted', 'collaborator', 'trusted'],
@@ -276,27 +274,49 @@ function can(ops: string[], name: string): boolean {
   return ops.includes(name)
 }
 
-/**
- * Trusted Network (peers.*) — Members tab.
- * Complete coverage: status, list, update (trust_preset), reset_conversation,
- * rules (list/set/delete), invites (create/list/open/accept/revoke/inbox.deliver),
- * inbox (list/decline/accept), requests (list/sas/sas.confirm), activity (list/dismiss),
- * grants.list, and cross-account local pairing helper.
- */
+async function readPeers(accountId: string) {
+  const muse = getBridge()?.muse
+  if (!muse?.rpc) return null
+  const st = parseStatus(await muse.rpc({ accountId, method: 'peers.status', params: {} }))
+  if (!st.supported) return null
+  const ops = st.allowedOperations
+  const [contacts, invites, inbox, requests, activities, grants] = await Promise.all([
+    can(ops, 'list_contacts') ? muse.rpc({ accountId, method: 'peers.list', params: {} }).then(parseContacts).catch(() => []) : [],
+    can(ops, 'list_invitations') ? muse.rpc({ accountId, method: 'peers.invites.list', params: {} }).then(parseInvites).catch(() => []) : [],
+    can(ops, 'list_invitations') || can(ops, 'accept_invitation')
+      ? muse.rpc({ accountId, method: 'peers.inbox.list', params: {} }).then(parseInbox).catch(() => []) : [],
+    can(ops, 'list_requests') ? muse.rpc({ accountId, method: 'peers.requests.list', params: {} }).then(parseRequests).catch(() => []) : [],
+    muse.rpc({ accountId, method: 'peers.activity.list', params: { limit: 20 } }).then(parseActivities).catch(() => []),
+    muse.rpc({ accountId, method: 'grants.list', params: {} }).then(parseGrants).catch(() => [])
+  ])
+  return { st, contacts, invites, inbox, requests, activities, grants }
+}
+
+const peerReads = new Map<string, ReturnType<typeof readPeers>>()
+
+function loadPeers(accountId: string, fresh: boolean) {
+  const existing = peerReads.get(accountId)
+  if (existing && !fresh) return existing
+  const request = readPeers(accountId).finally(() => {
+    if (peerReads.get(accountId) === request) peerReads.delete(accountId)
+  })
+  peerReads.set(accountId, request)
+  return request
+}
+
 export function PeersSection({ accountId }: { accountId: string }) {
-  const status = useBotStore((s) => s.accounts[accountId]?.status)
+  return <AccountPeersSection key={accountId} accountId={accountId} />
+}
+
+function AccountPeersSection({ accountId }: { accountId: string }) {
+  const connected = useBotStore((s) => isOnlineAccountStatus(s.accounts[accountId]?.status))
   const allAccounts = useBotStore((s) => s.accounts)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string>()
   const [hint, setHint] = useState<string>()
   const [unavailable, setUnavailable] = useState(false)
-  const [peersStatus, setPeersStatus] = useState<PeersStatus | null>(null)
-  const [contacts, setContacts] = useState<PeerContact[]>([])
-  const [invites, setInvites] = useState<PeerInvite[]>([])
-  const [inbox, setInbox] = useState<PeerInbox[]>([])
-  const [requests, setRequests] = useState<PeerRequest[]>([])
-  const [activities, setActivities] = useState<PeerActivityItem[]>([])
-  const [grants, setGrants] = useState<PeerGrant[]>([])
+  const [snapshot, setSnapshot] = useState<Awaited<ReturnType<typeof readPeers>>>(null)
+  const { st: peersStatus, contacts = [], invites = [], inbox = [], requests = [], activities = [], grants = [] } = snapshot ?? {}
   const [selectedPeerForRules, setSelectedPeerForRules] = useState<string | null>(null)
   const [peerRules, setPeerRules] = useState<PeerRule[]>([])
   const [newRuleText, setNewRuleText] = useState('')
@@ -310,72 +330,45 @@ export function PeersSection({ accountId }: { accountId: string }) {
     (a) => a.platformId === 'meta-muse' && a.id !== accountId && a.status !== 'offline'
   )
 
-  const refresh = useCallback(async () => {
-    const muse = getBridge()?.muse
-    if (!muse?.rpc) {
-      setUnavailable(true)
-      return
-    }
+  const request = useRef(0)
+  const rulesRequest = useRef(0)
+  const selectedRules = useRef<string | null>(null)
+  const mounted = useRef(false)
+
+  useLayoutEffect(() => {
+    mounted.current = true
+    return () => { mounted.current = false }
+  }, [])
+
+  const refresh = useCallback(async (fresh = false) => {
+    if (!mounted.current) return
+    const version = ++request.current
+    const current = () => mounted.current && version === request.current
     setLoading(true)
     setError(undefined)
-    setHint(undefined)
     try {
-      let stRaw: unknown
-      try {
-        stRaw = await muse.rpc({ accountId, method: 'peers.status', params: {} })
-      } catch (err) {
-        if (isIncompatibleApiError(err)) {
-          setUnavailable(true)
-          setPeersStatus(null)
-          setContacts([])
-          setInvites([])
-          setInbox([])
-          setRequests([])
-          return
-        }
-        throw err
-      }
-      const st = parseStatus(stRaw)
-      setPeersStatus(st)
-      if (st.supported === false && st.availability && /disabled|unavailable|unsupported/i.test(st.availability)) {
-        setUnavailable(true)
-        return
-      }
-      setUnavailable(false)
-      const ops = st.allowedOperations
-      const [cRaw, iRaw, inRaw, rRaw, actRaw, grRaw] = await Promise.all([
-        can(ops, 'list_contacts')
-          ? muse.rpc({ accountId, method: 'peers.list', params: {} }).catch(() => null)
-          : Promise.resolve(null),
-        can(ops, 'list_invitations')
-          ? muse.rpc({ accountId, method: 'peers.invites.list', params: {} }).catch(() => null)
-          : Promise.resolve(null),
-        can(ops, 'list_invitations') || can(ops, 'accept_invitation')
-          ? muse.rpc({ accountId, method: 'peers.inbox.list', params: {} }).catch(() => null)
-          : Promise.resolve(null),
-        can(ops, 'list_requests')
-          ? muse.rpc({ accountId, method: 'peers.requests.list', params: {} }).catch(() => null)
-          : Promise.resolve(null),
-        muse.rpc({ accountId, method: 'peers.activity.list', params: { limit: 20 } }).catch(() => null),
-        muse.rpc({ accountId, method: 'grants.list', params: {} }).catch(() => null)
-      ])
-      setContacts(cRaw ? parseContacts(cRaw) : [])
-      setInvites(iRaw ? parseInvites(iRaw) : [])
-      setInbox(inRaw ? parseInbox(inRaw) : [])
-      setRequests(rRaw ? parseRequests(rRaw) : [])
-      setActivities(actRaw ? parseActivities(actRaw) : [])
-      setGrants(grRaw ? parseGrants(grRaw) : [])
+      const result = await loadPeers(accountId, fresh)
+      if (!current()) return
+      setSnapshot(result)
+      setUnavailable(!result)
     } catch (err) {
-      setError(cleanSidebarError(err))
+      if (!current()) return
+      setSnapshot(null)
+      if (!isIncompatibleApiError(err)) setError(cleanSidebarError(err))
       setUnavailable(true)
     } finally {
-      setLoading(false)
+      if (current()) setLoading(false)
     }
   }, [accountId])
 
   useEffect(() => {
-    if (status === 'online' || status === 'busy' || status === 'attention') void refresh()
-  }, [refresh, status])
+    if (connected) void refresh()
+    else {
+      setSnapshot(null)
+      setLoading(false)
+    }
+    return () => { request.current++ }
+  }, [connected, refresh])
 
   const run = async (key: string, fn: () => Promise<void>) => {
     setBusy(key)
@@ -383,11 +376,11 @@ export function PeersSection({ accountId }: { accountId: string }) {
     setHint(undefined)
     try {
       await fn()
-      await refresh()
+      if (mounted.current) await refresh(true)
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
+      if (mounted.current) setError(err instanceof Error ? err.message : String(err))
     } finally {
-      setBusy(undefined)
+      if (mounted.current) setBusy(undefined)
     }
   }
 
@@ -397,6 +390,7 @@ export function PeersSection({ accountId }: { accountId: string }) {
       if (!muse?.rpc) return
       const raw = await muse.rpc({ accountId, method: 'peers.invites.create', params: {} })
       const o = asObj(raw) || {}
+      if (!mounted.current) return
       const frag = str(o['fragment'])
       const inviteId = str(o['invite_id_b64'] || o['invite_id'] || o['inviteId'])
       setHint(
@@ -529,20 +523,21 @@ export function PeersSection({ accountId }: { accountId: string }) {
       setHint(t('Peer conversation reset'))
     })
 
-  const loadPeerRules = async (museId: string) => {
-    if (selectedPeerForRules === museId) {
-      setSelectedPeerForRules(null)
-      return
-    }
+  const refreshPeerRules = async (museId: string) => {
     const muse = getBridge()?.muse
-    if (!muse?.rpc) return
-    setSelectedPeerForRules(museId)
-    try {
-      const raw = await muse.rpc({ accountId, method: 'peers.rules.list', params: { muse_id: museId } })
-      setPeerRules(parseRules(raw))
-    } catch {
-      setPeerRules([])
-    }
+    if (!mounted.current || selectedRules.current !== museId || !muse?.rpc) return
+    const version = ++rulesRequest.current
+    const raw = await muse.rpc({ accountId, method: 'peers.rules.list', params: { muse_id: museId } }).catch(() => null)
+    if (mounted.current && version === rulesRequest.current && selectedRules.current === museId) setPeerRules(parseRules(raw))
+  }
+
+  const loadPeerRules = (museId: string) => {
+    const next = selectedRules.current === museId ? null : museId
+    selectedRules.current = next
+    setSelectedPeerForRules(next)
+    setPeerRules([])
+    rulesRequest.current++
+    if (next) void refreshPeerRules(next)
   }
 
   const addPeerRule = (museId: string) =>
@@ -555,8 +550,7 @@ export function PeersSection({ accountId }: { accountId: string }) {
         params: { muse_id: museId, instruction: newRuleText.trim(), rule: newRuleText.trim() }
       })
       setNewRuleText('')
-      const raw = await muse.rpc({ accountId, method: 'peers.rules.list', params: { muse_id: museId } })
-      setPeerRules(parseRules(raw))
+      await refreshPeerRules(museId)
     })
 
   const deletePeerRule = (museId: string, ruleId: string) =>
@@ -568,8 +562,7 @@ export function PeersSection({ accountId }: { accountId: string }) {
         method: 'peers.rules.delete',
         params: { muse_id: museId, rule_id: ruleId }
       })
-      const raw = await muse.rpc({ accountId, method: 'peers.rules.list', params: { muse_id: museId } })
-      setPeerRules(parseRules(raw))
+      await refreshPeerRules(museId)
     })
 
   const dismissActivity = (activityId: string) =>

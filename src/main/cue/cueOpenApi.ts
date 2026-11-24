@@ -4,6 +4,8 @@ import { cueFetcherForAccount } from './cueAuth'
 const MANUS_API = 'https://api.manus.ai/v2/'
 const IM_AGENT = 'agent-default'
 const IM_TASK = 'agent-default-main_task'
+const POLL_TIMEOUT_MS = 15_000
+type CueOpenApiOptions = { asWebToken?: boolean; signal?: AbortSignal; beforeRequest?: () => void }
 
 type Data = Record<string, unknown>
 
@@ -20,7 +22,7 @@ async function request(
   apiKey: string,
   path: string,
   body?: unknown,
-  opts?: { asWebToken?: boolean }
+  opts?: CueOpenApiOptions
 ): Promise<CueRpcResponse> {
   const headers: Record<string, string> = opts?.asWebToken
     ? {
@@ -34,14 +36,15 @@ async function request(
         'Content-Type': 'application/json',
         Accept: 'application/json'
       }
-  const response = await cueFetcherForAccount(accountId)(new URL(path, MANUS_API), {
+  const response = await cueFetcherForAccount(accountId, undefined, opts?.beforeRequest)(new URL(path, MANUS_API), {
     method: body === undefined ? 'GET' : 'POST',
     headers,
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     redirect: 'error',
-    signal: AbortSignal.timeout(15_000)
+    signal: opts?.signal ?? AbortSignal.timeout(POLL_TIMEOUT_MS)
   })
   const data = object(await response.json().catch(() => null))
+  opts?.signal?.throwIfAborted()
   if (!response.ok || data.ok !== true) {
     const status = response.ok ? 502 : response.status
     const message = status === 401 || status === 403
@@ -90,7 +93,7 @@ function taskMessages(data: unknown): Data[] {
 export async function runCueOpenApi(
   req: CueRpcRequest,
   apiKey: string,
-  opts?: { asWebToken?: boolean }
+  opts?: CueOpenApiOptions
 ): Promise<CueRpcResponse> {
   const send = (path: string, body?: unknown) => request(req.accountId, apiKey, path, body, opts)
   switch (req.op) {
@@ -128,44 +131,55 @@ export async function runCueOpenApi(
       if (req.afterMessageId) query.set('start_event_id', req.afterMessageId)
       let assistantReply: { id: string; text: string } | undefined
       let receivedUserMessage = false
-      for (;;) {
-        const res = await send(`task.listMessages?${query}`)
-        if (!res.ok) return res
-        for (const event of taskMessages(res.data)) {
-          if (event.id === req.afterMessageId) continue
-          if (event.type === 'user_message') {
-            if (receivedUserMessage) return { ok: true, data: { done: true, reply: assistantReply } }
-            receivedUserMessage = req.expectedUserText === undefined || object(event.user_message).content === req.expectedUserText
-          }
-          if (!receivedUserMessage) continue
-          if (event.type === 'assistant_message') {
-            const assistant = object(event.assistant_message)
-            const text = string(assistant.content)
+      const seenCursors = new Set<string>()
+      const seenEvents = new Set<string>()
+      const signal = AbortSignal.timeout(POLL_TIMEOUT_MS)
+      try {
+        for (let page = 0; page < 100; page += 1) {
+          const res = await request(req.accountId, apiKey, `task.listMessages?${query}`, undefined, { ...opts, signal })
+          if (!res.ok) return res
+          for (const event of taskMessages(res.data)) {
+            if (req.afterMessageId && event.id === req.afterMessageId) continue
             const id = string(event.id)
-            if (text && id) assistantReply = { id, text }
-          }
-          if (event.type === 'error_message') {
-            return { ok: false, status: 502, message: 'Cue 执行出错，请在 Manus 中查看会话' }
-          }
-          const status = object(event.status_update).agent_status
-          if (status === 'waiting' || status === 'stopped') {
-            return {
-              ok: true,
-              data: {
-                done: true,
-                reply: assistantReply ?? (status === 'waiting'
-                  ? { id: string(event.id) || 'cue-waiting', text: 'Cue 正在等待输入或确认，请打开 Manus 查看。' }
-                  : undefined)
+            if (id) {
+              if (seenEvents.has(id)) continue
+              seenEvents.add(id)
+            }
+            if (event.type === 'user_message') {
+              if (receivedUserMessage) return { ok: true, data: { done: true, reply: assistantReply } }
+              receivedUserMessage = req.expectedUserText === undefined || object(event.user_message).content === req.expectedUserText
+            }
+            if (!receivedUserMessage) continue
+            if (event.type === 'assistant_message') {
+              const text = string(object(event.assistant_message).content)
+              if (text && id) assistantReply = { id, text }
+            }
+            const status = object(event.status_update).agent_status
+            if (event.type === 'error_message' || status === 'error') {
+              return { ok: false, status: 502, message: 'Cue 执行出错，请在 Manus 中查看会话' }
+            }
+            if (status === 'waiting' || status === 'stopped') {
+              return {
+                ok: true,
+                data: {
+                  done: true,
+                  reply: assistantReply ?? (status === 'waiting'
+                    ? { id: id || 'cue-waiting', text: 'Cue 正在等待输入或确认，请打开 Manus 查看。' }
+                    : undefined)
+                }
               }
             }
           }
-          if (status === 'error') return { ok: false, status: 502, message: 'Cue 执行出错，请在 Manus 中查看会话' }
+          const cursor = string(object(res.data).next_cursor)
+          if (!cursor || seenCursors.has(cursor)) break
+          seenCursors.add(cursor)
+          query.delete('start_event_id')
+          query.set('cursor', cursor)
         }
-        const cursor = string(object(res.data).next_cursor)
-        if (!cursor || query.get('cursor') === cursor) return { ok: true, data: { done: false } }
-        query.delete('start_event_id')
-        query.set('cursor', cursor)
+      } catch (error) {
+        if (!signal.aborted) throw error
       }
+      return { ok: true, data: { done: false } }
     }
     case 'listTasks':
       return send(`task.list?${new URLSearchParams({

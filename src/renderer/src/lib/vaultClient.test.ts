@@ -1,13 +1,32 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { getPlatformInspector, resolveInspectorTab } from '../components/info/platformInspector'
-import { loadDotMemoryDraft, saveDotMemoryDraft } from './vaultClient'
+import type { BotHubBridge } from '@shared/bridge'
+import { clearVaultCredentials, loadDotMemoryDraft, saveDotMemoryDraft } from './vaultClient'
 
-describe('vaultClient & platformInspector', () => {
+function deferred() {
+  let resolve!: () => void
+  const promise = new Promise<void>((done) => { resolve = done })
+  return { promise, resolve }
+}
+
+describe('vaultClient', () => {
   const originalWindow = globalThis.window
   let localStore: Record<string, string>
   let vaultStore: Record<string, string>
+  const setSecret = vi.fn(async (key: string, value: string) => {
+    vaultStore[key] = value
+    return { ok: true, encrypted: true }
+  })
+  const deleteSecret = vi.fn(async (key: string) => {
+    delete vaultStore[key]
+    return { ok: true as const }
+  })
+  const clearAll = vi.fn(async () => {
+    vaultStore = {}
+    return { ok: true as const }
+  })
 
   beforeEach(() => {
+    vi.clearAllMocks()
     localStore = {}
     vaultStore = {}
     ;(globalThis as unknown as { window: unknown }).window = {
@@ -23,18 +42,9 @@ describe('vaultClient & platformInspector', () => {
       electron: {
         vault: {
           getSecret: vi.fn(async (k: string) => vaultStore[k] ?? null),
-          setSecret: vi.fn(async (k: string, v: string) => {
-            vaultStore[k] = v
-            return { ok: true as const, encrypted: true }
-          }),
-          deleteSecret: vi.fn(async (k: string) => {
-            delete vaultStore[k]
-            return { ok: true as const }
-          }),
-          clearAll: vi.fn(async () => {
-            vaultStore = {}
-            return { ok: true as const }
-          }),
+          setSecret,
+          deleteSecret,
+          clearAll,
           status: vi.fn(),
           hardenPermissions: vi.fn()
         }
@@ -65,24 +75,70 @@ describe('vaultClient & platformInspector', () => {
     expect(vaultStore['dot.memory.snapshot.v1']).toBeUndefined()
   })
 
-  it('differentiates right-side inspector tabs and capabilities across Muse, Grok Bot, Hark, and Dot', () => {
-    const muse = getPlatformInspector('meta-muse')
-    const grok = getPlatformInspector('grok')
-    const hark = getPlatformInspector('hark')
-    const dot = getPlatformInspector('dot')
+  it('deletes a draft after a slow write has finished', async () => {
+    const writeStarted = deferred()
+    const finishWrite = deferred()
+    setSecret.mockImplementationOnce(async (key, value) => {
+      writeStarted.resolve()
+      await finishWrite.promise
+      vaultStore[key] = value
+      return { ok: true, encrypted: true }
+    })
 
-    expect(muse.supportsWebSession).toBe(true)
-    expect(grok.supportsWebSession).toBe(false)
-    expect(hark.supportsWebSession).toBe(true)
-    expect(dot.supportsWebSession).toBe(true)
+    const write = saveDotMemoryDraft('Old draft')
+    await writeStarted.promise
+    const clear = saveDotMemoryDraft('')
+    await Promise.resolve()
+    expect(deleteSecret).not.toHaveBeenCalled()
+    finishWrite.resolve()
 
-    expect(muse.tabs.map((t) => t.label)).toEqual(['Overview', 'Library', 'Computer', 'Sharing'])
-    expect(grok.tabs.map((t) => t.label)).toEqual(['Overview', 'Library', 'Sandbox', 'Agents'])
-    expect(hark.tabs.map((t) => t.label)).toEqual(['Overview', 'Library', 'Computer', 'Devices'])
-    expect(dot.tabs.map((t) => t.label)).toEqual(['Overview', 'Memory', 'Pages'])
+    await expect(Promise.all([write, clear])).resolves.toEqual([true, true])
+    expect(vaultStore['dot.memory.snapshot.v1']).toBeUndefined()
+    await expect(loadDotMemoryDraft()).resolves.toBe('')
+  })
 
-    // Switching from Muse's 'computer' tab to Dot falls back cleanly to 'overview'
-    expect(resolveInspectorTab('dot', 'computer')).toBe('overview')
-    expect(resolveInspectorTab('dot', 'memory')).toBe('memory')
+  it('keeps newer edits in submission order after a rejected write', async () => {
+    setSecret.mockRejectedValueOnce(new Error('Vault write failed'))
+
+    await expect(Promise.all([
+      saveDotMemoryDraft('First draft'),
+      saveDotMemoryDraft(''),
+      saveDotMemoryDraft('New draft')
+    ])).resolves.toEqual([false, true, true])
+
+    expect(deleteSecret).toHaveBeenCalledOnce()
+    expect(vaultStore['dot.memory.snapshot.v1']).toBe('New draft')
+  })
+
+  it('waits for plaintext migration before purging the vault and clears the in-memory draft', async () => {
+    localStore['bothub.dot.memorySnapshot'] = 'Legacy draft'
+    const migrationStarted = deferred()
+    const finishMigration = deferred()
+    setSecret.mockImplementationOnce(async (key, value) => {
+      migrationStarted.resolve()
+      await finishMigration.promise
+      vaultStore[key] = value
+      return { ok: true, encrypted: true }
+    })
+
+    const migration = loadDotMemoryDraft()
+    await migrationStarted.promise
+    const purge = clearVaultCredentials()
+    await Promise.resolve()
+    expect(clearAll).not.toHaveBeenCalled()
+    finishMigration.resolve()
+    await Promise.all([migration, purge])
+
+    expect(vaultStore).toEqual({})
+    ;(globalThis.window as { electron?: BotHubBridge }).electron = undefined
+    await expect(loadDotMemoryDraft()).resolves.toBe('')
+  })
+
+  it('reports a failed vault purge', async () => {
+    localStore['bothub.dot.memorySnapshot'] = 'Legacy draft'
+    clearAll.mockRejectedValueOnce(new Error('Vault is read-only'))
+
+    await expect(clearVaultCredentials()).rejects.toThrow('Vault is read-only')
+    expect(localStore['bothub.dot.memorySnapshot']).toBeUndefined()
   })
 })

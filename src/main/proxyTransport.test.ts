@@ -1,8 +1,9 @@
 import { createServer, type Server } from 'node:http'
 import { createSecureServer, type Http2SecureServer } from 'node:http2'
-import { connect, type AddressInfo } from 'node:net'
+import { once } from 'node:events'
+import { connect, createServer as createNetServer, type AddressInfo, type Socket } from 'node:net'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { proxyFetch, proxyWsAgent } from './proxyTransport'
+import { closeProxyDispatchers, proxyFetch, proxyWsAgent } from './proxyTransport'
 
 const TEST_LOCALHOST_KEY = `-----BEGIN PRIVATE KEY-----
 MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQCwPxaVFxlSGOPe
@@ -106,7 +107,8 @@ beforeAll(async () => {
   await new Promise<void>((r) => httpsProxy.listen(0, '127.0.0.1', r))
 })
 
-afterAll(() => {
+afterAll(async () => {
+  await closeProxyDispatchers()
   target.close()
   tlsTarget.close()
   proxy.close()
@@ -141,6 +143,72 @@ describe('proxyFetch & proxyWsAgent', () => {
     }) as unknown as { proxy?: URL }
     expect(agent?.proxy?.protocol).toBe('https:')
     expect(agent?.proxy?.port).toBe(String(port(httpsProxy)))
+  })
+
+  it('connects to an IPv6 SOCKS proxy with a bare socket hostname', async ({ skip }) => {
+    const socks = createNetServer((socket) => {
+      socket.once('data', () => {
+        socket.once('data', () => {
+          socket.write(Buffer.from([5, 0, 0, 1, 127, 0, 0, 1, 0, 0]))
+          socket.once('data', () => {
+            socket.end('HTTP/1.1 200 OK\r\nContent-Length: 7\r\nConnection: close\r\n\r\nover-v6')
+          })
+        })
+        socket.write(Buffer.from([5, 0]))
+      })
+    })
+    try {
+      socks.listen(0, '::1')
+      await once(socks, 'listening')
+    } catch (error) {
+      if (['EAFNOSUPPORT', 'EADDRNOTAVAIL'].includes((error as NodeJS.ErrnoException).code ?? '')) return skip()
+      throw error
+    }
+    try {
+      const proxyUrl = `socks5h://[::1]:${(socks.address() as AddressInfo).port}`
+      const res = await proxyFetch(proxyUrl, 'http://origin.example/')
+      expect(await res.text()).toBe('over-v6')
+      const ws = proxyWsAgent(proxyUrl) as unknown as { proxy: { host: string }; shouldLookup: boolean }
+      expect(ws.proxy.host).toBe('::1')
+      expect(ws.shouldLookup).toBe(false)
+    } finally {
+      await closeProxyDispatchers()
+      await new Promise<void>((resolve) => socks.close(() => resolve()))
+    }
+  })
+
+  it('drains an evicted dispatcher and cancels retired requests on shutdown', async () => {
+    const slowProxy = createServer((_req, res) => res.write('initial'))
+    const sockets = new Set<Socket>()
+    slowProxy.on('connection', (socket) => {
+      sockets.add(socket)
+      socket.once('close', () => sockets.delete(socket))
+    })
+    slowProxy.listen(0, '127.0.0.1')
+    await once(slowProxy, 'listening')
+    try {
+      const slowUrl = `http://127.0.0.1:${port(slowProxy)}`
+      const first = await proxyFetch(slowUrl, 'http://origin.example/first')
+      const firstBody = first.text().catch((error: unknown) => error)
+      const second = await proxyFetch(`http://other@127.0.0.1:${port(slowProxy)}`, 'http://origin.example/second')
+      const secondBody = second.text().catch((error: unknown) => error)
+      const peersClosed = [...sockets].map((socket) => once(socket, 'close'))
+
+      // Distinct credentials cause the oldest dispatchers to age out.
+      for (let index = 0; index < 32; index++) {
+        const result = await proxyFetch(`http://user${index}@127.0.0.1:${port(proxy)}`, `http://127.0.0.1:${port(target)}/`)
+        await result.text()
+      }
+      expect(sockets.size).toBe(2)
+      await closeProxyDispatchers()
+      await Promise.all(peersClosed)
+      expect(await firstBody).toBeInstanceOf(Error)
+      expect(await secondBody).toBeInstanceOf(Error)
+    } finally {
+      await closeProxyDispatchers()
+      for (const socket of sockets) socket.destroy()
+      await new Promise<void>((resolve) => slowProxy.close(() => resolve()))
+    }
   })
 
   it('refuses an unusable proxy instead of going direct', () => {

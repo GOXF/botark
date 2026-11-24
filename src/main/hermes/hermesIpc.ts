@@ -4,10 +4,10 @@ import {
   type HermesAuthStatus,
   type HermesConfigureRequest,
   type HermesLocalDetection,
-  type HermesMainEvent,
   type HermesRpcRequest,
   type HermesRpcResponse
 } from '@shared/ipc'
+import type { HermesTurnEvent } from '../../adapters/hermes/events'
 import { loadAccountProxyUrl } from '../muse/accountProxy'
 import {
   cancelAllHermesRuns,
@@ -34,15 +34,18 @@ import {
 import {
   clearHermesAccount,
   getHermesAccount,
+  getHermesAccountMetadata,
+  getHermesAccountRevision,
   hermesHandleFromUrl,
   listHermesAccountRecords,
   normalizeHermesBaseUrl,
   readLocalHermesEnv,
+  sameHermesOrigin,
   saveHermesAccount,
   updateHermesAccountModel
 } from './hermesStore'
 
-function broadcast(payload: HermesMainEvent): void {
+function broadcast(payload: HermesTurnEvent): void {
   for (const win of BrowserWindow.getAllWindows()) {
     if (win.isDestroyed() || win.webContents.isDestroyed()) continue
     win.webContents.send(HERMES_CHANNELS.event, payload)
@@ -51,9 +54,16 @@ function broadcast(payload: HermesMainEvent): void {
 
 async function statusFor(accountId: string, verifyLive = true): Promise<HermesAuthStatus> {
   const hasProxy = Boolean(await loadAccountProxyUrl(accountId).catch(() => false))
-  let acc: ReturnType<typeof getHermesAccount>
+  let acc: ReturnType<typeof getHermesAccountMetadata>
+  let apiKey: string | undefined
   try {
-    acc = getHermesAccount(accountId)
+    if (verifyLive) {
+      const resolved = getHermesAccount(accountId)
+      acc = resolved
+      apiKey = resolved?.apiKey
+    } else {
+      acc = getHermesAccountMetadata(accountId)
+    }
   } catch (error) {
     return {
       accountId,
@@ -81,11 +91,11 @@ async function statusFor(accountId: string, verifyLive = true): Promise<HermesAu
   const probe = await probeHermesServer({
     accountId,
     baseUrl: acc.baseUrl,
-    apiKey: acc.apiKey
+    apiKey
   })
   return {
     accountId,
-    signedIn: probe.reachable && probe.authenticated,
+    signedIn: probe.authenticated,
     baseUrl: acc.baseUrl,
     handle,
     displayName: acc.displayName || 'Hermes',
@@ -98,7 +108,7 @@ async function statusFor(accountId: string, verifyLive = true): Promise<HermesAu
   }
 }
 
-async function runHermesRpc(req: HermesRpcRequest): Promise<HermesRpcResponse> {
+async function runHermesRpc(req: HermesRpcRequest & { requestId?: string }): Promise<HermesRpcResponse> {
   try {
     switch (req.op) {
       case 'health':
@@ -141,20 +151,16 @@ async function runHermesRpc(req: HermesRpcRequest): Promise<HermesRpcResponse> {
       case 'listApprovals':
         return { ok: true, data: listHermesApprovals(req.accountId) }
       case 'decideApproval':
-        await decideHermesApproval(req.accountId, req.approvalId, req.decision, (pending) => {
-          broadcast({ type: 'approvals', accountId: req.accountId, pending })
-        })
+        await decideHermesApproval(req.accountId, req.approvalId, req.decision)
         return { ok: true, data: { ok: true } }
       case 'stopRun': {
-        const stopping = stopHermesRun(req.accountId)
-        broadcast({ type: 'approvals', accountId: req.accountId, pending: [] })
-        broadcast({ type: 'activity', accountId: req.accountId, activityCode: 'idle', busy: false })
-        await stopping
+        await stopHermesRun(req.accountId, req.requestId)
         return { ok: true, data: { ok: true } }
       }
       case 'sendMessage': {
+        const turn = { accountId: req.accountId, requestId: req.requestId }
         const result = await sendHermesMessage({
-          accountId: req.accountId,
+          ...turn,
           botId: req.botId,
           sessionId: req.sessionId,
           sessionKey: req.sessionKey,
@@ -162,13 +168,13 @@ async function runHermesRpc(req: HermesRpcRequest): Promise<HermesRpcResponse> {
           model: req.model,
           attachments: req.attachments,
           callbacks: {
-            onAccepted: () => {
-              if (req.requestId) broadcast({ type: 'accepted', accountId: req.accountId, requestId: req.requestId })
+            onAccepted: (sessionId) => {
+              if (req.requestId) broadcast({ type: 'accepted', accountId: req.accountId, requestId: req.requestId, sessionId })
             },
             onDelta: (payload) => {
               broadcast({
                 type: 'stream',
-                accountId: req.accountId,
+                ...turn,
                 conversationId: req.botId,
                 sessionId: payload.sessionId,
                 messageId: payload.messageId,
@@ -178,20 +184,22 @@ async function runHermesRpc(req: HermesRpcRequest): Promise<HermesRpcResponse> {
                 ...(payload.media ? { media: payload.media } : {})
               })
             },
-            onActivity: (act) => {
+            onActivity: (act, sessionId) => {
               broadcast({
                 type: 'activity',
-                accountId: req.accountId,
+                ...turn,
+                sessionId,
                 activityCode: act.code,
                 activityText: act.text,
                 activityEmoji: act.emoji,
                 busy: act.busy
               })
             },
-            onApprovals: (pending) => {
+            onApprovals: (pending, sessionId) => {
               broadcast({
                 type: 'approvals',
-                accountId: req.accountId,
+                ...turn,
+                sessionId,
                 pending
               })
             }
@@ -203,6 +211,9 @@ async function runHermesRpc(req: HermesRpcRequest): Promise<HermesRpcResponse> {
         return { ok: false, status: 400, message: 'Unknown Hermes RPC op' }
     }
   } catch (error) {
+    if (error instanceof Error && error.name === 'AbortError') {
+      return { ok: false, status: 0, code: 'aborted', message: error.message }
+    }
     if (error instanceof HermesApiError) {
       return {
         ok: false,
@@ -238,16 +249,17 @@ export function registerHermesIpc(): void {
             }
           })()
         : local.baseUrl
+    const matchesLocal = sameHermesOrigin(targetUrl, local.baseUrl)
     const probe = await probeHermesServer({
       baseUrl: targetUrl,
-      apiKey: local.apiKey
+      apiKey: matchesLocal ? local.apiKey : undefined
     })
     return {
       reachable: probe.reachable,
       baseUrl: targetUrl,
       version: probe.version,
       platform: probe.platform,
-      hasLocalEnvKey: local.hasApiKey,
+      hasLocalEnvKey: matchesLocal && local.hasApiKey,
       localEnvHost: local.host,
       localEnvPort: local.port,
       requiresAuth: probe.requiresAuth
@@ -262,15 +274,21 @@ export function registerHermesIpc(): void {
     const accountId = typeof req.accountId === 'string' ? req.accountId.trim() : ''
     if (!accountId) throw new TypeError('accountId required')
     const baseUrl = normalizeHermesBaseUrl(req.baseUrl)
+    const expectedRevision = getHermesAccountRevision(accountId)
 
-    let effectiveKey = typeof req.apiKey === 'string' ? req.apiKey.trim() : ''
-    if (!effectiveKey && req.useLocalKey) {
+    const suppliedKey = typeof req.apiKey === 'string' ? req.apiKey.trim() : ''
+    let effectiveKey = suppliedKey
+    if (!suppliedKey && req.useLocalKey) {
       const local = readLocalHermesEnv()
-      if (local.apiKey) effectiveKey = local.apiKey
+      if (local.apiKey && sameHermesOrigin(baseUrl, local.baseUrl)) effectiveKey = local.apiKey
     }
+    let keepExistingKey = false
     if (!effectiveKey && req.keepExistingKey) {
-      const prev = getHermesAccount(accountId)
-      if (prev?.apiKey) effectiveKey = prev.apiKey
+      const prev = getHermesAccountMetadata(accountId)
+      if (prev?.hasApiKey && sameHermesOrigin(baseUrl, prev.baseUrl)) {
+        effectiveKey = getHermesAccount(accountId)?.apiKey || ''
+        keepExistingKey = Boolean(effectiveKey)
+      }
     }
 
     const probe = await probeHermesServer({
@@ -292,8 +310,9 @@ export function registerHermesIpc(): void {
     const saved = await saveHermesAccount({
       accountId,
       baseUrl,
-      apiKey: effectiveKey || undefined,
-      keepExistingKey: Boolean(req.keepExistingKey && !effectiveKey),
+      expectedRevision,
+      apiKey: keepExistingKey ? undefined : effectiveKey || undefined,
+      keepExistingKey,
       displayName: req.displayName?.trim() || 'Hermes',
       model: req.model?.trim() || probe.defaultModel
     })
@@ -349,7 +368,7 @@ export function registerHermesIpc(): void {
     if (typeof request !== 'object' || request === null) {
       return { ok: false, status: 0, message: 'Invalid hermes rpc request' }
     }
-    const req = request as HermesRpcRequest
+    const req = request as HermesRpcRequest & { requestId?: string }
     if (typeof req.accountId !== 'string' || typeof req.op !== 'string') {
       return { ok: false, status: 0, message: 'accountId and op required' }
     }

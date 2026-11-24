@@ -10,6 +10,23 @@ function b64Json(obj: unknown): string {
 }
 
 describe('grokTranscriptDecoder', () => {
+  it('retains envelope nonce, streaming state and entry revision when decoding base64', () => {
+    const raw = {
+      entry_id: 'echo', seq: '5', updatedSeq: '7', revision: 3, is_streaming: false,
+      client_nonce: 'wire-nonce', requestId: 'turn-id',
+      body: b64Json({ id: 'inner-id', kind: 'message', text: '你好', clientNonce: 'old-nonce', isStreaming: true })
+    }
+    expect(decodeTranscriptBody(raw)).toMatchObject({ client_nonce: 'wire-nonce', is_streaming: false, text: '你好' })
+    expect(parseGrokTranscriptEntry(raw, 'agent')).toMatchObject({
+      entryId: 'echo', updatedSeq: '7', revision: '3', isStreaming: false,
+      clientNonce: 'wire-nonce', requestId: 'turn-id', role: 'user', text: '你好'
+    })
+  })
+
+  it('ignores choice cards with omitted options', () => {
+    expect(parseGrokMessagingCard({ card_id: 'choice', kind: 'GROK_BOT_MESSAGING_CARD_KIND_CHOICE' }, 'agent')).toEqual({})
+  })
+
   it('decodes send-message text with widget option values and entryId preservation', () => {
     const decoded = parseGrokTranscriptEntry(
       {

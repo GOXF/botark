@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { Download, Eye, FileText, KeyRound, Lock, LogIn, Pause, Play, Plus, Sparkles, Target, Trash2 } from 'lucide-react'
 import { EmptyLine, Section } from '@/components/info/Section'
 import { Button } from '@/components/ui/Button'
@@ -22,6 +22,13 @@ function str(v: unknown): string {
   return typeof v === 'string' ? v : v == null ? '' : String(v)
 }
 
+function useDotConnected(accountId: string): boolean {
+  return useBotStore((s) => {
+    const status = s.accounts[accountId]?.status
+    return status === 'online' || status === 'busy' || status === 'attention'
+  })
+}
+
 /**
  * 1. Dot Credentials (ChatGPT browser login or AT / RT / JSON import) & Rate Limits (`account/rateLimits/read`)
  */
@@ -32,7 +39,7 @@ export function DotCredentialsAndQuotaSection({
   accountId: string
   botId: string
 }) {
-  const status = useBotStore((s) => s.accounts[accountId]?.status)
+  const connected = useDotConnected(accountId)
   const connectAccount = useBotStore((s) => s.connectAccount)
   const renameAccount = useBotStore((s) => s.renameAccount)
   const openDotLogin = useBotStore((s) => s.openDotLogin)
@@ -65,17 +72,23 @@ export function DotCredentialsAndQuotaSection({
   const [busy, setBusy] = useState(false)
   const [hint, setHint] = useState<string>()
   const [error, setError] = useState<string>()
+  const credentialsRefresh = useRef(0)
+  useLayoutEffect(() => () => { credentialsRefresh.current++ }, [accountId, connected])
 
   const refresh = useCallback(async () => {
     const dot = getBridge()?.dot
     if (!dot) return
+    const request = ++credentialsRefresh.current
     setLoading(true)
     setError(undefined)
     try {
       const st = await dot.authStatus(accountId)
+      if (request !== credentialsRefresh.current) return
       setAuthInfo(st)
+      if (!st.signedIn) setRateLimits(null)
       if (st.signedIn) {
         const rlRes = await dot.rpc({ accountId, op: 'rateLimits' }).catch(() => null)
+        if (request !== credentialsRefresh.current) return
         if (rlRes && rlRes.ok && rlRes.data && typeof rlRes.data === 'object') {
           const root = asObj(rlRes.data) || {}
           const rl = asObj(root['rateLimits']) || root
@@ -95,15 +108,15 @@ export function DotCredentialsAndQuotaSection({
         }
       }
     } catch (err) {
-      setError(cleanSidebarError(err))
+      if (request === credentialsRefresh.current) setError(cleanSidebarError(err))
     } finally {
-      setLoading(false)
+      if (request === credentialsRefresh.current) setLoading(false)
     }
   }, [accountId])
 
   useEffect(() => {
     void refresh()
-  }, [refresh, status])
+  }, [refresh, connected])
 
   const handleImportRaw = async () => {
     const dot = getBridge()?.dot
@@ -282,7 +295,7 @@ export function DotOrbitProfilesSection({
   accountId: string
   botId: string
 }) {
-  const status = useBotStore((s) => s.accounts[accountId]?.status)
+  const connected = useDotConnected(accountId)
   const [dots, setDots] = useState<
     Array<{
       id: string
@@ -300,46 +313,69 @@ export function DotOrbitProfilesSection({
   const [busy, setBusy] = useState(false)
   const [hint, setHint] = useState<string>()
   const [error, setError] = useState<string>()
+  const requestGeneration = useRef(0)
+  const selecting = useRef<number | null>(null)
+  useLayoutEffect(() => () => {
+    requestGeneration.current++
+    selecting.current = null
+  }, [accountId, botId, connected])
 
   const refresh = useCallback(async () => {
     const dotBridge = getBridge()?.dot
-    if (!dotBridge?.rpc) return
+    if (!dotBridge?.rpc || selecting.current !== null) return
+    const generation = ++requestGeneration.current
     setLoading(true)
     setError(undefined)
     try {
       const st = await dotBridge.authStatus(accountId)
-      if (!st.signedIn) return
+      if (!st.signedIn || generation !== requestGeneration.current) return
 
       const res = await dotBridge.rpc({ accountId, op: 'listDots', ensureDefault: false })
+      if (generation !== requestGeneration.current) return
       if (res.ok && res.data && typeof res.data === 'object') {
         const d = res.data as {
           items?: typeof dots
           activeDot?: (typeof dots)[number]
         }
         if (Array.isArray(d.items)) setDots(d.items)
-        if (d.activeDot?.id) setActiveDotId(d.activeDot.id)
+        setActiveDotId(d.activeDot?.id ?? '')
       }
     } catch (err) {
-      setError(cleanSidebarError(err))
+      if (generation === requestGeneration.current) setError(cleanSidebarError(err))
     } finally {
-      setLoading(false)
+      if (generation === requestGeneration.current) setLoading(false)
     }
   }, [accountId])
 
   useEffect(() => {
-    if (status === 'online' || status === 'busy') void refresh()
-  }, [refresh, status])
+    if (connected) void refresh()
+    else {
+      setDots([])
+      setActiveDotId('')
+      setLoading(false)
+    }
+    setBusy(false)
+  }, [refresh, connected, botId])
 
   const selectDotProfile = async (dotId: string) => {
     const dotBridge = getBridge()?.dot
     if (!dotBridge?.rpc) return
+    const generation = ++requestGeneration.current
+    selecting.current = generation
     setBusy(true)
+    setLoading(false)
     setError(undefined)
     try {
       const res = await dotBridge.rpc({ accountId, op: 'selectDot', dotId, botId })
-      if (res.ok && res.data && typeof res.data === 'object') {
+      if (generation !== requestGeneration.current) return
+      if (!res.ok) {
+        setError(res.message)
+        return
+      }
+      if (res.data && typeof res.data === 'object') {
         const d = res.data as {
           dot?: { id: string; displayName: string; messagingRoomId: string }
+          roomId?: string
           messages?: Array<{
             id: string
             role: 'user' | 'bot'
@@ -348,7 +384,8 @@ export function DotOrbitProfilesSection({
             media?: ChatMessage['media']
           }>
         }
-        if (d.dot?.id) setActiveDotId(d.dot.id)
+        if (d.dot?.id !== dotId || !d.roomId || d.roomId !== d.dot.messagingRoomId) return
+        setActiveDotId(dotId)
         if (Array.isArray(d.messages)) {
           const hydrated: ChatMessage[] = d.messages
             .filter((m) => (m.text && m.text.trim()) || (m.media && m.media.length > 0))
@@ -365,16 +402,28 @@ export function DotOrbitProfilesSection({
                 ...(m.media && m.media.length > 0 ? { media: m.media } : {})
               }
             })
-          useBotStore.setState((s) => ({
-            messages: { ...s.messages, [botId]: hydrated }
-          }))
+          useBotStore.setState((s) => {
+            const bot = s.bots.find((b) => b.id === botId)
+            if (bot?.activeAccountId !== accountId) return s
+            const byId = new Map(hydrated.map((m) => [m.id, m]))
+            if (bot.activeSessionId === d.roomId) {
+              for (const m of s.messages[botId] ?? []) byId.set(m.id, m)
+            }
+            return {
+              bots: s.bots.map((b) => b === bot ? { ...b, activeSessionId: d.roomId } : b),
+              messages: { ...s.messages, [botId]: [...byId.values()].sort((a, b) => a.createdAt - b.createdAt) }
+            }
+          })
         }
         setHint(`已切换到 ${d.dot?.displayName || dotId}`)
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
+      if (generation === requestGeneration.current) setError(cleanSidebarError(err))
     } finally {
-      setBusy(false)
+      if (selecting.current === generation) {
+        selecting.current = null
+        setBusy(false)
+      }
     }
   }
 
@@ -391,7 +440,8 @@ export function DotOrbitProfilesSection({
       })
       if (res.ok) {
         setNewDotName('')
-        setHint('已创建新的 Dot 实例')
+        const created = res.data as { id?: string }
+        if (created?.id) await selectDotProfile(created.id)
         await refresh()
       } else {
         setError(res.message)
@@ -422,7 +472,23 @@ export function DotOrbitProfilesSection({
     if (!dotBridge?.rpc) return
     setBusy(true)
     try {
-      await dotBridge.rpc({ accountId, op: 'deleteDot', dotId })
+      const result = await dotBridge.rpc({ accountId, op: 'deleteDot', dotId })
+      if (!result.ok) { setError(result.message); return }
+      if (dotId === activeDotId) {
+        const profiles = await dotBridge.rpc({ accountId, op: 'listDots', ensureDefault: false })
+        const next = profiles.ok ? (profiles.data as { activeDot?: { id: string } }).activeDot : undefined
+        if (next) await selectDotProfile(next.id)
+        else {
+          useBotStore.setState((s) => {
+            const bot = s.bots.find((b) => b.id === botId && b.activeAccountId === accountId)
+            if (!bot) return s
+            return {
+              bots: s.bots.map((b) => b === bot ? { ...b, activeSessionId: undefined } : b),
+              messages: { ...s.messages, [botId]: [] }
+            }
+          })
+        }
+      }
       await refresh()
     } finally {
       setBusy(false)
@@ -523,9 +589,12 @@ export function DotOrbitProfilesSection({
  *    Cross-Account Memory Snapshot & Migration (`exportMemory` / `importMemory`), & Threads (`/backend-api/tbo/{id}/threads`)
  */
 export function DotGoalAndThreadsSection({ accountId }: { accountId: string }) {
-  const status = useBotStore((s) => s.accounts[accountId]?.status)
+  const connected = useDotConnected(accountId)
+  const roomId = useBotStore((s) => s.bots.find((b) => b.activeAccountId === accountId)?.activeSessionId)
   const bots = useBotStore((s) => s.bots)
-  const [goal, setGoal] = useState('')
+  const [savedGoal, setSavedGoal] = useState('')
+  const [goalDraft, setGoalDraft] = useState<string>()
+  const goal = goalDraft ?? savedGoal
   const [threads, setThreads] = useState<Array<{ id: string; title: string; updatedAt?: string }>>([])
   const [memorySnapshot, setMemorySnapshot] = useState('')
   const [vaultSealed, setVaultSealed] = useState(false)
@@ -534,6 +603,19 @@ export function DotGoalAndThreadsSection({ accountId }: { accountId: string }) {
   const [busy, setBusy] = useState(false)
   const [hint, setHint] = useState<string>()
   const [error, setError] = useState<string>()
+  const goalRequest = useRef(0)
+  const goalTarget = useRef<symbol | undefined>(undefined)
+  useLayoutEffect(() => {
+    goalTarget.current = Symbol()
+    setSavedGoal('')
+    setGoalDraft(undefined)
+    setThreads([])
+    setBusy(false)
+    return () => {
+      goalTarget.current = undefined
+      goalRequest.current++
+    }
+  }, [accountId, roomId, connected])
 
   const otherDotBots = bots.filter(
     (b) => b.platformId === 'dot' && b.activeAccountId && b.activeAccountId !== accountId
@@ -563,15 +645,17 @@ export function DotGoalAndThreadsSection({ accountId }: { accountId: string }) {
   const refresh = useCallback(async () => {
     const dotBridge = getBridge()?.dot
     if (!dotBridge?.rpc) return
+    const request = ++goalRequest.current
     setLoading(true)
     try {
       const [gRes, tRes] = await Promise.all([
         dotBridge.rpc({ accountId, op: 'getGoal' }).catch(() => null),
         dotBridge.rpc({ accountId, op: 'listThreads' }).catch(() => null)
       ])
+      if (request !== goalRequest.current) return
       if (gRes && gRes.ok && gRes.data && typeof gRes.data === 'object') {
         const go = asObj(gRes.data)
-        setGoal(str(go?.['goal'] ?? ''))
+        setSavedGoal(str(go?.['goal'] ?? ''))
       }
       if (tRes && tRes.ok && tRes.data && typeof tRes.data === 'object') {
         const to = asObj(tRes.data)
@@ -588,28 +672,37 @@ export function DotGoalAndThreadsSection({ accountId }: { accountId: string }) {
         )
       }
     } finally {
-      setLoading(false)
+      if (request === goalRequest.current) setLoading(false)
     }
   }, [accountId])
 
   useEffect(() => {
-    if (status === 'online' || status === 'busy') void refresh()
-  }, [refresh, status])
+    if (connected) void refresh()
+    else setLoading(false)
+  }, [refresh, connected, roomId])
 
   const saveGoal = async () => {
     const dotBridge = getBridge()?.dot
     if (!dotBridge?.rpc) return
+    const target = goalTarget.current
+    const value = goal.trim()
     setBusy(true)
+    setError(undefined)
     try {
-      if (goal.trim()) {
-        await dotBridge.rpc({ accountId, op: 'setGoal', goal: goal.trim() })
-        setHint('已保存长期目标')
-      } else {
-        await dotBridge.rpc({ accountId, op: 'clearGoal' })
-        setHint('已清除目标')
-      }
+      const result = value
+        ? await dotBridge.rpc({ accountId, op: 'setGoal', goal: value })
+        : await dotBridge.rpc({ accountId, op: 'clearGoal' })
+      if (target !== goalTarget.current) return
+      if (!result.ok) { setError(result.message); return }
+      goalRequest.current++
+      setLoading(false)
+      setSavedGoal(value)
+      setGoalDraft((draft) => draft === goalDraft ? undefined : draft)
+      setHint(value ? '已保存长期目标' : '已清除目标')
+    } catch (err) {
+      if (target === goalTarget.current) setError(cleanSidebarError(err))
     } finally {
-      setBusy(false)
+      if (target === goalTarget.current) setBusy(false)
     }
   }
 
@@ -682,7 +775,7 @@ export function DotGoalAndThreadsSection({ accountId }: { accountId: string }) {
         <div className="flex gap-1.5">
           <TextInput
             value={goal}
-            onChange={(e) => setGoal(e.target.value)}
+            onChange={(e) => setGoalDraft(e.target.value)}
             placeholder="设置长期目标…"
             aria-label="Dot goal"
             className="h-7 flex-1 text-[12px]"
@@ -787,7 +880,7 @@ export function DotGoalAndThreadsSection({ accountId }: { accountId: string }) {
  * 4. Dot Library & Dynamic Pages (`/backend-api/files/library/nodes` & `/backend-api/pages`)
  */
 export function DotLibrarySection({ accountId }: { accountId: string }) {
-  const status = useBotStore((s) => s.accounts[accountId]?.status)
+  const connected = useDotConnected(accountId)
   const setActiveDocument = useBotStore((s) => s.setActiveDocument)
   const [nodes, setNodes] = useState<
     Array<{
@@ -871,8 +964,8 @@ export function DotLibrarySection({ accountId }: { accountId: string }) {
   }, [accountId])
 
   useEffect(() => {
-    if (status === 'online' || status === 'busy') void refresh()
-  }, [refresh, status])
+    if (connected) void refresh()
+  }, [refresh, connected])
 
   const handleCreatePage = async () => {
     const dotBridge = getBridge()?.dot

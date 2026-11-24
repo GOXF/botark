@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type KeyboardEvent, type RefObject } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent, type RefObject } from 'react'
 import { getPlatform } from '@adapters/platforms'
 import { adapterRegistry } from '@adapters/registry'
 import type { PlatformId } from '@adapters/types'
@@ -41,12 +41,11 @@ function freshName(base: string, taken: readonly string[]): string {
 export function AddBotDialog() {
   const open = useBotStore((s) => s.addBotOpen)
   const key = useBotStore((s) => s.addBotKey)
-  const setOpen = useBotStore((s) => s.setAddBotOpen)
   if (key === 0) return null
-  return <AddBotFlow key={key} open={open} onClose={() => setOpen(false)} />
+  return <AddBotFlow key={key} wizardId={key} open={open} />
 }
 
-function AddBotFlow({ open, onClose }: { open: boolean; onClose: () => void }) {
+function AddBotFlow({ open, wizardId }: { open: boolean; wizardId: number }) {
   const addBot = useBotStore((s) => s.addBot)
   const bots = useBotStore((s) => s.bots)
   const accounts = useBotStore((s) => s.accounts)
@@ -63,11 +62,20 @@ function AddBotFlow({ open, onClose }: { open: boolean; onClose: () => void }) {
   const [batch, setBatch] = useState(false)
   const [batchBusy, setBatchBusy] = useState(false)
   const [grokAccountChoiceOpen, setGrokAccountChoiceOpen] = useState(false)
+  const [grokSyncError, setGrokSyncError] = useState<string>()
   const [hermesConnectOpen, setHermesConnectOpen] = useState(false)
   const [hermesReady, setHermesReady] = useState<{ handle: string; displayName: string } | null>(null)
   const { phase } = login
   const t = useT()
   const locale = usePrefsStore((s) => s.locale)
+
+  const isCurrentWizard = useCallback(() => {
+    const state = useBotStore.getState()
+    return state.addBotOpen && state.addBotKey === wizardId
+  }, [wizardId])
+  const onClose = useCallback(() => {
+    if (isCurrentWizard()) useBotStore.getState().setAddBotOpen(false)
+  }, [isCurrentWizard])
 
   const liveGrokAccounts = Object.values(accounts).filter(
     (a) =>
@@ -78,8 +86,11 @@ function AddBotFlow({ open, onClose }: { open: boolean; onClose: () => void }) {
   // If opened with `initialPlatform === 'grok'` (e.g. from onboarding or CLI `--open-grok-login`),
   // jump straight into Grok login or account picker automatically!
   const autoStartedRef = useRef(false)
+  useEffect(() => () => {
+    autoStartedRef.current = false
+  }, [])
   useEffect(() => {
-    if (!open || autoStartedRef.current || !initialPlatform) return
+    if (!open || !isCurrentWizard() || autoStartedRef.current || !initialPlatform) return
     if (initialPlatform === 'grok') {
       autoStartedRef.current = true
       if (liveGrokAccounts.length > 0) {
@@ -97,28 +108,38 @@ function AddBotFlow({ open, onClose }: { open: boolean; onClose: () => void }) {
       autoStartedRef.current = true
       login.start('cue')
     }
-  }, [open, initialPlatform, liveGrokAccounts.length])
+  }, [open, initialPlatform, isCurrentWizard, liveGrokAccounts.length])
 
   // Grok Bot: 1 account = many server-side Bots. As soon as sign-in completes,
   // sync all Bots under that Grok account into the left sidebar and close!
   useEffect(() => {
-    if (phase.kind !== 'signed-in' || phase.platformId !== 'grok' || grokSyncedRef.current) return
+    if (!open || !isCurrentWizard() || phase.kind !== 'signed-in' || phase.platformId !== 'grok' || grokSyncedRef.current) return
     grokSyncedRef.current = true
+    const accountId = login.accountId
     login.keep()
     created.current = true
-    void syncGrokAccountBots(login.accountId, {
-      includeDismissed: true,
-      selectFirst: true
-    }).finally(() => {
-      onClose()
-    })
-  }, [phase, login, syncGrokAccountBots, onClose])
+    void syncGrokAccountBots(accountId, { includeDismissed: true }).then(
+      () => {
+        if (!isCurrentWizard()) return
+        const first = useBotStore.getState().bots.find(
+          (bot) => bot.platformId === 'grok' && bot.accountIds.includes(accountId)
+        )
+        if (first) selectBot(first.id)
+        onClose()
+      },
+      (error: unknown) => {
+        if (isCurrentWizard()) setGrokSyncError(errorMessage(error))
+      }
+    )
+  }, [open, phase, login, syncGrokAccountBots, selectBot, isCurrentWizard, onClose])
 
   // GOXF: in-app confirm instead of window.confirm while a batch import is running.
   const [pendingLeave, setPendingLeave] = useState<(() => void) | null>(null)
   const guardLeaveBatch = (leave: () => void) => (batch && batchBusy ? setPendingLeave(() => leave) : leave())
 
-  const close = () => guardLeaveBatch(discardAndClose)
+  const close = () => {
+    if (isCurrentWizard()) guardLeaveBatch(discardAndClose)
+  }
   const discardAndClose = () => {
     if (hermesReady && !created.current) {
       void window.electron?.hermes?.clearAuth?.(login.accountId).catch(() => undefined)
@@ -140,6 +161,7 @@ function AddBotFlow({ open, onClose }: { open: boolean; onClose: () => void }) {
   }
 
   const finish = (platformId: PlatformId, name: string, avatar: string | undefined) => {
+    if (!isCurrentWizard()) return
     login.keep()
     created.current = true
     if (platformId === 'cue') {
@@ -217,7 +239,10 @@ function AddBotFlow({ open, onClose }: { open: boolean; onClose: () => void }) {
           <IconButton
             label={t('Back')}
             size="sm"
-            onClick={() => setHermesConnectOpen(false)}
+            onClick={() => {
+              login.discard()
+              setHermesConnectOpen(false)
+            }}
             className="-ml-1"
           >
             <ChevronLeft />
@@ -245,6 +270,10 @@ function AddBotFlow({ open, onClose }: { open: boolean; onClose: () => void }) {
         ;(preferred ?? listRef.current?.querySelector<HTMLButtonElement>('button:not(:disabled)'))?.focus()
       }}
       onCloseAutoFocus={(event) => {
+        if (useBotStore.getState().addBotKey !== wizardId) {
+          event.preventDefault()
+          return
+        }
         if (!created.current) return
         event.preventDefault()
         window.dispatchEvent(new Event('bothub:focus-composer'))
@@ -269,6 +298,7 @@ function AddBotFlow({ open, onClose }: { open: boolean; onClose: () => void }) {
             <GrokExistingAccountStep
               accounts={liveGrokAccounts}
               onCreated={(newBotId) => {
+                if (!isCurrentWizard()) return
                 created.current = true
                 if (newBotId) selectBot(newBotId)
                 onClose()
@@ -283,6 +313,7 @@ function AddBotFlow({ open, onClose }: { open: boolean; onClose: () => void }) {
             <HermesConnectStep
               key="hermes-connect"
               accountId={login.accountId}
+              isCurrentWizard={isCurrentWizard}
               onConnected={(info) => {
                 setHermesReady(info)
               }}
@@ -292,6 +323,7 @@ function AddBotFlow({ open, onClose }: { open: boolean; onClose: () => void }) {
             <NameStep
               key="hermes-name"
               platformId="hermes"
+              isCurrentWizard={isCurrentWizard}
               template={template}
               onTemplate={setTemplate}
               defaultName={freshName(
@@ -328,16 +360,23 @@ function AddBotFlow({ open, onClose }: { open: boolean; onClose: () => void }) {
           )}
           {!batch && phase.kind === 'signed-in' && phase.platformId === 'grok' && (
             <div className="flex flex-col items-center justify-center gap-3 py-8 text-center">
-              <RefreshCw className="size-5 animate-spin text-ink-secondary" />
-              <p className="text-[13.5px] text-ink-secondary">
-                登录成功，正在将该账号下的全部 Grok Bot 同步到左侧列表…
-              </p>
+              {grokSyncError ? (
+                <p className="text-[13.5px] text-status-error" role="alert">{grokSyncError}</p>
+              ) : (
+                <>
+                  <RefreshCw className="size-5 animate-spin text-ink-secondary" />
+                  <p className="text-[13.5px] text-ink-secondary">
+                    登录成功，正在将该账号下的全部 Grok Bot 同步到左侧列表…
+                  </p>
+                </>
+              )}
             </div>
           )}
           {!batch && phase.kind === 'signed-in' && phase.platformId !== 'grok' && (
             <NameStep
               key="name"
               platformId={phase.platformId}
+              isCurrentWizard={isCurrentWizard}
               template={template}
               onTemplate={setTemplate}
               defaultName={freshName(
@@ -398,12 +437,18 @@ function GrokExistingAccountStep({
   const [newName, setNewName] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+  const requestId = useRef(0)
+
+  useLayoutEffect(() => () => {
+    requestId.current++
+  }, [])
 
   const handleCreateOnAccount = async () => {
     const trimmed = newName.trim()
-    if (!trimmed || !targetAccId) return
+    if (busy || !trimmed || !targetAccId) return
     const grok = getBridge()?.grok
     if (!grok?.rpc) return
+    const request = ++requestId.current
     setBusy(true)
     setError('')
     try {
@@ -427,31 +472,34 @@ function GrokExistingAccountStep({
       })
       if (!res.ok) throw new Error(res.message || '创建失败')
       await syncGrokAccountBots(targetAccId, { includeDismissed: true })
+      if (requestId.current !== request) return
       const createdBot = useBotStore
         .getState()
         .bots.find((b) => b.platformId === 'grok' && b.selectedAgentId === agentId)
       onCreated(createdBot?.id)
     } catch (e) {
-      setError(errorMessage(e))
+      if (requestId.current === request) setError(errorMessage(e))
     } finally {
-      setBusy(false)
+      if (requestId.current === request) setBusy(false)
     }
   }
 
   const handleSyncAll = async () => {
-    if (!targetAccId) return
+    if (busy || !targetAccId) return
+    const request = ++requestId.current
     setBusy(true)
     setError('')
     try {
-      await syncGrokAccountBots(targetAccId, { includeDismissed: true, selectFirst: true })
+      await syncGrokAccountBots(targetAccId, { includeDismissed: true })
+      if (requestId.current !== request) return
       const first = useBotStore
         .getState()
         .bots.find((b) => b.platformId === 'grok' && b.accountIds.includes(targetAccId))
       onCreated(first?.id)
     } catch (e) {
-      setError(errorMessage(e))
+      if (requestId.current === request) setError(errorMessage(e))
     } finally {
-      setBusy(false)
+      if (requestId.current === request) setBusy(false)
     }
   }
 
@@ -489,7 +537,8 @@ function GrokExistingAccountStep({
               size="xs"
               variant="pill"
               value={targetAccId}
-              onValueChange={(next) => setTargetAccId(next)}
+              disabled={busy}
+              onValueChange={setTargetAccId}
               className="max-w-48"
               options={accounts.map((a) => ({
                 value: a.id,
@@ -952,6 +1001,7 @@ export function LoginWaiting({
 
 function NameStep({
   platformId,
+  isCurrentWizard,
   template,
   onTemplate,
   defaultName,
@@ -959,6 +1009,7 @@ function NameStep({
   onDone
 }: {
   platformId: PlatformId
+  isCurrentWizard: () => boolean
   template: BotTemplate
   onTemplate: (template: BotTemplate) => void
   defaultName: string
@@ -967,7 +1018,9 @@ function NameStep({
 }) {
   const [name, setName] = useState('')
   const [avatar, setAvatar] = useState<string | undefined>()
+  const [decoding, setDecoding] = useState(false)
   const [error, setError] = useState('')
+  const selectionId = useRef(0)
   const fileRef = useRef<HTMLInputElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const finalName = name.trim() || defaultName
@@ -980,14 +1033,23 @@ function NameStep({
   const emoji = template.emoji
 
   useEffect(() => inputRef.current?.focus(), [])
+  useLayoutEffect(() => () => {
+    selectionId.current++
+  }, [])
 
   const pickFile = async (file: File | undefined) => {
     if (!file) return
+    const selection = ++selectionId.current
+    const isCurrent = () => selectionId.current === selection && isCurrentWizard()
+    setDecoding(true)
     setError('')
     try {
-      setAvatar(await avatarFromFile(file))
+      const nextAvatar = await avatarFromFile(file)
+      if (isCurrent()) setAvatar(nextAvatar)
     } catch (failure) {
-      setError(errorMessage(failure))
+      if (isCurrent()) setError(errorMessage(failure))
+    } finally {
+      if (isCurrent()) setDecoding(false)
     }
   }
 
@@ -996,7 +1058,7 @@ function NameStep({
       className="flex animate-step-in flex-col items-center gap-5 pt-2"
       onSubmit={(event) => {
         event.preventDefault()
-        onDone(finalName, avatar)
+        if (!decoding) onDone(finalName, avatar)
       }}
     >
       <div className="relative">
@@ -1058,12 +1120,17 @@ function NameStep({
       </div>
 
       <div className="flex w-full items-center justify-end gap-2">
-        {avatar && (
-          <Button variant="ghost" className="mr-auto -ml-2" onClick={() => setAvatar(undefined)}>
+        {(avatar || decoding) && (
+          <Button variant="ghost" className="mr-auto -ml-2" onClick={() => {
+            selectionId.current++
+            setDecoding(false)
+            setError('')
+            setAvatar(undefined)
+          }}>
             {t('Remove photo')}
           </Button>
         )}
-        <Button variant="primary" type="submit">
+        <Button variant="primary" type="submit" disabled={decoding}>
           {t('Done')}
         </Button>
       </div>
@@ -1111,11 +1178,25 @@ function TemplateStep({ selected, onPick }: { selected: string; onPick: (templat
   )
 }
 
+function isLocalHermesUrl(raw: string): boolean {
+  const trimmed = raw.trim()
+  if (!trimmed) return false
+  try {
+    const url = new URL(/^[a-z]+:\/\//i.test(trimmed) ? trimmed : `http://${trimmed}`)
+    return (url.protocol === 'http:' || url.protocol === 'https:') &&
+      (url.hostname === 'localhost' || url.hostname === '[::1]' || /^127\./.test(url.hostname) && /^[\d.]+$/.test(url.hostname))
+  } catch {
+    return false
+  }
+}
+
 function HermesConnectStep({
   accountId,
+  isCurrentWizard,
   onConnected
 }: {
   accountId: string
+  isCurrentWizard: () => boolean
   onConnected: (info: { handle: string; displayName: string }) => void
 }) {
   const platform = getPlatform('hermes')
@@ -1133,26 +1214,38 @@ function HermesConnectStep({
   } | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+  const detectionId = useRef(0)
+  const connectionId = useRef(0)
+  const localUrl = isLocalHermesUrl(baseUrl)
+
+  useLayoutEffect(() => () => {
+    detectionId.current++
+    connectionId.current++
+  }, [])
 
   const runDetect = async (overrideUrl?: string) => {
     const hermes = getBridge()?.hermes
-    if (!hermes?.detectLocal) return
+    if (!hermes?.detectLocal || (overrideUrl !== undefined && !isLocalHermesUrl(overrideUrl))) return
+    const detection = ++detectionId.current
+    const isCurrent = () => detectionId.current === detection && isCurrentWizard()
     setDetecting(true)
     setError('')
     try {
       const info = await hermes.detectLocal(overrideUrl)
+      if (!isCurrent()) return
+      const hasLocalEnvKey = isLocalHermesUrl(overrideUrl ?? info.baseUrl) && info.hasLocalEnvKey
       setDetected({
         reachable: info.reachable,
         version: info.version,
-        hasLocalEnvKey: info.hasLocalEnvKey,
+        hasLocalEnvKey,
         requiresAuth: info.requiresAuth
       })
       if (!overrideUrl && info.baseUrl) setBaseUrl(info.baseUrl)
-      if (info.hasLocalEnvKey) setUseLocalKey(true)
+      setUseLocalKey(hasLocalEnvKey)
     } catch {
       /* ignore */
     } finally {
-      setDetecting(false)
+      if (isCurrent()) setDetecting(false)
     }
   }
 
@@ -1162,11 +1255,16 @@ function HermesConnectStep({
 
   const handleConnect = async (event: React.FormEvent) => {
     event.preventDefault()
+    if (busy) return
     const hermes = getBridge()?.hermes
     if (!hermes?.configure) {
       setError('需要在 Electron 桌面端中连接 Hermes')
       return
     }
+    const connection = ++connectionId.current
+    const isCurrent = () => connectionId.current === connection && isCurrentWizard()
+    detectionId.current++
+    setDetecting(false)
     setBusy(true)
     setError('')
     try {
@@ -1174,10 +1272,14 @@ function HermesConnectStep({
         accountId,
         baseUrl: baseUrl.trim(),
         apiKey: apiKey.trim() || undefined,
-        useLocalKey: !apiKey.trim() && useLocalKey,
+        ...(localUrl && !apiKey.trim() && useLocalKey ? { useLocalKey: true } : {}),
         model: model.trim() || undefined,
         displayName: 'Hermes'
       })
+      if (!isCurrent()) {
+        if (st.signedIn) await hermes.clearAuth?.(accountId)
+        return
+      }
       if (!st.signedIn) {
         setError(st.error || '无法连接 Hermes API Server，请检查地址与 API_SERVER_KEY')
         return
@@ -1187,9 +1289,9 @@ function HermesConnectStep({
         displayName: st.displayName || 'Hermes'
       })
     } catch (e) {
-      setError(errorMessage(e))
+      if (isCurrent()) setError(errorMessage(e))
     } finally {
-      setBusy(false)
+      if (isCurrent()) setBusy(false)
     }
   }
 
@@ -1209,8 +1311,8 @@ function HermesConnectStep({
           type="button"
           size="sm"
           variant="ghost"
-          disabled={detecting || busy}
-          onClick={() => void runDetect(baseUrl.trim() || undefined)}
+          disabled={detecting || busy || !localUrl}
+          onClick={() => void runDetect(baseUrl.trim())}
         >
           <RefreshCw className={cn('size-3.5', detecting && 'animate-spin')} />
           {t('Detect')}
@@ -1222,7 +1324,14 @@ function HermesConnectStep({
           <span className="text-[12px] font-medium text-ink-secondary">{t('Server URL')}</span>
           <input
             value={baseUrl}
-            onChange={(e) => setBaseUrl(e.target.value)}
+            disabled={busy}
+            onChange={(e) => {
+              detectionId.current++
+              setBaseUrl(e.target.value)
+              setUseLocalKey(false)
+              setDetected(null)
+              setDetecting(false)
+            }}
             placeholder="http://127.0.0.1:8642"
             spellCheck={false}
             required
@@ -1251,7 +1360,7 @@ function HermesConnectStep({
           />
         </label>
 
-        {detected?.hasLocalEnvKey && !apiKey.trim() && (
+        {localUrl && detected?.hasLocalEnvKey && !apiKey.trim() && (
           <div className="flex items-center justify-between gap-3 rounded-xl bg-sunken/50 px-3 py-2">
             <span className="text-[12px] text-ink-secondary">自动读取 ~/.hermes/.env 密钥</span>
             <SwitchPill checked={useLocalKey} onCheckedChange={setUseLocalKey} />

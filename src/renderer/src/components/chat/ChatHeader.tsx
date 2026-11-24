@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react'
 import { HarkProjects } from '../hark/HarkProjects'
 import { ChevronRight, Globe, Pin, PinOff, RefreshCw } from 'lucide-react'
-import { useEffect, useState } from 'react'
+import { memo, useEffect, useState } from 'react'
 import { PaneHeader } from '@/components/layout/PaneHeader'
 import { getPlatformInspector } from '@/components/info/platformInspector'
 import { ArkComposeNewSvg, ArkDrawerToggleSvg, ArkExportDocSvg } from '@/components/ui/ArkGlyphs'
@@ -9,19 +9,17 @@ import { triggerShareConversation } from './ShareConversationDialog'
 import { BotAvatar } from '@/components/ui/Avatar'
 import { IconButton } from '@/components/ui/IconButton'
 import { STATUS_LABEL } from '@/components/ui/Status'
-import { getBridge } from '@/lib/bridge'
 import { cn } from '@/lib/cn'
 import { getBotStatus } from '@/lib/selectors'
 import { shortcutLabel } from '@/lib/shortcuts'
 import { useBotStore } from '@/store/botStore'
 import { usePanes, type WorkspaceView } from '@/store/paneStore'
 import { adapterRegistry } from '@adapters/registry'
-import type { Bot, BotAccount } from '@/types'
+import type { Bot } from '@/types'
 import { t } from '@/lib/i18n'
 
 interface ChatHeaderProps {
   bot: Bot
-  accounts: BotAccount[]
   /** GOXF v13: a pane in a split keeps only "new conversation"; the pane's own buttons go in `extra`. */
   compact?: boolean
   extra?: ReactNode
@@ -65,7 +63,9 @@ function useEnsureGrokAgentBound(bot: Bot): void {
       adapter?.bindConversationAgent?.(bot.id, bot.selectedAgentId, account.id)
       return
     }
+    let current = true
     const apply = (list: AgentOption[]) => {
+      if (!current) return
       const pick = list[0]?.id
       if (!pick) return
       adapter?.bindConversationAgent?.(bot.id, pick, account.id)
@@ -80,11 +80,11 @@ function useEnsureGrokAgentBound(bot: Bot): void {
       ?.refreshAgents?.(account.id)
       .then((list) => apply((list ?? []).map((a) => ({ id: a.id, name: a.name }))))
       .catch(() => undefined)
+    return () => { current = false }
   }, [bot.id, bot.platformId, bot.selectedAgentId, account?.id, account?.status, setSelectedAgent])
 }
 
-export function ChatHeader({ bot, accounts: _accounts, compact = false, extra, merged = false, leading }: ChatHeaderProps) {
-  const allAccounts = useBotStore((s) => s.accounts)
+export const ChatHeader = memo(function ChatHeader({ bot, compact = false, extra, merged = false, leading }: ChatHeaderProps) {
   const hasMessages = useBotStore((s) => (s.messages[bot.id]?.length ?? 0) > 0)
   const infoOpen = useBotStore((s) => s.infoPanelOpen)
   const toggleInfoPanel = useBotStore((s) => s.toggleInfoPanel)
@@ -94,50 +94,41 @@ export function ChatHeader({ bot, accounts: _accounts, compact = false, extra, m
   const startNewMuseSession = useBotStore((s) => s.startNewMuseSession)
   const startNewHermesSession = useBotStore((s) => s.startNewHermesSession)
   const startNewAntigravitySession = useBotStore((s) => s.startNewAntigravitySession)
-  const setSelectedAgent = useBotStore((s) => s.setSelectedAgent)
+  const startNewGrokSession = useBotStore((s) => s.startNewGrokSession)
   const connectAccount = useBotStore((s) => s.connectAccount)
   const typing = useBotStore((s) => s.typing[bot.id] === true)
-  const activeAccount = allAccounts[bot.activeAccountId]
+  const activeAccount = useBotStore((s) => s.accounts[bot.activeAccountId])
   const inspector = getPlatformInspector(bot.platformId)
   const [startingFresh, setStartingFresh] = useState(false)
 
+  const [newConversationError, setNewConversationError] = useState<string>()
+
   const handleNewConversation = async () => {
-    if (bot.platformId === 'meta-muse') {
-      await startNewMuseSession(bot.id)
-      return
-    }
-    if (bot.platformId === 'hermes') {
-      setStartingFresh(true)
-      try {
-        await startNewHermesSession(bot.id)
-      } finally {
-        setStartingFresh(false)
+    setStartingFresh(true)
+    setNewConversationError(undefined)
+    try {
+      switch (bot.platformId) {
+        case 'meta-muse':
+          await startNewMuseSession(bot.id)
+          break
+        case 'hermes':
+          await startNewHermesSession(bot.id)
+          break
+        case 'antigravity':
+          startNewAntigravitySession(bot.id)
+          break
+        case 'grok':
+          await startNewGrokSession(bot.id)
+          break
       }
-      return
-    }
-    if (bot.platformId === 'antigravity') {
-      startNewAntigravitySession(bot.id)
-      return
-    }
-    if (bot.platformId === 'grok' && bot.activeAccountId && bot.selectedAgentId) {
-      const grok = getBridge()?.grok
-      if (!grok?.rpc) return
-      setStartingFresh(true)
-      try {
-        await grok.rpc({
-          accountId: bot.activeAccountId,
-          op: 'call',
-          method: 'StartFreshGrokBotConversation',
-          params: { agent_id: bot.selectedAgentId }
-        })
-        setSelectedAgent(bot.id, bot.selectedAgentId)
-      } finally {
-        setStartingFresh(false)
-      }
+    } catch (error) {
+      setNewConversationError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setStartingFresh(false)
     }
   }
 
-  const status = getBotStatus(bot, allAccounts)
+  const status = useBotStore((s) => getBotStatus(bot, s.accounts))
   const activity = useBotStore((s) => s.activity[bot.activeAccountId])
   const activityLine = activity
     ? `${activity.emoji ? activity.emoji + ' ' : ''}${activity.text || (activity.busy ? t('Working…') : '')}${
@@ -196,6 +187,7 @@ export function ChatHeader({ bot, accounts: _accounts, compact = false, extra, m
   )
 
   return (
+    <>
     <PaneHeader className="gap-3 pr-3">
       <div className={cn('flex min-w-0 flex-1 items-center gap-2', merged && '@container')}>
         {merged && leading}
@@ -278,5 +270,11 @@ export function ChatHeader({ bot, accounts: _accounts, compact = false, extra, m
         {compact && extra}
       </div>
     </PaneHeader>
+    {newConversationError && (
+      <p role="alert" className="mx-6 my-2 text-[13px] text-status-error">
+        {t('Could not start a new conversation. {reason}', { reason: newConversationError })}
+      </p>
+    )}
+    </>
   )
-}
+})

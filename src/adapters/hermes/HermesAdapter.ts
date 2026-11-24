@@ -1,5 +1,6 @@
 import { createId } from '@shared/id'
-import type { HermesMainEvent, HermesRpcRequest, HermesRpcResponse } from '@shared/ipc'
+import type { HermesRpcRequest, HermesRpcResponse } from '@shared/ipc'
+import type { HermesTurnEvent } from './events'
 import { getBotHubBridge } from '../meta-muse/electronBridge'
 import { statusAfterSendFailure } from '../sendFailure'
 import {
@@ -19,13 +20,14 @@ import {
   type Unsubscribe
 } from '../types'
 
-async function invokeHermesRpc(request: HermesRpcRequest): Promise<unknown> {
+async function invokeHermesRpc(request: HermesRpcRequest & { requestId?: string }): Promise<unknown> {
   const bridge = getBotHubBridge()?.hermes
   if (!bridge?.rpc) {
     throw new AdapterError('not-connected', 'Hermes IPC unavailable (Electron main required)')
   }
   const res = (await bridge.rpc(request)) as HermesRpcResponse
   if (!res.ok) {
+    if (res.code === 'aborted') throw new DOMException(res.message, 'AbortError')
     throw new AdapterError(
       res.status === 401 || res.status === 403 ? 'not-connected' : 'network',
       res.message || `Hermes RPC failed (${res.status})`
@@ -42,7 +44,7 @@ async function invokeHermesRpc(request: HermesRpcRequest): Promise<unknown> {
 export class HermesAdapter implements PlatformAdapter {
   readonly id = 'hermes' as const
   readonly name = 'Hermes'
-  private readonly activeSends = new Map<string, { conversationId: string }>()
+  private readonly activeSends = new Map<string, { conversationId: string; requestId: string; sessionId?: string }>()
 
   private readonly accounts = new Map<string, PlatformAccount>()
   private readonly statuses = new Map<string, ConnectionStatus>()
@@ -60,7 +62,9 @@ export class HermesAdapter implements PlatformAdapter {
     this.bridgeUnsub = b.hermes.onEvent((event) => this.handleMainEvent(event))
   }
 
-  private handleMainEvent(event: HermesMainEvent): void {
+  private handleMainEvent(event: HermesTurnEvent): void {
+    const send = this.activeSends.get(event.accountId)
+    if (event.requestId && send?.requestId !== event.requestId) return
     if (event.type === 'accepted') {
       this.pendingAcceptances.get(event.requestId)?.()
       return
@@ -69,6 +73,7 @@ export class HermesAdapter implements PlatformAdapter {
       this.emit({
         type: 'activity',
         accountId: event.accountId,
+        sessionId: send?.sessionId ?? event.sessionId,
         activity: {
           code: event.activityCode,
           text: event.activityText ?? null,
@@ -101,7 +106,11 @@ export class HermesAdapter implements PlatformAdapter {
     }
 
     if (event.type === 'stream') {
-      const convId = event.conversationId ?? event.accountId
+      if (!send || event.requestId !== send.requestId) return
+      const convId = send.conversationId
+      // If the gateway recreated the session, match the selection that
+      // initiated the send until the receipt updates the session ID.
+      const sessionId = send.sessionId ?? event.sessionId
       const tools = event.tools as MuseToolCall[] | undefined
       const media = event.media as MuseMediaPart[] | undefined
       if (!event.done) {
@@ -109,6 +118,7 @@ export class HermesAdapter implements PlatformAdapter {
           type: 'typing',
           conversationId: convId,
           accountId: event.accountId,
+          sessionId,
           isTyping: true
         })
         if (event.text || tools?.length || media?.length) {
@@ -117,6 +127,7 @@ export class HermesAdapter implements PlatformAdapter {
             messageId: event.messageId,
             conversationId: convId,
             accountId: event.accountId,
+            sessionId,
             text: event.text,
             tools,
             media
@@ -127,6 +138,7 @@ export class HermesAdapter implements PlatformAdapter {
           type: 'typing',
           conversationId: convId,
           accountId: event.accountId,
+          sessionId,
           isTyping: false
         })
         this.setStatus(event.accountId, 'online')
@@ -137,6 +149,7 @@ export class HermesAdapter implements PlatformAdapter {
               id: event.messageId,
               conversationId: convId,
               accountId: event.accountId,
+              sessionId,
               text: event.text,
               createdAt: Date.now(),
               ...(tools?.length ? { tools } : {}),
@@ -232,22 +245,25 @@ export class HermesAdapter implements PlatformAdapter {
   }
 
   async disconnect(accountId: string): Promise<void> {
-    await invokeHermesRpc({ accountId, op: 'stopRun' }).catch(() => undefined)
+    await invokeHermesRpc({ accountId, op: 'stopRun' })
     this.setStatus(accountId, 'offline')
   }
 
   async sendMessage(message: OutgoingMessage): Promise<SendReceipt> {
+    message.signal?.throwIfAborted()
     this.bindBridgeEvents()
     const previous = this.activeSends.get(message.accountId)
-    const send = { conversationId: message.conversationId }
+    const { accountId, conversationId, sessionId } = message
+    const requestId = createId('hermes_req')
+    const send = { conversationId, requestId, sessionId }
     this.activeSends.set(message.accountId, send)
-    if (previous && previous.conversationId !== message.conversationId) {
-      this.emit({ type: 'typing', accountId: message.accountId, isTyping: false, ...previous })
+    if (previous && previous.conversationId !== conversationId) {
+      this.emit({ type: 'typing', accountId, isTyping: false, conversationId: previous.conversationId, sessionId: previous.sessionId })
     }
     const finishTyping = () => {
       if (this.activeSends.get(message.accountId) !== send) return false
       this.activeSends.delete(message.accountId)
-      this.emit({ type: 'typing', accountId: message.accountId, isTyping: false, ...send })
+      this.emit({ type: 'typing', accountId, isTyping: false, conversationId, sessionId })
       return true
     }
     this.setStatus(message.accountId, 'busy')
@@ -255,19 +271,23 @@ export class HermesAdapter implements PlatformAdapter {
       type: 'typing',
       conversationId: message.conversationId,
       accountId: message.accountId,
+      sessionId,
       isTyping: true
     })
 
-    const sessionId = message.sessionId
     let accepted = false
-    const requestId = createId('hermes_req')
     const markAccepted = () => {
       if (accepted) return
       accepted = true
       message.onAccepted?.()
     }
+    const onAbort = () => {
+      void invokeHermesRpc({ accountId, op: 'stopRun', requestId }).catch(() => undefined)
+    }
     this.pendingAcceptances.set(requestId, markAccepted)
     try {
+      message.signal?.throwIfAborted()
+      message.signal?.addEventListener('abort', onAbort, { once: true })
       const res = (await invokeHermesRpc({
         accountId: message.accountId,
         op: 'sendMessage',
@@ -318,7 +338,7 @@ export class HermesAdapter implements PlatformAdapter {
         })
       }
       const detail = error instanceof Error ? error.message : String(error)
-      if (accepted && /aborted|取消|中断/i.test(detail)) {
+      if (accepted && error instanceof Error && error.name === 'AbortError') {
         if (current) this.setStatus(message.accountId, 'online')
         return { messageId: createId('msg'), acceptedAt: Date.now(), sessionId, noReply: true }
       }
@@ -326,6 +346,7 @@ export class HermesAdapter implements PlatformAdapter {
       if (current) this.setStatus(message.accountId, next, next === 'error' ? detail : undefined)
       throw error instanceof AdapterError ? error : new AdapterError('network', detail)
     } finally {
+      message.signal?.removeEventListener('abort', onAbort)
       this.pendingAcceptances.delete(requestId)
     }
   }

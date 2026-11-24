@@ -124,7 +124,7 @@ export async function uploadWorkspaceFile(
     await gw.request(
       'fs.write',
       { path: target, data_base64: '', overwrite: true, append: false, create_parent: true },
-      360_000
+      360_000, opts.signal
     )
   } else {
     let offset = 0
@@ -141,7 +141,7 @@ export async function uploadWorkspaceFile(
           append: i !== 0,
           create_parent: i === 0
         },
-        360_000
+        360_000, opts.signal
       )
       offset = end
     }
@@ -151,7 +151,7 @@ export async function uploadWorkspaceFile(
     await gw.request(
       'fs.rename',
       { source: staging, destination: dest, create_parent: true, overwrite: true },
-      120_000
+      120_000, opts.signal
     )
   }
   return dest
@@ -160,43 +160,139 @@ export async function uploadWorkspaceFile(
 const PREVIEW_MAX = 8 * 1024 * 1024
 const VIDEO_PREVIEW_MAX = 32 * 1024 * 1024
 
-export async function fetchFsRawPreview(
-  gw: MuseNativeGateway,
+export const MUSE_WORKSPACE_DOWNLOAD = 'workspace.download'
+
+export interface MuseWorkspaceFile {
   path: string
-): Promise<{ path: string; mimeType: string; dataBase64: string; byteLength: number }> {
-  const p = normalizeFsPath(path)
-  const maxBytes = /\.(mp4|m4v|webm|mov|mkv|avi|mp3|wav|m4a|ogg|flac)(?:[?#].*)?$/i.test(p)
+  mimeType: string
+  dataBase64: string
+  byteLength: number
+  truncated: boolean
+}
+
+function previewLimit(path: string): number {
+  return /\.(mp4|m4v|webm|mov|mkv|avi|mp3|wav|m4a|ogg|flac)(?:[?#].*)?$/i.test(path)
     ? VIDEO_PREVIEW_MAX
     : PREVIEW_MAX
-  let res: { body: Uint8Array; contentType?: string }
+}
+
+function contentRange(value?: string): { start: number; end: number; length: number | undefined } | undefined {
+  const match = /^bytes (\d+)-(\d+)\/(\d+|\*)$/i.exec(value ?? '')
+  if (!match) return undefined
+  const start = Number(match[1])
+  const end = Number(match[2])
+  const length = match[3] === '*' ? undefined : Number(match[3])
+  if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || end < start ||
+      (length !== undefined && (!Number.isSafeInteger(length) || end >= length))) return undefined
+  return { start, end, length }
+}
+
+function formatWorkspaceFile(path: string, bytes: Uint8Array, contentType: string | undefined, truncated: boolean): MuseWorkspaceFile {
+  return {
+    path,
+    mimeType: inferMediaMime({
+      headerMime: contentType, nameOrPath: path, bytes, fallback: guessMime(path) || 'application/octet-stream'
+    }),
+    dataBase64: bytesToBase64(bytes),
+    byteLength: bytes.byteLength,
+    truncated
+  }
+}
+
+function checkFullResponse(status: number, received: number, length?: number, truncated?: boolean): void {
+  if (status !== 200 || truncated || (length !== undefined && received !== length)) {
+    throw new Error('Muse did not return the complete file')
+  }
+}
+
+export async function fetchFsRawPreview(gw: MuseNativeGateway, path: string): Promise<MuseWorkspaceFile> {
+  return fetchFsRaw(gw, path, false)
+}
+
+export async function downloadFsRawFile(gw: MuseNativeGateway, path: string): Promise<MuseWorkspaceFile> {
+  return fetchFsRaw(gw, path, true)
+}
+
+async function fetchFsRaw(gw: MuseNativeGateway, path: string, download: boolean): Promise<MuseWorkspaceFile> {
+  const p = normalizeFsPath(path)
+  const maxBytes = previewLimit(p)
+  const fetch = (filePath: string) => gw.requestBinary('fs.raw', download ? { path: filePath } : {
+    path: filePath, _range: { start: 0, end: maxBytes - 1 }
+  }, 120_000, download ? undefined : maxBytes)
   let resolvedPath = p
+  let res: Awaited<ReturnType<typeof fetch>>
   try {
-    res = await gw.requestBinary('fs.raw', { path: p, _range: { start: 0, end: maxBytes - 1 } }, 120_000)
-  } catch (err) {
-    // If a relative path like `images/out.png` 404s, retry under `workspace/`.
-    if (!p.startsWith('workspace/')) {
-      const alt = `workspace/${p}`
-      res = await gw.requestBinary('fs.raw', { path: alt, _range: { start: 0, end: maxBytes - 1 } }, 120_000)
-      resolvedPath = alt
-    } else {
-      throw err
+    res = await fetch(p)
+  } catch (error) {
+    if (p.startsWith('workspace/') || (error as { status?: number }).status !== 404) throw error
+    resolvedPath = `workspace/${p}`
+    res = await fetch(resolvedPath)
+  }
+  const { body, contentType, status, contentLength } = res
+  if (download) {
+    checkFullResponse(status, body.length, contentLength, res.truncated)
+    return formatWorkspaceFile(resolvedPath, body, contentType, false)
+  }
+  const range = contentRange(res.contentRange)
+  if (status === 206 && range?.start !== 0) throw new Error('Muse returned an invalid file preview range')
+  const truncated = res.truncated || body.length > maxBytes ||
+    (range ? range.length !== body.length || range.end + 1 !== body.length : contentLength !== undefined && contentLength > body.length)
+  return formatWorkspaceFile(resolvedPath, body.subarray(0, maxBytes), contentType, truncated)
+}
+
+export async function fetchHttpWorkspaceFile(
+  fetch: (url: string, init?: RequestInit) => Promise<Response>, url: string, download: boolean
+): Promise<MuseWorkspaceFile> {
+  const response = await fetch(url, { method: 'GET' })
+  if (!response.ok) {
+    void response.body?.cancel().catch(() => undefined)
+    throw new Error(`HTTP ${response.status} fetching Muse media`)
+  }
+  const contentType = response.headers.get('content-type') ?? undefined
+  const length = response.headers.get('content-length')
+  // Fetch exposes decoded bytes when content encoding is in use.
+  const contentLength = length && /^\d+$/.test(length) && !response.headers.get('content-encoding') ? Number(length) : undefined
+  if (download) {
+    if (response.status !== 200) {
+      await response.body?.cancel().catch(() => undefined)
+      throw new Error('Muse did not return the complete file')
+    }
+    const body = new Uint8Array(await response.arrayBuffer())
+    checkFullResponse(response.status, body.length, contentLength)
+    return formatWorkspaceFile(url, body, contentType, false)
+  }
+
+  const limit = previewLimit(url)
+  const reader = response.body?.getReader()
+  const chunks: Uint8Array[] = []
+  let received = 0
+  let truncated = contentLength !== undefined && contentLength > limit
+  if (reader) {
+    try {
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        const remaining = limit - received
+        const chunk = value.length > remaining ? value.slice(0, remaining) : value
+        if (chunk.length) chunks.push(chunk)
+        received += chunk.length
+        if (value.length > remaining || (received === limit && truncated)) {
+          truncated = true
+          void reader.cancel().catch(() => undefined)
+          break
+        }
+      }
+    } finally {
+      reader.releaseLock()
     }
   }
-  const { body, contentType } = res
-  const mime = inferMediaMime({
-    headerMime: contentType,
-    nameOrPath: resolvedPath,
-    bytes: body,
-    fallback: guessMime(resolvedPath) || 'application/octet-stream'
-  })
-  // If server ignored Range and returned a huge body, truncate for UI.
-  const clipped = body.byteLength > maxBytes ? body.subarray(0, maxBytes) : body
-  return {
-    path: resolvedPath,
-    mimeType: mime,
-    dataBase64: bytesToBase64(clipped),
-    byteLength: clipped.byteLength
+  if (response.status === 206) {
+    const range = contentRange(response.headers.get('content-range') ?? undefined)
+    if (range?.start !== 0) throw new Error('Muse returned an invalid file preview range')
+    truncated ||= range.length !== received || range.end + 1 !== received
   }
+  const body = Buffer.concat(chunks, received)
+  return formatWorkspaceFile(url, body, contentType, truncated || (contentLength !== undefined && contentLength > received))
 }
 
 function guessMime(path: string): string | undefined {

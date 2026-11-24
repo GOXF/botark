@@ -1,9 +1,11 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import * as net from 'node:net'
 import * as tls from 'node:tls'
-import type { Duplex } from 'node:stream'
+import { PassThrough, type Duplex } from 'node:stream'
+import { pipeline } from 'node:stream/promises'
 import { SocksClient } from 'socks'
-import { proxyFetch, type ProxyTlsOptions } from './proxyTransport'
+import { closeProxyDispatchers, closeProxySocket, proxyRequest, resolveTlsPolicy, type ProxyTlsOptions } from './proxyTransport'
+import { normalizeProxyUrl, unbracketProxyHost } from './proxyUrl'
 
 export interface UpstreamProxySpec {
   mode: 'http' | 'https' | 'socks5' | 'socks5h'
@@ -15,8 +17,14 @@ export interface UpstreamProxySpec {
 
 interface ActiveBridge {
   server: Server
-  sockets: Set<net.Socket>
+  sockets: Set<Duplex>
+  requests: Set<Promise<void>>
   localUrl: string
+}
+
+interface ConnectTarget {
+  host: string
+  port: number
 }
 
 const activeBridges = new Map<string, Promise<ActiveBridge>>()
@@ -27,6 +35,7 @@ const MAX_CONNECT_HEADER_BYTES = 16_384
 const HOP_BY_HOP_HEADERS = new Set([
   'connection',
   'keep-alive',
+  'proxy-authentication-info',
   'proxy-authenticate',
   'proxy-authorization',
   'proxy-connection',
@@ -36,200 +45,208 @@ const HOP_BY_HOP_HEADERS = new Set([
   'upgrade'
 ])
 
-function bridgeKey(cfg: UpstreamProxySpec, tlsOpts?: ProxyTlsOptions): string {
-  const customTls = tlsOpts ? ':custom-tls' : ''
-  return `${cfg.mode}://${encodeURIComponent(cfg.username ?? '')}:${encodeURIComponent(cfg.password ?? '')}@${cfg.host.toLowerCase()}:${cfg.port}${customTls}`
-}
-
 function buildUpstreamUrl(cfg: UpstreamProxySpec): string {
-  const auth =
-    cfg.username && cfg.password
-      ? `${encodeURIComponent(cfg.username)}:${encodeURIComponent(cfg.password)}@`
-      : cfg.username
-        ? `${encodeURIComponent(cfg.username)}@`
-        : ''
+  if (cfg.password && !cfg.username) throw new Error('Proxy password requires a username')
+  const auth = cfg.username
+    ? `${encodeURIComponent(cfg.username)}:${encodeURIComponent(cfg.password ?? '')}@`
+    : ''
   const host = cfg.host.includes(':') && !cfg.host.startsWith('[') ? `[${cfg.host}]` : cfg.host
-  return `${cfg.mode}://${auth}${host}:${cfg.port}`
+  const url = normalizeProxyUrl(`${cfg.mode}://${auth}${host}:${cfg.port}`)
+  if (!url) throw new Error('Invalid upstream proxy configuration')
+  return url
 }
 
-function parseConnectTarget(rawTarget: string | undefined): { host: string; port: number } | null {
+function parseConnectTarget(rawTarget: string | undefined): ConnectTarget | null {
   const raw = (rawTarget ?? '').trim()
-  if (!raw) return null
-  if (raw.startsWith('[')) {
-    const closeIdx = raw.indexOf(']')
-    if (closeIdx <= 1) return null
-    const host = raw.slice(1, closeIdx)
-    const rest = raw.slice(closeIdx + 1)
-    const port = rest.startsWith(':') ? Number(rest.slice(1)) : 443
-    if (!host || !Number.isInteger(port) || port < 1 || port > 65535) return null
-    return { host, port }
-  }
-  const colonIdx = raw.lastIndexOf(':')
-  if (colonIdx <= 0) {
-    return { host: raw, port: 443 }
-  }
-  const host = raw.slice(0, colonIdx).trim()
-  const port = Number(raw.slice(colonIdx + 1))
-  if (!host || !Number.isInteger(port) || port < 1 || port > 65535) return null
+  const match = /^(\[[^\]]+\]|[^:\s/?#@]+)(?::([0-9]+))?$/.exec(raw)
+  if (!match) return null
+  const host = unbracketProxyHost(match[1]!)
+  if (match[1]!.startsWith('[') && !net.isIPv6(host)) return null
+  const port = Number(match[2] ?? 443)
+  if (!Number.isInteger(port) || port < 1 || port > 65535) return null
   return { host, port }
 }
 
-function connectViaHttpOrHttpsUpstream(
-  cfg: UpstreamProxySpec,
-  target: { host: string; port: number },
-  tlsOpts?: ProxyTlsOptions
-): Promise<{ socket: net.Socket | tls.TLSSocket; extraHead: Buffer }> {
+function trackSocket(sockets: Set<Duplex>, socket: Duplex): void {
+  sockets.add(socket)
+  socket.once('close', () => sockets.delete(socket))
+  // Socket errors can arrive between handshake and tunnel handlers.
+  socket.on('error', () => socket.destroy())
+}
+
+function trackRequest(requests: Set<Promise<void>>, request: Promise<void>): void {
+  requests.add(request)
+  void request.then(
+    () => { requests.delete(request) },
+    (error: unknown) => {
+      requests.delete(request)
+      console.warn('[proxy] local bridge request failed', error instanceof Error ? error.name : 'UnknownError')
+    }
+  )
+}
+
+function waitForConnect(
+  socket: net.Socket,
+  event: 'connect' | 'secureConnect',
+  negotiate: () => Promise<Buffer>
+): Promise<Buffer> {
   return new Promise((resolve, reject) => {
-    const proxyHost = cfg.host.replace(/^\[|\]$/g, '')
-    const socket: net.Socket | tls.TLSSocket =
-      cfg.mode === 'https'
-        ? tls.connect({
-            host: proxyHost,
-            port: cfg.port,
-            ALPNProtocols: ['http/1.1'],
-            ...(net.isIP(proxyHost) ? {} : { servername: proxyHost }),
-            ...(tlsOpts ?? {})
-          })
-        : net.connect({
-            host: proxyHost,
-            port: cfg.port
-          })
-
-    let settled = false
-    let headerBuf = Buffer.alloc(0)
-
-    const timer = setTimeout(() => {
-      fail(new Error('Upstream proxy CONNECT timed out'))
-    }, CONNECT_TIMEOUT_MS)
+    const timeout = setTimeout(() => socket.destroy(new Error('Upstream proxy CONNECT timed out')), CONNECT_TIMEOUT_MS)
+    timeout.unref()
 
     const cleanup = (): void => {
-      clearTimeout(timer)
-      socket.off('data', onData)
+      clearTimeout(timeout)
+      socket.off(event, start)
       socket.off('error', onError)
-      socket.off('close', onCloseBeforeTunnel)
+      socket.off('close', onClose)
     }
-
-    const fail = (err: Error): void => {
-      if (settled) return
-      settled = true
+    const onError = (error: Error): void => {
       cleanup()
-      socket.destroy()
-      reject(err)
+      reject(error)
     }
-
-    const onError = (err: Error): void => fail(err)
-    const onCloseBeforeTunnel = (): void => fail(new Error('Upstream proxy closed before CONNECT response'))
-
-    const onData = (chunk: Buffer): void => {
-      headerBuf = Buffer.concat([headerBuf, chunk])
-      const endIdx = headerBuf.indexOf('\r\n\r\n')
-      if (endIdx < 0) {
-        if (headerBuf.length > MAX_CONNECT_HEADER_BYTES) {
-          fail(new Error('Upstream proxy CONNECT response header too large'))
-        }
-        return
-      }
-      const headerText = headerBuf.subarray(0, endIdx).toString('latin1')
-      const firstLine = headerText.split('\r\n')[0] ?? ''
-      const statusMatch = /^HTTP\/1\.[01]\s+(\d{3})\b/i.exec(firstLine)
-      const status = statusMatch ? Number(statusMatch[1]) : 0
-      if (status !== 200) {
-        fail(new Error(`Upstream proxy rejected CONNECT with HTTP ${status || 'invalid'}`))
-        return
-      }
-      const extraHead = headerBuf.subarray(endIdx + 4)
-      settled = true
-      cleanup()
-      resolve({ socket, extraHead })
+    const onClose = (): void => onError(new Error('Upstream proxy closed before CONNECT response'))
+    const start = (): void => {
+      void negotiate().then((head) => {
+        cleanup()
+        resolve(head)
+      }, onError)
     }
-
+    socket.once(event, start)
     socket.once('error', onError)
-    socket.once('close', onCloseBeforeTunnel)
+    socket.once('close', onClose)
+  })
+}
 
-    const sendConnect = (): void => {
-      socket.on('data', onData)
-      const authority = net.isIPv6(target.host) ? `[${target.host}]:${target.port}` : `${target.host}:${target.port}`
-      let payload = `CONNECT ${authority} HTTP/1.1\r\nHost: ${authority}\r\nProxy-Connection: keep-alive\r\n`
-      if (cfg.username || cfg.password) {
-        const auth = Buffer.from(`${cfg.username ?? ''}:${cfg.password ?? ''}`, 'utf8').toString('base64')
-        payload += `Proxy-Authorization: Basic ${auth}\r\n`
+function negotiateHttpConnect(
+  socket: net.Socket,
+  cfg: UpstreamProxySpec,
+  target: ConnectTarget
+): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    let header = Buffer.alloc(0)
+    const cleanup = (): void => {
+      socket.off('data', onData)
+      socket.off('close', onClose)
+    }
+    const onClose = (): void => {
+      cleanup()
+      reject(new Error('Upstream proxy closed before CONNECT response'))
+    }
+    const onData = (chunk: Buffer): void => {
+      header = Buffer.concat([header, chunk])
+      const end = header.indexOf('\r\n\r\n')
+      if ((end < 0 ? header.length : end + 4) > MAX_CONNECT_HEADER_BYTES) {
+        cleanup()
+        reject(new Error('Upstream proxy CONNECT response header too large'))
+        return
       }
-      payload += '\r\n'
-      socket.write(payload)
+      if (end < 0) return
+
+      socket.pause()
+      cleanup()
+      const status = /^HTTP\/1\.[01]\s+(\d{3})\b/.exec(header.toString('latin1', 0, end))
+      if (status?.[1] !== '200') {
+        reject(new Error(`Upstream proxy rejected CONNECT with HTTP ${status?.[1] ?? 'invalid'}`))
+        return
+      }
+      resolve(header.subarray(end + 4))
     }
 
-    if (cfg.mode === 'https') {
-      ;(socket as tls.TLSSocket).once('secureConnect', sendConnect)
-    } else {
-      socket.once('connect', sendConnect)
-    }
+    const authority = net.isIPv6(target.host) ? `[${target.host}]:${target.port}` : `${target.host}:${target.port}`
+    const auth = cfg.username
+      ? `Proxy-Authorization: Basic ${Buffer.from(`${cfg.username}:${cfg.password ?? ''}`).toString('base64')}\r\n`
+      : ''
+    socket.on('data', onData)
+    socket.once('close', onClose)
+    socket.write(`CONNECT ${authority} HTTP/1.1\r\nHost: ${authority}\r\n${auth}\r\n`)
   })
 }
 
 async function handleConnect(
   cfg: UpstreamProxySpec,
+  sockets: Set<Duplex>,
   req: IncomingMessage,
-  clientSocket: Duplex,
+  client: Duplex,
   head: Buffer,
   tlsOpts?: ProxyTlsOptions
 ): Promise<void> {
-  clientSocket.on('error', () => {
-    /* ignore abrupt client resets */
-  })
   const target = parseConnectTarget(req.url)
   if (!target) {
-    if (clientSocket.writable) {
-      clientSocket.end('HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n')
-    } else {
-      clientSocket.destroy()
-    }
+    client.end('HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n')
     return
   }
 
+  let upstream: net.Socket | undefined
   try {
-    let upstream: net.Socket | tls.TLSSocket
-    let extraHead: Buffer = Buffer.alloc(0)
-
-    if (cfg.mode === 'socks5' || cfg.mode === 'socks5h') {
-      const proxyHost = cfg.host.replace(/^\[|\]$/g, '')
-      const res = await SocksClient.createConnection({
-        proxy: {
-          host: proxyHost,
+    const host = unbracketProxyHost(cfg.host)
+    const secure = cfg.mode === 'https'
+    const socket = secure
+      ? tls.connect({
+          ...tlsOpts,
+          host,
           port: cfg.port,
-          type: 5,
-          ...(cfg.username ? { userId: cfg.username, password: cfg.password ?? '' } : {})
-        },
-        command: 'connect',
-        destination: { host: target.host, port: target.port },
-        timeout: CONNECT_TIMEOUT_MS
-      })
-      upstream = res.socket
-    } else {
-      const res = await connectViaHttpOrHttpsUpstream(cfg, target, tlsOpts)
-      upstream = res.socket
-      extraHead = res.extraHead
-    }
+          ALPNProtocols: ['http/1.1'],
+          ...(net.isIP(host) ? {} : { servername: host })
+        })
+      : net.connect({ host, port: cfg.port })
+    upstream = socket
+    trackSocket(sockets, socket)
+    const closeUpstream = (): void => { client.destroy(); socket.destroy() }
+    client.once('close', closeUpstream)
+    client.once('error', closeUpstream)
+    client.once('end', closeUpstream)
 
-    if (clientSocket.destroyed) {
-      upstream.destroy()
+    const extraHead = await waitForConnect(socket, secure ? 'secureConnect' : 'connect', () =>
+      cfg.mode === 'socks5' || cfg.mode === 'socks5h'
+        ? SocksClient.createConnection({
+            proxy: { host, port: cfg.port, type: 5, userId: cfg.username, password: cfg.password },
+            command: 'connect',
+            destination: target,
+            existing_socket: socket,
+            timeout: CONNECT_TIMEOUT_MS
+          }).then(() => Buffer.alloc(0))
+        : negotiateHttpConnect(socket, cfg, target)
+    )
+    if (client.destroyed || socket.destroyed) {
+      closeUpstream()
       return
     }
 
-    upstream.on('error', () => clientSocket.destroy())
-    clientSocket.on('error', () => upstream.destroy())
+    socket.once('close', () => {
+      if (!socket.readableEnded) client.destroy()
+    })
+    socket.once('error', closeUpstream)
+    // Flush the last tunneled bytes when the upstream sends FIN.
+    socket.once('end', () => client.end(() => client.destroy()))
 
-    clientSocket.write('HTTP/1.1 200 Connection Established\r\n\r\n')
-    if (extraHead.length > 0) clientSocket.write(extraHead)
-    if (head.length > 0) upstream.write(head)
-    upstream.pipe(clientSocket)
-    clientSocket.pipe(upstream)
+    client.write('HTTP/1.1 200 Connection Established\r\n\r\n')
+    if (extraHead.length) client.write(extraHead)
+    if (head.length) socket.write(head)
+    socket.pipe(client, { end: false })
+    client.pipe(socket, { end: false })
   } catch {
-    if (!clientSocket.destroyed && clientSocket.writable) {
-      clientSocket.end('HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n\r\n')
+    upstream?.destroy()
+    if (!client.destroyed && client.writable) {
+      client.end('HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n\r\n')
     } else {
-      clientSocket.destroy()
+      client.destroy()
     }
   }
+}
+
+function endToEndHeaders(
+  headers: Record<string, string | string[] | undefined>
+): Record<string, string | string[]> {
+  const connection = headers['connection'] ?? []
+  const tokens = (Array.isArray(connection) ? connection.join(',') : connection)
+    .toLowerCase().split(',').map((token) => token.trim())
+  const forwarded: Record<string, string | string[]> = Object.create(null)
+  for (const [key, value] of Object.entries(headers)) {
+    if (value !== undefined && !HOP_BY_HOP_HEADERS.has(key) && !tokens.includes(key)) {
+      forwarded[key] = value
+    }
+  }
+  return forwarded
 }
 
 async function handleHttpForward(
@@ -240,104 +257,119 @@ async function handleHttpForward(
 ): Promise<void> {
   const targetUrl = req.url ?? ''
   if (!/^https?:\/\//i.test(targetUrl)) {
-    res.writeHead(400, { 'content-type': 'text/plain; charset=utf-8' })
+    res.writeHead(400, { 'content-type': 'text/plain; charset=utf-8', connection: 'close' })
     res.end('Bad proxy request')
     return
   }
 
-  const headers: Record<string, string> = {}
-  for (const [k, v] of Object.entries(req.headers)) {
-    const lower = k.toLowerCase()
-    if (HOP_BY_HOP_HEADERS.has(lower) || v == null) continue
-    headers[k] = Array.isArray(v) ? v.join(', ') : v
+  const controller = new AbortController()
+  let upload: PassThrough | undefined
+  let download: Awaited<ReturnType<typeof proxyRequest>>['body'] | undefined
+  const abort = (): void => {
+    controller.abort()
+    upload?.destroy()
   }
-
-  const method = (req.method ?? 'GET').toUpperCase()
-  let body: Buffer | undefined
-  if (method !== 'GET' && method !== 'HEAD') {
-    const chunks: Buffer[] = []
-    for await (const chunk of req) {
-      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
-    }
-    if (chunks.length > 0) body = Buffer.concat(chunks)
+  const onRequestClose = (): void => {
+    if (!req.complete) abort()
   }
+  const onClose = (): void => {
+    if (!res.writableFinished) abort()
+  }
+  req.once('error', abort)
+  req.once('close', onRequestClose)
+  res.once('close', onClose)
 
   try {
-    const upstreamRes = await proxyFetch(
-      upstreamUrl,
-      targetUrl,
-      {
-        method,
-        headers,
-        body: body ? new Uint8Array(body) : undefined,
-        redirect: 'manual'
-      },
-      tlsOpts ? { proxyTls: tlsOpts } : undefined
-    )
+    if (req.destroyed || res.destroyed) return
+    const headers = endToEndHeaders(req.headers)
+    // Node answers Expect: 100-continue itself. Undici does not accept it.
+    delete headers['expect']
+    for (const [name, values] of Object.entries(req.headersDistinct)) {
+      if (Object.hasOwn(headers, name) && values && values.length > 1 && name !== 'cookie') {
+        headers[name] = values
+      }
+    }
 
-    const outHeaders: Record<string, string> = {}
-    upstreamRes.headers.forEach((value, key) => {
-      if (!HOP_BY_HOP_HEADERS.has(key.toLowerCase())) {
-        outHeaders[key] = value
-      }
-    })
-    res.writeHead(upstreamRes.status, outHeaders)
-    if (upstreamRes.body) {
-      const reader = upstreamRes.body.getReader()
-      for (;;) {
-        const { done, value } = await reader.read()
-        if (done) break
-        if (value) res.write(Buffer.from(value))
-      }
-    }
-    res.end()
+    const hasBody = Boolean(req.headers['transfer-encoding'] || Number(req.headers['content-length']))
+    // A separate readable lets Undici cancel an incomplete upload without
+    // destroying the client socket before we can send the final response.
+    if (hasBody) upload = req.pipe(new PassThrough())
+    const response = await proxyRequest(upstreamUrl, targetUrl, {
+      method: req.method ?? 'GET',
+      headers,
+      body: upload,
+      signal: controller.signal
+    }, tlsOpts)
+
+    download = response.body
+    const responseHeaders = endToEndHeaders(response.headers)
+    if (hasBody && !req.readableEnded) responseHeaders['connection'] = 'close'
+    // The request API preserves Content-Encoding, Content-Length and header
+    // arrays because it streams the original upstream bytes.
+    res.writeHead(response.statusCode, responseHeaders)
+    await pipeline(download, res, { signal: controller.signal })
   } catch {
-    if (!res.headersSent) {
-      res.writeHead(502, { 'content-type': 'text/plain; charset=utf-8' })
+    if (res.destroyed || controller.signal.aborted) return
+    if (res.headersSent) {
+      res.destroy()
+    } else {
+      res.writeHead(502, { 'content-type': 'text/plain; charset=utf-8', connection: 'close' })
+      res.end('Upstream proxy request failed')
     }
-    res.end('Upstream proxy request failed')
+  } finally {
+    if (upload) {
+      req.unpipe(upload)
+      upload.destroy()
+    }
+    download?.destroy()
+    controller.abort()
+    req.off('error', abort)
+    req.off('close', onRequestClose)
+    res.off('close', onClose)
   }
 }
 
 /**
- * Start (or reuse) a loopback-only `http://127.0.0.1:<port>` proxy server that
- * tunnels Chromium partition traffic through an upstream `https://` TLS proxy
- * or any authenticated (`username`/`password`) `http`/`https`/`socks5`/`socks5h` proxy.
+ * Start (or reuse) a loopback-only HTTP proxy for a Chromium partition that
+ * requires an HTTPS or authenticated upstream proxy.
  */
 export async function ensureLocalProxyBridge(
   cfg: UpstreamProxySpec,
   tlsOpts?: ProxyTlsOptions
 ): Promise<string> {
-  const key = bridgeKey(cfg, tlsOpts)
+  const settings = { ...cfg }
+  const upstreamUrl = buildUpstreamUrl(settings)
+  settings.host = new URL(upstreamUrl).hostname
+  const tlsPolicy = resolveTlsPolicy(tlsOpts)
+  const key = JSON.stringify([upstreamUrl, tlsPolicy.key])
   let pending = activeBridges.get(key)
   if (!pending) {
     pending = new Promise<ActiveBridge>((resolve, reject) => {
-      const upstreamUrl = buildUpstreamUrl(cfg)
-      const sockets = new Set<net.Socket>()
+      const sockets = new Set<Duplex>()
+      const requests = new Set<Promise<void>>()
       const server = createServer((req, res) => {
-        void handleHttpForward(upstreamUrl, req, res, tlsOpts)
+        trackRequest(requests, handleHttpForward(upstreamUrl, req, res, tlsPolicy.options))
       })
-      server.on('connection', (sock) => {
-        sockets.add(sock)
-        sock.once('close', () => sockets.delete(sock))
+      server.on('connection', (socket) => trackSocket(sockets, socket))
+      server.on('connect', (req, client, head) => {
+        trackRequest(requests, handleConnect(settings, sockets, req, client, head, tlsPolicy.options))
       })
-      server.on('connect', (req, clientSocket, head) => {
-        void handleConnect(cfg, req, clientSocket, head, tlsOpts)
-      })
-      server.once('error', (err) => {
-        activeBridges.delete(key)
-        reject(err)
+      server.on('error', (error) => {
+        if (activeBridges.get(key) === pending) activeBridges.delete(key)
+        for (const socket of sockets) socket.destroy()
+        if (server.listening) server.close()
+        reject(error)
       })
       server.listen(0, '127.0.0.1', () => {
         const addr = server.address()
         if (!addr || typeof addr === 'string') {
           server.close()
-          activeBridges.delete(key)
+          if (activeBridges.get(key) === pending) activeBridges.delete(key)
           reject(new Error('Failed to bind local proxy bridge'))
           return
         }
         server.unref()
-        resolve({ server, sockets, localUrl: `http://127.0.0.1:${addr.port}` })
+        resolve({ server, sockets, requests, localUrl: `http://127.0.0.1:${addr.port}` })
       })
     })
     activeBridges.set(key, pending)
@@ -349,16 +381,13 @@ export async function ensureLocalProxyBridge(
 export async function closeAllLocalProxyBridges(): Promise<void> {
   const entries = [...activeBridges.values()]
   activeBridges.clear()
-  await Promise.all(
-    entries.map(async (p) => {
-      try {
-        const b = await p
-        for (const sock of b.sockets) sock.destroy()
-        b.server.closeAllConnections?.()
-        await new Promise<void>((resolve) => b.server.close(() => resolve()))
-      } catch {
-        /* ignore */
-      }
-    })
-  )
+  const closing = entries.map(async (entry) => {
+    const { server, sockets, requests } = await entry
+    const closed = new Promise<void>((resolve) => server.close(() => resolve()))
+    const socketClosures = [...sockets].map(closeProxySocket)
+    await Promise.allSettled([closed, ...socketClosures, ...requests])
+  })
+  // Let already-listening bridges stop accepting before retiring their transport.
+  await Promise.resolve()
+  await Promise.allSettled([...closing, closeProxyDispatchers()])
 }

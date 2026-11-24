@@ -1,8 +1,6 @@
-/**
- * Typing ("thinking…") is driven only by adapter events. If a stream dies
- * without its final event, the indicator used to stay on forever. The
- * watchdog clears it after a long quiet period.
- */
+import type { ChatMessage } from '@/types'
+
+const STALLED_TEXT = '很久没有收到回复，已停止等待；可以刷新会话或再发一次'
 
 /** No event at all for this long while typing → give up waiting. */
 export const REPLY_IDLE_LIMIT_MS = 3 * 60_000
@@ -17,7 +15,7 @@ export function isReplyStalled(lastEventAt: number, now: number, busy: boolean):
 export class ReplyWatchdog {
   private readonly lastEvent = new Map<string, number>()
 
-  constructor(private readonly now: () => number = Date.now) {}
+  constructor(private readonly now: () => number = () => Date.now()) {}
 
   touch(botId: string): void {
     this.lastEvent.set(botId, this.now())
@@ -46,4 +44,13 @@ export class ReplyWatchdog {
     }
     return out
   }
+}
+
+export const replyWatchdog = new ReplyWatchdog()
+
+export function markStalledReply(messages: ChatMessage[], accountId: string): ChatMessage[] {
+  const last = messages.at(-1)
+  if (last?.role !== 'user' || last.accountId !== accountId ||
+      (last.delivery !== 'accepted' && last.delivery !== 'sent')) return messages
+  return [...messages.slice(0, -1), { ...last, delivery: 'no-reply', error: STALLED_TEXT }]
 }

@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react'
+import { useLayoutEffect, useRef, useState } from 'react'
 import { Sparkles } from 'lucide-react'
 import { Dialog } from '@/components/ui/Dialog'
 import { Button } from '@/components/ui/Button'
@@ -17,7 +17,7 @@ import { getBridge } from '@/lib/bridge'
 import { cn } from '@/lib/cn'
 import { useBotStore } from '@/store/botStore'
 import type { Bot } from '@/types'
-import { t } from '@/lib/i18n'
+import { useT } from '@/lib/i18n'
 
 interface BotAvatarEditorDialogProps {
   bot: Bot
@@ -31,6 +31,7 @@ interface BotAvatarEditorDialogProps {
  * - Photo tab: upload custom image or switch back to animated Bot
  */
 export function BotAvatarEditorDialog({ bot, open, onOpenChange }: BotAvatarEditorDialogProps) {
+  const t = useT()
   const setBotAvatar = useBotStore((s) => s.setBotAvatar)
   const setBotCharacter = useBotStore((s) => s.setBotCharacter)
   const renameBot = useBotStore((s) => s.renameBot)
@@ -38,16 +39,57 @@ export function BotAvatarEditorDialog({ bot, open, onOpenChange }: BotAvatarEdit
   const [poke, setPoke] = useState(0)
   const [syncingMuse, setSyncingMuse] = useState(false)
   const [museSyncHint, setMuseSyncHint] = useState<string>()
+  const [avatarError, setAvatarError] = useState<string>()
   const fileRef = useRef<HTMLInputElement>(null)
+  const selectionId = useRef(0)
   const canSyncMuseIdentity = bot.platformId === 'meta-muse' && Boolean(getBridge()?.muse?.syncIdentity)
+
+  useLayoutEffect(() => {
+    setAvatarError(undefined)
+    setMuseSyncHint(undefined)
+    setSyncingMuse(false)
+    return () => { selectionId.current++ }
+  }, [open, bot.id, bot.activeAccountId])
+
+  const invalidateSelection = () => {
+    selectionId.current++
+    setAvatarError(undefined)
+    setMuseSyncHint(undefined)
+    setSyncingMuse(false)
+  }
+
+  const changeOpen = (next: boolean) => {
+    if (!next) invalidateSelection()
+    onOpenChange(next)
+  }
+
+  const pickFile = async (file: File) => {
+    if (!open) return
+    invalidateSelection()
+    const selection = selectionId.current
+    try {
+      const avatar = await avatarFromFile(file)
+      if (selectionId.current !== selection) return
+      setBotAvatar(bot.id, avatar)
+      changeOpen(false)
+    } catch (error) {
+      if (selectionId.current === selection) {
+        setAvatarError(t('Could not read image: {reason}', {
+          reason: error instanceof Error ? error.message : String(error)
+        }))
+      }
+    }
+  }
 
   const handleImportMuseAvatar = async () => {
     const muse = getBridge()?.muse
-    if (!muse?.syncIdentity || !bot.activeAccountId) return
+    if (!open || !muse?.syncIdentity || !bot.activeAccountId) return
+    invalidateSelection()
+    const selection = selectionId.current
     setSyncingMuse(true)
-    setMuseSyncHint(undefined)
     try {
       const identity = await muse.syncIdentity(bot.activeAccountId)
+      if (selectionId.current !== selection) return
       if (identity.avatarDataUrl) {
         setBotAvatar(bot.id, identity.avatarDataUrl)
         setTab('upload')
@@ -63,9 +105,9 @@ export function BotAvatarEditorDialog({ bot, open, onOpenChange }: BotAvatarEdit
         setMuseSyncHint('当前 Muse 账号暂未配置自定义虚拟形象图片')
       }
     } catch {
-      setMuseSyncHint('无法读取 Muse 虚拟形象，请确认账号在线后重试')
+      if (selectionId.current === selection) setMuseSyncHint('无法读取 Muse 虚拟形象，请确认账号在线后重试')
     } finally {
-      setSyncingMuse(false)
+      if (selectionId.current === selection) setSyncingMuse(false)
     }
   }
 
@@ -74,25 +116,30 @@ export function BotAvatarEditorDialog({ bot, open, onOpenChange }: BotAvatarEdit
   const isDark = typeof document !== 'undefined' && document.documentElement.dataset.theme === 'dark'
 
   const selectShape = (shape: BotShape) => {
+    invalidateSelection()
     if (bot.avatar) setBotAvatar(bot.id, undefined)
     setBotCharacter(bot.id, { shape, color: bot.avatarColor ?? currentColor })
     setPoke((n) => n + 1)
   }
 
   const selectColor = (color: BotColorId) => {
+    invalidateSelection()
     if (bot.avatar) setBotAvatar(bot.id, undefined)
     setBotCharacter(bot.id, { shape: bot.avatarShape ?? currentShape, color })
     setPoke((n) => n + 1)
   }
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange} title={t('Bot appearance')} className="max-w-[360px]">
+    <Dialog open={open} onOpenChange={changeOpen} title={t('Bot appearance')} className="max-w-[360px]">
       <div className="mb-3 flex rounded-lg bg-hover p-0.5 text-[12px]" role="tablist">
         <button
           type="button"
           role="tab"
           aria-selected={tab === 'bot'}
-          onClick={() => setTab('bot')}
+          onClick={() => {
+            invalidateSelection()
+            setTab('bot')
+          }}
           className={cn(
             'flex-1 rounded-md py-1 font-medium transition-colors',
             tab === 'bot' ? 'bg-surface text-ink shadow-soft' : 'text-ink-secondary hover:text-ink'
@@ -212,15 +259,7 @@ export function BotAvatarEditorDialog({ bot, open, onOpenChange }: BotAvatarEdit
             onChange={(event) => {
               const file = event.target.files?.[0]
               event.target.value = ''
-              if (file) {
-                void avatarFromFile(file).then(
-                  (avatar) => {
-                    setBotAvatar(bot.id, avatar)
-                    onOpenChange(false)
-                  },
-                  () => {}
-                )
-              }
+              if (file) void pickFile(file)
             }}
           />
           <div className="flex gap-2">
@@ -232,6 +271,7 @@ export function BotAvatarEditorDialog({ bot, open, onOpenChange }: BotAvatarEdit
                 variant="secondary"
                 size="sm"
                 onClick={() => {
+                  invalidateSelection()
                   setBotAvatar(bot.id, undefined)
                   setTab('bot')
                 }}
@@ -242,6 +282,7 @@ export function BotAvatarEditorDialog({ bot, open, onOpenChange }: BotAvatarEdit
           </div>
         </div>
       )}
+      {avatarError && <p className="mt-2 text-center text-[12px] text-status-error" role="alert">{avatarError}</p>}
     </Dialog>
   )
 }

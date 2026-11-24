@@ -31,4 +31,10 @@ describe('proxy URLs', () => {
     expect(requireValidProxyUrl('  ')).toBeUndefined()
     expect(() => requireValidProxyUrl('not a proxy')).toThrow()
   })
+
+  it('rejects password-only credentials and preserves valid credentials on IPv6', () => {
+    expect(normalizeProxyUrl('http://:secret@host.test:8080')).toBeNull()
+    expect(() => requireValidProxyUrl('socks5://:secret@[::1]:1080')).toThrow()
+    expect(normalizeProxyUrl('socks5://alice:p%40ss@[::1]:1080')).toBe('socks5://alice:p%40ss@[::1]:1080')
+  })
 })

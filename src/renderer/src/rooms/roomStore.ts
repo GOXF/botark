@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import { createJSONStorage, persist } from 'zustand/middleware'
+import { persist, type PersistStorage } from 'zustand/middleware'
 import { adapterRegistry } from '@adapters/registry'
 import type { ConnectionStatus, SendReceipt } from '@adapters/types'
 import { createId } from '@shared/id'
@@ -9,10 +9,11 @@ import { createSafeStorage } from '@/store/delivery'
 import type { Bot } from '@/types'
 import {
   assistantTurnPrompt,
+  classifyRoomReply,
   freshRoomSession,
-  isFinal,
   mentions,
   refusesRoomFrame,
+  normalizeMentionName,
   roomRecipient,
   turnPrompt,
   type CollabRoom,
@@ -27,12 +28,57 @@ export interface RoomTurnProgress {
   limit: number
 }
 
+interface SlackDestination {
+  channel: string
+  thread?: string
+  bindingGeneration?: number
+}
+
 interface RoomState {
   externalAudiences: Record<string, string | undefined>
+  slackDestinations: Record<string, SlackDestination | undefined>
   rooms: CollabRoom[]
   speakers: Record<string, string | undefined>
   turnProgress: Record<string, RoomTurnProgress | undefined>
   errors: Record<string, string | undefined>
+}
+
+function roomStorageBacking(): Storage | undefined {
+  try {
+    return globalThis.localStorage
+  } catch {
+    return undefined
+  }
+}
+
+let storedRooms: {
+  backing: Storage
+  name: string
+  value: string | null
+  rooms?: CollabRoom[]
+  version?: number
+} | undefined
+const safeRoomStorage = createSafeStorage(roomStorageBacking, () => { storedRooms = undefined })
+const roomStorage: PersistStorage<Pick<RoomState, 'rooms'>> = {
+  getItem(name) {
+    const backing = roomStorageBacking()
+    const value = safeRoomStorage.getItem(name)
+    storedRooms = backing ? { backing, name, value } : undefined
+    return value ? JSON.parse(value) : null
+  },
+  setItem(name, item) {
+    const backing = roomStorageBacking()
+    if (!backing) return
+    const previous = storedRooms?.backing === backing && storedRooms.name === name ? storedRooms : undefined
+    if (previous?.rooms === item.state.rooms && previous.version === item.version) return
+    const value = JSON.stringify(item)
+    storedRooms = { backing, name, value, rooms: item.state.rooms, version: item.version }
+    if (value !== previous?.value) safeRoomStorage.setItem(name, value)
+  },
+  removeItem(name) {
+    storedRooms = undefined
+    safeRoomStorage.removeItem(name)
+  }
 }
 
 export const useRooms = create<RoomState>()(
@@ -42,14 +88,19 @@ export const useRooms = create<RoomState>()(
       speakers: {},
       turnProgress: {},
       errors: {},
+      slackDestinations: {},
       externalAudiences: {}
     }),
     {
       name: 'botark-collaboration-rooms',
-      storage: createJSONStorage(() =>
-        createSafeStorage(() => (typeof localStorage === 'undefined' ? undefined : localStorage))
-      ),
+      storage: roomStorage,
       partialize: (s) => ({ rooms: s.rooms }),
+      onRehydrateStorage: () => (state) => {
+        if (state && storedRooms) {
+          storedRooms.rooms = state.rooms
+          storedRooms.version = 0
+        }
+      },
       merge: (persisted, current) => {
         const raw = persisted && typeof persisted === 'object' ? (persisted as { rooms?: unknown }) : {}
         const safeRooms = Array.isArray(raw.rooms)
@@ -58,6 +109,7 @@ export const useRooms = create<RoomState>()(
               .map((r) => ({
                 id: String(r.id),
                 title: typeof r.title === 'string' && r.title.trim() ? r.title : '协作讨论',
+                pinned: typeof r.pinned === 'boolean' ? r.pinned : undefined,
                 members: Array.isArray(r.members) ? (r.members as RoomMember[]) : [],
                 messages: Array.isArray(r.messages) ? (r.messages as RoomMessage[]).map((m) =>
                   r.finalId && m?.id === r.finalId ? { ...m, final: true } : m
@@ -112,11 +164,12 @@ async function openWorkspacePortal(scope: string): Promise<string> {
   }
 }
 
-function findBotForMember(member: RoomMember, bots: Bot[]): Bot | undefined {
+function findBotForMember(member: RoomMember, bots: Bot[], occupiedIds: ReadonlySet<string>): Bot | undefined {
   return (
     bots.find((b) => b.id === member.botId) ??
     bots.find(
       (b) =>
+        !occupiedIds.has(b.id) &&
         b.platformId === member.platform &&
         (b.activeAccountId === member.accountId || b.accountIds?.includes(member.accountId)) &&
         (!member.agentId || b.selectedAgentId === member.agentId)
@@ -131,13 +184,15 @@ function reconcileRoomMemberList(
 ): { members: RoomMember[]; changed: boolean } {
   let changed = false
   const usedNames = new Set<string>()
+  const occupiedIds = new Set(members.map((member) => member.botId))
   const next = members.map((member) => {
-    const bot = findBotForMember(member, bots)
+    const bot = findBotForMember(member, bots, occupiedIds)
     if (!bot) {
-      usedNames.add(member.name.toLowerCase())
+      usedNames.add(normalizeMentionName(member.name))
       return member
     }
     const nextBotId = bot.id || member.botId
+    occupiedIds.add(nextBotId)
     const nextAccountId =
       bot.activeAccountId ||
       (bot.accountIds?.includes(member.accountId) ? member.accountId : bot.accountIds?.[0]) ||
@@ -160,17 +215,17 @@ function reconcileRoomMemberList(
       } else {
         nextName = rawName
       }
-      if (usedNames.has(nextName.toLowerCase())) {
-        if (handle && !usedNames.has(`${rawName} · ${handle}`.toLowerCase())) {
+      if (usedNames.has(normalizeMentionName(nextName))) {
+        if (handle && !usedNames.has(normalizeMentionName(`${rawName} · ${handle}`))) {
           nextName = `${rawName} · ${handle}`
         } else {
           let n = 2
-          while (usedNames.has(`${rawName} (${n})`.toLowerCase())) n++
+          while (usedNames.has(normalizeMentionName(`${rawName} (${n})`))) n++
           nextName = `${rawName} (${n})`
         }
       }
     }
-    usedNames.add(nextName.toLowerCase())
+    usedNames.add(normalizeMentionName(nextName))
     const resetSession = nextAccountId !== member.accountId || nextAgentId !== member.agentId
     if (
       nextBotId !== member.botId ||
@@ -269,17 +324,43 @@ useBotStore.subscribe((state, prev) => {
 })
 
 const pendingTurns = new Map<string, Promise<unknown>>()
-const runs = new Map<string, AbortController>()
+const runs = new Map<string, {
+  controller: AbortController
+  finished: Promise<void>
+  finish: () => void
+  slackDestination?: SlackDestination
+}>()
 const activeAccounts = new Set<string>()
 const roomById = (id: string) => useRooms.getState().rooms.find((r) => r.id === id)
+
+export const roomRunFinished = (id: string) => runs.get(id)?.finished
+
+export function roomSlackDestination(room: CollabRoom): SlackDestination | undefined {
+  if (room.coordinatorId) return
+  const binding = useRooms.getState().slackDestinations[room.slackParent ?? room.id]
+  const active = runs.get(room.id)
+  if (active) return active.slackDestination
+  if (binding && room.slackChannel) return { ...binding, channel: room.slackChannel, thread: room.slackThread }
+  return binding
+}
 
 function update(id: string, fn: (room: CollabRoom) => CollabRoom) {
   useRooms.setState((s) => ({ rooms: s.rooms.map((r) => (r.id === id ? fn(r) : r)) }))
 }
 
+function recordHandoff(roomId: string, post: RoomMessage, botId: string) {
+  update(roomId, (room) => ({ ...room, messages: room.messages.map((message) =>
+    message.id === post.id && !message.handoffBotIds?.includes(botId)
+      ? { ...message, handoffBotIds: [...(message.handoffBotIds ?? []), botId] }
+      : message
+  ) }))
+}
+
 export function stopRoom(id: string) {
-  runs.get(id)?.abort()
+  const run = runs.get(id)
   runs.delete(id)
+  run?.controller.abort()
+  run?.finish()
   useRooms.setState((s) => ({
     speakers: { ...s.speakers, [id]: undefined },
     turnProgress: { ...s.turnProgress, [id]: undefined }
@@ -294,6 +375,10 @@ export function renameRoom(id: string, title: string) {
   const trimmed = title.trim()
   if (!trimmed) return
   update(id, (r) => ({ ...r, title: trimmed }))
+}
+
+export function togglePinRoom(id: string) {
+  update(id, (room) => ({ ...room, pinned: !room.pinned }))
 }
 
 export function updateRoomConfig(
@@ -333,6 +418,14 @@ export function deleteRoom(id: string) {
   useRooms.setState((s) => ({
     rooms: s.rooms.filter((r) => !toRemove.has(r.id))
   }))
+  const workspace = getBridge()?.workspace
+  if (workspace) {
+    // The IPC handler disposes the workspace scope alongside the deleted room.
+    const dispose = { op: 'dispose' } as { op: 'dispose' } & Parameters<typeof workspace.manage>[1]
+    for (const rid of toRemove) {
+      void workspace.manage(rid, dispose).catch((error) => console.error('[room] workspace cleanup failed', error))
+    }
+  }
   const botState = useBotStore.getState()
   if (botState.selectedBotId && toRemove.has(botState.selectedBotId)) {
     const remainingRoom = useRooms.getState().rooms[0]?.id
@@ -355,17 +448,17 @@ export function addRoom(title: string, ids: string[], mode: CollabRoom['mode'], 
     }
     const rawBase = bot.name?.trim() || accounts[bot.activeAccountId]?.displayName?.trim() || id
     let candidate = rawBase
-    if (usedNames.has(candidate.toLowerCase())) {
+    if (usedNames.has(normalizeMentionName(candidate))) {
       const handle = accounts[bot.activeAccountId]?.handle?.trim()
-      if (handle && !usedNames.has(`${rawBase} · ${handle}`.toLowerCase())) {
+      if (handle && !usedNames.has(normalizeMentionName(`${rawBase} · ${handle}`))) {
         candidate = `${rawBase} · ${handle}`
       } else {
         let n = 2
-        while (usedNames.has(`${rawBase} (${n})`.toLowerCase())) n++
+        while (usedNames.has(normalizeMentionName(`${rawBase} (${n})`))) n++
         candidate = `${rawBase} (${n})`
       }
     }
-    usedNames.add(candidate.toLowerCase())
+    usedNames.add(normalizeMentionName(candidate))
     return {
       botId: id,
       platform: bot.platformId,
@@ -433,16 +526,16 @@ export function addMemberToRoom(roomId: string, botId: string): { ok: boolean; e
     return { ok: false, error: '请先连接该 Bot 再加入群聊' }
   }
 
-  const usedNames = new Set(room.members.map((m) => m.name.toLowerCase()))
+  const usedNames = new Set(room.members.map((m) => normalizeMentionName(m.name)))
   const rawBase = bot.name?.trim() || accounts[bot.activeAccountId]?.displayName?.trim() || botId
   let name = rawBase
-  if (usedNames.has(name.toLowerCase())) {
+  if (usedNames.has(normalizeMentionName(name))) {
     const handle = accounts[bot.activeAccountId]?.handle?.trim()
-    if (handle && !usedNames.has(`${rawBase} · ${handle}`.toLowerCase())) {
+    if (handle && !usedNames.has(normalizeMentionName(`${rawBase} · ${handle}`))) {
       name = `${rawBase} · ${handle}`
     } else {
       let n = 2
-      while (usedNames.has(`${rawBase} (${n})`.toLowerCase())) n++
+      while (usedNames.has(normalizeMentionName(`${rawBase} (${n})`))) n++
       name = `${rawBase} (${n})`
     }
   }
@@ -489,7 +582,7 @@ export function moveMemberToRoom(
   if (target.members.some((m) => m.botId === botId)) {
     return { ok: false, error: '目标群聊中已包含该 Bot' }
   }
-  if (target.members.some((m) => m.name.toLowerCase() === member.name.toLowerCase())) {
+  if (target.members.some((m) => normalizeMentionName(m.name) === normalizeMentionName(member.name))) {
     return { ok: false, error: `目标群聊中已存在同名成员「${member.name}」` }
   }
 
@@ -524,7 +617,7 @@ export function moveMemberToRoom(
   return { ok: true }
 }
 
-async function memberReply(room: CollabRoom, member: RoomMember, signal: AbortSignal) {
+async function memberReply(room: CollabRoom, member: RoomMember, trigger: RoomMessage, signal: AbortSignal) {
   const adapter = adapterRegistry.get(member.platform)
   const bot = useBotStore
     .getState()
@@ -559,6 +652,8 @@ async function memberReply(room: CollabRoom, member: RoomMember, signal: AbortSi
       replies.set(m.id, m.text)
   })
   let sessionId = member.sessionId
+  const hermesSessionKey = member.platform === 'hermes'
+    ? member.hermesSessionKey || `${room.id}-${member.botId}` : undefined
   const cancel = () => {
     void cancelPlatformTurn({
       ...bot,
@@ -592,29 +687,25 @@ async function memberReply(room: CollabRoom, member: RoomMember, signal: AbortSi
         ...r,
         members: r.members.map((m) => (m.botId === member.botId ? { ...m, sessionId } : m))
       }))
+    const contextMember = member.sessionId || hermesSessionKey ? member : { ...member, cursor: 0 }
     let prompt: string
     if (refusesRoomFrame(member.platform)) {
       // This member will not act behind another application's tool protocol,
       // and it rejects the collaboration-room frame itself. Give it a plain
       // assistant frame plus a workspace portal it can reach with its own web
       // tools instead.
-      prompt = assistantTurnPrompt(room, member)
+      prompt = assistantTurnPrompt(room, contextMember)
       const portal = await openWorkspacePortal(room.id)
       if (portal) prompt += portal
     } else {
-      prompt = turnPrompt(room, member)
+      prompt = turnPrompt(room, contextMember, trigger)
       const hub = getBridge()?.workspace
       const workspace = hub ? await hub.manage(room.id, { op: 'status' }) : undefined
       if (workspace?.tools.length) {
         prompt +=
-          '\n\nTo request one workspace tool, reply with [TOOL] followed by JSON {"name":"…","args":{…}}. Use "." for the workspace root and relative paths like "README.md" (never "/workspace" or "~/workspace"). A person approves each call. Available tools: ' +
-          JSON.stringify(
-            workspace.tools.map((t) => ({
-              name: t.name,
-              ...(t.description ? { description: t.description } : {}),
-              schema: t.inputSchema
-            }))
-          )
+          '\n\nTo request one workspace tool, reply with [TOOL] followed by JSON {"name":"…","args":{…}}. A person approves each call. ' +
+          'Use paths relative to the workspace directory and use "." for the workspace root (never "/workspace" or "~/workspace"). Available tools: ' +
+          JSON.stringify(workspace.tools.map((t) => ({ name: t.name, description: t.description, schema: t.inputSchema })))
       }
     }
     signal.throwIfAborted()
@@ -634,7 +725,7 @@ async function memberReply(room: CollabRoom, member: RoomMember, signal: AbortSi
           sessionId,
           accountId: member.accountId,
           agentId: member.agentId,
-          hermesSessionKey: member.hermesSessionKey ?? room.id + '-' + member.botId,
+          hermesSessionKey,
           text: prompt,
           signal
         })
@@ -652,7 +743,7 @@ async function memberReply(room: CollabRoom, member: RoomMember, signal: AbortSi
     signal.throwIfAborted()
     const text = [...replies.values()].join('\n\n')
     if (!text) throw new Error(`@${member.name} 没有返回文字回复`)
-    return { text, sessionId: receipt.sessionId ?? sessionId }
+    return { text, sessionId: receipt.sessionId || sessionId, hermesSessionKey }
   } finally {
     unsubscribe()
     activeAccounts.delete(lockKey)
@@ -663,10 +754,11 @@ async function memberReply(room: CollabRoom, member: RoomMember, signal: AbortSi
 export async function submitBrief(
   id: string,
   input: string,
-  { author = 'User', messageId = createId('post'), references = [], handoff, start = true }: {
+  { author = 'User', messageId = createId('post'), references = [], slackDestination, handoff, start = true }: {
     author?: string
     messageId?: string
     references?: RoomReference[]
+    slackDestination?: SlackDestination
     handoff?: RoomMessage['handoff']
     /** false: only post the requirement, nobody starts on it. */
     start?: boolean
@@ -688,20 +780,27 @@ export async function submitBrief(
   stopRoom(id)
   setError(id)
   const controller = new AbortController()
-  runs.set(id, controller)
-  update(id, (r) => ({ ...r, brief: text, finalId: undefined, messages: [...r.messages, message] }))
-  const coordinator = room.coordinatorId ? room.members[0] : undefined
-  const queue = coordinator ? [coordinator] : mentions(text, room.members)
-  if (!queue.length && room.mode === 'auto') {
-    const { accounts } = useBotStore.getState()
-    const first = room.members.find((member) => {
-      const status = adapterRegistry.get(member.platform)?.getStatus(member.accountId)
-      return status === 'online' || status === 'attention'
-    }) ?? room.members.find((member) => isConnectedStatus(accounts[member.accountId]?.status))
-      ?? room.members[0]
-    if (first) queue.push(first)
-  }
+  let finish!: () => void
+  const finished = new Promise<void>((resolve) => { finish = resolve })
+  const destination = slackDestination ?? roomSlackDestination(room)
+  const run = { controller, finished, finish, slackDestination: destination }
+  const signal = controller.signal
+  runs.set(id, run)
   try {
+    update(id, (r) => ({ ...r, brief: text, finalId: undefined, messages: [...r.messages, message] }))
+    const coordinator = room.members.find((m) => m.botId === room.coordinatorId)
+    const initial = coordinator ? [coordinator] : mentions(text, room.members)
+    if (!initial.length && room.mode === 'auto') {
+      const { accounts } = useBotStore.getState()
+      const first = room.members.find((member) => {
+        const status = adapterRegistry.get(member.platform)?.getStatus(member.accountId)
+        return status === 'online' || status === 'attention'
+      }) ?? room.members.find((member) => isConnectedStatus(accounts[member.accountId]?.status))
+        ?? room.members[0]
+      if (first) initial.push(first)
+    }
+    const queue: Array<{ member: RoomMember; trigger: RoomMessage; handoff?: RoomMessage }> =
+      initial.map((member) => ({ member, trigger: message }))
     if (room.members.length === 0) {
       setError(id, '群聊没有可对话的成员')
       return
@@ -714,105 +813,148 @@ export async function submitBrief(
       return
     }
     const failed = new Set<string>()
+    const toolRecovery = new Set<string>()
+    const isQueued = (botId: string) => queue.some(({ member }) => member.botId === botId)
     for (let turn = 0; queue.length; turn++) {
-      const pendingKey = JSON.stringify([id, turnLockKey(queue[0]!)])
+      const pendingKey = JSON.stringify([id, turnLockKey(queue[0]!.member)])
       const previous = pendingTurns.get(pendingKey)
       if (previous) await previous.catch(() => {})
-      controller.signal.throwIfAborted()
+      signal.throwIfAborted()
       const current = roomById(id)
       if (!current) break
       if (turn >= current.limit) {
-        setError(id, `已达 ${current.limit} 轮上限，待回复：${queue.map((m) => '@' + m.name).join('、')}`)
+        setError(id, `已达 ${current.limit} 轮上限，待回复：${queue.map(({ member }) => '@' + member.name).join('、')}`)
         break
       }
       const next = queue.shift()!
-      const member = current.members.find((m) => m.botId === next.botId)
+      const member = current.members.find((m) => m.botId === next.member.botId)
       if (!member) continue
+      const isCoordinator = member.botId === coordinator?.botId
+      if (next.handoff) recordHandoff(id, next.handoff, member.botId)
       useRooms.setState((s) => ({
         speakers: { ...s.speakers, [id]: member.name },
         turnProgress: { ...s.turnProgress, [id]: { turn: turn + 1, limit: current.limit } }
       }))
-      const pending = memberReply(current, member, controller.signal)
+      const pending = memberReply(current, member, next.trigger, signal)
       pendingTurns.set(pendingKey, pending)
       let reply: Awaited<typeof pending>
       try {
         reply = await pending
       } catch (error) {
-        controller.signal.throwIfAborted()
-        if (member.botId === coordinator?.botId) throw error
+        signal.throwIfAborted()
+        if (isCoordinator) throw error
         failed.add(member.botId)
         setError(id, `@${member.name}：${error instanceof Error ? error.message : String(error)}`)
-        update(id, (r) => ({ ...r, messages: [...r.messages, {
+        const notice: RoomMessage = {
           id: createId('post'), author: 'BotArk', notice: true,
           text: `${member.name} 本轮未取得回复。`, createdAt: Date.now()
-        }] }))
-        if (coordinator && !queue.some((m) => m.botId === coordinator.botId)) queue.push(coordinator)
+        }
+        update(id, (r) => ({ ...r, messages: [...r.messages, notice] }))
+        if (coordinator && !isQueued(coordinator.botId)) queue.push({ member: coordinator, trigger: notice })
         continue
       } finally {
         if (pendingTurns.get(pendingKey) === pending) pendingTurns.delete(pendingKey)
       }
-      controller.signal.throwIfAborted()
-      const done = (!coordinator || member.botId === coordinator.botId) && isFinal(reply.text)
+      signal.throwIfAborted()
+      const latest = roomById(id)
+      if (!latest) break
+      // Use the roster from the prompt to resolve names, then deliver by current bot ID.
+      const classified = classifyRoomReply(reply.text, member.botId, current.members, latest)
+      const currentMembers = new Map(latest.members.map((m) => [m.botId, m]))
+      const targets = classified.kind === 'post' ? classified.botIds : []
+      const done = classified.kind === 'final'
+      const toolRequest = classified.kind === 'tool'
       const post: RoomMessage = {
         id: createId('post'),
         author: member.name,
         authorBotId: member.botId,
         ...(done ? { final: true } : {}),
-        text: reply.text,
+        ...(toolRequest ? { localOnly: true } : {}),
+        text: classified.text,
         createdAt: Date.now()
       }
+      const appendPost = Boolean(post.text || targets.length)
+      const cursor = reply.sessionId || reply.hermesSessionKey ? latest.messages.length + Number(appendPost) : 0
+      const storedMember = currentMembers.get(member.botId)
+      const members = storedMember && (storedMember.cursor !== cursor || storedMember.sessionId !== reply.sessionId ||
+        storedMember.hermesSessionKey !== reply.hermesSessionKey)
+        ? latest.members.map((m) => m === storedMember ? {
+          ...m, cursor, sessionId: reply.sessionId, hermesSessionKey: reply.hermesSessionKey
+        } : m)
+        : latest.members
       update(id, (r) => ({
         ...r,
         finalId: done ? post.id : undefined,
-        messages: [...r.messages, post],
-        members: r.members.map((m) =>
-          m.botId === member.botId
-            ? { ...m, cursor: r.messages.length + 1, sessionId: reply.sessionId }
-            : m
-        )
+        messages: appendPost ? [...r.messages, post] : r.messages,
+        members
       }))
       if (done) break
-      const tool = requestedTool(post.text)
-      const latest = roomById(id)!
-      if (tool) {
-        if (turn + 1 >= latest.limit) {
-          setError(id, `已达 ${latest.limit} 轮上限，工具 ${tool.name} 尚未执行。`)
-          break
+      if (toolRequest) {
+        let resultText: string
+        let toolFailed = false
+        let requestedToolName: string | undefined
+        try {
+          signal.throwIfAborted()
+          const tool = requestedTool(post.text)
+          if (!tool) throw new Error('无效的工具请求')
+          requestedToolName = tool.name
+          if (turn + 1 >= latest.limit) {
+            setError(id, `已达 ${latest.limit} 轮上限，工具 ${tool.name} 尚未执行。`)
+            break
+          }
+          const bridge = getBridge()?.workspace
+          if (!bridge) throw new Error('工作区不可用')
+          const recipient = roomRecipient(latest, destination ? `Slack ${destination.channel}` : undefined)
+          resultText = await bridge.run(id, tool.name, tool.args, recipient)
+        } catch (error) {
+          signal.throwIfAborted()
+          const toolError = `工具请求失败：${error instanceof Error ? error.message : String(error)}`
+          resultText = destination && requestedToolName ? '工具请求失败。请使用已有信息继续。' : toolError
+          toolFailed = true
+          setError(id, `@${member.name}：${toolError}`)
         }
-        const bridge = getBridge()?.workspace
-        if (!bridge) throw new Error('工作区不可用')
-        const recipient = roomRecipient(latest, useRooms.getState().externalAudiences[id])
-        const result = await bridge.run(id, tool.name, tool.args, recipient)
-        controller.signal.throwIfAborted()
+        signal.throwIfAborted()
+        const result: RoomMessage = {
+          id: createId('post'), author: 'Tool', text: resultText, createdAt: Date.now(),
+          ...(toolFailed ? { localOnly: true } : {}),
+          ...(!toolFailed && requestedToolName ? { references: [{ label: 'Requested tool', text: requestedToolName }] } : {})
+        }
         update(id, (r) => ({
           ...r,
-          messages: [
-            ...r.messages,
-            { id: createId('post'), author: 'Tool', text: result, createdAt: Date.now() }
-          ]
+          messages: [...r.messages, result]
         }))
-        queue.unshift(member)
+        if (!toolFailed) {
+          queue.unshift({ member, trigger: result })
+        } else if (coordinator && !isCoordinator) {
+          if (!isQueued(coordinator.botId)) queue.push({ member: coordinator, trigger: result })
+        } else if (!queue.length && turn + 1 < latest.limit && !toolRecovery.has(member.botId)) {
+          toolRecovery.add(member.botId)
+          queue.push({ member, trigger: result })
+        }
         continue
       }
-      if (coordinator && member.botId !== coordinator.botId) {
-        if (!queue.some((m) => m.botId === coordinator.botId)) queue.push(coordinator)
-      } else if (latest.mode === 'auto') {
-        for (const target of mentions(post.text, latest.members)) {
-          if (target.botId !== member.botId && !failed.has(target.botId) && !queue.some((m) => m.botId === target.botId)) {
-            queue.push(target)
-          }
+      for (const botId of targets) {
+        const target = currentMembers.get(botId)
+        if (!target || botId === member.botId || failed.has(botId)) continue
+        const queued = queue.find(({ member }) => member.botId === botId)
+        if (queued) {
+          queued.trigger = post
+          queued.handoff = post
+        } else {
+          queue.push({ member: target, trigger: post, handoff: post })
         }
       }
     }
   } catch (e) {
-    if (!controller.signal.aborted) setError(id, e instanceof Error ? e.message : String(e))
+    if (!signal.aborted) setError(id, e instanceof Error ? e.message : String(e))
   } finally {
-    if (runs.get(id) === controller) {
+    if (runs.get(id) === run) {
       runs.delete(id)
       useRooms.setState((s) => ({
         speakers: { ...s.speakers, [id]: undefined },
         turnProgress: { ...s.turnProgress, [id]: undefined }
       }))
     }
+    finish()
   }
 }

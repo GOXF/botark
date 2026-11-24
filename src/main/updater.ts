@@ -16,7 +16,14 @@ let started = false
 let lastInfo: UpdateInfo | null = null
 let latestVersionTag: string | null = null
 let downloaded = false
-let isManualCheck = false
+
+interface UpdateCheck {
+  manual: boolean
+  done: Promise<void>
+}
+
+let activeCheck: UpdateCheck | undefined
+const SIGNING_ERROR = /ShipIt|code signature|代码不含资源|did not pass validation/i
 
 /**
  * ShipIt (Squirrel.Mac) requires a valid Developer ID Application signature on macOS.
@@ -79,11 +86,8 @@ function openReleasePage(version?: string): void {
   void shell.openExternal(releaseUrl(version ?? latestVersionTag ?? lastInfo?.version))
 }
 
-async function checkViaGitHubApi(manual: boolean): Promise<void> {
+async function checkViaGitHubApi(attempt: UpdateCheck): Promise<void> {
   const currentVersion = app.getVersion()
-  if (manual) {
-    broadcast({ type: 'checking' })
-  }
   try {
     const res = await fetch(GITHUB_API_LATEST, {
       headers: {
@@ -92,17 +96,16 @@ async function checkViaGitHubApi(manual: boolean): Promise<void> {
       },
       signal: AbortSignal.timeout(12_000)
     })
-    const data = res.ok ? ((await res.json().catch(() => null)) as Parameters<typeof interpretLatestRelease>[1]) : null
+    const data: unknown = res.ok ? await res.json().catch(() => null) : null
     const outcome = interpretLatestRelease(res, data, currentVersion, isNewerVersion)
     if (outcome.type === 'available') {
       latestVersionTag = outcome.version
       broadcast({ type: 'available', version: outcome.version, releaseNotes: outcome.releaseNotes, manualInstall: true })
-    } else if (manual) {
-      // A failed check is not "no update": say it failed.
+    } else if (attempt.manual) {
       broadcast(outcome.type === 'error' ? { type: 'error', message: outcome.message } : { type: 'not-available', version: currentVersion })
     }
   } catch (error) {
-    if (manual) broadcast({ type: 'error', message: checkFailedMessage(error) })
+    if (attempt.manual) broadcast({ type: 'error', message: checkFailedMessage(error) })
   }
 }
 
@@ -112,12 +115,6 @@ function configure(): void {
   autoUpdater.autoInstallOnAppQuit = auto
   autoUpdater.allowPrerelease = false
   autoUpdater.logger = null
-
-  autoUpdater.on('checking-for-update', () => {
-    if (isManualCheck) {
-      broadcast({ type: 'checking' })
-    }
-  })
 
   autoUpdater.on('update-available', (info) => {
     lastInfo = info
@@ -129,12 +126,6 @@ function configure(): void {
       releaseNotes: typeof info.releaseNotes === 'string' ? info.releaseNotes : undefined,
       manualInstall: !auto
     })
-  })
-
-  autoUpdater.on('update-not-available', (info) => {
-    if (isManualCheck) {
-      broadcast({ type: 'not-available', version: info.version || app.getVersion() })
-    }
   })
 
   autoUpdater.on('download-progress', (progress) => {
@@ -160,39 +151,53 @@ function configure(): void {
 
   autoUpdater.on('error', (error) => {
     const raw = error?.message || String(error)
-    if (/ShipIt|code signature|代码不含资源|did not pass validation/i.test(raw)) {
+    if (SIGNING_ERROR.test(raw)) {
+      downloaded = false
       broadcast({
         type: 'available',
         version: latestVersionTag ?? lastInfo?.version ?? app.getVersion(),
         manualInstall: true
       })
-      return
-    }
-    // Missing app-update.yml / 404 latest-mac.yml / no published releases: fall back to GitHub API check
-    // Missing manifest / nothing published: check() catches the rejected
-    // checkForUpdates() and falls back to the GitHub API once.
-    if (/app-update\.yml|ENOENT|404|latest-mac\.yml|latest\.yml|No published versions|Cannot find/i.test(raw)) {
-      return
-    }
-    if (isManualCheck) {
-      broadcast({ type: 'error', message: raw })
     }
   })
 }
 
-async function check(manual = false): Promise<void> {
-  isManualCheck = manual
-  // When unpacked, unsigned on macOS, or app-update.yml is not bundled, use the
-  // lightweight GitHub Releases API check so it never throws ENOENT / ShipIt errors.
-  if (!app.isPackaged || !canAutoInstall() || !hasAppUpdateConfig()) {
-    await checkViaGitHubApi(manual)
-    return
+async function runCheck(attempt: UpdateCheck): Promise<void> {
+  if (canAutoInstall() && hasAppUpdateConfig()) {
+    try {
+      const result = await autoUpdater.checkForUpdates()
+      if (result) {
+        if (!result.isUpdateAvailable && attempt.manual) {
+          broadcast({ type: 'not-available', version: result.updateInfo.version || app.getVersion() })
+        }
+        void result.downloadPromise?.catch((error: unknown) => {
+          const message = error instanceof Error ? error.message : String(error)
+          if (attempt.manual && !SIGNING_ERROR.test(message)) broadcast({ type: 'error', message })
+        })
+        return
+      }
+    } catch {
+      // A missing or unreadable native update manifest falls back to GitHub.
+    }
   }
-  try {
-    await autoUpdater.checkForUpdates()
-  } catch {
-    await checkViaGitHubApi(manual)
+  await checkViaGitHubApi(attempt)
+}
+
+function check(manual = false): Promise<void> {
+  if (activeCheck) {
+    if (manual && !activeCheck.manual) {
+      activeCheck.manual = true
+      broadcast({ type: 'checking' })
+    }
+    return activeCheck.done
   }
+  const attempt: UpdateCheck = {
+    manual,
+    done: Promise.resolve().then(() => runCheck(attempt)).finally(() => { activeCheck = undefined })
+  }
+  activeCheck = attempt
+  if (manual) broadcast({ type: 'checking' })
+  return attempt.done
 }
 
 function installOrOpenRelease(): void {

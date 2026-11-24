@@ -21,6 +21,7 @@ import type {
   MuseMediaPartView,
   MuseToolCallView
 } from '@shared/ipc'
+import { randomUUID } from 'node:crypto'
 import { loadAccountTransportProxyUrl } from '../muse/accountProxy'
 import { proxyFetch } from '../proxyTransport'
 import { getHermesAccount, normalizeHermesBaseUrl } from './hermesStore'
@@ -54,20 +55,35 @@ export interface HermesTranscriptMessage {
   media?: MuseMediaPartView[]
 }
 
-export interface HermesApprovalRecord {
+interface HermesApprovalRecord {
   approval: HermesApprovalView
   runId: string
   requestId?: string
 }
 
+interface HermesConnection {
+  accountId: string
+  baseUrl: string
+  apiKey?: string
+  fetchImpl?: typeof fetch
+}
+
 interface ActiveRunState {
+  connection: HermesConnection
   controller: AbortController
+  callbacks: HermesStreamCallbacks
+  requestId?: string
   runId?: string
   sessionId?: string
+  dispatched: boolean
+  stopRequested?: boolean
+  stopConfirmed?: boolean
+  stopping?: Promise<void>
+  approvals: Map<string, HermesApprovalRecord>
+  decisions: Map<string, 'pending' | 'resolved'>
 }
 
 const activeRuns = new Map<string, ActiveRunState>()
-const pendingApprovals = new Map<string, HermesApprovalRecord[]>()
 
 function isLoopbackUrl(urlStr: string): boolean {
   try {
@@ -84,16 +100,16 @@ async function fetchForAccount(
   init?: RequestInit,
   explicitFetch?: typeof fetch
 ): Promise<Response> {
-  if (explicitFetch) return explicitFetch(url, init)
-  let proxyUrl: string | undefined
-  if (accountId) {
-    proxyUrl = await loadAccountTransportProxyUrl(accountId)
-  }
-  // Never route localhost / 127.0.0.1 through the OS system proxy when no explicit per-account proxy is configured.
-  if (!proxyUrl && isLoopbackUrl(url)) {
-    return fetch(url, init)
-  }
-  return proxyFetch(proxyUrl, url, init)
+  init?.signal?.throwIfAborted()
+  const request: RequestInit = { ...init, redirect: 'error' }
+  if (explicitFetch) return explicitFetch(url, request)
+  const proxyUrl = accountId ? await loadAccountTransportProxyUrl(accountId) : undefined
+  return fetchHermesUrl(proxyUrl, url, request)
+}
+
+function fetchHermesUrl(proxyUrl: string | undefined, url: string, init?: RequestInit): Promise<Response> {
+  init?.signal?.throwIfAborted()
+  return !proxyUrl && isLoopbackUrl(url) ? fetch(url, init) : proxyFetch(proxyUrl, url, init)
 }
 
 function buildAuthHeaders(apiKey?: string, extra?: Record<string, string>): Record<string, string> {
@@ -143,9 +159,10 @@ async function hermesJsonRequest<T = unknown>(args: {
   const url = `${args.baseUrl}${args.path.startsWith('/') ? args.path : `/${args.path}`}`
   const timeoutController = new AbortController()
   const timer = setTimeout(() => timeoutController.abort(), args.timeoutMs ?? 20_000)
-  const onExternalAbort = () => timeoutController.abort()
+  const onExternalAbort = () => timeoutController.abort(args.signal?.reason)
   args.signal?.addEventListener('abort', onExternalAbort, { once: true })
   try {
+    args.signal?.throwIfAborted()
     const headers = buildAuthHeaders(args.apiKey, {
       ...(args.body !== undefined ? { 'Content-Type': 'application/json' } : {}),
       ...args.headers
@@ -161,6 +178,7 @@ async function hermesJsonRequest<T = unknown>(args: {
       },
       args.fetchImpl
     )
+    args.signal?.throwIfAborted()
     if (!res.ok) {
       const err = await readErrorMessage(res)
       throw new HermesApiError(err.message, res.status, err.code, err.body)
@@ -169,6 +187,7 @@ async function hermesJsonRequest<T = unknown>(args: {
     if (!text.trim()) return {} as T
     return JSON.parse(text) as T
   } catch (error) {
+    args.signal?.throwIfAborted()
     if (error instanceof HermesApiError) throw error
     if (error instanceof Error && error.name === 'AbortError') {
       throw new HermesApiError('Hermes 请求超时或已取消', 0, 'aborted')
@@ -331,26 +350,26 @@ export interface ParsedSseFrame {
  * comment keepalives (`: keepalive`), multi-line `data:` blocks, and `event:` headers.
  */
 export class SseParser {
+  private static readonly MAX_FRAME_LENGTH = 16 * 1024 * 1024
   private buffer = ''
   private currentEvent = ''
   private currentData: string[] = []
+  private frameLength = 0
 
   feed(chunk: string): ParsedSseFrame[] {
-    const frames: ParsedSseFrame[] = []
-    this.buffer += chunk
-    let nl = this.buffer.indexOf('\n')
+    return [...this.frames(chunk)]
+  }
+
+  *frames(chunk: string): Generator<ParsedSseFrame> {
+    let start = 0
+    let nl = chunk.indexOf('\n')
     while (nl !== -1) {
-      const line = this.buffer.slice(0, nl).replace(/\r$/, '')
-      this.buffer = this.buffer.slice(nl + 1)
+      this.checkFrameLength(this.buffer.length + nl - start + 1)
+      const line = (this.buffer + chunk.slice(start, nl)).replace(/\r$/, '')
+      this.buffer = ''
       if (line === '') {
-        if (this.currentData.length > 0) {
-          frames.push({
-            event: this.currentEvent || 'message',
-            data: this.currentData.join('\n')
-          })
-        }
-        this.currentEvent = ''
-        this.currentData = []
+        const frame = this.takeFrame()
+        if (frame) yield frame
       } else if (line.startsWith(':')) {
         // SSE comment / keepalive
       } else if (line.startsWith('event:')) {
@@ -358,25 +377,35 @@ export class SseParser {
       } else if (line.startsWith('data:')) {
         this.currentData.push(line.slice(5).trimStart())
       }
-      nl = this.buffer.indexOf('\n')
+      if (line.startsWith('data:') || line.startsWith('event:')) this.frameLength += line.length + 1
+      start = nl + 1
+      nl = chunk.indexOf('\n', start)
     }
-    return frames
+    this.checkFrameLength(this.buffer.length + chunk.length - start)
+    this.buffer += chunk.slice(start)
   }
 
   flush(): ParsedSseFrame[] {
-    const frames: ParsedSseFrame[] = []
-    if (this.buffer.trim()) {
-      frames.push(...this.feed('\n'))
-    }
-    if (this.currentData.length > 0) {
-      frames.push({
-        event: this.currentEvent || 'message',
-        data: this.currentData.join('\n')
-      })
-      this.currentEvent = ''
-      this.currentData = []
-    }
+    const frames = this.buffer ? this.feed('\n') : []
+    const frame = this.takeFrame()
+    if (frame) frames.push(frame)
     return frames
+  }
+
+  private checkFrameLength(extra: number): void {
+    if (this.frameLength + extra > SseParser.MAX_FRAME_LENGTH) {
+      throw new HermesApiError('Hermes SSE 帧超过大小限制', 502, 'sse_frame_too_large')
+    }
+  }
+
+  private takeFrame(): ParsedSseFrame | undefined {
+    const frame = this.currentEvent || this.currentData.length
+      ? { event: this.currentEvent || 'message', data: this.currentData.join('\n') }
+      : undefined
+    this.currentEvent = ''
+    this.currentData = []
+    this.frameLength = 0
+    return frame
   }
 }
 
@@ -521,9 +550,23 @@ export async function probeHermesServer(args: {
   let version: string | undefined
   let platform: string | undefined
   let reachable = false
+  let verified = false
+  let models: string[] = []
+  let requiresAuth = false
+  let supportsSessions = false
+  let errorMessage: string | undefined
+
+  const authRejected = (error: unknown) => {
+    if (!(error instanceof HermesApiError) || (error.status !== 401 && error.status !== 403)) return false
+    reachable = true
+    requiresAuth = true
+    verified = false
+    errorMessage = args.apiKey ? 'API Key 无效，请检查 Hermes 的 API_SERVER_KEY' : '该 Hermes 服务需要 API_SERVER_KEY 鉴权'
+    return true
+  }
 
   try {
-    const health = await hermesJsonRequest<Record<string, unknown>>({
+    const health = await hermesJsonRequest<Record<string, unknown> | null>({
       accountId: args.accountId,
       baseUrl,
       path: '/health',
@@ -531,27 +574,15 @@ export async function probeHermesServer(args: {
       fetchImpl: args.fetchImpl
     })
     reachable = true
-    if (typeof health['version'] === 'string') version = health['version']
-    if (typeof health['platform'] === 'string') platform = health['platform']
-  } catch (error) {
-    // Some reverse proxies only expose /v1/models; fall through to check /v1/models before giving up
-    if (error instanceof HermesApiError && error.status === 0) {
-      return {
-        reachable: false,
-        authenticated: false,
-        models: [],
-        defaultModel: 'hermes-agent',
-        supportsSessions: false,
-        requiresAuth: false,
-        error: `无法连接到 ${baseUrl}（请确认已运行 hermes gateway 且启用 API_SERVER_ENABLED=true）`
-      }
-    }
+    if (typeof health?.['version'] === 'string') version = health['version']
+    if (typeof health?.['platform'] === 'string') platform = health['platform']
+  } catch {
+    // A reverse proxy can expose the authenticated endpoints without /health.
   }
 
-  let models: string[] = []
-  let requiresAuth = false
+  let modelsRejected = false
   try {
-    const modelsRes = await hermesJsonRequest<Record<string, unknown>>({
+    const modelsRes = await hermesJsonRequest<Record<string, unknown> | null>({
       accountId: args.accountId,
       baseUrl,
       apiKey: args.apiKey,
@@ -560,72 +591,57 @@ export async function probeHermesServer(args: {
       fetchImpl: args.fetchImpl
     })
     reachable = true
-    const data = Array.isArray(modelsRes['data']) ? (modelsRes['data'] as Array<Record<string, unknown>>) : []
-    models = data.map((m) => String(m['id'] ?? '')).filter(Boolean)
+    const data = modelsRes?.['data']
+    if (Array.isArray(data) && (data.length > 0 || modelsRes?.['object'] === 'list') &&
+      data.every((row) => row && typeof row.id === 'string' && row.id.trim())) {
+      verified = true
+      models = data.map((row) => row.id as string)
+    }
   } catch (error) {
-    if (error instanceof HermesApiError && (error.status === 401 || error.status === 403)) {
-      requiresAuth = true
-      return {
-        reachable: true,
-        authenticated: false,
-        version,
-        platform,
-        models: [],
-        defaultModel: 'hermes-agent',
-        supportsSessions: false,
-        requiresAuth: true,
-        error: args.apiKey ? 'API Key 无效（401），请检查 Hermes 的 API_SERVER_KEY' : '该 Hermes 服务需要 API_SERVER_KEY 鉴权'
-      }
-    }
-    if (!reachable) {
-      return {
-        reachable: false,
-        authenticated: false,
-        models: [],
-        defaultModel: 'hermes-agent',
-        supportsSessions: false,
-        requiresAuth: false,
-        error: error instanceof Error ? error.message : String(error)
-      }
-    }
+    modelsRejected = authRejected(error)
   }
 
-  let supportsSessions = true
-  try {
-    const caps = await hermesJsonRequest<Record<string, unknown>>({
-      accountId: args.accountId,
-      baseUrl,
-      apiKey: args.apiKey,
-      path: '/v1/capabilities',
-      timeoutMs: 8_000,
-      fetchImpl: args.fetchImpl
-    })
-    const auth = (caps['auth'] as Record<string, unknown> | undefined) ?? {}
-    if (typeof auth['required'] === 'boolean') requiresAuth = auth['required']
-    if (typeof caps['model'] === 'string' && caps['model'] && !models.includes(caps['model'])) {
-      models.unshift(caps['model'])
-    }
-    const endpoints = (caps['endpoints'] as Record<string, unknown> | undefined) ?? {}
-    if (Object.keys(endpoints).length > 0) {
-      const paths = Object.values(endpoints)
-        .map((e) => (e && typeof e === 'object' ? String((e as Record<string, unknown>)['path'] ?? '') : ''))
-      supportsSessions = paths.some((p) => p.includes('/api/sessions'))
-    }
-  } catch (error) {
-    if (error instanceof HermesApiError && error.status === 404) {
-      supportsSessions = false
+  if (!modelsRejected) {
+    try {
+      const caps = await hermesJsonRequest<Record<string, unknown> | null>({
+        accountId: args.accountId,
+        baseUrl,
+        apiKey: args.apiKey,
+        path: '/v1/capabilities',
+        timeoutMs: 8_000,
+        fetchImpl: args.fetchImpl
+      })
+      reachable = true
+      const auth = caps?.['auth'] as Record<string, unknown> | undefined
+      if (caps && (caps['object'] === 'hermes.api_server.capabilities' ||
+        (caps['platform'] === 'hermes-agent' && typeof auth?.['required'] === 'boolean'))) {
+        requiresAuth = auth?.['required'] === true
+        verified = !requiresAuth || Boolean(args.apiKey?.trim())
+        if (!verified) errorMessage = '该 Hermes 服务需要 API_SERVER_KEY 鉴权'
+        if (typeof caps['model'] === 'string' && caps['model'] && !models.includes(caps['model'])) {
+          models.unshift(caps['model'])
+        }
+        const endpoints = (caps['endpoints'] as Record<string, { path?: unknown }> | undefined) ?? {}
+        supportsSessions = Object.values(endpoints).some((endpoint) =>
+          typeof endpoint?.path === 'string' && endpoint.path.startsWith('/api/sessions'))
+      }
+    } catch (error) {
+      authRejected(error)
     }
   }
 
   return {
-    reachable: true,
-    authenticated: true,
+    reachable,
+    authenticated: verified,
     version,
     platform,
-    models: models.length ? models : ['hermes-agent'],
+    models: models.length || !verified ? models : ['hermes-agent'],
     defaultModel: models[0] || 'hermes-agent',
     supportsSessions,
-    requiresAuth
+    requiresAuth,
+    ...(!verified && { error: errorMessage || (reachable
+      ? 'Hermes 未返回可验证的 API 响应'
+      : `无法连接到 ${baseUrl}（请确认已运行 hermes gateway 且启用 API_SERVER_ENABLED=true）`) })
   }
 }
 
@@ -826,17 +842,26 @@ export async function createHermesSession(
   opts?: { title?: string; model?: string }
 ): Promise<HermesSessionSummary> {
   const acc = requireAccount(accountId)
+  return createSession({ accountId, baseUrl: acc.baseUrl, apiKey: acc.apiKey }, {
+    title: opts?.title,
+    model: opts?.model?.trim() || acc.model
+  })
+}
+
+async function createSession(
+  connection: HermesConnection,
+  opts: { title?: string; model?: string; signal?: AbortSignal }
+): Promise<HermesSessionSummary> {
   const payload: Record<string, unknown> = { source: 'api_server' }
-  if (opts?.title?.trim()) payload['title'] = opts.title.trim()
-  const model = opts?.model?.trim() || acc.model
+  if (opts.title?.trim()) payload['title'] = opts.title.trim()
+  const { model, signal } = opts
   if (model && model !== 'hermes-agent') payload['model'] = model
   const res = await hermesJsonRequest<Record<string, unknown>>({
-    accountId,
-    baseUrl: acc.baseUrl,
-    apiKey: acc.apiKey,
+    ...connection,
     method: 'POST',
     path: '/api/sessions',
     body: payload,
+    signal,
     timeoutMs: 12_000
   })
   const session = (res['session'] as Record<string, unknown> | undefined) ?? res
@@ -879,66 +904,78 @@ export async function getHermesSessionMessages(
 // ---------------- Approvals & Run Control ----------------
 
 export function listHermesApprovals(accountId: string): HermesApprovalView[] {
-  return (pendingApprovals.get(accountId) ?? []).map((r) => r.approval)
+  const run = activeRuns.get(accountId)
+  return run ? Array.from(run.approvals.values(), (item) => item.approval) : []
 }
 
 export async function decideHermesApproval(
   accountId: string,
   approvalId: string,
-  decision: 'allow_once' | 'allow_session' | 'allow_always' | 'deny' | 'deny_always',
-  onApprovalsChanged?: (pending: HermesApprovalView[]) => void
+  decision: 'allow_once' | 'allow_session' | 'allow_always' | 'deny' | 'deny_always'
 ): Promise<void> {
-  const acc = requireAccount(accountId)
-  const list = pendingApprovals.get(accountId) ?? []
-  const target = list.find((item) => item.approval.id === approvalId)
   const run = activeRuns.get(accountId)
-  const runId = target?.runId || run?.runId
-  if (!target || !run || !runId) {
+  const entry = run && Array.from(run.approvals).find(([, item]) => item.approval.id === approvalId)
+  if (!run || !entry || run.stopRequested) {
     throw new HermesApiError('未找到对应的 Hermes 运行任务（审批可能已过期）', 409)
   }
+  const [key, target] = entry
+  if (run.decisions.has(key)) {
+    throw new HermesApiError('Hermes 审批正在处理', 409, 'approval_in_progress')
+  }
+  run.decisions.set(key, 'pending')
   const choice = mapApprovalDecisionToHermesChoice(decision)
-  await hermesJsonRequest({
-    accountId,
-    baseUrl: acc.baseUrl,
-    apiKey: acc.apiKey,
-    method: 'POST',
-    path: `/v1/runs/${encodeURIComponent(runId)}/approval`,
-    body: {
-      choice,
-      ...(target.requestId ? { request_id: target.requestId } : {})
-    },
-    timeoutMs: 12_000
-  })
-  if (activeRuns.get(accountId) !== run) return
-  const remaining = (pendingApprovals.get(accountId) ?? []).filter((item) => item !== target)
-  if (remaining.length) pendingApprovals.set(accountId, remaining)
-  else pendingApprovals.delete(accountId)
-  onApprovalsChanged?.(remaining.map((r) => r.approval))
+  try {
+    await hermesJsonRequest({
+      ...run.connection,
+      method: 'POST',
+      path: `/v1/runs/${encodeURIComponent(target.runId)}/approval`,
+      body: { choice, ...(target.requestId ? { request_id: target.requestId } : {}) },
+      timeoutMs: 12_000
+    })
+  } catch (error) {
+    run.decisions.delete(key)
+    throw error
+  }
+  run.decisions.set(key, 'resolved')
+  run.approvals.delete(key)
+  if (activeRuns.get(accountId) === run) run.callbacks.onApprovals?.(listHermesApprovals(accountId))
 }
 
-export async function stopHermesRun(accountId: string): Promise<void> {
+export async function stopHermesRun(accountId: string, requestId?: string): Promise<void> {
   const run = activeRuns.get(accountId)
-  if (!run) return
-  activeRuns.delete(accountId)
-  pendingApprovals.delete(accountId)
-  run.controller.abort()
-  if (run.runId) {
-    try {
-      const acc = getHermesAccount(accountId)
-      if (acc) {
-        await hermesJsonRequest({
-          accountId,
-          baseUrl: acc.baseUrl,
-          apiKey: acc.apiKey,
-          method: 'POST',
-          path: `/v1/runs/${encodeURIComponent(run.runId)}/stop`,
-          body: {},
-          timeoutMs: 5_000
-        }).catch(() => undefined)
-      }
-    } catch {
-      /* best-effort stop */
+  if (!run || (requestId && requestId !== run.requestId)) return
+  if (run.stopConfirmed) return
+  if (run.stopping) return run.stopping
+  const runId = run.runId
+  if (!runId) {
+    run.controller.abort()
+    if (run.dispatched) {
+      throw new HermesApiError('Hermes 未提供运行 ID，无法确认远端已停止', 409, 'stop_unconfirmed')
     }
+    return
+  }
+  run.stopRequested = true
+  run.stopping = (async () => {
+    const result = await hermesJsonRequest<{ status?: string; run_id?: string; stopped?: boolean } | null>({
+      ...run.connection,
+      method: 'POST',
+      path: `/v1/runs/${encodeURIComponent(runId)}/stop`,
+      body: {},
+      timeoutMs: 5_000
+    })
+    const confirmed = result?.stopped === true ||
+      ['stopping', 'stopped', 'cancelled', 'completed', 'failed', 'interrupted'].includes(result?.status ?? '')
+    if (!confirmed || (result?.run_id && result.run_id !== runId)) {
+      throw new HermesApiError('Hermes 未确认停止请求', 502, 'stop_unconfirmed')
+    }
+    run.stopConfirmed = true
+    run.controller.abort()
+  })()
+  try {
+    await run.stopping
+  } finally {
+    run.stopping = undefined
+    run.stopRequested = false
   }
 }
 
@@ -946,7 +983,6 @@ export function cancelAllHermesRuns(accountId: string): void {
   if (accountId === '*') {
     for (const [, run] of activeRuns) run.controller.abort()
     activeRuns.clear()
-    pendingApprovals.clear()
     return
   }
   const run = activeRuns.get(accountId)
@@ -954,13 +990,12 @@ export function cancelAllHermesRuns(accountId: string): void {
     run.controller.abort()
     activeRuns.delete(accountId)
   }
-  pendingApprovals.delete(accountId)
 }
 
 // ---------------- Streaming Chat (Native Session SSE + OpenAI Fallback) ----------------
 
 export interface HermesStreamCallbacks {
-  onAccepted?: () => void
+  onAccepted?: (sessionId?: string) => void
   onDelta: (payload: {
     messageId: string
     sessionId?: string
@@ -969,8 +1004,8 @@ export interface HermesStreamCallbacks {
     media?: MuseMediaPartView[]
     done: boolean
   }) => void
-  onActivity?: (activity: { code: string; text?: string; emoji?: string; busy: boolean }) => void
-  onApprovals?: (pending: HermesApprovalView[]) => void
+  onActivity?: (activity: { code: string; text?: string; emoji?: string; busy: boolean }, sessionId?: string) => void
+  onApprovals?: (pending: HermesApprovalView[], sessionId?: string) => void
 }
 
 export interface HermesSendResult {
@@ -979,6 +1014,115 @@ export interface HermesSendResult {
   text: string
   tools?: MuseToolCallView[]
   media?: MuseMediaPartView[]
+}
+
+async function readHermesStream(
+  body: ReadableStream<Uint8Array>,
+  signal: AbortSignal,
+  handle: (frame: ParsedSseFrame) => boolean
+): Promise<void> {
+  const reader = body.getReader()
+  const decoder = new TextDecoder()
+  const parser = new SseParser()
+  let cancelled = false
+  const cancel = () => {
+    if (cancelled) return
+    cancelled = true
+    void reader.cancel().catch(() => undefined)
+  }
+  signal.addEventListener('abort', cancel, { once: true })
+  try {
+    signal.throwIfAborted()
+    while (true) {
+      const { value, done } = await reader.read()
+      signal.throwIfAborted()
+      const chunk = done ? decoder.decode() : decoder.decode(value, { stream: true })
+      for (const frame of parser.frames(chunk)) {
+        if (handle(frame)) return
+      }
+      if (done) break
+    }
+    for (const frame of parser.flush()) {
+      if (handle(frame)) return
+    }
+  } finally {
+    signal.removeEventListener('abort', cancel)
+    cancel()
+    reader.releaseLock()
+  }
+}
+
+class HermesStreamText {
+  raw = ''
+  private tail = ''
+  private mediaStart?: number
+
+  append(delta: string): void {
+    const start = this.raw.length - this.tail.length
+    this.raw += delta
+    if (this.mediaStart !== undefined) return
+    // Keep incomplete inline media out of IPC snapshots. Extract media once
+    // from the authoritative final text, including tags split across deltas.
+    const chunk = this.tail + delta
+    const match = /!\[|<(?:video|audio)\b/i.exec(chunk)
+    if (match) this.mediaStart = start + match.index
+    this.tail = chunk.slice(-6)
+  }
+
+  preview(): string {
+    if (this.mediaStart !== undefined) return this.raw.slice(0, this.mediaStart)
+    return this.raw
+  }
+}
+
+function streamRunState(accountId: string, controller: AbortController): ActiveRunState | undefined {
+  const run = activeRuns.get(accountId)
+  return run?.controller === controller ? run : undefined
+}
+
+function parseStreamEvent(data: string): Record<string, unknown> {
+  try {
+    const parsed: unknown = JSON.parse(data)
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed as Record<string, unknown>
+  } catch {
+    // Some gateways send empty or non-JSON terminal markers.
+  }
+  return {}
+}
+
+function recordApproval(
+  run: ActiveRunState | undefined,
+  runId: string,
+  event: Record<string, unknown>,
+  callbacks: HermesStreamCallbacks
+): void {
+  if (!runId) return
+  const requestId = typeof event['request_id'] === 'string' ? event['request_id']
+    : typeof event['id'] === 'string' ? event['id'] : undefined
+  const key = JSON.stringify([runId, requestId])
+  if (run?.decisions.get(key) === 'resolved') return
+  const payload = { ...(run?.approvals.get(key)?.approval.raw as Record<string, unknown> | undefined), ...event }
+  const command = typeof payload['command'] === 'string' ? payload['command'] : ''
+  const description = typeof payload['description'] === 'string' ? payload['description'] : ''
+  const approval: HermesApprovalView = {
+    id: requestId || runId,
+    status: 'pending',
+    title: command ? `Allow command: ${command}` : description || 'Hermes approval required',
+    detail: command && description ? description : command || undefined,
+    approvalType: 'hermes_command',
+    decisionOptions: mapHermesChoicesToDecisions(payload['choices']),
+    raw: payload
+  }
+  run?.approvals.set(key, { approval, runId, requestId })
+  callbacks.onApprovals?.(run ? Array.from(run.approvals.values(), (item) => item.approval) : [approval])
+  callbacks.onActivity?.({ code: 'approval', text: 'Waiting for command approval…', busy: true })
+}
+
+function streamFailure(payload: Record<string, unknown>): HermesApiError {
+  const nestedError = payload['error'] as Record<string, unknown> | undefined
+  const summary = [payload['message'], payload['error'], nestedError?.['message'], payload['turn_exit_reason']]
+    .find((value): value is string => typeof value === 'string' && Boolean(value))
+  return new HermesApiError(summary || 'Hermes run failed', 502, 'run_failed')
 }
 
 export async function streamNativeSessionTurn(args: {
@@ -996,6 +1140,13 @@ export async function streamNativeSessionTurn(args: {
   const url = `${args.baseUrl}/api/sessions/${encodeURIComponent(args.sessionId)}/chat/stream`
   const body: Record<string, unknown> = { message: args.userContent }
   if (args.model?.trim()) body['model'] = args.model.trim()
+  const signal = args.controller.signal
+  signal.throwIfAborted()
+  const state = streamRunState(args.accountId, args.controller)
+  if (state) {
+    state.dispatched = true
+    state.sessionId = args.sessionId
+  }
 
   const res = await fetchForAccount(
     args.accountId,
@@ -1008,63 +1159,59 @@ export async function streamNativeSessionTurn(args: {
         'X-Hermes-Session-Key': args.sessionKey
       }),
       body: JSON.stringify(body),
-      signal: args.controller.signal
+      signal
     },
     args.fetchImpl
   )
 
+  signal.throwIfAborted()
   if (!res.ok) {
+    if (state) state.dispatched = false
     const err = await readErrorMessage(res)
     throw new HermesApiError(err.message, res.status, err.code, err.body)
   }
 
-  args.callbacks.onAccepted?.()
-  const reader = res.body?.getReader()
-  if (!reader) {
+  if (!res.body) {
     throw new HermesApiError('Hermes 流式响应体为空', 502)
   }
 
-  const decoder = new TextDecoder()
-  const parser = new SseParser()
-  let messageId = `hermes_${Date.now()}`
+  let messageId = `hermes_${randomUUID()}`
   let effectiveSessionId = res.headers.get('X-Hermes-Session-Id') || args.sessionId
-  let accumulated = ''
-  let completedText = ''
-  let streamError: string | null = null
+  if (state) {
+    state.sessionId = effectiveSessionId
+    state.runId = res.headers.get('X-Hermes-Run-Id') || undefined
+  }
+  args.callbacks.onAccepted?.(effectiveSessionId)
+  const accumulated = new HermesStreamText()
+  let completedText: string | undefined
+  let terminal = false
   const tools: MuseToolCallView[] = []
 
-  const emitProgress = (done: boolean, overrideText?: string) => {
-    const raw = overrideText !== undefined ? overrideText : accumulated
-    const { text, media } = extractInlineDataUrlImages(raw)
+  const emitProgress = () => {
     args.callbacks.onDelta({
       messageId,
       sessionId: effectiveSessionId,
-      text,
-      tools: tools.length ? [...tools] : undefined,
-      media: media.length ? media : undefined,
-      done
+      text: accumulated.preview(),
+      tools: tools.length ? tools.map((tool) => ({ ...tool })) : undefined,
+      done: false
     })
   }
 
-  const handleFrame = (eventName: string, rawData: string) => {
-    args.controller.signal.throwIfAborted()
-    if (!rawData || rawData === '[DONE]') return
-    let payload: Record<string, unknown>
-    try {
-      payload = JSON.parse(rawData) as Record<string, unknown>
-    } catch {
-      return
+  await readHermesStream(res.body, signal, ({ event: eventName, data: rawData }) => {
+    if (rawData === '[DONE]') {
+      terminal = true
+      return true
     }
+    const payload = parseStreamEvent(rawData)
 
     const runId = typeof payload['run_id'] === 'string' ? payload['run_id'] : undefined
-    const state = activeRuns.get(args.accountId)
-    const ownsRun = state?.controller === args.controller
-    if (runId && ownsRun) state.runId = runId
+    if (runId && state) state.runId ??= runId
     if (typeof payload['session_id'] === 'string' && payload['session_id']) {
       effectiveSessionId = payload['session_id']
+      if (state) state.sessionId = effectiveSessionId
     }
 
-    const type = eventName && eventName !== 'message' ? eventName : String(payload['type'] ?? '')
+    const type = eventName && eventName !== 'message' ? eventName : String(payload['type'] ?? payload['event'] ?? '')
 
     switch (type) {
       case 'run.started':
@@ -1083,8 +1230,8 @@ export async function streamNativeSessionTurn(args: {
         }
         const delta = typeof payload['delta'] === 'string' ? payload['delta'] : ''
         if (delta) {
-          accumulated += delta
-          emitProgress(false)
+          accumulated.append(delta)
+          emitProgress()
         }
         break
       }
@@ -1109,7 +1256,7 @@ export async function streamNativeSessionTurn(args: {
           text: preview ? `${name}: ${preview.slice(0, 80)}` : `Running ${name}…`,
           busy: true
         })
-        emitProgress(false)
+        emitProgress()
         break
       }
       case 'tool.progress': {
@@ -1141,89 +1288,56 @@ export async function streamNativeSessionTurn(args: {
             summary: preview
           })
         }
-        emitProgress(false)
+        emitProgress()
         break
       }
       case 'approval.request': {
-        const activeRunId = runId || (ownsRun ? state.runId : undefined) || ''
-        const requestId =
-          typeof payload['request_id'] === 'string'
-            ? payload['request_id']
-            : typeof payload['id'] === 'string'
-              ? payload['id']
-              : `apr_${Date.now()}`
-        const command = typeof payload['command'] === 'string' ? payload['command'] : ''
-        const desc = typeof payload['description'] === 'string' ? payload['description'] : ''
-        const approval: HermesApprovalView = {
-          id: requestId,
-          status: 'pending',
-          title: command ? `Allow command: ${command}` : desc || 'Hermes approval required',
-          detail: command && desc ? desc : command || undefined,
-          approvalType: 'hermes_command',
-          decisionOptions: mapHermesChoicesToDecisions(payload['choices']),
-          raw: payload
-        }
-        const current = ownsRun ? pendingApprovals.get(args.accountId) ?? [] : []
-        const next = [...current.filter((x) => x.approval.id !== requestId), { approval, runId: activeRunId, requestId }]
-        if (ownsRun) pendingApprovals.set(args.accountId, next)
-        args.callbacks.onApprovals?.(next.map((x) => x.approval))
-        args.callbacks.onActivity?.({ code: 'approval', text: 'Waiting for command approval…', busy: true })
+        recordApproval(state, runId || state?.runId || '', payload, args.callbacks)
         break
       }
       case 'assistant.completed': {
         if (typeof payload['message_id'] === 'string' && payload['message_id']) {
           messageId = `hermes_${payload['message_id']}`
         }
-        if (typeof payload['content'] === 'string' && payload['content']) {
-          completedText = payload['content']
-        }
+        if (payload['interrupted'] === true) throw new HermesApiError('Hermes 已取消运行', 0, 'aborted')
+        if (payload['partial'] === true || payload['completed'] === false) throw streamFailure(payload)
+        if (typeof payload['content'] === 'string') completedText = payload['content']
         break
       }
       case 'error':
-      case 'run.failed': {
-        const msg =
-          (typeof payload['message'] === 'string' && payload['message']) ||
-          (typeof payload['error'] === 'string' && payload['error']) ||
-          'Hermes run failed'
-        streamError = msg
-        break
-      }
+      case 'run.failed':
+        throw streamFailure(payload)
+      case 'run.cancelled':
+        throw new HermesApiError('Hermes 已取消运行', 0, 'aborted')
+      case 'run.completed':
+        if (typeof payload['message_id'] === 'string' && payload['message_id']) {
+          messageId = `hermes_${payload['message_id']}`
+        }
+        terminal = true
+        return true
+      case 'done':
+        terminal = true
+        return true
       default:
         break
     }
-  }
+    return false
+  })
 
-  try {
-    while (true) {
-      const { value, done } = await reader.read()
-      if (done) break
-      const chunk = decoder.decode(value, { stream: true })
-      for (const frame of parser.feed(chunk)) {
-        handleFrame(frame.event, frame.data)
-      }
-    }
-    for (const frame of parser.flush()) {
-      handleFrame(frame.event, frame.data)
-    }
-  } finally {
-    reader.releaseLock()
+  signal.throwIfAborted()
+  if (!terminal && completedText === undefined) {
+    throw new HermesApiError('Hermes 流式连接在运行完成前关闭', 502, 'stream_incomplete')
   }
-
-  args.controller.signal.throwIfAborted()
-  if (streamError && !completedText && !accumulated) {
-    throw new HermesApiError(streamError, 502)
-  }
-
-  const finalRaw = completedText || accumulated
-  const { text, media } = extractInlineDataUrlImages(finalRaw)
-  emitProgress(true, finalRaw)
-  return {
+  const { text, media } = extractInlineDataUrlImages(completedText ?? accumulated.raw)
+  const result = {
     messageId,
     sessionId: effectiveSessionId,
     text,
     tools: tools.length ? tools : undefined,
     media: media.length ? media : undefined
   }
+  args.callbacks.onDelta({ ...result, done: true })
+  return result
 }
 
 export async function streamOpenAICompatTurn(args: {
@@ -1239,6 +1353,10 @@ export async function streamOpenAICompatTurn(args: {
   fetchImpl?: typeof fetch
 }): Promise<HermesSendResult> {
   const url = `${args.baseUrl}/v1/chat/completions`
+  const signal = args.controller.signal
+  signal.throwIfAborted()
+  const state = streamRunState(args.accountId, args.controller)
+  if (state) state.dispatched = true
   const res = await fetchForAccount(
     args.accountId,
     url,
@@ -1255,25 +1373,33 @@ export async function streamOpenAICompatTurn(args: {
         stream: true,
         messages: [{ role: 'user', content: args.userContent }]
       }),
-      signal: args.controller.signal
+      signal
     },
     args.fetchImpl
   )
 
+  signal.throwIfAborted()
   if (!res.ok) {
+    if (state) state.dispatched = false
     const err = await readErrorMessage(res)
     throw new HermesApiError(err.message, res.status, err.code, err.body)
   }
 
-  args.callbacks.onAccepted?.()
-  const effectiveSessionId = res.headers.get('X-Hermes-Session-Id') || args.sessionId
+  if (!res.body) throw new HermesApiError('Hermes OpenAI 流式响应体为空', 502)
+  let effectiveSessionId = res.headers.get('X-Hermes-Session-Id') || args.sessionId
+  if (state) {
+    state.sessionId = effectiveSessionId
+    state.runId = res.headers.get('X-Hermes-Run-Id') || undefined
+  }
+  args.callbacks.onAccepted?.(effectiveSessionId)
   const contentType = res.headers.get('content-type') || ''
-  let messageId = `hermes_${Date.now()}`
+  let messageId = `hermes_${randomUUID()}`
 
   // Non-streaming JSON fallback if server returned application/json
   if (contentType.includes('application/json')) {
     const json = (await res.json()) as Record<string, unknown>
-    args.controller.signal.throwIfAborted()
+    signal.throwIfAborted()
+    if (json['error']) throw streamFailure(json)
     if (typeof json['id'] === 'string' && json['id']) messageId = `hermes_${json['id']}`
     const choices = Array.isArray(json['choices']) ? (json['choices'] as Array<Record<string, unknown>>) : []
     const msg = (choices[0]?.['message'] as Record<string, unknown> | undefined) ?? {}
@@ -1283,67 +1409,45 @@ export async function streamOpenAICompatTurn(args: {
     return { messageId, sessionId: effectiveSessionId, text, media: media.length ? media : undefined }
   }
 
-  const reader = res.body?.getReader()
-  if (!reader) {
-    throw new HermesApiError('Hermes OpenAI 流式响应体为空', 502)
-  }
-
-  const decoder = new TextDecoder()
-  const parser = new SseParser()
-  let accumulated = ''
-
-  try {
-    while (true) {
-      const { value, done } = await reader.read()
-      if (done) break
-      const chunk = decoder.decode(value, { stream: true })
-      for (const frame of parser.feed(chunk)) {
-        args.controller.signal.throwIfAborted()
-        if (!frame.data || frame.data === '[DONE]') continue
-        let parsed: Record<string, unknown>
-        try {
-          parsed = JSON.parse(frame.data) as Record<string, unknown>
-        } catch {
-          continue
-        }
-        if (typeof parsed['id'] === 'string' && parsed['id']) {
-          messageId = `hermes_${parsed['id']}`
-        }
-        const choices = Array.isArray(parsed['choices']) ? (parsed['choices'] as Array<Record<string, unknown>>) : []
-        const delta = (choices[0]?.['delta'] as Record<string, unknown> | undefined) ?? {}
-        const piece = typeof delta['content'] === 'string' ? delta['content'] : ''
-        if (piece) {
-          accumulated += piece
-          const { text, media } = extractInlineDataUrlImages(accumulated)
-          args.callbacks.onDelta({
-            messageId,
-            sessionId: effectiveSessionId,
-            text,
-            media: media.length ? media : undefined,
-            done: false
-          })
-        }
-      }
+  const accumulated = new HermesStreamText()
+  await readHermesStream(res.body, signal, ({ event, data }) => {
+    if (data === '[DONE]') return true
+    const parsed = parseStreamEvent(data)
+    const type = event === 'message' ? parsed['type'] ?? parsed['event'] : event
+    if (type === 'run.failed' || type === 'error' || parsed['error']) throw streamFailure(parsed)
+    if (type === 'run.cancelled') throw new HermesApiError('Hermes 已取消运行', 0, 'aborted')
+    if (typeof parsed['run_id'] === 'string' && state) state.runId ??= parsed['run_id']
+    if (typeof parsed['session_id'] === 'string' && parsed['session_id']) {
+      effectiveSessionId = parsed['session_id']
+      if (state) state.sessionId = effectiveSessionId
     }
-  } finally {
-    reader.releaseLock()
-  }
-
-  args.controller.signal.throwIfAborted()
-  const { text, media } = extractInlineDataUrlImages(accumulated)
-  args.callbacks.onDelta({
-    messageId,
-    sessionId: effectiveSessionId,
-    text,
-    media: media.length ? media : undefined,
-    done: true
+    if (type === 'approval.request') {
+      const runId = typeof parsed['run_id'] === 'string' ? parsed['run_id'] : state?.runId
+      recordApproval(state, runId || '', parsed, args.callbacks)
+      return false
+    }
+    if (type === 'run.completed' || type === 'done') return true
+    if (typeof parsed['id'] === 'string' && parsed['id']) messageId = `hermes_${parsed['id']}`
+    const choices = Array.isArray(parsed['choices']) ? (parsed['choices'] as Array<Record<string, unknown>>) : []
+    const delta = choices[0]?.['delta'] as Record<string, unknown> | undefined
+    if (typeof delta?.['content'] === 'string' && delta['content']) {
+      accumulated.append(delta['content'])
+      args.callbacks.onDelta({ messageId, sessionId: effectiveSessionId, text: accumulated.preview(), done: false })
+    }
+    return typeof choices[0]?.['finish_reason'] === 'string' && Boolean(choices[0]['finish_reason'])
   })
-  return { messageId, sessionId: effectiveSessionId, text, media: media.length ? media : undefined }
+
+  signal.throwIfAborted()
+  const { text, media } = extractInlineDataUrlImages(accumulated.raw)
+  const result = { messageId, sessionId: effectiveSessionId, text, media: media.length ? media : undefined }
+  args.callbacks.onDelta({ ...result, done: true })
+  return result
 }
 
 export async function sendHermesMessage(args: {
   accountId: string
   botId?: string
+  requestId?: string
   sessionId?: string
   sessionKey?: string
   text: string
@@ -1360,17 +1464,42 @@ export async function sendHermesMessage(args: {
 
   // Cancel any stale in-flight stream on this account before starting a new one
   const prev = activeRuns.get(args.accountId)
-  if (prev) prev.controller.abort()
+  prev?.controller.abort()
 
   const controller = new AbortController()
-  activeRuns.set(args.accountId, { controller, sessionId: args.sessionId })
-  if (pendingApprovals.delete(args.accountId)) args.callbacks.onApprovals?.([])
+  const signal = controller.signal
+  const connection: HermesConnection = { accountId: args.accountId, baseUrl: acc.baseUrl, apiKey: acc.apiKey }
+  const run: ActiveRunState = {
+    connection, controller, callbacks: args.callbacks, requestId: args.requestId, sessionId: args.sessionId,
+    dispatched: false, approvals: new Map(), decisions: new Map()
+  }
+  activeRuns.set(args.accountId, run)
 
   const sessionKey = `botark:${args.sessionKey || args.botId || args.accountId}`
   const model = args.model?.trim() || acc.model
+  const sessionOptions = { title: args.text.trim().slice(0, 60) || 'BotArk Chat', model, signal }
 
   try {
-    args.callbacks.onActivity?.({ code: 'thinking', text: 'Connecting to Hermes…', busy: true })
+    args.callbacks.onApprovals?.([], run.sessionId)
+    args.callbacks.onActivity?.({ code: 'thinking', text: 'Connecting to Hermes…', busy: true }, run.sessionId)
+    signal.throwIfAborted()
+    if (args.fetchImpl) {
+      connection.fetchImpl = args.fetchImpl
+    } else {
+      const proxyUrl = await loadAccountTransportProxyUrl(args.accountId)
+      connection.fetchImpl = (url, init) => fetchHermesUrl(proxyUrl, String(url), init)
+    }
+    signal.throwIfAborted()
+    const streamOptions = {
+      ...connection, sessionKey, userContent, model, controller,
+      callbacks: {
+        onAccepted: args.callbacks.onAccepted,
+        onDelta: args.callbacks.onDelta,
+        onActivity: (activity: Parameters<NonNullable<HermesStreamCallbacks['onActivity']>>[0]) =>
+          args.callbacks.onActivity?.(activity, run.sessionId),
+        onApprovals: (approvals: HermesApprovalView[]) => args.callbacks.onApprovals?.(approvals, run.sessionId)
+      }
+    }
 
     // Try native session API first (supports tool calls, approvals, persistent history & session switching).
     let sessionId = args.sessionId?.trim() || undefined
@@ -1378,10 +1507,7 @@ export async function sendHermesMessage(args: {
 
     if (!sessionId) {
       try {
-        const created = await createHermesSession(args.accountId, {
-          title: args.text.trim().slice(0, 60) || 'BotArk Chat',
-          model
-        })
+        const created = await createSession(connection, sessionOptions)
         sessionId = created.id
       } catch (error) {
         if (
@@ -1397,63 +1523,25 @@ export async function sendHermesMessage(args: {
 
     if (!useLegacyOpenAI && sessionId) {
       try {
-        return await streamNativeSessionTurn({
-          accountId: args.accountId,
-          baseUrl: acc.baseUrl,
-          apiKey: acc.apiKey,
-          sessionId,
-          sessionKey,
-          userContent,
-          model,
-          controller,
-          callbacks: args.callbacks,
-          fetchImpl: args.fetchImpl
-        })
+        return await streamNativeSessionTurn({ ...streamOptions, sessionId })
       } catch (error) {
         // If session was deleted server-side (404), recreate once; if endpoint unsupported (405/501), fallback to /v1/chat/completions
         if (error instanceof HermesApiError && error.code === 'session_not_found') {
-          const recreated = await createHermesSession(args.accountId, {
-            title: args.text.trim().slice(0, 60) || 'BotArk Chat',
-            model
-          })
-          return await streamNativeSessionTurn({
-            accountId: args.accountId,
-            baseUrl: acc.baseUrl,
-            apiKey: acc.apiKey,
-            sessionId: recreated.id,
-            sessionKey,
-            userContent,
-            model,
-            controller,
-            callbacks: args.callbacks,
-            fetchImpl: args.fetchImpl
-          })
+          const recreated = await createSession(connection, sessionOptions)
+          return await streamNativeSessionTurn({ ...streamOptions, sessionId: recreated.id })
         }
-        if (error instanceof HermesApiError && (error.status === 404 || error.status === 405 || error.status === 501)) {
-          useLegacyOpenAI = true
-        } else {
+        if (!(error instanceof HermesApiError) || ![404, 405, 501].includes(error.status)) {
           throw error
         }
       }
     }
 
-    return await streamOpenAICompatTurn({
-      accountId: args.accountId,
-      baseUrl: acc.baseUrl,
-      apiKey: acc.apiKey,
-      sessionId,
-      sessionKey,
-      userContent,
-      model,
-      controller,
-      callbacks: args.callbacks,
-      fetchImpl: args.fetchImpl
-    })
+    return await streamOpenAICompatTurn({ ...streamOptions, sessionId })
   } finally {
-    if (activeRuns.get(args.accountId)?.controller === controller) {
+    if (activeRuns.get(args.accountId) === run) {
       activeRuns.delete(args.accountId)
-      if (pendingApprovals.delete(args.accountId)) args.callbacks.onApprovals?.([])
-      args.callbacks.onActivity?.({ code: 'idle', busy: false })
+      if (run.approvals.size) args.callbacks.onApprovals?.([], run.sessionId)
+      args.callbacks.onActivity?.({ code: 'idle', busy: false }, run.sessionId)
     }
   }
 }

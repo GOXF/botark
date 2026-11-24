@@ -14,6 +14,7 @@ const { loadCueTokens, fetcherMock } = vi.hoisted(() => ({
 
 vi.mock('./cueAuth', () => ({
   CUE_CONNECT_BASE: 'https://api.manus.im',
+  currentCueAuthForIdentity: () => undefined,
   cueFetcherForAccount: (_id: string, explicit?: typeof fetch) => explicit ?? fetcherMock,
   forceRefreshCueAuth: vi.fn(async () => null),
   loadCueTokens
@@ -114,6 +115,20 @@ describe('Cue native Connect-RPC client & history parser', () => {
         events: [{ type: 'event', event: { id: 'e1', type: 'chat', sender: 'assistant', content: 'hi', timestamp: 1700000005000 } }]
       })
     ).toEqual([{ id: 'e1', role: 'bot', text: 'hi', createdAtMs: 1700000005000 }])
+  })
+
+  it('keeps the freshest history copy and derives stable IDs for idless chat events', async () => {
+    const event = { type: 'chat', sender: 'assistant', content: 'No explicit ID', timestamp: 1_700_000_000 }
+    const newest = { type: 'chat', id: 'same-id', sender: 'assistant', content: 'Edited', timestamp: 1_700_000_001 }
+    const cursor = { kind: 'events', userChatId: 'before-first', prevId: 'previous' }
+    const fetchImpl = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(Response.json({ turns: [{ ...cursor, events: [newest, event] }] }))
+      .mockResolvedValueOnce(Response.json({ turns: [{ kind: 'events', events: [event, { ...newest, content: 'Old copy' }] }] }))
+    const history = await fetchCueSessionHistory('fixture', 'session', { fetchImpl })
+    expect(history.messages).toEqual([
+      expect.objectContaining({ id: extractCueHistoryMessages([event])[0]?.id, text: event.content }),
+      expect.objectContaining({ id: 'same-id', text: 'Edited' })
+    ])
   })
 
   it('parses proto3 stringified int64 and snake_case Cue membership quota fields', () => {

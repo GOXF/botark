@@ -2,8 +2,9 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { WebSocket } from 'ws'
-import { describe, expect, it } from 'vitest'
-import { buildPairingUri, parsePairingUri, type MobileRelayCommand, type MobileSendCommand } from '@shared/mobileSync'
+import { once } from 'node:events'
+import { describe, expect, it, vi } from 'vitest'
+import { buildPairingUri, parsePairingUri, type MobileRelayCommand, type MobileSendCommand, type MobileSendResult } from '@shared/mobileSync'
 import {
   decryptAesGcmCombined,
   encryptAesGcmCombined,
@@ -98,6 +99,16 @@ describe('MobileSyncServer zero-server LAN bridge', () => {
       const ping = await fetch(`${base}/api/mobile/v1/ping`).then((r) => r.json() as Promise<Record<string, unknown>>)
       expect(ping['ok']).toBe(true)
       expect(ping['hostName']).toBe('Test-Mac')
+
+      for (const path of ['/', '/pair']) {
+        const response = await fetch(`${base}${path}`)
+        const html = await response.text()
+        expect(response.headers.get('cache-control')).toBe('no-store')
+        expect(html).toContain('BotArk Desktop settings')
+        expect(html).not.toContain('botark://pair')
+        expect(html).not.toContain(parsedUri.token)
+        expect(html).not.toContain(parsedUri.key)
+      }
 
       // 2. Push snapshot from Desktop
       srv.updateSnapshot({
@@ -270,4 +281,115 @@ describe('MobileSyncServer zero-server LAN bridge', () => {
       rmSync(dir, { recursive: true, force: true })
     }
   })
+
+  it('serializes overlapping starts and stops and closes the listener', async () => {
+    const server = new MobileSyncServer({ defaultPort: 0 })
+    try {
+      const startA = server.start()
+      const startB = server.start()
+      const stop = server.stop()
+      const [a, b, stopped] = await Promise.all([startA, startB, stop])
+      expect(a.port).toBeGreaterThan(0)
+      expect(b.port).toBe(a.port)
+      expect(stopped).toMatchObject({ running: false, port: null, pairUri: null })
+      await expect(fetch(`http://127.0.0.1:${a.port}/api/mobile/v1/ping`)).rejects.toThrow()
+      const stoppingAgain = server.stop()
+      const restarted = server.start()
+      expect((await stoppingAgain).running).toBe(false)
+      expect((await restarted).running).toBe(true)
+    } finally {
+      await server.stop()
+    }
+  })
+
+  it('preserves an in-flight send after an HTTP timeout and checks attachment bytes on retry', async () => {
+    let acknowledge!: (value: MobileSendResult) => void
+    const onSendMessage = vi.fn(() => new Promise<MobileSendResult>((resolve) => { acknowledge = resolve }))
+    const server = new MobileSyncServer({ defaultPort: 0, onSendMessage, sendAckTimeoutMs: 40 })
+    try {
+      const { base, deviceToken } = await pairTestDevice(server)
+      const send = (data: string) => fetch(`${base}/api/mobile/v1/bots/bot/send`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${deviceToken}` },
+        body: JSON.stringify({
+          text: '', clientMessageId: 'retry-id',
+          attachments: [{ name: 'file.txt', mimeType: 'text/plain', dataUrl: `data:text/plain;base64,${data}` }]
+        })
+      })
+      expect((await send('YQ==')).status).toBe(503)
+      expect((await send('Yg==')).status).toBe(409)
+      acknowledge({ ok: true, messageId: 'retry-id' })
+      expect(await (await send('YQ==')).json()).toMatchObject({ ok: true, messageId: 'retry-id' })
+      expect(onSendMessage).toHaveBeenCalledTimes(1)
+    } finally {
+      await server.stop()
+    }
+  })
+
+  it('joins with one fresh snapshot and drops a socket that stops answering pings', async () => {
+    let refresh!: () => void
+    const server = new MobileSyncServer({
+      defaultPort: 0,
+      heartbeatIntervalMs: 100,
+      refreshSnapshot: async () => refresh()
+    })
+    let healthy: WebSocket | undefined
+    let stale: WebSocket | undefined
+    try {
+      refresh = () => undefined
+      const { base, deviceToken } = await pairTestDevice(server)
+      refresh = () => server.updateSnapshot({
+        version: 1, updatedAtMs: 0, hostName: '', selectedBotId: 'current-bot',
+        groups: [], bots: [], accounts: {}, messages: {}, approvals: {}
+      }, false)
+      const url = `${base.replace('http:', 'ws:')}/api/mobile/v1/ws?token=${deviceToken}`
+      healthy = new WebSocket(url)
+      const healthyMessages = vi.fn()
+      healthy.on('message', healthyMessages)
+      const [snapshot] = await once(healthy, 'message')
+      expect(JSON.parse(String(snapshot))).toMatchObject({ type: 'snapshot', snapshot: { selectedBotId: 'current-bot' } })
+
+      stale = new WebSocket(url, { autoPong: false })
+      await once(stale, 'close')
+      expect(healthy.readyState).toBe(WebSocket.OPEN)
+      expect(healthyMessages).toHaveBeenCalledTimes(1)
+    } finally {
+      healthy?.terminate()
+      stale?.terminate()
+      await server.stop()
+    }
+  })
+
+  it('drops a client whose queued writes exceed the backpressure limit', async () => {
+    const server = new MobileSyncServer({ defaultPort: 0 })
+    let socket: WebSocket | undefined
+    try {
+      const { base, deviceToken } = await pairTestDevice(server)
+      socket = new WebSocket(`${base.replace('http:', 'ws:')}/api/mobile/v1/ws?token=${deviceToken}`)
+      await once(socket, 'message')
+      const queuedBytes = vi.spyOn(WebSocket.prototype, 'bufferedAmount', 'get').mockReturnValue(16 * 1024 * 1024)
+      const closed = once(socket, 'close')
+      try {
+        server.broadcastLiveEvent({ type: 'typing', botId: 'bot', isTyping: true })
+        await closed
+      } finally {
+        queuedBytes.mockRestore()
+      }
+      expect(server.getState().devices[0]?.connected).toBe(false)
+    } finally {
+      socket?.terminate()
+      await server.stop()
+    }
+  })
 })
+
+async function pairTestDevice(server: MobileSyncServer): Promise<{ base: string; deviceToken: string }> {
+  const { port, pairUri } = await server.start()
+  const base = `http://127.0.0.1:${port}`
+  const response = await fetch(`${base}/api/mobile/v1/pair`, {
+    method: 'POST', body: JSON.stringify({ pairToken: parsePairingUri(pairUri!)?.token })
+  })
+  expect(response.status).toBe(200)
+  const { deviceToken } = await response.json() as { deviceToken: string }
+  return { base, deviceToken }
+}

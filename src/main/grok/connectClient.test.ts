@@ -192,4 +192,31 @@ describe('GrokConnectClient (Sand 0.79.3 wire protocol)', () => {
     expect(seen[0]).toEqual({ agentState: { agentId: 'agent-1', isRunning: true } })
     expect((seen[1]!['rows'] as Record<string, unknown>)['agentId']).toBe('agent-1')
   })
+
+  it.each(['break', 'trailer', 'abort'])('cancels the unread body before unlocking the reader on %s', async (mode) => {
+    const cancel = vi.fn()
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        if (mode === 'break') controller.enqueue(encodeConnectFrame(0, { ping: {} }))
+        if (mode === 'trailer') controller.enqueue(encodeConnectFrame(2, {}))
+      },
+      cancel
+    })
+    const client = new GrokConnectClient({ auth: { accessToken: 'fixture' }, fetchImpl: async () => new Response(stream) })
+    const controller = new AbortController()
+    const frames = client.watchTranscripts({ cursors: [] }, controller.signal)
+    if (mode === 'abort') {
+      const pending = frames.next()
+      const rejected = expect(pending).rejects.toMatchObject({ name: 'AbortError' })
+      await vi.waitFor(() => expect(stream.locked).toBe(true))
+      controller.abort()
+      await rejected
+    } else if (mode === 'break') {
+      for await (const _frame of frames) break
+    } else {
+      await expect(frames.next()).resolves.toMatchObject({ done: true })
+    }
+    expect(cancel).toHaveBeenCalledOnce()
+    expect(stream.locked).toBe(false)
+  })
 })

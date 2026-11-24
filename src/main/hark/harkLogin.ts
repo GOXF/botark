@@ -2,8 +2,8 @@
  * Interactive Hark login via BrowserWindow + account persist partition.
  *
  * Opens app.hark.com/login (Continue with Google → auth.hark.com → Google).
- * Success: GET /api/auth/get-session returns a valid session. Cookies only
- * trigger a probe: they can appear before OAuth finishes or outlive a session.
+ * Account profile and session probes verify login. Cookie changes trigger
+ * another probe because OAuth can set cookies before the session is usable.
  * Never prints cookie/token values.
  */
 
@@ -25,6 +25,7 @@ import {
   HARK_LOGIN_URL,
   listSessionCookieNames,
   looksLikeSessionCookie,
+  withHarkCredentials,
   type HarkAuthSession
 } from './harkClient'
 import { probeHarkSession } from './harkSession'
@@ -33,7 +34,13 @@ const ALLOWED_HOST =
   /^(?:[\w-]+\.)*(?:hark\.com|google\.com|googleusercontent\.com|gstatic\.com|googleapis\.com|youtube\.com|chromiumapp\.org|apple\.com|icloud\.com|cloudflare\.com)$/i
 
 const loginWindows = new Map<string, BrowserWindow>()
-const loginChildWindows = new Map<string, Set<BrowserWindow>>()
+type HarkLoginResult = { session: HarkAuthSession; cookieNames: string[] }
+interface HarkLoginAttempt {
+  cleanup?: () => void
+  checking?: Promise<void>
+  closing?: boolean
+}
+const loginAttempts = new Map<string, HarkLoginAttempt>()
 
 export type HarkLoginSuccess = {
   accountId: string
@@ -77,15 +84,31 @@ function hostAllowed(url: string): boolean {
   }
 }
 
-async function probeSignedIn(accountId: string): Promise<{
-  session: HarkAuthSession
-  cookieNames: string[]
-} | null> {
-  const probe = await probeHarkSession(accountId)
-  if (!('signedIn' in probe)) {
-    return { session: probe.session, cookieNames: await listSessionCookieNames(accountId) }
+async function probeSignedIn(accountId: string): Promise<HarkLoginResult | null> {
+  return withHarkCredentials(accountId, async () => {
+    try {
+      const probe = await probeHarkSession(accountId)
+      if (!('signedIn' in probe)) {
+        return { session: probe.session, cookieNames: await listSessionCookieNames(accountId) }
+      }
+    } catch { /* A transient error can be retried by the login window. */ }
+    return null
+  })
+}
+
+function settleLogin(accountId: string, attempt: HarkLoginAttempt, hit: HarkLoginResult | null, silent = false): void {
+  if (loginAttempts.get(accountId) !== attempt) return
+  loginAttempts.delete(accountId)
+  const win = loginWindows.get(accountId)
+  if (!silent) {
+    if (hit) emit({
+      accountId, signedIn: true, ...extractHandle(hit.session), sessionCookieNames: hit.cookieNames
+    })
+    else emit({ accountId, signedIn: false, windowClosed: true })
   }
-  return null
+  attempt.cleanup?.()
+  if (loginWindows.get(accountId) === win) loginWindows.delete(accountId)
+  if (win && !win.isDestroyed()) win.destroy()
 }
 
 export async function openHarkLoginWindow(accountId: string, parent?: BrowserWindow): Promise<void> {
@@ -95,21 +118,26 @@ export async function openHarkLoginWindow(accountId: string, parent?: BrowserWin
     existing.focus()
     return
   }
+  const previous = loginAttempts.get(accountId)
+  if (previous && !previous.closing) return
+  const attempt: HarkLoginAttempt = {}
+  loginAttempts.set(accountId, attempt)
+  const current = () => loginAttempts.get(accountId) === attempt
 
   // Enforce per-account proxy BEFORE probing session or loading app.hark.com/login (fail-closed).
-  await applyProxyToPartition(accountId)
+  try {
+    await applyProxyToPartition(accountId)
+  } catch (error) {
+    settleLogin(accountId, attempt, null, true)
+    throw error
+  }
+  if (!current()) return
 
   // Already signed in on this partition?
   const already = await probeSignedIn(accountId)
+  if (!current()) return
   if (already) {
-    const { handle, displayName } = extractHandle(already.session)
-    emit({
-      accountId,
-      signedIn: true,
-      handle,
-      displayName,
-      sessionCookieNames: already.cookieNames
-    })
+    settleLogin(accountId, attempt, already)
     return
   }
 
@@ -139,7 +167,6 @@ export async function openHarkLoginWindow(accountId: string, parent?: BrowserWin
   loginWindows.set(accountId, win)
 
   const childPopups = new Set<BrowserWindow>()
-  loginChildWindows.set(accountId, childPopups)
   const closeChildPopups = () => {
     for (const child of childPopups) {
       try {
@@ -151,12 +178,11 @@ export async function openHarkLoginWindow(accountId: string, parent?: BrowserWin
     childPopups.clear()
   }
 
-  let settling = false
   let handedOffToBrowser = false
   let lastBlockCheckAt = 0
 
   const maybeShowGoogleFallbackBanner = async (wc: WebContents): Promise<void> => {
-    if (settling || wc.isDestroyed()) return
+    if (!current() || attempt.closing || wc.isDestroyed()) return
     try {
       const currentUrl = wc.getURL()
       if (!/^https:\/\/accounts\.(?:google|youtube)\.com\//i.test(currentUrl)) return
@@ -164,6 +190,7 @@ export async function openHarkLoginWindow(accountId: string, parent?: BrowserWin
       if (now - lastBlockCheckAt < 150) return
       lastBlockCheckAt = now
       const bodyText = await wc.executeJavaScript(GOOGLE_BLOCK_CHECK_SCRIPT, true)
+      if (!current() || attempt.closing) return
       if (!isGoogleBlockedOrPasskeyText(bodyText, currentUrl)) return
       if (!handedOffToBrowser) {
         handedOffToBrowser = true
@@ -271,26 +298,11 @@ export async function openHarkLoginWindow(accountId: string, parent?: BrowserWin
 
   attachNavigationGuards(win.webContents, win)
 
-  const finish = async (): Promise<void> => {
-    if (settling || win.isDestroyed()) return
-    const hit = await probeSignedIn(accountId)
-    if (!hit) return
-    settling = true
-    const { handle, displayName } = extractHandle(hit.session)
-    // Emit BEFORE close so add-bot advances to Name (same race Muse fixed).
-    emit({
-      accountId,
-      signedIn: true,
-      handle,
-      displayName,
-      sessionCookieNames: hit.cookieNames
-    })
-    closeChildPopups()
-    try {
-      if (!win.isDestroyed()) win.close()
-    } catch {
-      /* ignore */
-    }
+  const finish = (): void => {
+    if (!current() || attempt.checking) return
+    attempt.checking = probeSignedIn(accountId).then((hit) => {
+      if (current() && (hit || attempt.closing)) settleLogin(accountId, attempt, hit)
+    }).finally(() => { attempt.checking = undefined })
   }
 
   const onNav = (wc: WebContents): void => {
@@ -328,76 +340,64 @@ export async function openHarkLoginWindow(accountId: string, parent?: BrowserWin
   ses.cookies.on('changed', onCookie)
 
   const poll = setInterval(() => {
-    if (win.isDestroyed() || settling) {
+    if (win.isDestroyed() || !current()) {
       clearInterval(poll)
       return
     }
     void finish()
   }, 1200)
 
-  win.on('closed', () => {
+  attempt.cleanup = () => {
     clearInterval(poll)
     ses.cookies.off('changed', onCookie)
     closeChildPopups()
-    loginChildWindows.delete(accountId)
-    loginWindows.delete(accountId)
-    void (async () => {
-      if (settling) return
-      const hit = await probeSignedIn(accountId)
-      if (hit) {
-        const { handle, displayName } = extractHandle(hit.session)
-        emit({
-          accountId,
-          signedIn: true,
-          handle,
-          displayName,
-          sessionCookieNames: hit.cookieNames
-        })
-        return
-      }
-      emit({ accountId, signedIn: false, windowClosed: true })
-    })()
+  }
+  win.on('closed', () => {
+    if (!current()) return
+    attempt.closing = true
+    if (loginWindows.get(accountId) === win) loginWindows.delete(accountId)
+    attempt.cleanup?.()
+    attempt.cleanup = undefined
+    finish()
   })
 
   try {
     await win.loadURL(HARK_LOGIN_URL)
   } catch (error) {
-    console.error('[hark] openLogin load failed', error)
+    if (current() && !attempt.closing) console.error('[hark] openLogin load failed', error)
   }
 }
 
-export async function cancelHarkLogin(accountId: string): Promise<void> {
-  const win = loginWindows.get(accountId)
-  loginWindows.delete(accountId)
-  const children = loginChildWindows.get(accountId)
-  loginChildWindows.delete(accountId)
-  if (children) {
-    for (const child of children) {
-      try {
-        if (!child.isDestroyed()) child.destroy()
-      } catch {
-        /* ignore */
-      }
+export async function cancelHarkLogin(accountId: string, opts?: { clearIfEmpty?: boolean }): Promise<void> {
+  const attempt = loginAttempts.get(accountId)
+  if (attempt) {
+    settleLogin(accountId, attempt, null, true)
+  } else {
+    const win = loginWindows.get(accountId)
+    if (win) {
+      loginWindows.delete(accountId)
+      if (!win.isDestroyed()) win.destroy()
     }
-    children.clear()
   }
-  if (win && !win.isDestroyed()) win.destroy()
+  if (opts?.clearIfEmpty === false) return
   try {
     // Only an explicit "no session" wipes the partition; a network error throws and keeps it.
-    if ('signedIn' in await probeHarkSession(accountId, { reportConnectionErrors: true })) {
+    if (!loginAttempts.has(accountId) && 'signedIn' in await probeHarkSession(accountId, { reportConnectionErrors: true })) {
       const ses = electronSession.fromPartition(partitionForAccount(accountId))
-      await ses.clearStorageData()
+      if (typeof ses?.clearStorageData === 'function') {
+        await ses.clearStorageData()
+      }
     }
   } catch (error) {
     console.error('[hark] clear partition failed', error)
   }
 }
 
-export function closeHarkLoginWindow(accountId: string): boolean {
-  const win = loginWindows.get(accountId)
-  if (!win || win.isDestroyed()) return false
-  win.close()
-  return true
+export async function completeHarkCredentialImport(accountId: string, session: HarkAuthSession): Promise<void> {
+  const cookieNames = await listSessionCookieNames(accountId).catch(() => [])
+  const attempt = loginAttempts.get(accountId) ?? {}
+  loginAttempts.set(accountId, attempt)
+  settleLogin(accountId, attempt, { session, cookieNames })
 }
 
 export function hasOpenHarkLogin(accountId: string): boolean {

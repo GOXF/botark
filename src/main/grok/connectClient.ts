@@ -12,6 +12,7 @@
  */
 
 import { createHash, randomUUID } from 'node:crypto'
+import { setTimeout as delay } from 'node:timers/promises'
 import type { GrokServiceId } from '@shared/ipc'
 
 export const GROK_API_BASE = 'https://api2.cursor.sh'
@@ -211,6 +212,9 @@ export class GrokConnectClient {
   private readonly opts: GrokConnectClientOptions
   private readonly fetchImpl: typeof fetch
 
+  get accessToken(): string { return this.opts.auth.accessToken }
+  get machineId(): string | undefined { return this.opts.auth.machineId }
+
   constructor(opts: GrokConnectClientOptions) {
     this.opts = opts
     this.baseUrl = (opts.baseUrl ?? GROK_API_BASE).replace(/\/$/, '')
@@ -220,7 +224,8 @@ export class GrokConnectClient {
   async unary<TReq extends object, TRes = unknown>(
     method: string,
     body: TReq,
-    service: GrokServiceId = 'grokbot'
+    service: GrokServiceId = 'grokbot',
+    signal?: AbortSignal
   ): Promise<TRes> {
     const svcName = GROK_SERVICES[service] ?? GROK_SERVICE
     const url = `${this.baseUrl}/${svcName}/${method}`
@@ -231,14 +236,16 @@ export class GrokConnectClient {
         const delayMs = Math.round(
           350 * Math.pow(1.8, attempt - 1) * (0.85 + Math.random() * 0.3)
         )
-        await new Promise((r) => setTimeout(r, delayMs))
+        await delay(delayMs, undefined, { signal })
       }
+      signal?.throwIfAborted()
       try {
+        const deadline = AbortSignal.timeout(25_000)
         const res = await this.fetchImpl(url, {
           method: 'POST',
           headers: buildGrokConnectHeaders(this.opts),
           body: JSON.stringify(body ?? {}),
-          signal: AbortSignal.timeout(25_000)
+          signal: signal ? AbortSignal.any([signal, deadline]) : deadline
         })
         const text = await res.text()
         if (!res.ok) {
@@ -270,7 +277,7 @@ export class GrokConnectClient {
         }
       } catch (err) {
         lastErr = err
-        if (err instanceof GrokConnectError) throw err
+        if (signal?.aborted || err instanceof GrokConnectError) throw err
         if (attempt + 1 >= maxAttempts) throw err
       }
     }
@@ -310,7 +317,7 @@ export class GrokConnectClient {
     replyQuote?: string
     attachmentPaths?: string[]
     attachmentNames?: string[]
-  }) {
+  }, signal?: AbortSignal) {
     return this.unary<Record<string, unknown>, Record<string, unknown>>('SendGrokBotUserMessage', {
       agent_id: req.agentId,
       message_id: req.messageId,
@@ -327,15 +334,15 @@ export class GrokConnectClient {
       source: GROK_MESSAGE_SOURCE.DESKTOP,
       send_source: GROK_SEND_SOURCE.CHAT,
       renders_mcp_elicitation_forms: true
-    })
+    }, 'grokbot', signal)
   }
 
-  getSendStatus(req: { agentId: string; messageId: string; sessionId?: string }) {
+  getSendStatus(req: { agentId: string; messageId: string; sessionId?: string }, signal?: AbortSignal) {
     return this.unary('GetGrokBotSendStatus', {
       agent_id: req.agentId,
       message_id: req.messageId,
       session_id: req.sessionId ?? ''
-    })
+    }, 'grokbot', signal)
   }
 
   listTranscriptEntries(req: {
@@ -343,13 +350,13 @@ export class GrokConnectClient {
     sessionId?: string
     limit?: number
     beforeSeq?: string
-  }) {
+  }, signal?: AbortSignal) {
     return this.unary('ListGrokBotTranscriptEntries', {
       agent_id: req.agentId,
       session_id: req.sessionId ?? '',
       limit: req.limit ?? 50,
       ...(req.beforeSeq ? { before_seq: req.beforeSeq } : {})
-    })
+    }, 'grokbot', signal)
   }
 
   // ---------------- Attachments & Store Files ----------------
@@ -360,7 +367,7 @@ export class GrokConnectClient {
     fileName: string
     mimeType?: string
     bytes: Buffer
-  }): Promise<UploadedAttachmentRef> {
+  }, signal?: AbortSignal): Promise<UploadedAttachmentRef> {
     const sha256Hex = createHash('sha256').update(req.bytes).digest('hex')
     const begin = await this.unary<Record<string, unknown>, Record<string, unknown>>(
       'BeginGrokBotAttachmentUpload',
@@ -372,7 +379,7 @@ export class GrokConnectClient {
         supports_store_attachment_refs: true,
         supports_multipart: true,
         sha256_hex: sha256Hex
-      }
+      }, 'grokbot', signal
     )
 
     const modeRaw = begin['mode']
@@ -394,7 +401,7 @@ export class GrokConnectClient {
         fileName: req.fileName,
         contentType: req.mimeType || 'application/octet-stream',
         bytes: req.bytes
-      })
+      }, signal)
       return {
         alias: boxFile.path || boxFile.name,
         fileName: req.fileName,
@@ -430,7 +437,7 @@ export class GrokConnectClient {
         {
           upload_token: uploadToken,
           parts: partChecksums
-        }
+        }, 'grokbot', signal
       )
       const parts = Array.isArray(presigned['parts'])
         ? (presigned['parts'] as Array<Record<string, unknown>>)
@@ -450,7 +457,8 @@ export class GrokConnectClient {
         const putRes = await this.fetchImpl(target.url, {
           method: 'PUT',
           headers: { ...(target.headers ?? {}) },
-          body: req.bytes.subarray(offset, offset + size)
+          body: req.bytes.subarray(offset, offset + size),
+          signal
         })
         if (!putRes.ok) {
           throw new Error(`Attachment multipart PUT failed (${putRes.status})`)
@@ -465,7 +473,7 @@ export class GrokConnectClient {
           {
             upload_token: uploadToken,
             parts: [{ part_number: 1, checksum_sha256: sumB64 }]
-          }
+          }, 'grokbot', signal
         )
         target = (presigned['put'] ??
           (Array.isArray(presigned['parts'])
@@ -483,7 +491,8 @@ export class GrokConnectClient {
       const putRes = await this.fetchImpl(target.url, {
         method: 'PUT',
         headers,
-        body: req.bytes
+        body: req.bytes,
+        signal
       })
       if (!putRes.ok) {
         throw new Error(`Attachment PUT failed (${putRes.status})`)
@@ -492,7 +501,7 @@ export class GrokConnectClient {
 
     const done = await this.unary<Record<string, unknown>, Record<string, unknown>>(
       'CompleteGrokBotAttachmentUpload',
-      { upload_token: uploadToken }
+      { upload_token: uploadToken }, 'grokbot', signal
     )
     const doneRefusal = done['refusal']
     if (
@@ -519,7 +528,7 @@ export class GrokConnectClient {
     fileName: string
     contentType?: string
     bytes: Buffer
-  }): Promise<{ name: string; path: string }> {
+  }, signal?: AbortSignal): Promise<{ name: string; path: string }> {
     const sha256Hex = createHash('sha256').update(req.bytes).digest('hex')
     const contentType = req.contentType || 'application/octet-stream'
     const begin = await this.unary<Record<string, unknown>, Record<string, unknown>>(
@@ -530,7 +539,7 @@ export class GrokConnectClient {
         size_bytes: String(req.bytes.byteLength),
         sha256_hex: sha256Hex,
         content_type: contentType
-      }
+      }, 'grokbot', signal
     )
     const uploadToken = String(begin['uploadToken'] ?? begin['upload_token'] ?? '')
     const putUrl = String(begin['url'] ?? '')
@@ -546,7 +555,8 @@ export class GrokConnectClient {
     const putRes = await this.fetchImpl(putUrl, {
       method: 'PUT',
       headers,
-      body: req.bytes
+      body: req.bytes,
+      signal
     })
     if (!putRes.ok) {
       throw new Error(`Agent file PUT failed (${putRes.status})`)
@@ -556,7 +566,7 @@ export class GrokConnectClient {
       {
         agent_id: req.agentId,
         upload_token: uploadToken
-      }
+      }, 'grokbot', signal
     )
     const fileObj = (finished['file'] ?? {}) as Record<string, unknown>
     const finalName = String(
@@ -568,14 +578,14 @@ export class GrokConnectClient {
     }
   }
 
-  resolveAttachmentReads(req: { agentId: string; sessionId?: string; paths: string[] }) {
+  resolveAttachmentReads(req: { agentId: string; sessionId?: string; paths: string[] }, signal?: AbortSignal) {
     return this.unary<Record<string, unknown>, Record<string, unknown>>(
       'ResolveGrokBotAttachmentReads',
       {
         agent_id: req.agentId,
         ...(req.sessionId ? { session_id: req.sessionId } : {}),
         paths: req.paths
-      }
+      }, 'grokbot', signal
     )
   }
 
@@ -769,6 +779,7 @@ export class GrokConnectClient {
     },
     signal?: AbortSignal
   ): AsyncGenerator<Record<string, unknown>, void, void> {
+    signal?.throwIfAborted()
     const url = `${this.baseUrl}/${GROK_SERVICE}/WatchGrokBotTranscripts`
     const headers = {
       ...buildGrokConnectHeaders(this.opts),
@@ -799,14 +810,19 @@ export class GrokConnectClient {
     }
     if (!res.body) return
     const reader = res.body.getReader()
+    const cancel = () => { void reader.cancel().catch(() => undefined) }
+    signal?.addEventListener('abort', cancel, { once: true })
     const decoder = new TextDecoder()
     let buffer = Buffer.alloc(0)
     try {
       while (true) {
+        signal?.throwIfAborted()
         const { done, value } = await reader.read()
+        signal?.throwIfAborted()
         if (done) break
         buffer = Buffer.concat([buffer, Buffer.from(value)])
         while (buffer.length >= 5) {
+          signal?.throwIfAborted()
           const flags = buffer[0]!
           const len = buffer.readUInt32BE(1)
           if (buffer.length < 5 + len) break
@@ -840,11 +856,9 @@ export class GrokConnectClient {
         }
       }
     } finally {
-      try {
-        reader.releaseLock()
-      } catch {
-        /* ignore */
-      }
+      signal?.removeEventListener('abort', cancel)
+      await reader.cancel().catch(() => undefined)
+      reader.releaseLock()
     }
   }
 }

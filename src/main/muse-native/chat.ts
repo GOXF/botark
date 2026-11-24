@@ -14,11 +14,49 @@
 import { EventEmitter } from 'node:events'
 import { appendFileSync } from 'node:fs'
 import { randomUUID } from 'node:crypto'
-import type { MuseNativeGateway, SubscriptionHandle } from './gateway'
+import { setTimeout as delay } from 'node:timers/promises'
+import { MuseGatewayError, type MuseNativeGateway, type SubscriptionHandle } from './gateway'
+import { abortable } from './lifecycle'
 
 /** Client capabilities the web client advertises (`delta_stream` enables text deltas). */
 /** Abort reason for a turn replaced by a newer send: stop locally, keep it running server-side. */
-export const MUSE_STREAM_SUPERSEDED = "superseded"
+export const MUSE_STREAM_SUPERSEDED = 'superseded'
+export const MUSE_STREAM_STOPPED = 'stopped'
+
+export function isMuseStop(signal: AbortSignal): boolean {
+  return signal.reason === MUSE_STREAM_STOPPED ||
+    (signal.reason instanceof DOMException && signal.reason.name === 'AbortError')
+}
+
+export function createMuseTurnDeadline(opts: { signal?: AbortSignal; timeoutMs?: number }): {
+  signal: AbortSignal
+  dispose(): void
+} {
+  const controller = new AbortController()
+  const onAbort = () => controller.abort(opts.signal?.reason)
+  opts.signal?.addEventListener('abort', onAbort, { once: true })
+  if (opts.signal?.aborted) onAbort()
+  const timer = setTimeout(() => controller.abort(new MuseGatewayError('Muse turn timed out', 'timeout')), opts.timeoutMs ?? 600_000)
+  return {
+    signal: controller.signal,
+    dispose: () => {
+      clearTimeout(timer)
+      opts.signal?.removeEventListener('abort', onAbort)
+    }
+  }
+}
+
+export function museEventSessionId(payload: Record<string, unknown>): string {
+  return firstField([payload, obj(payload['chat_context']), obj(payload['message'])], 'session_id', 'sessionId', 'thread_id', 'threadId') || ''
+}
+
+function chatEvent(raw: Record<string, unknown>): MuseChatEvent | undefined {
+  if (raw['type'] !== 'event') return
+  const name = str(raw['event']) || str(raw['event_name'])
+  if (!name) return
+  const { type, event, event_name, seq, ts_ms, payload, ...fields } = raw
+  return { name, seq: Number(seq ?? 0), payload: { ...fields, ...obj(payload) } }
+}
 
 export const MUSE_CHAT_CAPABILITIES = [
   'hotel_results',
@@ -175,6 +213,7 @@ export type MuseRichWidget =
       url?: string
       taskId?: string
       previewSha256?: string
+      previewSrc?: string
       actionLabel?: string
     }
 
@@ -281,8 +320,8 @@ function coord(v: unknown): { latitude: number; longitude: number } | null {
   return { latitude, longitude }
 }
 
-/** Parse shopping / maps / html / slides widgets for read-only display. */
-export function parseRichWidgets(payload: Record<string, unknown>): MuseRichWidget[] {
+/** Parse presentation widgets for read-only display. */
+function parsePresentationWidgets(payload: Record<string, unknown>): MuseRichWidget[] {
   const bags: unknown[] = []
   for (const key of ['widgets', 'presentations', 'presentation']) {
     const v = payload[key]
@@ -684,32 +723,260 @@ export function parseRichWidgets(payload: Record<string, unknown>): MuseRichWidg
       })
       continue
     }
-    if (/browser|computer|desktop|remote_view|vm_view|screen/i.test(kind)) {
-      const preview = asObj(data['preview'] || data['latest_preview']) || data
-      const isComputer = /computer|desktop|vm/i.test(kind)
-      const rawStatus = str(data['status'] || data['state'] || w['status'])
-      out.push({
-        kind: 'session_card',
-        widgetId,
-        cardType: isComputer ? 'computer' : 'browser',
-        title: str(data['title'] || w['title']) || (isComputer ? '云端电脑' : 'Browser'),
-        subtitle: str(data['subtitle'] || data['description'] || preview['title'] || data['url']) || undefined,
-        status:
-          /running|working|active|in_progress/i.test(rawStatus)
-            ? '正在工作'
-            : /waiting|input|paused|approval/i.test(rawStatus)
-              ? '等待你操作'
-              : rawStatus || '就绪',
-        url: str(data['url'] || data['current_url'] || preview['url'] || w['url']) || undefined,
-        taskId: str(data['task_id'] || data['taskId'] || preview['task_id'] || preview['taskId']) || undefined,
-        previewSha256: str(preview['sha256'] || preview['hash'] || data['sha256']) || undefined,
-        actionLabel: str(data['cta_label'] || data['button_label']) || (isComputer ? '打开云电脑' : '打开浏览器')
-      })
-      continue
-    }
-
   }
   return out
+}
+
+type RemoteCardType = 'browser' | 'computer'
+type RemoteSessionCard = Extract<MuseRichWidget, { kind: 'session_card' }> & { cardType: RemoteCardType }
+const TOOL_EVENT = /^(?:delta\.tool_|tool_(?:call|use|result)(?:[.:_]|$))/i
+const REMOTE_EVENT = /^(?:delta\.)?(?:browser|computer|ui_widget)(?:[.:_]|$)/i
+const REMOTE_FIELDS = ['browser', 'computer', 'browser_use', 'computer_use', 'browserTask', 'browser_task', 'live_view']
+const PREVIEW_FIELDS = ['preview', 'latest_preview', 'latestPreview', 'screenshot', 'latest_screenshot', 'latestScreenshot']
+const REMOTE_TASK_IDS = ['task_id', 'taskId', 'browser_task_id', 'browserTaskId', 'active_task_id', 'latest_task_id']
+const REMOTE_HASHES = ['sha256', 'preview_sha256', 'previewSha256', 'hash', 'image_hash', 'imageHash']
+const COMPUTER_PREVIEW_PATH = /\/computer\/previews\/([^/?#]+)\/([^/?#]+)/
+// Rich widgets are persisted in local chat history. Prefer the RPC reference for larger frames.
+const MAX_EMBEDDED_PREVIEW_CHARS = 256 * 1024
+const EMBEDDED_PREVIEW = /^data:image\/(?:png|jpeg|webp|gif|avif);base64,[A-Za-z0-9+/]+={0,2}$/i
+const TASK_FIELDS = ['task', 'active_task', 'activeTask', 'latest_task', 'latestTask', 'browserTask', 'browser_task']
+const REMOTE_DETAIL_FIELDS = new Set([
+  'payload', 'result', 'output', 'data', 'widget', 'ui_widget', 'state', 'metadata', 'content',
+  ...TASK_FIELDS, ...REMOTE_FIELDS, ...PREVIEW_FIELDS, 'image', 'source', 'tool', 'tool_use', 'tool_result', 'function', 'input', 'arguments', 'args'
+])
+const REMOTE_CONTAINERS = [
+  'payload', 'data', 'message', 'transcript', 'messages', 'content', 'items', 'blocks',
+  'widgets', 'widget', 'ui_widget', 'presentations', 'presentation', 'tool_calls', 'toolCalls', 'tool_use',
+  'tool_call', 'tool_result', 'result', 'output', 'metadata', ...REMOTE_FIELDS
+]
+
+function remoteCardType(value: unknown): RemoteCardType | undefined {
+  const name = str(value).replace(/([a-z\d])([A-Z])/g, '$1_$2').toLowerCase().replace(/[.\s:/-]+/g, '_')
+  if (/(?:^|_)browser(?:_|$)|^(?:open_url|navigate(?:_to)?|remote_view|live_view)(?:_|$)/.test(name)) return 'browser'
+  if (/(?:^|_)(?:computer|desktop)(?:_|$)|^(?:vm_view|screen|screenshot)(?:_|$)/.test(name)) return 'computer'
+  return undefined
+}
+
+function isRunningRemoteStatus(status?: string): boolean {
+  return /^(?:正在工作|running|working|active|in[ _-]progress|pending|queued)$/i.test(status ?? '')
+}
+
+function firstField(records: ReadonlyArray<Record<string, unknown>>, ...keys: string[]): string | undefined {
+  for (const record of records) {
+    for (const key of keys) {
+      const value = str(record[key]).trim()
+      if (value) return value
+    }
+  }
+  return undefined
+}
+
+function assistantMessageId(record: Record<string, unknown>): string {
+  return firstField([record], 'message_id', 'assistant_message_id') ||
+    firstField([obj(record['message'])], 'message_id', 'id') || ''
+}
+
+function structuredToolData(value: unknown): unknown {
+  if (typeof value !== 'string') return value
+  const json = value.trim()
+  if (json.length > 262_144 || !/^[{\[]/.test(json)) return undefined
+  try {
+    return JSON.parse(json)
+  } catch {
+    return undefined
+  }
+}
+
+function remoteCardTitle(type: RemoteCardType): string {
+  return type === 'computer' ? '云端电脑' : 'Browser'
+}
+
+function embeddedPreview(records: Record<string, unknown>[], previewUrl?: string): string | undefined {
+  for (const record of records) {
+    const source = firstField([record], 'dataUrl', 'data_url', 'image_url', 'imageUrl', 'src') || previewUrl
+    if (source && source.length <= MAX_EMBEDDED_PREVIEW_CHARS && EMBEDDED_PREVIEW.test(source)) {
+      return source
+    }
+    const data = firstField([record], 'dataBase64', 'data_base64', 'imageBase64', 'image_base64', 'base64', 'png_base64', 'jpeg_base64')
+    if (!data || data.length > MAX_EMBEDDED_PREVIEW_CHARS) continue
+    const src = extractInlineImageUri({ ...record, data_base64: data }, firstField([record], 'contentType', 'content_type'))
+    if (EMBEDDED_PREVIEW.test(src)) return src
+  }
+  return undefined
+}
+
+function remoteSessionCard(record: Record<string, unknown>, type: RemoteCardType, source: string, toolId?: string): RemoteSessionCard {
+  const details: Array<Record<string, unknown>> = []
+  const tasks: Array<Record<string, unknown>> = []
+  const previews: Array<Record<string, unknown>> = []
+  let directScreenshot: string | undefined
+  const collect = (raw: unknown, key: string, depth: number): void => {
+    if (depth > 8) return
+    if (typeof raw === 'string' && PREVIEW_FIELDS.includes(key) && raw.length <= MAX_EMBEDDED_PREVIEW_CHARS) {
+      if (!directScreenshot && EMBEDDED_PREVIEW.test(raw)) directScreenshot = raw
+      if (/screenshot/i.test(key) && /^(?:iVBORw0KGgo|\/9j\/|UklGR|R0lGOD)/.test(raw)) {
+        directScreenshot ??= embeddedPreview([{ dataBase64: raw }])
+      }
+    }
+    const value = structuredToolData(raw)
+    if (Array.isArray(value)) {
+      for (const item of value) collect(item, key, depth + 1)
+      return
+    }
+    const entry = asObj(value)
+    if (!entry) return
+    if (PREVIEW_FIELDS.includes(key) || key === 'image' || key === 'source') previews.push(entry)
+    else if (TASK_FIELDS.includes(key)) tasks.push(entry)
+    else details.push(entry)
+    for (const field of REMOTE_DETAIL_FIELDS) {
+      collect(entry[field], field, depth + 1)
+    }
+    if (entry['type'] === 'text' && key === 'content') collect(entry['text'], key, depth + 1)
+  }
+  collect(record, '', 0)
+  const page = [...tasks, ...details]
+  const taskId = firstField(page, ...REMOTE_TASK_IDS) || firstField(tasks, 'id') || firstField(previews, ...REMOTE_TASK_IDS)
+  const matchingPreviews = previews.filter((preview) => {
+    const owner = firstField([preview], ...REMOTE_TASK_IDS)
+    return !taskId || !owner || owner === taskId
+  })
+  const rawStatus = firstField(page, 'status', 'state') ||
+    (details.some((detail) => detail['is_error'] === true || detail['success'] === false) ? 'Failed' :
+      /(?:start(?:ed)?|tool_use)$/.test(source) ? 'running' : /(?:done|completed|tool_result)$/.test(source) ? 'Completed' : '')
+  const previewUrl = firstField(matchingPreviews, 'url')
+  const imageUrl = firstField([...matchingPreviews, ...page], 'image_url', 'imageUrl', 'screenshot_url', 'preview_url') ||
+    (/\.(?:png|jpe?g|webp|gif|avif)(?:[?#]|$)/i.test(previewUrl ?? '') ? previewUrl : undefined)
+  const directUrl = firstField(page, 'url')
+  const previewPath = COMPUTER_PREVIEW_PATH.exec(imageUrl ?? previewUrl ?? directUrl ?? '')
+  const url = firstField([...page, ...matchingPreviews], 'current_url', 'currentUrl', 'page_url', 'pageUrl') ||
+    (directUrl && !COMPUTER_PREVIEW_PATH.test(directUrl) ? directUrl : undefined) ||
+    (!previewPath && previewUrl !== imageUrl ? previewUrl : undefined)
+  const id = firstField([record, obj(record['widget'] ?? record['ui_widget'])], 'widget_id', 'widgetId', 'presentation_id') ||
+    (!TOOL_EVENT.test(source) ? firstField([record], 'id') : undefined)
+  const resolvedTaskId = taskId || (previewPath ? previewPath[1] : undefined)
+  const suffix = resolvedTaskId || toolId
+  const hash = firstField([...matchingPreviews, ...page], ...REMOTE_HASHES) ||
+    (previewPath && (!taskId || taskId === previewPath[1]) ? previewPath[2] : undefined)
+  return {
+    kind: 'session_card',
+    widgetId: id || `muse-${type}${suffix ? `-${suffix}` : ''}`,
+    cardType: type,
+    title: firstField([...page, ...matchingPreviews], 'title', 'page_title') || remoteCardTitle(type),
+    subtitle: firstField(page, 'subtitle', 'description') || firstField(matchingPreviews, 'title'),
+    status: isRunningRemoteStatus(rawStatus) ? '正在工作' :
+      /^(?:waiting|waiting_for_input|paused|needs_approval)$/i.test(rawStatus) ? '等待你操作' : rawStatus || undefined,
+    url: url && /^https?:\/\//i.test(url) ? url : undefined,
+    taskId: resolvedTaskId,
+    previewSha256: hash,
+    previewSrc: !previewPath && imageUrl && /^https?:\/\//i.test(imageUrl) ? imageUrl :
+      resolvedTaskId && hash ? undefined : directScreenshot ?? embeddedPreview([...matchingPreviews, ...page], previewUrl),
+    actionLabel: firstField(page, 'cta_label', 'button_label', 'actionLabel')
+  }
+}
+
+function isRemoteSessionCard(widget: MuseRichWidget): widget is RemoteSessionCard {
+  return widget.kind === 'session_card' && widget.cardType !== 'vault'
+}
+
+function mergeRemoteCard(cards: RemoteSessionCard[], next: RemoteSessionCard): void {
+  // A tool start often arrives without a task ID. Fold it into the later presentation.
+  const index = cards.findIndex((card) => {
+    if (card.taskId && next.taskId) return card.taskId === next.taskId
+    if (card.widgetId === next.widgetId) return true
+    if (card.previewSha256 && next.previewSha256) return card.previewSha256 === next.previewSha256
+    return card.cardType === next.cardType
+  })
+  const prev = cards[index]
+  if (!prev) {
+    const widgetId = cards.some((card) => card.widgetId === next.widgetId) && next.taskId
+      ? `${next.widgetId}-${next.taskId}` : next.widgetId
+    cards.push({ ...next, widgetId })
+    return
+  }
+  cards[index] = {
+    ...prev,
+    title: next.title === remoteCardTitle(next.cardType) ? prev.title : next.title,
+    subtitle: next.subtitle ?? prev.subtitle,
+    status: isRunningRemoteStatus(next.status) && !next.taskId && prev.status && !isRunningRemoteStatus(prev.status)
+      ? prev.status : next.status ?? prev.status,
+    url: next.url ?? prev.url,
+    taskId: next.taskId ?? prev.taskId,
+    previewSha256: next.previewSha256 ?? prev.previewSha256,
+    previewSrc: next.previewSrc ?? (next.previewSha256 && next.previewSha256 !== prev.previewSha256 ? undefined : prev.previewSrc),
+    actionLabel: next.actionLabel ?? prev.actionLabel
+  }
+}
+
+function mergeRichWidgets(previous: MuseRichWidget[] | undefined, next: MuseRichWidget[]): MuseRichWidget[] {
+  if (!previous?.length) return next
+  if (!next.length) return previous
+  const remote = previous.filter(isRemoteSessionCard)
+  const other = next.filter((widget) => !isRemoteSessionCard(widget))
+  for (const widget of next.filter(isRemoteSessionCard)) mergeRemoteCard(remote, widget)
+  return [...(other.length ? other : previous.filter((widget) => !isRemoteSessionCard(widget))), ...remote]
+}
+
+function toolDetails(record: Record<string, unknown>): Record<string, unknown> {
+  return obj(record['tool_use'] ?? record['tool_result'] ?? record['tool_call'] ?? record['tool'])
+}
+
+function remoteToolId(record: Record<string, unknown>, source: string): string | undefined {
+  const fields = [record, toolDetails(record)]
+  return firstField(fields, 'tool_id', 'toolId', 'tool_use_id', 'toolUseId', 'tool_call_id', 'toolCallId', 'call_id') ||
+    (TOOL_EVENT.test(source) ? firstField(fields, 'id') : undefined)
+}
+
+function parseRemoteSessionCards(
+  payload: Record<string, unknown>,
+  eventName = '',
+  toolTypes = new Map<string, RemoteCardType>()
+): RemoteSessionCard[] {
+  const cards: RemoteSessionCard[] = []
+  const visit = (raw: unknown, source: string, depth: number, toolContent = false): void => {
+    if (depth > 10) return
+    if (Array.isArray(raw)) {
+      for (const item of raw) visit(item, source, depth + 1, toolContent)
+      return
+    }
+    const record = asObj(raw)
+    if (!record) return
+    if (record['role'] === 'user' || record['role'] === 'system') return
+    if (source === 'content' && record['type'] === 'text') {
+      if (toolContent) visit(structuredToolData(record['text']), source, depth + 1, true)
+      return
+    }
+    const tag = firstField([record], 'widget_kind', 'widgetKind', 'kind', 'type', 'event_name', 'event') || source
+    const toolSource = TOOL_EVENT.test(tag) ? tag : source
+    const toolId = remoteToolId(record, toolSource)
+    const tool = TOOL_EVENT.test(toolSource) || Boolean(toolId)
+    const data = obj(record['data'])
+    const call = toolDetails(record)
+    const descriptor = firstField([record, call, data], 'card_type', 'cardType', 'tool_type', 'toolType', 'widget_type', 'widgetType') ||
+      (tag === 'ui_widget' ? firstField([obj(record['widget']), data], 'kind', 'widget_kind', 'type') : undefined)
+    const name = tool || tag === 'ui_widget'
+      ? firstField([record, obj(record['function']), call, obj(call['function']), data], 'name', 'tool_name', 'toolName') : undefined
+    const type = remoteCardType(descriptor) ?? (toolId ? toolTypes.get(toolId) : undefined) ?? remoteCardType(name) ??
+      remoteCardType(tag) ?? remoteCardType(source)
+    if (type && !/vault|credential|password|login_card|secure_storage/i.test(tag)) {
+      if (toolId) toolTypes.set(toolId, type)
+      mergeRemoteCard(cards, remoteSessionCard(record, type, tool ? toolSource : tag, toolId))
+      return
+    }
+    for (const key of REMOTE_CONTAINERS) {
+      const value = key === 'content' && (tool || toolContent) ? structuredToolData(record[key]) : record[key]
+      visit(value, key === 'tool_calls' || key === 'toolCalls' ? 'tool_call' : key, depth + 1, tool || toolContent)
+    }
+    if (tool) visit(record['tool'], 'tool_call', depth + 1)
+  }
+  visit(payload, eventName, 0)
+  return cards
+}
+
+/** Read-only widgets can be presentations, content blocks, or browser tool calls. */
+export function parseRichWidgets(
+  payload: Record<string, unknown>, eventName?: string, toolTypes?: Map<string, RemoteCardType>
+): MuseRichWidget[] {
+  return [...parsePresentationWidgets(payload), ...parseRemoteSessionCards(payload, eventName, toolTypes)]
 }
 
 
@@ -719,14 +986,16 @@ export function parseToolCall(
   messageId: string,
   displayText?: string
 ): MuseToolCall | null {
-  const started = eventName === 'tool_call.started' || eventName === 'delta.tool_start'
-  const name = str(payload['name']) || 'tool_call'
-  const toolType = str(payload['tool_type']) || undefined
-  const id = str(payload['tool_id']) || messageId || name
+  const started = /(?:start(?:ed)?|tool_use)$/.test(eventName)
+  const tool = toolDetails(payload)
+  const fields = [payload, tool, obj(payload['function']), obj(tool['function'])]
+  const name = firstField(fields, 'name', 'tool_name', 'toolName') || 'tool_call'
+  const toolType = firstField(fields, 'tool_type', 'toolType')
+  const id = remoteToolId(payload, eventName) || messageId || name
   let status: MuseToolCall['status'] = started ? 'running' : 'completed'
   if (!started) {
     const result = obj(payload['result'])
-    if (result['success'] === false) status = 'errored'
+    if (result['success'] === false || payload['is_error'] === true || tool['is_error'] === true) status = 'errored'
   }
   const summary =
     (displayText && displayText.trim()) ||
@@ -994,13 +1263,21 @@ export function transcriptText(payload: Record<string, unknown>): string {
 }
 
 function assistantTextFromPayload(p: Record<string, unknown>): string {
+  const message = obj(p['message'])
+  const content = p['content'] ?? message['content']
+  const blockText = Array.isArray(content) ? content.map((part) => {
+    const block = obj(part)
+    const type = str(block['type'] || block['kind'])
+    return !type || type === 'text' || type === 'markdown' ? str(block['text'] || block['markdown']) : ''
+  }).filter(Boolean).join('\n\n') : ''
   const raw =
     transcriptText(p) ||
     str(p['display_text']) ||
     str(p['markdown']) ||
-    str(p['content']) ||
+    str(content) ||
     str(p['text']) ||
-    ''
+    blockText ||
+    str(message['text'])
   return raw.replace(/\[\[hatch_widget:[^\]]+\]\]/g, '').trim()
 }
 
@@ -1027,70 +1304,85 @@ function captureMuseEvent(e: unknown): void {
  */
 export class MuseChatChannel extends EventEmitter {
   private handle: SubscriptionHandle | null = null
+  private pending: SubscriptionHandle | null = null
   private opening: Promise<void> | null = null
-  private stopped = false
+  private retryTimer?: ReturnType<typeof setTimeout>
+  private readonly lifetime = new AbortController()
+
+  private readonly onPhase = (phase: string): void => {
+    if (phase === 'ready') void this.ensure().catch(() => undefined)
+  }
 
   constructor(private readonly gw: MuseNativeGateway) {
     super()
     this.setMaxListeners(50)
-    gw.on('phase', (p: string) => {
-      if (p === 'ready' && !this.stopped && !this.handle) void this.ensure().catch(() => undefined)
-    })
+    gw.on('phase', this.onPhase)
   }
 
   async ensure(): Promise<void> {
+    const { signal } = this.lifetime
+    signal.throwIfAborted()
     if (this.handle) return
     if (this.opening) return this.opening
-    this.opening = (async () => {
-      const h = await this.gw.subscribe('chat.subscribe', { capabilities: MUSE_CHAT_CAPABILITIES }, (e) => {
-        captureMuseEvent(e)
-        if (e['type'] !== 'event') return
-        const name = str(e['event']) || str(e['event_name'])
-        if (!name) return
-        // Tolerate top-level fields when payload is thin.
-        const payload = { ...obj(e), ...obj(e['payload']) }
-        delete payload['type']
-        delete payload['event']
-        delete payload['event_name']
-        delete payload['seq']
-        delete payload['ts_ms']
-        delete payload['payload']
-        this.emit('event', { name, seq: Number(e['seq'] ?? 0), payload } satisfies MuseChatEvent)
-      })
-      await h.ack
-      this.handle = h
-      this.emit('resumed')
-      h.done.then(
-        () => this.onEnded(h),
-        () => this.onEnded(h)
-      )
-    })().finally(() => {
-      this.opening = null
+    clearTimeout(this.retryTimer)
+    this.retryTimer = undefined
+    const opening = abortable(signal, async () => {
+      const h = await this.gw.subscribe('chat.subscribe', { capabilities: MUSE_CHAT_CAPABILITIES }, (raw) => {
+        captureMuseEvent(raw)
+        const event = chatEvent(raw)
+        if (!signal.aborted && event) this.emit('event', event)
+      }, signal)
+      if (signal.aborted) {
+        h.cancel('disposed')
+        signal.throwIfAborted()
+      }
+      this.pending = h
+      try {
+        await h.ack
+        signal.throwIfAborted()
+        this.handle = h
+        void h.done.then(() => this.onEnded(h), () => this.onEnded(h))
+        this.emit('resumed')
+      } catch (err) {
+        h.cancel('subscription setup failed')
+        throw err
+      } finally {
+        if (this.pending === h) this.pending = null
+      }
+    }).finally(() => {
+      if (this.opening === opening) this.opening = null
     })
-    return this.opening
+    this.opening = opening
+    void opening.catch(() => this.scheduleRetry(1500))
+    return opening
   }
 
   private onEnded(h: SubscriptionHandle): void {
     if (this.handle !== h) return
     this.handle = null
     this.emit('ended')
-    // If the socket is still up the server closed only the subscription: reopen.
-    if (!this.stopped && this.gw.isReady()) {
-      void this.ensure().catch(() => {
-        if (this.stopped || this.handle) return
-        setTimeout(() => {
-          if (!this.stopped && !this.handle && this.gw.isReady()) {
-            void this.ensure().catch(() => undefined)
-          }
-        }, 1500)
-      })
-    }
+    this.scheduleRetry(0)
+  }
+
+  private scheduleRetry(ms: number): void {
+    if (this.lifetime.signal.aborted || this.handle || this.retryTimer || !this.gw.isReady()) return
+    this.retryTimer = setTimeout(() => {
+      this.retryTimer = undefined
+      if (this.gw.isReady()) void this.ensure().catch(() => undefined)
+    }, ms)
   }
 
   stop(): void {
-    this.stopped = true
-    this.handle?.cancel()
+    this.lifetime.abort(new MuseGatewayError('chat channel disposed', 'closed'))
+    this.gw.off('phase', this.onPhase)
+    clearTimeout(this.retryTimer)
+    this.retryTimer = undefined
+    const handle = this.handle
     this.handle = null
+    handle?.cancel('disposed')
+    this.pending?.cancel('disposed')
+    this.pending = null
+    this.removeAllListeners()
   }
 }
 
@@ -1136,7 +1428,11 @@ export interface StreamChatInput {
   /** Origin metadata for option-widget taps. */
   messageOrigin?: Record<string, unknown>
   /** Called once the server acknowledged this user message. */
-  onAck?: () => void
+  onAck?: (sessionId?: string) => void
+  onSessionId?: (sessionId: string) => void
+  /** Check that a delayed Stop still owns the session. */
+  canCancel?: () => boolean
+  beforeSend?: (signal: AbortSignal) => Promise<unknown>
 }
 
 /** Build chat.stream `items` from text + optional attachment items. */
@@ -1166,25 +1462,40 @@ export async function streamChat(
   channel: MuseChatChannel,
   input: StreamChatInput,
   onUpdate: (u: ChatStreamUpdate) => void,
-  opts: { timeoutMs?: number; settleMs?: number; recoverMs?: number; signal?: AbortSignal } = {}
+  opts: { timeoutMs?: number; settleMs?: number; recoverMs?: number; signal?: AbortSignal; deadline?: AbortSignal } = {}
 ): Promise<ChatStreamResult> {
-  await gw.connect()
-  await channel.ensure()
+  const ownDeadline = opts.deadline ? undefined : createMuseTurnDeadline(opts)
+  const signal = opts.deadline ?? ownDeadline!.signal
+  const cleanup = new AbortController()
+  const working = AbortSignal.any([signal, cleanup.signal])
 
   const settleMs = opts.settleMs ?? 1500
   const counts: Record<string, number> = {}
   const texts = new Map<string, string>()
+  const liveTexts = new Map<string, { text: string; deltas: Array<{ seq: number; text: string }> }>()
+  const historyTexts = new Map<string, { text: string; seq: number }>()
+  const seenSequences = new Set<string>()
+  const earlyEvents: Array<{ event: MuseChatEvent; scoped: boolean }> = []
   const widgets = new Map<string, MuseOptionWidget[]>()
   const richWidgets = new Map<string, MuseRichWidget[]>()
+  const remoteTools = new Map<string, RemoteCardType>()
+  const toolMessages = new Map<string, string>()
   const tools = new Map<string, MuseToolCall[]>()
   const media = new Map<string, MuseMediaPart[]>()
   const pendingMedia: MuseMediaPart[] = []
+  let pendingRichWidgets: MuseRichWidget[] = []
+  let pendingWidgetSeq = 0
   const order: string[] = []
   const doneIds = new Set<string>()
+  const finalTextIds = new Set<string>()
+  const richWidgetSequences = new Map<string, number>()
   let sessionId = input.sessionId ?? ''
   let ackUserMessageId = ''
   const turnStartedAtMs = Date.now()
   let started = false
+  let sending = false
+  let dispatched = false
+  let sharedTurnMatches = true
   let lastActivity = ''
   let settle!: () => void
   let fail!: (e: Error) => void
@@ -1192,6 +1503,7 @@ export async function streamChat(
     settle = a
     fail = b
   })
+  void finished.catch(() => undefined)
   let settleTimer: ReturnType<typeof setTimeout> | null = null
 
   const clearSettle = (): void => {
@@ -1239,9 +1551,16 @@ export async function streamChat(
       const drained = pendingMedia.splice(0, pendingMedia.length)
       mergeMediaList(id, drained)
     }
+    if (pendingRichWidgets.length) {
+      richWidgets.set(id, mergeRichWidgets(richWidgets.get(id), pendingRichWidgets))
+      if (pendingWidgetSeq) richWidgetSequences.set(id, Math.max(pendingWidgetSeq, richWidgetSequences.get(id) ?? 0))
+      pendingRichWidgets = []
+      pendingWidgetSeq = 0
+    }
   }
 
   const pushUpdate = (id: string, done: boolean): void => {
+    if (working.aborted) return
     onUpdate({
       messageId: id,
       text: texts.get(id) ?? '',
@@ -1254,10 +1573,28 @@ export async function streamChat(
   }
 
   const mine = (p: Record<string, unknown>): boolean => {
-    const s = str(p['session_id'])
-    if (sessionId) return !s || s === sessionId
-    const ctx = obj(p['chat_context'])
-    return !str(ctx['device_id']) || str(ctx['device_id']) === input.nodeId
+    const session = museEventSessionId(p)
+    if (session && sessionId && session !== sessionId) return false
+    const device = str(obj(p['chat_context'])['device_id'])
+    return Boolean(sessionId) || !device || device === input.nodeId
+  }
+
+  const ownsUserMessage = (p: Record<string, unknown>): boolean => Boolean(ackUserMessageId) &&
+    (str(p['message_id']) || str(p['user_message_id'])) === ackUserMessageId
+
+  const appendLiveText = (id: string, chunk: string, seq: number): void => {
+    const live = liveTexts.get(id) ?? { text: '', deltas: [] }
+    live.text += chunk
+    live.deltas.push({ seq, text: chunk })
+    liveTexts.set(id, live)
+    const history = historyTexts.get(id)
+    // A sequenced snapshot covers all deltas through that sequence. When no
+    // sequence is available, keep both candidates until the completed text arrives.
+    if (history?.seq && seq > history.seq) {
+      history.text += chunk
+      history.seq = seq
+    }
+    texts.set(id, history?.seq ? history.text : mergeMonotonic(live.text, history?.text ?? ''))
   }
 
   const applyMedia = (id: string, p: Record<string, unknown>): boolean => {
@@ -1282,100 +1619,166 @@ export async function streamChat(
     const idx = prev.findIndex((t) => t.id === tool.id || t.name === tool.name)
     if (idx >= 0) {
       const next = [...prev]
-      next[idx] = { ...prev[idx]!, ...tool, id: prev[idx]!.id }
+      const previous = prev[idx]!
+      next[idx] = {
+        ...previous,
+        ...tool,
+        id: previous.id,
+        name: tool.name === 'tool_call' ? previous.name : tool.name,
+        toolType: tool.toolType ?? previous.toolType,
+        summary: tool.summary ?? previous.summary
+      }
       tools.set(id, next)
     } else {
       tools.set(id, [...prev, tool])
     }
   }
 
-  const applyWidgets = (id: string, p: Record<string, unknown>): void => {
+  const applyWidgets = (id: string, p: Record<string, unknown>, eventName?: string, seq = 0): boolean => {
     const parsed = parseOptionWidgets(p)
-    const rich = parseRichWidgets(p)
-    if (!parsed.length && !rich.length) return
-    ensureBubble(id || order[order.length - 1] || '')
+    const rich = parseRichWidgets(p, eventName, remoteTools)
+    if (!parsed.length && !rich.length) return false
     const target = id || order[order.length - 1]
-    if (!target) return
+    if (!target) {
+      pendingRichWidgets = mergeRichWidgets(pendingRichWidgets, rich)
+      if (rich.length) pendingWidgetSeq = Math.max(seq, pendingWidgetSeq)
+      return false
+    }
+    ensureBubble(target)
     if (parsed.length) widgets.set(target, parsed)
-    if (rich.length) richWidgets.set(target, rich)
-    pushUpdate(target, doneIds.has(target))
+    if (rich.length) {
+      const existing = richWidgets.get(target)
+      const latestSeq = richWidgetSequences.get(target) ?? 0
+      richWidgets.set(target, existing && seq > 0 && seq < latestSeq ? mergeRichWidgets(rich, existing) : mergeRichWidgets(existing, rich))
+      if (seq > latestSeq) richWidgetSequences.set(target, seq)
+    }
+    return true
   }
 
-  const completeBubble = (id: string, p: Record<string, unknown>): void => {
+  const completeBubble = (id: string, p: Record<string, unknown>, seq: number): void => {
     if (!id) return
     ensureBubble(id)
     if (doneIds.has(id)) {
-      applyWidgets(id, p)
+      const changedWidgets = applyWidgets(id, p, undefined, seq)
       const addedMedia = applyMedia(id, p)
-      const nextText = mergeMonotonic(texts.get(id) ?? '', assistantTextFromPayload(p))
-      if (addedMedia || nextText !== texts.get(id)) {
+      const nextText = finalTextIds.has(id) ? '' : assistantTextFromPayload(p)
+      if (nextText) {
         texts.set(id, nextText)
-        pushUpdate(id, true)
+        finalTextIds.add(id)
       }
+      if (addedMedia || nextText || changedWidgets) pushUpdate(id, true)
       return
     }
     const status = str(p['status'])
     if (status && status !== 'completed' && status !== 'complete' && status !== 'done' && status !== 'finished') {
       if (status === 'failed' || status === 'error' || status === 'cancelled' || status === 'interrupted') {
         doneIds.add(id)
-        applyWidgets(id, p)
+        applyWidgets(id, p, undefined, seq)
         applyMedia(id, p)
         pushUpdate(id, true)
         armSettleIfIdle()
       }
       return
     }
-    const final = mergeMonotonic(texts.get(id) ?? '', assistantTextFromPayload(p))
-    texts.set(id, final)
+    const final = assistantTextFromPayload(p)
+    if (final) {
+      texts.set(id, final)
+      finalTextIds.add(id)
+    }
     doneIds.add(id)
-    applyWidgets(id, p)
+    applyWidgets(id, p, undefined, seq)
     applyMedia(id, p)
     pushUpdate(id, true)
     armSettleIfIdle()
   }
 
-  const onEvent = (e: MuseChatEvent): void => {
-    if (gapTimer) {
-      clearTimeout(gapTimer)
-      gapTimer = null
-    }
+  const onEvent = (e: MuseChatEvent, scoped = false): void => {
+    if (working.aborted || !sending) return
     const p = e.payload
+    const toolEvent = TOOL_EVENT.test(e.name)
+    const remoteEvent = REMOTE_EVENT.test(e.name)
     const watched =
       e.name.startsWith('delta.') ||
       e.name === 'message.user' ||
       e.name === 'agent.status' ||
       e.name === 'message.assistant' ||
-      e.name === 'tool_call.started' ||
-      e.name === 'tool_call.completed' ||
+      toolEvent || remoteEvent ||
       /presentation|attachment|media|artifact/i.test(e.name)
-    if (!watched) return
-    if (e.name !== 'agent.status' && !mine(p)) return
+    if (!watched || !mine(p)) return
+    if (!started) {
+      if (earlyEvents.length < 512) earlyEvents.push({ event: e, scoped })
+      return
+    }
+    const id = assistantMessageId(p)
+    const parentId = str(p['user_message_id']) || str(p['reply_to_message_id']) || str(p['parent_message_id'])
+    if (e.name === 'message.user') {
+      if (!scoped) {
+        // An unqualified user event may belong to another session on this account.
+        if (ownsUserMessage(p)) sharedTurnMatches = true
+        else if (!museEventSessionId(p) || museEventSessionId(p) === sessionId) {
+          sharedTurnMatches = false
+          pendingMedia.length = 0
+          pendingRichWidgets = []
+          pendingWidgetSeq = 0
+        }
+      }
+      if (ownsUserMessage(p) && !sessionId) {
+        sessionId = museEventSessionId(p)
+        if (sessionId) input.onSessionId?.(sessionId)
+      }
+      return
+    }
+    if (e.name !== 'agent.status' && !scoped && parentId && parentId !== ackUserMessageId && !texts.has(id)) return
+    if (!scoped && e.name !== 'agent.status' && !sessionId && (!parentId || parentId !== ackUserMessageId)) return
+    if (!scoped && !sharedTurnMatches && !texts.has(id) && (!parentId || e.name === 'agent.status')) return
+    if (remoteEvent && !scoped && !museEventSessionId(p) && !parentId && (!id || !texts.has(id))) return
+    if (!sessionId && e.name !== 'agent.status' && (scoped || parentId === ackUserMessageId)) {
+      sessionId = museEventSessionId(p)
+      if (sessionId) input.onSessionId?.(sessionId)
+    }
+    if (e.seq > 0) {
+      const key = `${e.seq}:${e.name}:${id}`
+      if (seenSequences.has(key)) return
+      seenSequences.add(key)
+    }
     counts[e.name] = (counts[e.name] ?? 0) + 1
-    const id = str(p['message_id'])
+    const updateWidgets = (target: string): boolean => applyWidgets(target, p, e.name, e.seq)
+    if (toolEvent) {
+      const toolId = remoteToolId(p, e.name)
+      const target = id || (toolId ? toolMessages.get(toolId) : undefined) || order.at(-1) || ''
+      if (toolId && target) toolMessages.set(toolId, target)
+      updateWidgets(target)
+      applyMedia(target, p)
+      if (target) {
+        ensureBubble(target)
+        const tool = parseToolCall(e.name, p, target)
+        if (tool) upsertTool(target, tool)
+        pushUpdate(target, doneIds.has(target))
+      }
+      if (target && doneIds.has(target)) armSettleIfIdle()
+      else clearSettle()
+      return
+    }
     switch (e.name) {
-      case 'message.user':
-        started = true
-        if (!sessionId) sessionId = str(p['session_id'])
-        clearSettle()
-        break
       case 'delta.message_start':
         if (!started) break
         if (!id) break
         ensureBubble(id)
+        updateWidgets(id)
         clearSettle()
         pushUpdate(id, false)
         break
       case 'delta.text_append': {
-        if (!started || !id) break
+        if (!id || doneIds.has(id)) break
         ensureBubble(id)
-        const next = texts.get(id)! + str(p['text'])
-        texts.set(id, next)
+        appendLiveText(id, str(p['text']), e.seq)
         pushUpdate(id, false)
         break
       }
       case 'delta.placeholder': {
         if (!started || !id) break
         ensureBubble(id)
+        updateWidgets(id)
         if (!texts.get(id)) {
           const placeholder = str(p['text'] || p['display_text'] || p['placeholder'])
           if (placeholder) texts.set(id, placeholder)
@@ -1386,8 +1789,8 @@ export async function streamChat(
       }
       case 'delta.presentation': {
         if (!started) break
-        applyWidgets(id, p)
         const targetId = id || order[order.length - 1] || ''
+        updateWidgets(targetId)
         if (targetId) {
           ensureBubble(targetId)
           applyMedia(targetId, p)
@@ -1405,27 +1808,7 @@ export async function streamChat(
       case 'message.assistant': {
         if (!started) break
         if (!id) break
-        completeBubble(id, p)
-        break
-      }
-      case 'delta.tool_start':
-      case 'delta.tool_done':
-      case 'tool_call.started':
-      case 'tool_call.completed': {
-        if (!started) break
-        const targetId = id || order[order.length - 1] || ''
-        if (targetId) {
-          ensureBubble(targetId)
-          const tool = parseToolCall(e.name, p, str(p['tool_id']) || targetId)
-          if (tool) upsertTool(targetId, tool)
-          applyMedia(targetId, p)
-          clearSettle()
-          pushUpdate(targetId, doneIds.has(targetId))
-        } else {
-          // Tool completed with generated image before the assistant bubble exists — queue for next bubble!
-          applyMedia('', p)
-          clearSettle()
-        }
+        completeBubble(id, p, e.seq)
         break
       }
       case 'agent.status': {
@@ -1441,10 +1824,10 @@ export async function streamChat(
       default: {
         // Catch-all for presentation / attachment / media / artifact events
         if (!started) break
-        applyWidgets(id, p)
-        const added = applyMedia(id, p)
         const targetId = id || order[order.length - 1] || ''
-        if (added && targetId) {
+        const changedWidgets = updateWidgets(targetId)
+        const added = applyMedia(targetId, p)
+        if ((changedWidgets || added) && targetId) {
           pushUpdate(targetId, doneIds.has(targetId))
         }
         break
@@ -1459,13 +1842,31 @@ export async function streamChat(
   // gateway is back, backfill the in-flight reply from chat.history.
   let gapTimer: ReturnType<typeof setTimeout> | null = null
   let backfilling = false
-  let closed = false
-
   const applyHistoryRows = (rows: HistoryRow[]): void => {
     for (const row of rows) {
+      if (working.aborted) return
       if (!row.id) continue
       ensureBubble(row.id)
-      const merged = mergeMonotonic(texts.get(row.id) ?? '', row.text)
+      const previous = texts.get(row.id) ?? ''
+      const prior = historyTexts.get(row.id)
+      const live = liveTexts.get(row.id)
+      let seq = row.seq ?? 0
+      let snapshot = row.text
+      if (!row.completed && seq && snapshot && live) {
+        for (const delta of live.deltas) {
+          if (delta.seq <= seq) continue
+          snapshot += delta.text
+          seq = delta.seq
+        }
+      }
+      if (snapshot && (!prior || !prior.seq || seq >= prior.seq)) {
+        historyTexts.set(row.id, { text: mergeMonotonic(prior?.text ?? '', snapshot), seq })
+      }
+      const history = historyTexts.get(row.id)?.text ?? ''
+      const authoritative = row.completed && row.text && (!prior?.seq || !row.seq || row.seq >= prior.seq)
+      const merged = authoritative ? row.text
+        : doneIds.has(row.id) ? previous : mergeMonotonic(live?.text ?? previous, history)
+      if (authoritative) finalTextIds.add(row.id)
       let changed = false
       if (merged !== texts.get(row.id)) {
         texts.set(row.id, merged)
@@ -1476,7 +1877,9 @@ export async function streamChat(
         changed = true
       }
       if (row.richWidgets?.length) {
-        richWidgets.set(row.id, row.richWidgets)
+        const liveWidgets = richWidgets.get(row.id)
+        const older = liveWidgets && row.seq && row.seq < (richWidgetSequences.get(row.id) ?? 0)
+        richWidgets.set(row.id, older ? mergeRichWidgets(row.richWidgets, liveWidgets) : mergeRichWidgets(liveWidgets, row.richWidgets))
         changed = true
       }
       if (row.media?.length && mergeMediaList(row.id, row.media)) {
@@ -1498,87 +1901,77 @@ export async function streamChat(
     }
   }
 
-  const backfill = async (forceOnce = false): Promise<void> => {
-    if (backfilling) return
+  let historyRead: Promise<void> | undefined
+  const recoverHistory = (): Promise<void> => {
+    if (historyRead) return historyRead
+    const read = recoverHistoryOnce().finally(() => {
+      if (historyRead === read) historyRead = undefined
+    })
+    historyRead = read
+    return read
+  }
+
+  const recoverHistoryOnce = async (): Promise<void> => {
+    if (working.aborted || !started || !sessionId || !gw.isReady()) return
+    const hist = await abortable(working, () => gw.request('chat.history', { session_id: sessionId, limit: 50 }, 5_000, working))
+    if (working.aborted) return
+    applyHistoryRows(historyAssistantsAfterTurn(hist, {
+      ackUserMessageId,
+      knownAssistantIds: new Set(order),
+      turnStartedAtMs
+    }))
+  }
+
+  const backfill = async (): Promise<void> => {
+    if (backfilling || !started) return
     backfilling = true
-    let ranOnce = false
     try {
-      while (
-        !closed &&
-        sessionId &&
-        ((forceOnce && !ranOnce) ||
-          order.some((id) => !doneIds.has(id)) ||
-          (lastActivity && !isMuseIdleActivity(lastActivity)))
-      ) {
-        await new Promise((r) => setTimeout(r, ranOnce ? 2000 : 400))
-        ranOnce = true
-        if (closed || !gw.isReady()) continue
-        let hist: unknown
-        try {
-          hist = await gw.request('chat.history', { session_id: sessionId, limit: 50 })
-        } catch {
-          continue
-        }
-        const rows = historyAssistantsAfterTurn(hist, {
-          ackUserMessageId,
-          knownAssistantIds: new Set(order),
-          turnStartedAtMs
-        })
-        clearGap()
-        applyHistoryRows(rows)
+      await delay(400, undefined, { signal: working })
+      while (!working.aborted && gw.isReady()) {
+        await recoverHistory().catch(() => undefined)
+        if (working.aborted) return
         if (order.length && order.every((id) => doneIds.has(id)) && isMuseIdleActivity(lastActivity)) {
           settle()
           return
         }
+        if (!order.some((id) => !doneIds.has(id)) && isMuseIdleActivity(lastActivity)) return
+        await delay(2000, undefined, { signal: working })
       }
+    } catch {
+      /* The turn ended during the retry delay. */
     } finally {
       backfilling = false
     }
   }
 
-  const reconcileFinal = async (): Promise<void> => {
-    if (!sessionId || !gw.isReady() || opts.signal?.aborted) return
-    try {
-      const hist = await gw.request('chat.history', { session_id: sessionId, limit: 50 })
-      const rows = historyAssistantsAfterTurn(hist, {
-        ackUserMessageId,
-        knownAssistantIds: new Set(order),
-        turnStartedAtMs
-      })
-      applyHistoryRows(rows)
-    } catch {
-      /* best-effort */
-    }
-  }
-
   const onResumed = (): void => {
     clearGap()
-    void backfill(true)
+    void backfill()
   }
-
-  const onPhase = (p: string): void => {
-    if (p === 'ready' && gapTimer) {
-      void channel.ensure().then(onResumed).catch(() => void backfill(true))
-    }
-  }
-  gw.on('phase', onPhase)
   const onEnded = (): void => {
-    if (gapTimer) return
-    gapTimer = setTimeout(() => fail(new Error('Muse gateway did not recover mid-reply')), opts.recoverMs ?? 60_000)
-  }
-  channel.on('event', onEvent)
-  channel.on('ended', onEnded)
-  channel.on('resumed', onResumed)
-  const onAbort = (): void => {
-    if (opts.signal?.reason !== MUSE_STREAM_SUPERSEDED) {
-      void gw.request('chat.cancel', sessionId ? { session_id: sessionId } : {}).catch(() => undefined)
+    if (!gapTimer) {
+      gapTimer = setTimeout(() => fail(new Error('Muse gateway did not recover mid-reply')), opts.recoverMs ?? 60_000)
     }
-    settle()
   }
-  opts.signal?.addEventListener('abort', onAbort, { once: true })
-  const timer = setTimeout(settle, opts.timeoutMs ?? 600_000)
+  let sendHandle: SubscriptionHandle | undefined
+  let sendHandleReleased = false
+  const cancelUpstream = (id: string): void => {
+    if (!id || input.canCancel?.() === false) return
+    void gw.request('chat.cancel', { session_id: id }, 5_000).catch(() => undefined)
+  }
+  const onAbort = (): void => {
+    if (isMuseStop(signal) && dispatched && sessionId) cancelUpstream(sessionId)
+  }
+  signal.addEventListener('abort', onAbort, { once: true })
   let ack: Record<string, unknown> = {}
   try {
+    await abortable(signal, () => gw.connect())
+    await abortable(signal, () => channel.ensure())
+    const beforeSend = input.beforeSend
+    if (beforeSend) await abortable(signal, () => beforeSend(signal))
+    channel.on('event', onEvent)
+    channel.on('ended', onEnded)
+    channel.on('resumed', onResumed)
     const params: Record<string, unknown> = {
       items: buildChatStreamItems(input.text, input.items),
       node_id: input.nodeId,
@@ -1586,29 +1979,61 @@ export async function streamChat(
     }
     if (input.sessionId) params['session_id'] = input.sessionId
     if (input.messageOrigin) params['message_origin'] = input.messageOrigin
-    const h = await gw.subscribe('chat.stream', params, () => undefined)
-    ack = await h.ack
-    input.onAck?.()
+    sending = true
+    const h = await abortable(signal, async () => {
+      const handle = await gw.subscribe('chat.stream', params, (raw) => {
+        const event = chatEvent(raw)
+        if (event) onEvent(event, true)
+      }, signal, () => { dispatched = true })
+      sendHandle = handle
+      if (signal.aborted) releaseSendHandle(handle)
+      return handle
+    })
+    ack = await abortable(signal, () => h.ack)
     const r = obj(ack['result'])
     const ackSession = str(ack['session_id']) || str(r['session_id'])
-    if (!sessionId && ackSession) sessionId = ackSession
     ackUserMessageId = str(ack['message_id']) || str(r['message_id']) || str(ack['user_message_id']) || str(r['user_message_id'])
+    if (ack['ok'] === false || (!ackUserMessageId && !ackSession)) throw new Error('Muse did not acknowledge this send')
+    if (sessionId && ackSession && ackSession !== sessionId) throw new Error('Muse acknowledged a different chat session')
+    sessionId ||= ackSession
     started = true
-    await h.done.catch(() => undefined)
-    await finished
-    await reconcileFinal()
+    input.onAck?.(sessionId || undefined)
+    sharedTurnMatches = !earlyEvents.some(({ event, scoped }) => !scoped && event.name === 'message.user' && mine(event.payload))
+    for (const { event, scoped } of earlyEvents) onEvent(event, scoped)
+    earlyEvents.length = 0
+    await abortable(signal, () => Promise.all([h.done.catch(() => undefined), finished]))
+    await abortable(signal, recoverHistory).catch(() => signal.throwIfAborted())
+    for (const id of order) if (!doneIds.has(id)) pushUpdate(id, true)
+  } catch (error) {
+    if (signal.reason === MUSE_STREAM_SUPERSEDED) throw new Error('Muse turn superseded')
+    if (isMuseStop(signal)) throw new DOMException('Muse turn stopped', 'AbortError')
+    throw error
   } finally {
-    closed = true
-    gw.off('phase', onPhase)
-    clearTimeout(timer)
+    cleanup.abort()
+    signal.removeEventListener('abort', onAbort)
+    ownDeadline?.dispose()
     clearSettle()
     clearGap()
     channel.off('event', onEvent)
     channel.off('ended', onEnded)
     channel.off('resumed', onResumed)
-    opts.signal?.removeEventListener('abort', onAbort)
+    if (sendHandle) releaseSendHandle(sendHandle)
   }
-  for (const id of order) if (!doneIds.has(id)) pushUpdate(id, true)
+
+  function releaseSendHandle(handle: SubscriptionHandle): void {
+    if (sendHandleReleased) return
+    sendHandleReleased = true
+    if (isMuseStop(signal) && !sessionId) {
+      // A new session has no safe cancel target until this send's ACK arrives.
+      const lateAck = AbortSignal.timeout(30_000)
+      void abortable(lateAck, () => handle.ack).then((value) => {
+        cancelUpstream(str(value['session_id']) || str(obj(value['result'])['session_id']))
+      }, () => undefined).finally(() => handle.cancel()).catch(() => undefined)
+    } else {
+      handle.cancel()
+    }
+  }
+
   const widgetsByMessageId: Record<string, MuseOptionWidget[]> = {}
   for (const [id, list] of widgets) widgetsByMessageId[id] = list
   const richWidgetsByMessageId: Record<string, MuseRichWidget[]> = {}
@@ -1637,21 +2062,14 @@ export async function selectOptionWidget(
     widget: MuseOptionWidget
     selectedText: string
     optionIndex: number
+    onAck?: StreamChatInput['onAck']
+    onSessionId?: StreamChatInput['onSessionId']
+    canCancel?: StreamChatInput['canCancel']
   },
   onUpdate: (u: ChatStreamUpdate) => void,
-  opts?: { timeoutMs?: number; settleMs?: number; signal?: AbortSignal }
+  opts?: { timeoutMs?: number; settleMs?: number; signal?: AbortSignal; deadline?: AbortSignal }
 ): Promise<ChatStreamResult> {
   const mutationId = randomUUID()
-  try {
-    await gw.request('widgets.state.set', {
-      widget_id: input.widget.widgetId,
-      base_version: input.widget.baseVersion,
-      mutation_id: mutationId,
-      state: { selectedText: input.selectedText }
-    })
-  } catch {
-    // Best-effort; still send the chat turn.
-  }
   return streamChat(
     gw,
     channel,
@@ -1659,6 +2077,15 @@ export async function selectOptionWidget(
       text: input.selectedText,
       nodeId: input.nodeId,
       sessionId: input.sessionId,
+      onAck: input.onAck,
+      onSessionId: input.onSessionId,
+      canCancel: input.canCancel,
+      beforeSend: (signal) => gw.request('widgets.state.set', {
+        widget_id: input.widget.widgetId,
+        base_version: input.widget.baseVersion,
+        mutation_id: mutationId,
+        state: { selectedText: input.selectedText }
+      }, undefined, signal).catch(() => undefined),
       messageOrigin: {
         kind: 'options_widget',
         widget_id: input.widget.widgetId,
@@ -1732,12 +2159,15 @@ interface HistoryRow {
   richWidgets?: MuseRichWidget[]
   media?: MuseMediaPart[]
   at?: number
+  seq?: number
+  parentId?: string
 }
 
 function extractRawHistoryEvents(raw: unknown): Array<Record<string, unknown>> {
   let r = obj(raw)
-  if (r['ok'] !== undefined && r['result'] !== undefined) r = obj(r['result'])
-  const list = (r['chat_events'] ?? r['events'] ?? r['messages'] ?? r['items'] ?? (Array.isArray(raw) ? raw : [])) as unknown
+  const result = r['result']
+  if (asObj(result)) r = obj(result)
+  const list = r['chat_events'] ?? r['events'] ?? r['messages'] ?? r['items'] ?? (Array.isArray(result) ? result : raw)
   if (!Array.isArray(list)) return []
   const indexed = list.map((item, index) => {
     const e = obj(item)
@@ -1764,10 +2194,64 @@ function extractRawHistoryEvents(raw: unknown): Array<Record<string, unknown>> {
   return indexed.map((x) => x.e)
 }
 
+function isAssistantHistoryEvent(name: string, payload: Record<string, unknown>): boolean {
+  return !TOOL_EVENT.test(name) && (/assistant|message_done|presentation/i.test(name) ||
+    payload['role'] === 'assistant' || obj(payload['message'])['role'] === 'assistant')
+}
+
+/** Attach scoped browser events to their assistant message before either history pass reads it. */
+function historyRichWidgets(list: Record<string, unknown>[]): Map<string, MuseRichWidget[]> {
+  const byMessage = new Map<string, MuseRichWidget[]>()
+  const toolTypes = new Map<string, RemoteCardType>()
+  const toolMessages = new Map<string, string>()
+  let lastAssistantId = ''
+  let pending: MuseRichWidget[] = []
+  const add = (id: string, widgets: MuseRichWidget[]) => {
+    if (widgets.length) byMessage.set(id, mergeRichWidgets(byMessage.get(id), widgets))
+  }
+  const flush = () => {
+    if (lastAssistantId) add(lastAssistantId, pending)
+    pending = []
+  }
+  for (const [index, event] of list.entries()) {
+    if (isUserHistoryEvent(event)) {
+      flush()
+      lastAssistantId = ''
+      toolTypes.clear()
+      toolMessages.clear()
+      continue
+    }
+    const payload = { ...event, ...obj(event['payload']) }
+    const name = str(event['event_name']) || str(event['event']) || str(event['type'])
+    const explicitId = assistantMessageId(payload)
+    const toolId = remoteToolId(payload, name)
+    if (toolId && explicitId) toolMessages.set(toolId, explicitId)
+    if (isAssistantHistoryEvent(name, payload)) {
+      const id = explicitId || str(event['id']) || `hist_${index + 1}`
+      add(id, pending)
+      pending = []
+      add(id, parseRichWidgets(payload, name, toolTypes))
+      for (const toolId of toolTypes.keys()) {
+        if (!toolMessages.has(toolId)) toolMessages.set(toolId, id)
+      }
+      lastAssistantId = id
+      continue
+    }
+    const widgets = parseRemoteSessionCards(payload, name, toolTypes)
+    if (!widgets.length) continue
+    const id = explicitId || (toolId ? toolMessages.get(toolId) : undefined)
+    if (id) add(id, widgets)
+    else pending = mergeRichWidgets(pending, widgets)
+  }
+  flush()
+  return byMessage
+}
+
 /** Assistant rows from chat.history (`{ok,result:{events|chat_events|messages}}`), oldest first. */
 export function historyAssistants(raw: unknown): HistoryRow[] {
   const list = extractRawHistoryEvents(raw)
   if (!list.length) return []
+  const richByMessage = historyRichWidgets(list)
   const rows: Array<HistoryRow & { at: number }> = []
   let pendingToolMedia: MuseMediaPart[] = []
   for (const e of list) {
@@ -1775,27 +2259,20 @@ export function historyAssistants(raw: unknown): HistoryRow[] {
     const name = str(e['event_name']) || str(e['event']) || str(e['type'])
     const role = str(e['role']) || str(p['role'])
     const mergedPayload = { ...e, ...p }
-    if (/tool_call|delta\.tool|attachment|media|artifact/i.test(name) && !/assistant/.test(name)) {
+    if ((TOOL_EVENT.test(name) || /attachment|media|artifact/i.test(name)) && !/assistant/.test(name)) {
       const tm = parseMediaParts(mergedPayload)
       if (tm.length) pendingToolMedia.push(...tm)
       continue
     }
-    const isAssistantEvent = /assistant|message_done|presentation/i.test(name) || role === 'assistant'
-    if (!isAssistantEvent) {
+    if (!isAssistantHistoryEvent(name, mergedPayload)) {
       if (/message\.user/i.test(name) || role === 'user') pendingToolMedia = []
       continue
     }
-    const text =
-      transcriptText(p) ||
-      transcriptText(e) ||
-      str(e['display_text']) ||
-      str(p['display_text']) ||
-      str(e['text']) ||
-      str(p['content']) ||
-      str(e['content'])
+    const text = assistantTextFromPayload(mergedPayload)
     const status = (str(p['status']) || str(e['status'])).toLowerCase()
     const w = parseOptionWidgets(mergedPayload)
-    const rw = parseRichWidgets(mergedPayload)
+    const id = assistantMessageId(mergedPayload) || str(e['id'])
+    const rw = richByMessage.get(id)
     const ownMedia = parseMediaParts(mergedPayload)
     const combinedMedia = [...pendingToolMedia, ...ownMedia]
     pendingToolMedia = []
@@ -1807,18 +2284,21 @@ export function historyAssistants(raw: unknown): HistoryRow[] {
       dedupMedia.push(m)
     }
     rows.push({
-      id: str(e['message_id']) || str(p['message_id']) || str(e['id']),
+      id,
       text,
       completed:
         status === 'completed' ||
         status === 'complete' ||
         status === 'done' ||
         status === 'finished' ||
-        (!status && Boolean(text || w.length || rw.length || dedupMedia.length)),
+        (!status && Boolean(text || w.length || rw?.length || dedupMedia.length)),
       widgets: w.length ? w : undefined,
-      richWidgets: rw.length ? rw : undefined,
+      richWidgets: rw,
       media: dedupMedia.length ? dedupMedia : undefined,
-      at: parseMuseTimestampMs(e, p)
+      at: parseMuseTimestampMs(e, p),
+      seq: Number(e['seq'] ?? p['seq'] ?? 0) || undefined,
+      parentId: str(mergedPayload['user_message_id']) || str(mergedPayload['reply_to_message_id']) ||
+        str(mergedPayload['parent_message_id']) || undefined
     })
   }
   rows.sort((a, b) => a.at - b.at)
@@ -1842,6 +2322,7 @@ export function historyAssistantsAfterTurn(
   if (!list.length) return []
   const known = opts.knownAssistantIds ?? new Set<string>()
   const ackId = (opts.ackUserMessageId || '').trim()
+  const matchesAck = (row: HistoryRow) => !ackId || !row.parentId || row.parentId === ackId
 
   // Locate the user message that kicked off this turn, if present in chat.history.
   let userEventIndex = -1
@@ -1849,8 +2330,7 @@ export function historyAssistantsAfterTurn(
     for (let i = 0; i < list.length; i += 1) {
       const e = list[i]!
       const p = obj(e['payload'])
-      const id = str(e['message_id']) || str(p['message_id']) || str(e['id'])
-      if (id === ackId) {
+      if (isUserHistoryEvent(e) && (str(e['message_id']) || str(p['message_id']) || str(e['id'])) === ackId) {
         userEventIndex = i
         break
       }
@@ -1860,24 +2340,31 @@ export function historyAssistantsAfterTurn(
   // If the turn's user message is in history, only consider events strictly after it
   // (plus any assistant id already observed streaming in this turn).
   if (userEventIndex >= 0) {
-    const afterRows = historyAssistants(list.slice(userEventIndex + 1))
-    const byId = new Map(afterRows.map((r) => [r.id, r]))
+    const after = list.slice(userEventIndex + 1)
+    const nextUser = after.findIndex(isUserHistoryEvent)
+    const afterRows = historyAssistants(nextUser < 0 ? after : after.slice(0, nextUser)).filter(matchesAck)
+    const ids = new Set(afterRows.map((row) => row.id))
     if (known.size > 0) {
       for (const r of historyAssistants(list)) {
-        if (known.has(r.id) && !byId.has(r.id)) byId.set(r.id, r)
+        if (known.has(r.id) && !ids.has(r.id) && matchesAck(r)) afterRows.push(r)
       }
     }
-    return [...byId.values()]
+    return afterRows
   }
 
   // Fallback when ackUserMessageId isn't echoed in history:
   // ONLY accept assistant rows already seen in this turn, OR timestamped after turnStartedAtMs.
-  const cutoff = opts.turnStartedAtMs - 15_000
+  const cutoff = opts.turnStartedAtMs - (ackId ? 0 : 15_000)
   return historyAssistants(list).filter((row) => {
-    if (!row.id) return false
-    if (known.has(row.id)) return true
+    if (!row.id || !matchesAck(row)) return false
+    if (known.has(row.id) || (ackId && row.parentId === ackId)) return true
     return typeof row.at === 'number' && row.at >= cutoff
   })
+}
+
+function isUserHistoryEvent(event: Record<string, unknown>): boolean {
+  const payload = obj(event['payload'])
+  return (event['event_name'] ?? event['event']) === 'message.user' || (event['role'] ?? payload['role']) === 'user'
 }
 
 export interface MuseHistoryMessage {
@@ -1953,6 +2440,7 @@ function mergeMediaPartsDedup(
 export function parseHistoryTranscript(raw: unknown): MuseHistoryMessage[] {
   const list = extractRawHistoryEvents(raw)
   if (!list.length) return []
+  const richByMessage = historyRichWidgets(list)
   const byId = new Map<string, MuseHistoryMessage & { seq: number; hasRealTs: boolean }>()
   let pendingToolMedia: MuseMediaPart[] = []
   let lastBotId: string | null = null
@@ -1965,16 +2453,12 @@ export function parseHistoryTranscript(raw: unknown): MuseHistoryMessage[] {
     const name = str(e['event_name']) || str(e['event']) || str(e['type'])
     const roleRaw = str(e['role']) || str(p['role'])
     const isUser = /message\.user/i.test(name) || roleRaw === 'user'
-    const isAssistant =
-      /assistant/i.test(name) ||
-      /message_done/i.test(name) ||
-      /presentation/i.test(name) ||
-      roleRaw === 'assistant'
     const mergedPayload = { ...e, ...p }
+    const isAssistant = isAssistantHistoryEvent(name, mergedPayload)
     if (!isUser && !isAssistant) {
       const extraMedia = parseMediaParts(mergedPayload)
       if (extraMedia.length) {
-        const rawRefId = str(e['message_id']) || str(p['message_id'])
+        const rawRefId = assistantMessageId(mergedPayload)
         const existingBot = rawRefId ? byId.get(`muse_native_${rawRefId}`) : undefined
         if (existingBot && existingBot.role === 'bot') {
           existingBot.media = mergeMediaPartsDedup(existingBot.media, extraMedia)
@@ -1984,7 +2468,7 @@ export function parseHistoryTranscript(raw: unknown): MuseHistoryMessage[] {
       }
       continue
     }
-    const rawId = str(e['message_id']) || str(p['message_id']) || str(e['id']) || `hist_${idx}`
+    const rawId = assistantMessageId(mergedPayload) || str(e['id']) || `hist_${idx}`
     const id = isUser ? `muse_user_${rawId}` : `muse_native_${rawId}`
     const parsedTs = parseMuseTimestampMs(e, p)
     const hasRealTs = parsedTs > 0
@@ -2012,20 +2496,13 @@ export function parseHistoryTranscript(raw: unknown): MuseHistoryMessage[] {
         seq: prev?.seq ?? seq
       })
     } else {
-      const text =
-        transcriptText(p) ||
-        transcriptText(e) ||
-        str(e['display_text']) ||
-        str(p['display_text']) ||
-        str(e['text']) ||
-        str(p['content']) ||
-        str(e['content'])
+      const text = assistantTextFromPayload(mergedPayload)
       const w = parseOptionWidgets(mergedPayload)
-      const rw = parseRichWidgets(mergedPayload)
+      const rw = richByMessage.get(rawId)
       const ownMedia = parseMediaParts(mergedPayload)
       const combinedMedia = mergeMediaPartsDedup(pendingToolMedia, ownMedia)
       pendingToolMedia = []
-      if (!text && !w.length && !rw.length && !combinedMedia?.length) continue
+      if (!text && !w.length && !rw?.length && !combinedMedia?.length) continue
       const prev = byId.get(id)
       byId.set(id, {
         id,
@@ -2034,7 +2511,7 @@ export function parseHistoryTranscript(raw: unknown): MuseHistoryMessage[] {
         createdAt: prev?.hasRealTs ? prev.createdAt : hasRealTs ? at : prev?.createdAt ?? at,
         hasRealTs: Boolean(prev?.hasRealTs || hasRealTs),
         widgets: w.length ? w : prev?.widgets,
-        richWidgets: rw.length ? rw : prev?.richWidgets,
+        richWidgets: rw,
         media: mergeMediaPartsDedup(prev?.media, combinedMedia),
         seq: prev?.seq ?? seq
       })

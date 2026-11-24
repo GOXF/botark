@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { getPlatform } from '@adapters/platforms'
 import { Check, Copy, Globe } from 'lucide-react'
 import { getPlatformInspector } from '@/components/info/platformInspector'
@@ -8,16 +8,22 @@ import { Button } from '@/components/ui/Button'
 import { Dialog } from '@/components/ui/Dialog'
 import { MarkdownText } from '@/components/chat/MarkdownText'
 import { SegmentedControl } from '@/components/ui/SegmentedControl'
+import { translate, useT } from '@/lib/i18n'
 import { useBotStore } from '@/store/botStore'
+import { usePrefsStore, type Locale } from '@/store/prefsStore'
 import type { Bot, ChatMessage } from '@/types'
 
 export interface OpenShareEventDetail {
   botId: string
   messageId?: string
+  conversationKey?: string
 }
 
 export function triggerShareConversation(detail: OpenShareEventDetail): void {
-  window.dispatchEvent(new CustomEvent<OpenShareEventDetail>('bothub:open-share', { detail }))
+  const bot = useBotStore.getState().bots.find((item) => item.id === detail.botId)
+  window.dispatchEvent(new CustomEvent<OpenShareEventDetail>('bothub:open-share', {
+    detail: { ...detail, conversationKey: bot ? shareConversationKey(bot) : undefined }
+  }))
 }
 
 function escapeHtml(raw: string): string {
@@ -41,17 +47,23 @@ function formatMessageHtml(text: string): string {
     .replace(/\n/g, '<br />')
 }
 
-export function buildStandaloneShareHtml(bot: Bot, platformName: string, items: ChatMessage[]): string {
-  const dateLabel = new Date().toLocaleString()
+export function buildStandaloneShareHtml(
+  bot: Bot,
+  platformName: string,
+  items: ChatMessage[],
+  locale: Locale = 'zh'
+): string {
+  const language = locale === 'zh' ? 'zh-CN' : 'en'
+  const dateLabel = new Date().toLocaleString(language)
   const turnsHtml = items
     .map((m) => {
       const isUser = m.role === 'user'
-      const time = new Date(m.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+      const time = new Date(m.createdAt).toLocaleTimeString(language, { hour: '2-digit', minute: '2-digit' })
       const quote = m.replyQuote
         ? `<div class="quote">↳ ${escapeHtml(m.replyQuote)}</div>`
         : ''
       return `<article class="turn ${isUser ? 'turn-user' : 'turn-bot'}">
-  <div class="meta">${isUser ? 'You' : escapeHtml(bot.name)} · ${time}</div>
+  <div class="meta">${escapeHtml(isUser ? translate(locale, 'You') : bot.name)} · ${time}</div>
   ${quote}
   <div class="bubble">${formatMessageHtml(m.text || '')}</div>
 </article>`
@@ -59,11 +71,11 @@ export function buildStandaloneShareHtml(bot: Bot, platformName: string, items: 
     .join('\n')
 
   return `<!doctype html>
-<html lang="zh-CN">
+<html lang="${language}">
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>${escapeHtml(bot.name)} · 对话共享页面</title>
+<title>${escapeHtml(bot.name)} · ${escapeHtml(translate(locale, 'Share conversation'))}</title>
 <style>
   :root {
     color-scheme: light dark;
@@ -187,15 +199,15 @@ export function buildStandaloneShareHtml(bot: Bot, platformName: string, items: 
     <header>
       <div>
         <div class="title">${escapeHtml(bot.name)}</div>
-        <div class="sub">${escapeHtml(platformName)} · 共 ${items.length} 条对话记录</div>
+        <div class="sub">${escapeHtml(platformName)} · ${escapeHtml(translate(locale, 'Messages: {count}', { count: items.length }))}</div>
       </div>
-      <span class="badge">Shared via BotArk</span>
+      <span class="badge">${escapeHtml(translate(locale, 'Shared via BotArk'))}</span>
     </header>
     <main>
 ${turnsHtml}
     </main>
     <footer>
-      <span>导出时间 · ${escapeHtml(dateLabel)}</span>
+      <span>${escapeHtml(translate(locale, 'Exported on {date}', { date: dateLabel }))}</span>
       <span>BotArk Desktop</span>
     </footer>
   </div>
@@ -203,16 +215,28 @@ ${turnsHtml}
 </html>`
 }
 
-export function buildShareMarkdown(bot: Bot, platformName: string, items: ChatMessage[]): string {
-  const header = `# ${bot.name}（${platformName}）\n\n`
+export function buildShareMarkdown(
+  bot: Bot,
+  platformName: string,
+  items: ChatMessage[],
+  locale: Locale = 'zh'
+): string {
+  const header = `# ${translate(locale, '{name} ({platform})', { name: bot.name, platform: platformName })}\n\n`
   const body = items
     .map((m) => {
-      const speaker = m.role === 'user' ? '**我**' : `**${bot.name}**`
-      const quote = m.replyQuote ? `> 引用：${m.replyQuote}\n\n` : ''
-      return `### ${speaker}\n\n${quote}${m.text || ''}`
+      const speaker = m.role === 'user' ? translate(locale, 'Me') : bot.name
+      const quote = m.replyQuote ? `> ${translate(locale, 'Quote: {text}', { text: m.replyQuote })}\n\n` : ''
+      return `### **${speaker}**\n\n${quote}${m.text || ''}`
     })
     .join('\n\n---\n\n')
   return header + body + '\n'
+}
+
+type ShareScope = 'all' | 'focus'
+type ShareSelection = { conversationKey: string; messageId?: string; scope: ShareScope; id: symbol }
+
+function shareConversationKey(bot: Bot): string {
+  return JSON.stringify([bot.id, bot.activeSessionId ?? bot.hermesSessionKey, bot.activeAccountId, bot.selectedAgentId])
 }
 
 export function ShareConversationDialog({
@@ -222,30 +246,60 @@ export function ShareConversationDialog({
   bot: Bot
   messages: ChatMessage[]
 }) {
+  const t = useT()
   const openWebSessionAt = useBotStore((s) => s.openWebSessionAt)
-  const [open, setOpen] = useState(false)
-  const [focusMessageId, setFocusMessageId] = useState<string | undefined>()
-  const [scope, setScope] = useState<'all' | 'focus'>('all')
-  const [copiedMd, setCopiedMd] = useState(false)
+  const [selection, setSelection] = useState<ShareSelection>()
+  const [copiedId, setCopiedId] = useState<symbol>()
+  const currentShare = useRef<symbol>(undefined)
+  const copyTimeout = useRef<ReturnType<typeof setTimeout>>(undefined)
+  const conversationKey = shareConversationKey(bot)
+  const activeSelection = selection?.conversationKey === conversationKey ? selection : undefined
+  const focusMessageId = activeSelection?.messageId
+  const scope = activeSelection?.scope ?? 'all'
+  const open = activeSelection !== undefined
+  const copiedMd = open && copiedId === activeSelection.id
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const onOpen = (event: Event) => {
       const detail = (event as CustomEvent<OpenShareEventDetail>).detail
       if (!detail || detail.botId !== bot.id) return
-      setFocusMessageId(detail.messageId)
-      setScope(detail.messageId ? 'focus' : 'all')
-      setOpen(true)
+      if (detail.conversationKey !== undefined && detail.conversationKey !== conversationKey) return
+      const id = Symbol()
+      currentShare.current = id
+      setSelection({ conversationKey, messageId: detail.messageId, scope: detail.messageId ? 'focus' : 'all', id })
     }
     window.addEventListener('bothub:open-share', onOpen)
-    return () => window.removeEventListener('bothub:open-share', onOpen)
-  }, [bot.id])
+    return () => {
+      currentShare.current = undefined
+      window.removeEventListener('bothub:open-share', onOpen)
+    }
+  }, [bot.id, conversationKey])
+
+  useEffect(() => {
+    setSelection((previous) => previous?.conversationKey === conversationKey ? previous : undefined)
+  }, [conversationKey])
+
+  useEffect(() => () => clearTimeout(copyTimeout.current), [activeSelection?.id])
+
+  const close = () => {
+    currentShare.current = undefined
+    setSelection(undefined)
+  }
 
   const platform = getPlatform(bot.platformId)
   const supportsWebShare = getPlatformInspector(bot.platformId).supportsWebSession
+  const locale = usePrefsStore((s) => s.locale)
+  const isCurrentShare = () => {
+    if (!activeSelection || currentShare.current !== activeSelection.id) return false
+    const state = useBotStore.getState()
+    const currentBot = state.bots.find((item) => item.id === state.selectedBotId)
+    return currentBot !== undefined && shareConversationKey(currentBot) === conversationKey
+  }
 
   const selectedMessages = useMemo(() => {
+    if (!open) return []
     const nonEmpty = messages.filter((m) => Boolean(m.text?.trim()))
-    if (scope === 'focus' && focusMessageId) {
+    if (scope === 'focus') {
       const idx = nonEmpty.findIndex((m) => m.id === focusMessageId)
       if (idx >= 0) {
         const target = nonEmpty[idx]!
@@ -253,12 +307,15 @@ export function ShareConversationDialog({
         const prev = idx > 0 && target.role === 'bot' && nonEmpty[idx - 1]?.role === 'user' ? [nonEmpty[idx - 1]!] : []
         return [...prev, target]
       }
+      return []
     }
     return nonEmpty
-  }, [focusMessageId, messages, scope])
+  }, [open, focusMessageId, messages, scope])
+  const canExport = open && selectedMessages.length > 0
 
   const handleDownloadHtml = () => {
-    const html = buildStandaloneShareHtml(bot, platform.name, selectedMessages)
+    if (!canExport || !isCurrentShare()) return
+    const html = buildStandaloneShareHtml(bot, platform.name, selectedMessages, locale)
     const blob = new Blob([html], { type: 'text/html;charset=utf-8' })
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
@@ -270,18 +327,22 @@ export function ShareConversationDialog({
   }
 
   const handleCopyMarkdown = () => {
-    const md = buildShareMarkdown(bot, platform.name, selectedMessages)
+    if (!canExport || !isCurrentShare()) return
+    const { id } = activeSelection
+    const md = buildShareMarkdown(bot, platform.name, selectedMessages, locale)
     void navigator.clipboard.writeText(md).then(() => {
-      setCopiedMd(true)
-      setTimeout(() => setCopiedMd(false), 1600)
-    })
+      if (currentShare.current !== id) return
+      setCopiedId(id)
+      clearTimeout(copyTimeout.current)
+      copyTimeout.current = setTimeout(() => setCopiedId(undefined), 1600)
+    }, () => {})
   }
 
   return (
     <Dialog
       open={open}
-      onOpenChange={setOpen}
-      title="共享对话页面"
+      onOpenChange={(next) => { if (!next) close() }}
+      title={t('Share conversation')}
       className="w-[min(92vw,580px)]"
     >
       <div className="flex flex-col gap-4">
@@ -299,19 +360,21 @@ export function ShareConversationDialog({
             <div>
               <p className="text-[13.5px] font-semibold text-ink">{bot.name}</p>
               <p className="text-[11.5px] text-ink-muted">
-                {platform.name} · 已选 {selectedMessages.length} 条消息
+                {platform.name} · {t('Selected messages: {count}', { count: selectedMessages.length })}
               </p>
             </div>
           </div>
 
           {focusMessageId && (
-            <SegmentedControl
+            <SegmentedControl<ShareScope>
               size="xs"
               value={scope}
-              onValueChange={setScope}
+              onValueChange={(scope) => {
+                setSelection((previous) => previous?.id === activeSelection.id ? { ...previous, scope } : previous)
+              }}
               options={[
-                { value: 'focus', label: '当前问答' },
-                { value: 'all', label: `整段对话 (${messages.length})` }
+                { value: 'focus', label: t('Current exchange') },
+                { value: 'all', label: t('Entire conversation ({count})', { count: messages.length }) }
               ]}
             />
           )}
@@ -320,7 +383,9 @@ export function ShareConversationDialog({
         {/* Live Share Page Preview */}
         <div className="max-h-[340px] overflow-y-auto rounded-2xl border border-line/80 bg-sunken/35 p-4">
           {selectedMessages.length === 0 ? (
-            <p className="py-8 text-center text-[13px] text-ink-muted">当前会话暂无可分享内容</p>
+            <p className="py-8 text-center text-[13px] text-ink-muted">
+              {t(scope === 'focus' ? 'This message has no shareable text or is unavailable' : 'This conversation has no shareable messages')}
+            </p>
           ) : (
             <div className="flex flex-col gap-3">
               {selectedMessages.slice(0, 12).map((m) => {
@@ -346,7 +411,7 @@ export function ShareConversationDialog({
               })}
               {selectedMessages.length > 12 && (
                 <p className="text-center text-[11.5px] text-ink-muted">
-                  其余 {selectedMessages.length - 12} 条消息将完整包含在导出的共享页面中
+                  {t('The export will include the remaining {count} messages', { count: selectedMessages.length - 12 })}
                 </p>
               )}
             </div>
@@ -358,13 +423,15 @@ export function ShareConversationDialog({
             <Button
               size="sm"
               variant="ghost"
+              disabled={!open || (scope === 'focus' && !canExport)}
               onClick={() => {
-                setOpen(false)
+                if (!isCurrentShare()) return
+                close()
                 openWebSessionAt(null)
               }}
             >
               <Globe className="size-3.5" />
-              在原生网页生成云端链接
+              {t('Create a share link on the platform')}
             </Button>
           ) : (
             <span />
@@ -374,20 +441,20 @@ export function ShareConversationDialog({
             <Button
               size="sm"
               variant="secondary"
-              disabled={selectedMessages.length === 0}
+              disabled={!canExport}
               onClick={handleCopyMarkdown}
             >
               {copiedMd ? <Check className="size-3.5 text-status-online" /> : <Copy className="size-3.5" />}
-              {copiedMd ? '已复制 Markdown' : '复制 Markdown'}
+              {t(copiedMd ? 'Copied Markdown' : 'Copy Markdown')}
             </Button>
             <Button
               size="sm"
               variant="primary"
-              disabled={selectedMessages.length === 0}
+              disabled={!canExport}
               onClick={handleDownloadHtml}
             >
               <ArkExportDocSvg className="size-3.5" />
-              导出共享网页 (.html)
+              {t('Download share page (.html)')}
             </Button>
           </div>
         </div>

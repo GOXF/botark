@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ComponentType } from 'react'
 import type { GrokServiceId } from '@shared/ipc'
 import { adapterRegistry } from '@adapters/registry'
 import { EmptyLine, Section } from '@/components/info/Section'
@@ -21,6 +21,32 @@ async function callGrok(
   const res = await grok.rpc({ accountId, op: 'call', service, method, params })
   if (!res.ok) throw new Error(res.message || `HTTP ${res.status}`)
   return res.data
+}
+
+const pendingReads = new Map<string, Promise<unknown>>()
+
+function readGrok(accountId: string, method: string, params: Record<string, unknown> = {}, service?: GrokServiceId, fresh = false) {
+  const identity = useBotStore.getState().accounts[accountId]?.handle
+  const key = JSON.stringify([accountId, params['agent_id'], identity, service, method, params])
+  const pending = pendingReads.get(key)
+  if (pending && !fresh) return pending
+  const promise = callGrok(accountId, method, params, service).finally(() => {
+    if (pendingReads.get(key) === promise) pendingReads.delete(key)
+  })
+  pendingReads.set(key, promise)
+  return promise
+}
+
+function scopeInspector<Props extends { accountId: string; agentId?: string; connected: boolean }>(Inspector: ComponentType<Props>) {
+  return function ScopedInspector(props: Omit<Props, 'connected'>) {
+    const connected = useBotStore((state) => {
+      const status = state.accounts[props.accountId]?.status
+      return status === 'online' || status === 'busy'
+    })
+    const identity = useBotStore((state) => state.accounts[props.accountId]?.handle)
+    const scopedProps = { ...props, connected } as Props
+    return <Inspector key={JSON.stringify([props.accountId, props.agentId, identity, connected])} {...scopedProps} />
+  }
 }
 
 function asObj(v: unknown): Record<string, unknown> | null {
@@ -199,21 +225,21 @@ export function GrokAccountAuthSection({ accountId }: { accountId: string }) {
  * (`CreateGrokBotAgent`, `UpdateGrokBotAgent`, `DuplicateGrokBotAgent`, `DeleteGrokBotAgent`,
  *  `CreateGrokBotRoom`, `SearchGrokBotTranscripts`, `exportRecipe` / `importRecipe`)
  */
-export function GrokAgentsAndRoomsSection({
+function GrokAgentsAndRoomsInspector({
   accountId,
+  connected,
   agentId,
   botId
 }: {
   accountId: string
+  connected: boolean
   agentId?: string
   botId: string
 }) {
-  const status = useBotStore((s) => s.accounts[accountId]?.status)
   const setSelectedAgent = useBotStore((s) => s.setSelectedAgent)
   const selectBot = useBotStore((s) => s.selectBot)
   const syncGrokAccountBots = useBotStore((s) => s.syncGrokAccountBots)
   const addBot = useBotStore((s) => s.addBot)
-  const accounts = useBotStore((s) => s.accounts)
 
   const [agents, setAgents] = useState<
     Array<{ id: string; name: string; isGroup: boolean; description?: string }>
@@ -257,8 +283,8 @@ export function GrokAgentsAndRoomsSection({
   }, [accountId])
 
   useEffect(() => {
-    if (status === 'online' || status === 'busy') void refresh()
-  }, [refresh, status])
+    if (connected) void refresh()
+  }, [refresh, connected])
 
   const createAgent = async () => {
     if (!newName.trim()) return
@@ -336,7 +362,7 @@ export function GrokAgentsAndRoomsSection({
   }
 
   const pinAgentAsSidebarBot = (a: { id: string; name: string }) => {
-    const acc = accounts[accountId]
+    const acc = useBotStore.getState().accounts[accountId]
     const createdBotId = `bot_grok_${a.id.slice(0, 8)}_${Date.now().toString(36)}`
     addBot({
       id: createdBotId,
@@ -714,16 +740,17 @@ export function GrokAgentsAndRoomsSection({
  * 1. Grok Bot Sessions & Conversation Controls
  * (`ListGrokBotAgentSessions`, `StartFreshGrokBotConversation`, `RollBackGrokBotConversation`)
  */
-export function GrokSessionsSection({
+function GrokSessionsInspector({
   accountId,
+  connected,
   agentId,
   botId
 }: {
   accountId: string
+  connected: boolean
   agentId?: string
   botId: string
 }) {
-  const status = useBotStore((s) => s.accounts[accountId]?.status)
   const setSelectedAgent = useBotStore((s) => s.setSelectedAgent)
   const [sessions, setSessions] = useState<
     Array<{ sessionId: string; kind: string; updatedAtMs: number }>
@@ -738,7 +765,7 @@ export function GrokSessionsSection({
     setLoading(true)
     setError(undefined)
     try {
-      const raw = await callGrok(accountId, 'ListGrokBotAgentSessions', { agent_id: agentId })
+      const raw = await readGrok(accountId, 'ListGrokBotAgentSessions', { agent_id: agentId })
       const o = asObj(raw) || {}
       const list = Array.isArray(o['sessions']) ? o['sessions'] : []
       setSessions(
@@ -759,8 +786,8 @@ export function GrokSessionsSection({
   }, [accountId, agentId])
 
   useEffect(() => {
-    if (status === 'online' || status === 'busy') void refresh()
-  }, [refresh, status])
+    if (connected) void refresh()
+  }, [refresh, connected])
 
   const startFresh = async () => {
     if (!agentId) return
@@ -844,14 +871,15 @@ export function GrokSessionsSection({
  * 1b. Grok Bot Tasks & Live Subagents
  * (`ListGrokBotAgentTasks`, `MarkGrokBotAgentTaskDone`, `ListGrokBotSubagents`)
  */
-export function GrokTasksAndSubagentsSection({
+function GrokTasksAndSubagentsInspector({
   accountId,
+  connected,
   agentId
 }: {
   accountId: string
+  connected: boolean
   agentId?: string
 }) {
-  const status = useBotStore((s) => s.accounts[accountId]?.status)
   const [tasks, setTasks] = useState<
     Array<{ id: string; title: string; status: string; done: boolean }>
   >([])
@@ -865,11 +893,11 @@ export function GrokTasksAndSubagentsSection({
     setLoading(true)
     try {
       const [tRaw, sRaw] = await Promise.all([
-        callGrok(accountId, 'ListGrokBotAgentTasks', {
+        readGrok(accountId, 'ListGrokBotAgentTasks', {
           agent_id: agentId,
           include_recently_done: true
         }).catch(() => null),
-        callGrok(accountId, 'ListGrokBotSubagents', { agent_id: agentId }).catch(() => null)
+        readGrok(accountId, 'ListGrokBotSubagents', { agent_id: agentId }).catch(() => null)
       ])
       const tList = Array.isArray(asObj(tRaw)?.['tasks'])
         ? (asObj(tRaw)!['tasks'] as unknown[])
@@ -910,8 +938,8 @@ export function GrokTasksAndSubagentsSection({
   }, [accountId, agentId])
 
   useEffect(() => {
-    if (status === 'online' || status === 'busy') void refresh()
-  }, [refresh, status])
+    if (connected) void refresh()
+  }, [refresh, connected])
 
   const markDone = async (taskId: string) => {
     if (!agentId) return
@@ -973,14 +1001,15 @@ export function GrokTasksAndSubagentsSection({
  * 2. Grok Bot Automations & Routines
  * (`ListGrokBotAgentAutomations`, `ListGrokBotAgentRoutines`, `SetGrokBotAgentAutomationEnabled`, `DeleteGrokBotAgentAutomation`)
  */
-export function GrokAutomationsSection({
+function GrokAutomationsInspector({
   accountId,
+  connected,
   agentId
 }: {
   accountId: string
+  connected: boolean
   agentId?: string
 }) {
-  const status = useBotStore((s) => s.accounts[accountId]?.status)
   const [items, setItems] = useState<
     Array<{
       id: string
@@ -1001,8 +1030,8 @@ export function GrokAutomationsSection({
     setError(undefined)
     try {
       const [autoRaw, routineRaw] = await Promise.all([
-        callGrok(accountId, 'ListGrokBotAgentAutomations', { agent_id: agentId }).catch(() => null),
-        callGrok(accountId, 'ListGrokBotAgentRoutines', { agent_id: agentId }).catch(() => null)
+        readGrok(accountId, 'ListGrokBotAgentAutomations', { agent_id: agentId }).catch(() => null),
+        readGrok(accountId, 'ListGrokBotAgentRoutines', { agent_id: agentId }).catch(() => null)
       ])
       const list = Array.isArray(asObj(autoRaw)?.['automations'])
         ? (asObj(autoRaw)!['automations'] as unknown[])
@@ -1064,8 +1093,8 @@ export function GrokAutomationsSection({
   }, [accountId, agentId])
 
   useEffect(() => {
-    if (status === 'online' || status === 'busy') void refresh()
-  }, [refresh, status])
+    if (connected) void refresh()
+  }, [refresh, connected])
 
   const toggleEnabled = async (id: string, isEnabled: boolean, isRoutine?: boolean) => {
     if (!agentId) return
@@ -1161,14 +1190,15 @@ export function GrokAutomationsSection({
  * 3. Grok Bot Cloud Memories & Skills
  * (`ListGrokBotUserBotMemories`, `ListGrokBotAgentSkills`, `AddGrokBotAgentSkill`, `UpdateGrokBotAgentSkill`, `RemoveGrokBotAgentSkill`)
  */
-export function GrokMemoriesAndSkillsSection({
+function GrokMemoriesAndSkillsInspector({
   accountId,
+  connected,
   agentId
 }: {
   accountId: string
+  connected: boolean
   agentId?: string
 }) {
-  const status = useBotStore((s) => s.accounts[accountId]?.status)
   const [memories, setMemories] = useState<Array<{ factId: string; text: string }>>([])
   const [skills, setSkills] = useState<Array<{ name: string; description: string; body: string }>>(
     []
@@ -1186,8 +1216,8 @@ export function GrokMemoriesAndSkillsSection({
     setError(undefined)
     try {
       const [memRaw, skRaw] = await Promise.all([
-        callGrok(accountId, 'ListGrokBotUserBotMemories', { agent_id: agentId }).catch(() => null),
-        callGrok(accountId, 'ListGrokBotAgentSkills', { agent_id: agentId }).catch(() => null)
+        readGrok(accountId, 'ListGrokBotUserBotMemories', { agent_id: agentId }).catch(() => null),
+        readGrok(accountId, 'ListGrokBotAgentSkills', { agent_id: agentId }).catch(() => null)
       ])
       const mObj = asObj(memRaw) || {}
       const mList = Array.isArray(mObj['memories']) ? mObj['memories'] : []
@@ -1225,8 +1255,8 @@ export function GrokMemoriesAndSkillsSection({
   }, [accountId, agentId])
 
   useEffect(() => {
-    if (status === 'online' || status === 'busy') void refresh()
-  }, [refresh, status])
+    if (connected) void refresh()
+  }, [refresh, connected])
 
   const saveSkill = async () => {
     if (!agentId || !newSkillName.trim() || !newSkillContent.trim()) return
@@ -1428,23 +1458,26 @@ function detectAgentMcpPayloadKey(raw: Record<string, unknown> | null): string {
   return 'mcp_servers'
 }
 
-export function GrokConnectorsAndMcpSection({
+function GrokConnectorsAndMcpInspector({
   accountId,
+  connected,
   agentId
 }: {
   accountId: string
+  connected: boolean
   agentId?: string
 }) {
-  const status = useBotStore((s) => s.accounts[accountId]?.status)
   const [mcpSummary, setMcpSummary] = useState<string>('')
   const [mcpUnsupported, setMcpUnsupported] = useState(false)
   const [userMcpRaw, setUserMcpRaw] = useState<Record<string, unknown> | null>(null)
-  const [userMcpJson, setUserMcpJson] = useState('')
+  const [userMcpJson, setUserMcpJson] = useState<string>()
+  const [userMcpLoaded, setUserMcpLoaded] = useState(false)
   const [showUserEditor, setShowUserEditor] = useState(false)
 
   const [agentMcpRaw, setAgentMcpRaw] = useState<Record<string, unknown> | null>(null)
+  const [agentMcpLoaded, setAgentMcpLoaded] = useState(false)
   const [agentMcpItems, setAgentMcpItems] = useState<Array<{ name: string; detail: string }>>([])
-  const [agentMcpJson, setAgentMcpJson] = useState('')
+  const [agentMcpJson, setAgentMcpJson] = useState<string>()
   const [showAgentEditor, setShowAgentEditor] = useState(false)
   const [customMcpName, setCustomMcpName] = useState('')
   const [customMcpEndpoint, setCustomMcpEndpoint] = useState('')
@@ -1456,21 +1489,40 @@ export function GrokConnectorsAndMcpSection({
   const [error, setError] = useState<string>()
   const [hint, setHint] = useState<string>()
 
-  const refresh = useCallback(async () => {
+  const mounted = useRef(false)
+  const readGeneration = useRef(0)
+  const savedUserJson = useMemo(() => JSON.stringify(asObj(userMcpRaw?.['settings']) ?? userMcpRaw ?? {}, null, 2), [userMcpRaw])
+  const savedAgentJson = useMemo(() => JSON.stringify(agentMcpRaw ?? {}, null, 2), [agentMcpRaw])
+  const currentUserJson = userMcpJson ?? savedUserJson
+  const currentAgentJson = agentMcpJson ?? savedAgentJson
+  useEffect(() => {
+    mounted.current = true
+    return () => {
+      mounted.current = false
+      readGeneration.current++
+    }
+  }, [])
+
+  const refresh = useCallback(async (fresh = false) => {
+    const generation = ++readGeneration.current
+    const current = () => mounted.current && generation === readGeneration.current
+    const read = (method: string, params: Record<string, unknown> = {}) => readGrok(accountId, method, params, undefined, fresh)
     setLoading(true)
     setError(undefined)
     try {
       const [mcpRes, agentMcpRes, mailRes] = await Promise.allSettled([
-        callGrok(accountId, 'GetGrokBotUserMcpSettings', {}),
+        read('GetGrokBotUserMcpSettings'),
         agentId
-          ? callGrok(accountId, 'GetGrokBotAgentCustomMcp', { agent_id: agentId })
+          ? read('GetGrokBotAgentCustomMcp', { agent_id: agentId })
           : Promise.resolve(null),
-        callGrok(accountId, 'ListGrokBotEmailThreads', { limit: 8 })
+        read('ListGrokBotEmailThreads', { limit: 8 })
       ])
 
+      if (!current()) return
       const errors: string[] = []
 
       if (mcpRes.status === 'fulfilled') {
+        setUserMcpLoaded(true)
         setMcpUnsupported(false)
         const topObj = asObj(mcpRes.value)
         setUserMcpRaw(topObj)
@@ -1480,13 +1532,10 @@ export function GrokConnectorsAndMcpSection({
           setMcpSummary(
             keys.length ? `已同步 MCP 配置 (${keys.slice(0, 3).join(', ')})` : '已启用默认 MCP'
           )
-          setUserMcpJson(JSON.stringify(settings, null, 2))
         } else {
           setMcpSummary('已连接云端 MCP 设置')
-          setUserMcpJson('{}')
         }
       } else {
-        setUserMcpRaw(null)
         const cleaned = cleanSidebarError(mcpRes.reason)
         if (cleaned) {
           errors.push(`MCP 设置加载失败：${cleaned}`)
@@ -1498,13 +1547,11 @@ export function GrokConnectorsAndMcpSection({
 
       if (agentId) {
         if (agentMcpRes.status === 'fulfilled') {
+          setAgentMcpLoaded(true)
           const rawObj = asObj(agentMcpRes.value)
           setAgentMcpRaw(rawObj)
           setAgentMcpItems(extractAgentMcpItems(rawObj))
-          setAgentMcpJson(JSON.stringify(rawObj ?? {}, null, 2))
         } else {
-          setAgentMcpRaw(null)
-          setAgentMcpItems([])
           const cleaned = cleanSidebarError(agentMcpRes.reason)
           if (cleaned) errors.push(`Agent 自定义 MCP 加载失败：${cleaned}`)
         }
@@ -1535,20 +1582,21 @@ export function GrokConnectorsAndMcpSection({
         setError(errors.join('；'))
       }
     } finally {
-      setLoading(false)
+      if (current()) setLoading(false)
     }
   }, [accountId, agentId])
 
   useEffect(() => {
-    if (status === 'online' || status === 'busy') void refresh()
-  }, [refresh, status, agentId])
+    if (connected) void refresh()
+  }, [refresh, connected])
 
   const saveUserMcpSettings = async () => {
+    if (!userMcpLoaded) return
     setBusy(true)
     setError(undefined)
     setHint(undefined)
     try {
-      const parsed = JSON.parse(userMcpJson || '{}') as unknown
+      const parsed = JSON.parse(currentUserJson) as unknown
       if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
         throw new Error('用户 MCP 设置必须是 JSON 对象')
       }
@@ -1557,9 +1605,11 @@ export function GrokConnectorsAndMcpSection({
           ? { settings: parsed }
           : (parsed as Record<string, unknown>)
       await callGrok(accountId, 'SetGrokBotUserMcpSettings', payload)
+      if (!mounted.current) return
       setHint('已保存 Grok 用户 MCP 设置')
+      setUserMcpJson(undefined)
       setShowUserEditor(false)
-      await refresh()
+      await refresh(true)
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
     } finally {
@@ -1568,7 +1618,7 @@ export function GrokConnectorsAndMcpSection({
   }
 
   const addQuickAgentCustomMcp = async () => {
-    if (!agentId) return
+    if (!agentId || !agentMcpLoaded) return
     const name = customMcpName.trim()
     const endpoint = customMcpEndpoint.trim()
     if (!name || !endpoint) return
@@ -1591,10 +1641,11 @@ export function GrokConnectorsAndMcpSection({
         agent_id: agentId,
         [key]: nextContainer
       })
+      if (!mounted.current) return
       setCustomMcpName('')
       setCustomMcpEndpoint('')
       setHint(`已更新 Agent 自定义 MCP「${name}」`)
-      await refresh()
+      await refresh(true)
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
     } finally {
@@ -1603,22 +1654,24 @@ export function GrokConnectorsAndMcpSection({
   }
 
   const saveAgentCustomMcpJson = async () => {
-    if (!agentId) return
+    if (!agentId || !agentMcpLoaded) return
     setBusy(true)
     setError(undefined)
     setHint(undefined)
     try {
-      const parsed = JSON.parse(agentMcpJson || '{}') as unknown
+      const parsed = JSON.parse(currentAgentJson) as unknown
       if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
         throw new Error('Agent 自定义 MCP 配置必须是 JSON 对象')
       }
       await callGrok(accountId, 'UpdateGrokBotAgentCustomMcp', {
-        agent_id: agentId,
-        ...(parsed as Record<string, unknown>)
+        ...(parsed as Record<string, unknown>),
+        agent_id: agentId
       })
+      if (!mounted.current) return
       setHint('已保存 Agent 自定义 MCP 配置')
+      setAgentMcpJson(undefined)
       setShowAgentEditor(false)
-      await refresh()
+      await refresh(true)
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
     } finally {
@@ -1636,10 +1689,11 @@ export function GrokConnectorsAndMcpSection({
         username: inboxUsername.trim(),
         display_name: inboxUsername.trim()
       })
+      if (!mounted.current) return
       const inbox = asObj(asObj(res)?.['inbox'])
       setInboxUsername('')
       setHint(inbox?.['email'] ? `已开通专属邮箱：${str(inbox['email'])}` : '已请求创建专属收件箱')
-      await refresh()
+      await refresh(true)
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
     } finally {
@@ -1674,7 +1728,7 @@ export function GrokConnectorsAndMcpSection({
               </span>
               <button
                 type="button"
-                onClick={() => setShowUserEditor((v) => !v)}
+                onClick={() => setShowUserEditor((open) => !open)}
                 className="shrink-0 text-[11px] font-medium text-accent-600 hover:underline"
               >
                 {showUserEditor ? '收起' : '编辑设置'}
@@ -1684,12 +1738,12 @@ export function GrokConnectorsAndMcpSection({
               <div className="flex flex-col gap-1.5">
                 <textarea
                   rows={4}
-                  value={userMcpJson}
+                  value={currentUserJson}
                   onChange={(e) => setUserMcpJson(e.target.value)}
                   className="w-full rounded-md border border-line bg-main px-2 py-1.5 font-mono text-[11px] text-ink outline-none focus:border-accent-300"
                 />
                 <div className="flex justify-end">
-                  <Button size="sm" variant="primary" disabled={busy} onClick={() => void saveUserMcpSettings()}>
+                  <Button size="sm" variant="primary" disabled={busy || !userMcpLoaded} onClick={() => void saveUserMcpSettings()}>
                     保存用户 MCP 设置
                   </Button>
                 </div>
@@ -1707,7 +1761,7 @@ export function GrokConnectorsAndMcpSection({
               </span>
               <button
                 type="button"
-                onClick={() => setShowAgentEditor((v) => !v)}
+                onClick={() => setShowAgentEditor((open) => !open)}
                 className="shrink-0 text-[11px] font-medium text-accent-600 hover:underline"
               >
                 {showAgentEditor ? '收起 JSON' : '编辑 JSON'}
@@ -1741,7 +1795,7 @@ export function GrokConnectorsAndMcpSection({
               <Button
                 size="sm"
                 variant="secondary"
-                disabled={busy || !customMcpName.trim() || !customMcpEndpoint.trim()}
+                disabled={busy || !agentMcpLoaded || !customMcpName.trim() || !customMcpEndpoint.trim()}
                 onClick={() => void addQuickAgentCustomMcp()}
               >
                 添加
@@ -1752,12 +1806,12 @@ export function GrokConnectorsAndMcpSection({
               <div className="flex flex-col gap-1.5">
                 <textarea
                   rows={4}
-                  value={agentMcpJson}
+                  value={currentAgentJson}
                   onChange={(e) => setAgentMcpJson(e.target.value)}
                   className="w-full rounded-md border border-line bg-main px-2 py-1.5 font-mono text-[11px] text-ink outline-none focus:border-accent-300"
                 />
                 <div className="flex justify-end">
-                  <Button size="sm" variant="primary" disabled={busy} onClick={() => void saveAgentCustomMcpJson()}>
+                  <Button size="sm" variant="primary" disabled={busy || !agentMcpLoaded} onClick={() => void saveAgentCustomMcpJson()}>
                     保存 Agent MCP
                   </Button>
                 </div>
@@ -1801,14 +1855,15 @@ export function GrokConnectorsAndMcpSection({
  * (`ListGrokBotAgentFiles`, `ListGrokBotUserStoreFiles`, `ListGrokBotLibraryDocs`,
  *  `BeginGrokBotAgentFileUpload` / `FinishGrokBotAgentFileUpload`, `DeleteGrokBotAgentFile`)
  */
-export function GrokFilesSection({
+function GrokFilesInspector({
   accountId,
+  connected,
   agentId
 }: {
   accountId: string
+  connected: boolean
   agentId?: string
 }) {
-  const status = useBotStore((s) => s.accounts[accountId]?.status)
   const setActiveDocument = useBotStore((s) => s.setActiveDocument)
   const [files, setFiles] = useState<
     Array<{ name: string; path: string; sizeBytes: number; storeRef?: string }>
@@ -1824,11 +1879,11 @@ export function GrokFilesSection({
     setError(undefined)
     try {
       const [aRaw, uRaw, dRaw] = await Promise.all([
-        callGrok(accountId, 'ListGrokBotAgentFiles', { agent_id: agentId, page_token: '' }).catch(
+        readGrok(accountId, 'ListGrokBotAgentFiles', { agent_id: agentId, page_token: '' }).catch(
           () => null
         ),
-        callGrok(accountId, 'ListGrokBotUserStoreFiles', { agent_id: agentId }).catch(() => null),
-        callGrok(accountId, 'ListGrokBotLibraryDocs', { agent_id: agentId }).catch(() => null)
+        readGrok(accountId, 'ListGrokBotUserStoreFiles', { agent_id: agentId }).catch(() => null),
+        readGrok(accountId, 'ListGrokBotLibraryDocs', { agent_id: agentId }).catch(() => null)
       ])
       const aList = Array.isArray(asObj(aRaw)?.['files'])
         ? (asObj(aRaw)!['files'] as unknown[])
@@ -1878,8 +1933,8 @@ export function GrokFilesSection({
   }, [accountId, agentId])
 
   useEffect(() => {
-    if (status === 'online' || status === 'busy') void refresh()
-  }, [refresh, status])
+    if (connected) void refresh()
+  }, [refresh, connected])
 
   const uploadFile = async (file: File | undefined) => {
     if (!file || !agentId) return
@@ -1990,14 +2045,15 @@ export function GrokFilesSection({
  * 5. Grok Bot Members & Access Invites
  * (`ListGrokBotAgentAccessInvites`, `CreateGrokBotAgentAccessInvite`, `AcceptGrokBotAgentAccessInvite`)
  */
-export function GrokMembersSection({
+function GrokMembersInspector({
   accountId,
+  connected,
   agentId
 }: {
   accountId: string
+  connected: boolean
   agentId?: string
 }) {
-  const status = useBotStore((s) => s.accounts[accountId]?.status)
   const [invites, setInvites] = useState<Array<{ email: string; expiresAtMs: number }>>([])
   const [email, setEmail] = useState('')
   const [inviteCode, setInviteCode] = useState('')
@@ -2011,7 +2067,7 @@ export function GrokMembersSection({
     setLoading(true)
     setError(undefined)
     try {
-      const raw = await callGrok(accountId, 'ListGrokBotAgentAccessInvites', {
+      const raw = await readGrok(accountId, 'ListGrokBotAgentAccessInvites', {
         agent_id: agentId
       })
       const o = asObj(raw) || {}
@@ -2035,8 +2091,8 @@ export function GrokMembersSection({
   }, [accountId, agentId])
 
   useEffect(() => {
-    if (status === 'online' || status === 'busy') void refresh()
-  }, [refresh, status])
+    if (connected) void refresh()
+  }, [refresh, connected])
 
   const sendInvite = async () => {
     if (!agentId || !email.trim()) return
@@ -2144,14 +2200,15 @@ export function GrokMembersSection({
 /**
  * 6. Grok Bot Cloud SandBox Computer (`GetSandBoxRunState`, `EnsureSandBox`, `RecreateSandBox`, VNC & Gateway)
  */
-export function GrokComputerSection({
+function GrokComputerInspector({
   accountId,
+  connected,
   agentId
 }: {
   accountId: string
+  connected: boolean
   agentId?: string
 }) {
-  const status = useBotStore((s) => s.accounts[accountId]?.status)
   const [runState, setRunState] = useState<string>('UNKNOWN')
   const [boxDetail, setBoxDetail] = useState<{
     podId?: string
@@ -2168,8 +2225,8 @@ export function GrokComputerSection({
     setLoading(true)
     setError(undefined)
     try {
-      const stateRes = await callGrok(accountId, 'GetSandBoxRunState', {}, 'sandbox').catch(() =>
-        callGrok(accountId, 'GetSandBoxRunState', {})
+      const stateRes = await readGrok(accountId, 'GetSandBoxRunState', {}, 'sandbox').catch(() =>
+        readGrok(accountId, 'GetSandBoxRunState', {})
       )
       const stObj = asObj(stateRes) || {}
       const rawState = stObj['state']
@@ -2192,8 +2249,8 @@ export function GrokComputerSection({
   }, [accountId, agentId])
 
   useEffect(() => {
-    if (status === 'online' || status === 'busy') void refresh()
-  }, [refresh, status])
+    if (connected) void refresh()
+  }, [refresh, connected])
 
   const wakeSandBox = async () => {
     setBusy(true)
@@ -2288,3 +2345,13 @@ export function GrokComputerSection({
     </Section>
   )
 }
+
+export const GrokAgentsAndRoomsSection = scopeInspector(GrokAgentsAndRoomsInspector)
+export const GrokSessionsSection = scopeInspector(GrokSessionsInspector)
+export const GrokTasksAndSubagentsSection = scopeInspector(GrokTasksAndSubagentsInspector)
+export const GrokAutomationsSection = scopeInspector(GrokAutomationsInspector)
+export const GrokMemoriesAndSkillsSection = scopeInspector(GrokMemoriesAndSkillsInspector)
+export const GrokConnectorsAndMcpSection = scopeInspector(GrokConnectorsAndMcpInspector)
+export const GrokFilesSection = scopeInspector(GrokFilesInspector)
+export const GrokMembersSection = scopeInspector(GrokMembersInspector)
+export const GrokComputerSection = scopeInspector(GrokComputerInspector)

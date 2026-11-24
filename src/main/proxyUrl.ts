@@ -15,7 +15,7 @@ export function normalizeProxyUrl(raw: string | undefined | null): string | null
     return null
   }
   const kind = proxyKindOf(url.protocol)
-  if (!url.hostname || !kind) return null
+  if (!url.hostname || !kind || (url.password && !url.username)) return null
 
   const afterScheme = withScheme.replace(/^[a-z][a-z0-9+.-]*:\/\//i, '').replace(/[/?#].*$/, '')
   const hostPort = afterScheme.includes('@') ? afterScheme.slice(afterScheme.lastIndexOf('@') + 1) : afterScheme
@@ -64,6 +64,11 @@ export function proxyKind(normalizedUrl: string): ProxyKind | null {
 /** undici only knows socks5://; the proxy resolves names either way. */
 export function undiciProxyUrl(normalizedUrl: string): string {
   return normalizedUrl.replace(/^socks5h:\/\//i, 'socks5://').replace(/^socks:\/\//i, 'socks5://')
+}
+
+/** URL hostnames keep the IPv6 brackets that TCP sockets do not accept. */
+export function unbracketProxyHost(host: string): string {
+  return host.startsWith('[') && host.endsWith(']') ? host.slice(1, -1) : host
 }
 
 /** For saving user input: empty → undefined, invalid → throw (never store junk that later goes direct). */

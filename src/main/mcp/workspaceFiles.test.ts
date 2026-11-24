@@ -40,3 +40,27 @@ it('applies an unambiguous literal patch and preserves content on a failed match
   await workspaceFile(root, 'patch', { path: 'draft', before: 'b', after: '$1' })
   expect(await workspaceFile(root, 'read', { path: 'draft' })).toBe('a a $1')
 })
+
+it('serializes approved patches to the same canonical file', async () => {
+  await mkdir(join(root, 'src'))
+  await writeFile(join(root, 'src', 'draft'), 'first second')
+  await symlink(join(root, 'src'), join(root, 'alias'), process.platform === 'win32' ? 'junction' : 'dir')
+  await Promise.all([
+    workspaceFile(root, 'patch', { path: 'src/draft', before: 'first', after: 'one' }),
+    workspaceFile(root, 'patch', { path: 'alias/draft', before: 'second', after: 'two' })
+  ])
+  expect(await readFile(join(root, 'src', 'draft'), 'utf8')).toBe('one two')
+})
+
+it('skips dependency, build, and VCS directories by default in search', async () => {
+  const excluded = ['.git', 'node_modules', 'dist', 'out', '.next', 'target']
+  await Promise.all(excluded.map(async (name) => {
+    await mkdir(join(root, name))
+    await writeFile(join(root, name, 'match.txt'), '')
+  }))
+  await mkdir(join(root, 'src'))
+  await writeFile(join(root, 'src', 'match.txt'), '')
+  expect(await workspaceFile(root, 'search', { path: '.', query: 'match' })).toBe(join('src', 'match.txt'))
+  expect(await workspaceFile(root, 'search', { path: 'node_modules', query: 'match' }))
+    .toBe(join('node_modules', 'match.txt'))
+})

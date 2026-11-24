@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { createId } from '@shared/id'
 import type { HermesAuthStatus } from '@shared/ipc'
 import { CheckCircle2, LogOut, Pencil, Plus, RefreshCw, Trash2 } from 'lucide-react'
@@ -10,6 +10,16 @@ import { StatusDot } from '@/components/ui/Status'
 import { getBridge } from '@/lib/bridge'
 import { cn } from '@/lib/cn'
 import { useBotStore } from '@/store/botStore'
+
+function originFor(value: string | undefined): string | undefined {
+  if (!value?.trim()) return undefined
+  const url = value.trim()
+  try {
+    return new URL(url.includes('://') ? url : `http://${url}`).origin
+  } catch {
+    return undefined
+  }
+}
 
 export function HermesAccountsSettingsPanel() {
   const bots = useBotStore((s) => s.bots)
@@ -30,13 +40,18 @@ export function HermesAccountsSettingsPanel() {
   const [apiKeyInput, setApiKeyInput] = useState('')
   const [modelInput, setModelInput] = useState('')
   const [useLocalKey, setUseLocalKey] = useState(false)
-  const [hasLocalEnvKey, setHasLocalEnvKey] = useState(false)
+  const [localKeyOrigin, setLocalKeyOrigin] = useState<string>()
+  const urlRevision = useRef(0)
   const [localVersion, setLocalVersion] = useState<string>()
   const [localReachable, setLocalReachable] = useState(false)
   const [busy, setBusy] = useState(false)
   const [detecting, setDetecting] = useState(false)
   const [hint, setHint] = useState<string>()
   const [error, setError] = useState<string>()
+  const currentOrigin = originFor(baseUrlInput)
+  const savedAccount = editingAccountId ? metaMap[editingAccountId] : undefined
+  const canReuseSavedKey = Boolean(savedAccount?.hasApiKey && currentOrigin && currentOrigin === originFor(savedAccount.baseUrl))
+  const canUseLocalKey = Boolean(currentOrigin && currentOrigin === localKeyOrigin)
 
   const refreshMeta = useCallback(async () => {
     const hermes = getBridge()?.hermes
@@ -51,27 +66,30 @@ export function HermesAccountsSettingsPanel() {
     }
   }, [])
 
-  const detectLocal = useCallback(async () => {
+  const detectLocal = useCallback(async (fillUrl: boolean) => {
     const hermes = getBridge()?.hermes
     if (!hermes?.detectLocal) return
+    const revision = urlRevision.current
     setDetecting(true)
     try {
       const info = await hermes.detectLocal()
       setLocalReachable(info.reachable)
       setLocalVersion(info.version)
-      setHasLocalEnvKey(info.hasLocalEnvKey)
-      if (!editingAccountId && info.baseUrl) setBaseUrlInput(info.baseUrl)
-      if (info.hasLocalEnvKey && !editingAccountId) setUseLocalKey(true)
+      setLocalKeyOrigin(info.hasLocalEnvKey ? originFor(info.baseUrl) : undefined)
+      if (fillUrl && info.baseUrl && revision === urlRevision.current) {
+        setBaseUrlInput(info.baseUrl)
+        setUseLocalKey(false)
+      }
     } catch {
       /* ignore */
     } finally {
       setDetecting(false)
     }
-  }, [editingAccountId])
+  }, [])
 
   useEffect(() => {
     void refreshMeta()
-    void detectLocal()
+    void detectLocal(true)
   }, [refreshMeta, detectLocal])
 
   const handleSave = async (event: React.FormEvent) => {
@@ -92,8 +110,8 @@ export function HermesAccountsSettingsPanel() {
         accountId,
         baseUrl: baseUrlInput.trim(),
         apiKey: apiKeyInput.trim() || undefined,
-        keepExistingKey: isEdit && !apiKeyInput.trim() && !useLocalKey,
-        useLocalKey: !apiKeyInput.trim() && useLocalKey,
+        keepExistingKey: canReuseSavedKey && !apiKeyInput.trim() && !useLocalKey,
+        useLocalKey: canUseLocalKey && !apiKeyInput.trim() && useLocalKey,
         model: modelInput.trim() || undefined,
         displayName
       })
@@ -124,6 +142,7 @@ export function HermesAccountsSettingsPanel() {
       setNameInput('')
       setApiKeyInput('')
       setModelInput('')
+      setUseLocalKey(false)
       await refreshMeta()
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
@@ -135,6 +154,7 @@ export function HermesAccountsSettingsPanel() {
   const startEdit = (accountId: string) => {
     const meta = metaMap[accountId]
     const acc = accounts[accountId]
+    urlRevision.current += 1
     setEditingAccountId(accountId)
     setNameInput(acc?.displayName || meta?.displayName || 'Hermes')
     setBaseUrlInput(meta?.baseUrl || 'http://127.0.0.1:8642')
@@ -154,7 +174,7 @@ export function HermesAccountsSettingsPanel() {
             接入本机或远程 Hermes Gateway，支持多实例、流式工具与审批
           </p>
         </div>
-        <Button size="sm" variant="secondary" disabled={detecting} onClick={() => void detectLocal()}>
+        <Button size="sm" variant="secondary" disabled={detecting} onClick={() => void detectLocal(!editingAccountId)}>
           <RefreshCw className={cn('size-3.5', detecting && 'animate-spin')} />
           检测本机服务
         </Button>
@@ -218,7 +238,11 @@ export function HermesAccountsSettingsPanel() {
             <span className="text-[12px] font-medium text-ink-secondary">API Server 地址</span>
             <input
               value={baseUrlInput}
-              onChange={(e) => setBaseUrlInput(e.target.value)}
+              onChange={(e) => {
+                urlRevision.current += 1
+                setBaseUrlInput(e.target.value)
+                setUseLocalKey(false)
+              }}
               placeholder="http://127.0.0.1:8642"
               spellCheck={false}
               required
@@ -235,11 +259,11 @@ export function HermesAccountsSettingsPanel() {
                 if (e.target.value.trim()) setUseLocalKey(false)
               }}
               placeholder={
-                editingAccountId
+                useLocalKey && canUseLocalKey
+                  ? '自动读取 ~/.hermes/.env'
+                  : canReuseSavedKey
                   ? '留空保留当前已加密密钥'
-                  : useLocalKey
-                    ? '自动读取 ~/.hermes/.env'
-                    : '无鉴权本地服务可留空'
+                  : '无鉴权服务可留空'
               }
               spellCheck={false}
               className="h-9 rounded-lg border border-line bg-main px-3 font-mono text-[12.5px] text-ink outline-none focus:border-accent-600"
@@ -247,7 +271,7 @@ export function HermesAccountsSettingsPanel() {
           </label>
         </div>
 
-        {hasLocalEnvKey && !apiKeyInput.trim() && (
+        {canUseLocalKey && !apiKeyInput.trim() && (
           <div className="flex items-center justify-between gap-3 rounded-xl bg-main px-3 py-2 ring-1 ring-line/50">
             <span className="text-[12px] text-ink-secondary">
               自动读取本机 <code className="font-mono text-[11px] text-ink">~/.hermes/.env</code> 密钥
@@ -271,6 +295,7 @@ export function HermesAccountsSettingsPanel() {
                   setNameInput('')
                   setApiKeyInput('')
                   setModelInput('')
+                  setUseLocalKey(false)
                 }}
               >
                 取消编辑

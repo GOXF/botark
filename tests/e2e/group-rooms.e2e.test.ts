@@ -15,8 +15,8 @@ import { setGrokAuth } from '@adapters/grokbot/tokenStore'
 import { runDotRpc } from '@main/dot/dotIpc'
 import { importDotCredentialsFromRaw, getStoredDotAccount } from '@main/dot/dotClient'
 import { partitionForAccount } from '@main/webContentsViewManager'
-import { mentions, type CollabRoom } from '@/rooms/model'
-import { addRoom, stopRoom, submitBrief, useRooms } from '@/rooms/roomStore'
+import { mentions, roomMarkdown, type CollabRoom } from '@/rooms/model'
+import { addRoom, setRoomAdministrator, stopRoom, submitBrief, useRooms } from '@/rooms/roomStore'
 import { useBotStore } from '@/store/botStore'
 import type { IncomingMessage, OutgoingMessage, PlatformAdapter } from '@adapters/types'
 import type { Bot } from '@/types'
@@ -50,7 +50,7 @@ describe('Area 3: Group Creation, Conversation & Single-Bot Remove/Move', () => 
                 accountId: req.accountId,
                 conversationId: req.conversationId,
                 cascadeId: 'casc_1',
-                messageId: 'agy_reply_1',
+                messageId: req.clientMessageId,
                 text: 'Partial...',
                 done: false
               })
@@ -61,7 +61,7 @@ describe('Area 3: Group Creation, Conversation & Single-Bot Remove/Move', () => 
                 accountId: req.accountId,
                 conversationId: req.conversationId,
                 cascadeId: 'casc_1',
-                messageId: 'agy_reply_1',
+                messageId: req.clientMessageId,
                 text: '[FINAL] Antigravity complete answer',
                 done: true
               })
@@ -151,12 +151,13 @@ describe('Area 3: Group Creation, Conversation & Single-Bot Remove/Move', () => 
 
   it('E2E-T1-A3-03: Grok Room bodyOmitted Hydration, replay Frame & Fallback Poller', async (ctx) => {
     let listCallCount = 0
+    let sentMessageId: string | undefined
     vi.stubGlobal('window', {
       electron: {
         grok: {
           authStatus: async () => ({ signedIn: true, accountSlot: 'g1', machineId: 'm1' }),
           getSession: async () => ({ signedIn: true, accountSlot: 'g1', machineId: 'm1' }),
-          rpc: async (req: { op: string }) => {
+          rpc: async (req: { op: string; messageId?: string }) => {
             if (req.op === 'listAgents') {
               return { ok: true, data: { agents: [{ id: 'ag1', name: 'Grok1' }] } }
             }
@@ -168,17 +169,21 @@ describe('Area 3: Group Creation, Conversation & Single-Bot Remove/Move', () => 
                 ok: true,
                 data: {
                   entries: [
+                    { entryId: 'e_user', clientNonce: sentMessageId, role: 'user', text: 'Test room turn', updatedSeq: '11' },
                     {
                       entryId: 'e_hydrated',
                       sender: { type: 'agent' },
                       message: 'Hydrated Grok Room Reply',
-                      updatedSeq: '11'
+                      updatedSeq: '12'
                     }
                   ]
                 }
               }
             }
-            if (req.op === 'sendUserMessage') return { ok: true, data: {} }
+            if (req.op === 'sendUserMessage') {
+              sentMessageId = req.messageId
+              return { ok: true, data: {} }
+            }
             if (req.op === 'watchUntilReply') {
               return { ok: true, data: { text: '', messages: [] } }
             }
@@ -206,6 +211,7 @@ describe('Area 3: Group Creation, Conversation & Single-Bot Remove/Move', () => 
       received.some((m) => m.text.includes('Hydrated Grok Room Reply')) && !receipt.noReply,
       'GrokBotAdapter must fall back to listTranscriptEntries when watchUntilReply resolves empty'
     )
+    expect(listCallCount).toBeGreaterThanOrEqual(2)
     expect(received[0]!.text).toContain('Hydrated Grok Room Reply')
   })
 
@@ -516,6 +522,55 @@ describe('Area 3: Group Creation, Conversation & Single-Bot Remove/Move', () => 
       'CJK punctuation-adjacent @mentions must match while excluding email addresses and prefix collisions'
     )
     expect(out).toEqual(['Muse', 'Dot'])
+  })
+
+  it('routes recovered [FINAL] callouts through the room and exports the actual final (#58, #59)', async () => {
+    const roster = [
+      { id: 'admin', name: 'Muse · Admin', platformId: 'meta-muse', accountIds: ['muse'], activeAccountId: 'muse', selectedAgentId: 'admin' },
+      { id: 'hark', name: 'Admin-hark', platformId: 'hark', accountIds: ['hark'], activeAccountId: 'hark' },
+      { id: 'worker', name: 'Muse · agent 1', platformId: 'meta-muse', accountIds: ['muse'], activeAccountId: 'muse', selectedAgentId: 'agent-1' }
+    ] as Bot[]
+    useBotStore.setState({ bots: roster })
+    const calls: OutgoingMessage[] = []
+    const listeners = new Set<(msg: IncomingMessage) => void>()
+    const workerCallout = '@Muse · agent 1 用户叫你说话呢，回一下。\n\n我等你的回复。'
+    const harkCallout = '@Admin-hark 在吗，回一声，测试一下 @ 能不能到你。'
+    vi.spyOn(adapterRegistry, 'get').mockReturnValue({
+      getStatus: () => 'online',
+      onMessage: (emit: (msg: IncomingMessage) => void) => {
+        listeners.add(emit)
+        return () => listeners.delete(emit)
+      },
+      async sendMessage(msg: OutgoingMessage) {
+        calls.push(msg)
+        const coordinated = msg.text.includes('Coordinate the human brief')
+        const text = msg.agentId === 'admin' && !msg.text.includes('[Muse · agent 1] 在。')
+          ? '[FINAL]\n' + (coordinated ? workerCallout : harkCallout)
+          : msg.agentId === 'agent-1' ? '在。' : '[FINAL]\n已确认在线，感谢 @Muse · Admin。'
+        for (const emit of listeners) emit({ ...msg, id: 'result', text, createdAt: 1 })
+        return { messageId: 'result', acceptedAt: 1, sessionId: msg.sessionId }
+      }
+    } as unknown as PlatformAdapter)
+    vi.stubGlobal('window', { electron: {
+      muse: { startSession: async () => ({ sessionId: 'muse-session' }) },
+      hark: { rpc: async () => ({ ok: true, data: { conversationId: 'hark-session' } }) }
+    } })
+
+    const adminRoomId = setRoomAdministrator('admin', true)!
+    const group = addRoom('Admin及协助团队', ['admin', 'hark'], 'auto', 8)
+    await submitBrief(adminRoomId, '请叫 agent 1 回一声。')
+    await submitBrief(group.id, '@Muse · Admin 请叫 hark 回一声。')
+
+    expect(calls.map(({ agentId, accountId }) => agentId ?? accountId)).toEqual(['admin', 'agent-1', 'admin', 'admin', 'hark'])
+    expect(calls[1]?.text).toContain(workerCallout)
+    expect(calls[4]?.text).toContain(harkCallout)
+    for (const [id, callout, target] of [[adminRoomId, workerCallout, 'worker'], [group.id, harkCallout, 'hark']]) {
+      const room = useRooms.getState().rooms.find((candidate) => candidate.id === id)!
+      expect(room.messages[1]).toMatchObject({ text: callout, handoffBotIds: [target] })
+      expect(room.messages[1]?.final).toBeUndefined()
+      expect(room.finalId).toBe(room.messages.at(-1)?.id)
+      expect(roomMarkdown(room)).toBe(`# ${room.title}\n\n已确认在线，感谢 @Muse · Admin。\n`)
+    }
   })
 
   it('E2E-T2-A3-02: room-turn-* botId Protection Across Dot/Grok/Cue', async (ctx) => {

@@ -76,7 +76,7 @@ export interface WorkspaceOptimizeReport {
 }
 
 export type WorkspaceRequest =
-  | { op: 'status' | 'unbind' }
+  | { op: 'status' | 'unbind' | 'dispose' }
   | { op: 'bind'; directory?: string }
   | { op: 'import'; targetScope?: McpConfigScope; autoStart?: boolean }
   | { op: 'upsert' | 'update'; previousName?: string; server: McpServerConfigInput; autoStart?: boolean }

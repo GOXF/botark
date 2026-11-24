@@ -1,8 +1,10 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { adapterRegistry } from '@adapters/registry'
 import type { AdapterEvent, PlatformAdapter } from '@adapters/types'
 import { startAdapterBridge } from '@/services/adapterBridge'
-import { useBotStore } from '@/store/botStore'
+import { flushWorkspacePersistence, useBotStore } from '@/store/botStore'
+import { REPLY_BUSY_LIMIT_MS } from '@/store/replyWatchdog'
+import type { GrokMainEvent } from '@shared/ipc'
 import type { Bot } from '@/types'
 
 describe('Account status sync (Qoder-2x / Hark-*) & per-bot WebSession view pinning', () => {
@@ -58,10 +60,19 @@ describe('Account status sync (Qoder-2x / Hark-*) & per-bot WebSession view pinn
         }
       },
       messages: {},
+      typing: {},
+      activity: {},
       selectedBotId: 'bot_qoder_2x',
       webSessionOpen: false,
       webSessionByBot: {}
     })
+  })
+
+  afterEach(() => {
+    flushWorkspacePersistence()
+    vi.useRealTimers()
+    vi.restoreAllMocks()
+    vi.unstubAllGlobals()
   })
 
   it('promotes stale offline Qoder-2x / Hark-* accounts to online on receiveMessage, applyHarkHistory, or streaming delta', () => {
@@ -104,6 +115,123 @@ describe('Account status sync (Qoder-2x / Hark-*) & per-bot WebSession view pinn
       stop()
       list.mockRestore()
     }
+  })
+
+  it('ignores sessionless messages and typing for a bot whose active account changed', () => {
+    let listener: ((event: AdapterEvent) => void) | undefined
+    const adapter = { id: 'hark', subscribe: (cb: (event: AdapterEvent) => void) => { listener = cb; return () => {} } }
+    vi.spyOn(adapterRegistry, 'list').mockReturnValue([adapter as PlatformAdapter])
+    const [target, other] = useBotStore.getState().bots as [Bot, Bot]
+    useBotStore.setState({ bots: [{ ...target, accountIds: [target.activeAccountId, other.activeAccountId] }, other] })
+    const stop = startAdapterBridge()
+    try {
+      listener?.({ type: 'typing', conversationId: target.id, accountId: other.activeAccountId, isTyping: true })
+      listener?.({ type: 'message', message: {
+        id: 'stale', conversationId: target.id, accountId: other.activeAccountId, text: 'Wrong account', createdAt: 1
+      } })
+      expect(useBotStore.getState().typing[target.id]).toBeUndefined()
+      expect(useBotStore.getState().messages).toEqual({})
+    } finally {
+      stop()
+    }
+  })
+
+  it('accepts a shorter authoritative Grok final and increments unread once for its stream', () => {
+    let listener: ((event: GrokMainEvent) => void) | undefined
+    vi.spyOn(adapterRegistry, 'list').mockReturnValue([])
+    vi.stubGlobal('window', { electron: { grok: { onEvent: (cb: (event: GrokMainEvent) => void) => {
+      listener = cb
+      return () => {}
+    } } } })
+    const [target, selected] = useBotStore.getState().bots as [Bot, Bot]
+    const bot = { ...target, platformId: 'grok' as const, selectedAgentId: 'agent' }
+    useBotStore.setState((s) => ({
+      bots: [bot, selected],
+      selectedBotId: selected.id,
+      accounts: { ...s.accounts, [bot.activeAccountId]: { ...s.accounts[bot.activeAccountId]!, platformId: 'grok' } }
+    }))
+    const stop = startAdapterBridge()
+    try {
+      const stream = {
+        type: 'stream' as const, conversationId: bot.id, accountId: bot.activeAccountId,
+        agentId: 'agent', sessionId: bot.activeSessionId, messageId: 'streamed', done: false, text: 'A long draft'
+      }
+      listener?.({ ...stream, accountId: selected.activeAccountId })
+      listener?.({ ...stream, sessionId: 'stale-session' })
+      expect(useBotStore.getState().messages).toEqual({})
+      listener?.(stream)
+      listener?.({ ...stream, text: 'A longer draft' })
+      expect(useBotStore.getState().bots[0]?.unread).toBe(1)
+      listener?.({ ...stream, done: true, text: 'Done' })
+      useBotStore.getState().applyMessageDelta('streamed', bot.id, bot.activeAccountId, 'A longer stale draft')
+      const state = useBotStore.getState()
+      expect(state.messages[bot.id]).toMatchObject([{ id: 'streamed', text: 'Done' }])
+      expect(state.bots[0]?.unread).toBe(1)
+      expect(state.accounts[bot.activeAccountId]?.unread).toBe(1)
+      expect(state.typing[bot.id]).toBeUndefined()
+    } finally {
+      stop()
+    }
+  })
+
+  it('clears stale typing and busy status when the watchdog expires', async () => {
+    vi.useFakeTimers()
+    let listener: ((event: AdapterEvent) => void) | undefined
+    const adapter = { id: 'hark', subscribe: (cb: (event: AdapterEvent) => void) => { listener = cb; return () => {} } }
+    vi.spyOn(adapterRegistry, 'list').mockReturnValue([adapter as PlatformAdapter])
+    const bot = useBotStore.getState().bots[0]!
+    const accountId = bot.activeAccountId
+    useBotStore.setState({ messages: { [bot.id]: [
+      { id: 'accepted', botId: bot.id, accountId, role: 'user', text: 'request', createdAt: 1, delivery: 'accepted' }
+    ] } })
+    const stop = startAdapterBridge()
+    try {
+      listener?.({ type: 'typing', conversationId: bot.id, accountId, isTyping: true })
+      listener?.({ type: 'activity', accountId, activity: {
+        code: 'busy', text: 'Running', busy: true, emoji: null, agentId: null, subagents: 0
+      } })
+      await vi.advanceTimersByTimeAsync(REPLY_BUSY_LIMIT_MS)
+      const state = useBotStore.getState()
+      expect(state.typing[bot.id]).toBeUndefined()
+      expect(state.activity[accountId]).toBeUndefined()
+      expect(state.accounts[accountId]?.status).toBe('online')
+      expect(state.messages[bot.id]?.[0]?.delivery).toBe('no-reply')
+    } finally {
+      stop()
+    }
+  })
+
+  it('skips transient writes and coalesces message deltas before serializing the workspace', () => {
+    vi.useFakeTimers()
+    const saved = vi.fn()
+    vi.stubGlobal('localStorage', { getItem: () => null, setItem: saved, removeItem: () => {} })
+    const bot = useBotStore.getState().bots[0]!
+    const accountId = bot.activeAccountId
+    useBotStore.getState().setAccountStatus(accountId, 'online')
+    flushWorkspacePersistence()
+    saved.mockClear()
+
+    const markup = { toJSON: vi.fn(() => 'fixture') }
+    useBotStore.getState().setTyping(bot.id, true)
+    useBotStore.getState().setActivity(accountId, { busy: true, text: 'Transient', code: 'working', emoji: null })
+    useBotStore.setState((s) => ({ accounts: { ...s.accounts, [accountId]: { ...s.accounts[accountId]!, pending: true } } }))
+    vi.advanceTimersByTime(500)
+    expect(saved).not.toHaveBeenCalled()
+
+    const media = [{ kind: 'file' as const, path: 'report.txt', name: markup as unknown as string }]
+    useBotStore.getState().applyMessageDelta('streamed', bot.id, accountId, 'Draft', undefined, undefined, media)
+    vi.advanceTimersByTime(300)
+    useBotStore.getState().applyMessageDelta('streamed', bot.id, accountId, 'Final text')
+    vi.advanceTimersByTime(349)
+    expect(saved).not.toHaveBeenCalled()
+    expect(markup.toJSON).not.toHaveBeenCalled()
+    vi.advanceTimersByTime(1)
+
+    expect(saved).toHaveBeenCalledOnce()
+    expect(markup.toJSON).toHaveBeenCalledOnce()
+    const snapshot = JSON.parse(saved.mock.calls[0]![1]).state
+    expect(snapshot.messages[bot.id][0].text).toBe('Final text')
+    expect(snapshot.accounts[accountId].pending).toBeUndefined()
   })
 
   it('uses successfully refreshed Hark history as a live signal even for an empty session', () => {

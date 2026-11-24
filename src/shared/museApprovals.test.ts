@@ -5,6 +5,7 @@ import {
   extractRawApprovalItems,
   isUploadApproval,
   mapMuseApproval,
+  MuseApprovalSnapshots,
   resolveApprovalOptions
 } from './museApprovals'
 
@@ -183,5 +184,38 @@ describe('museApprovals', () => {
     const params = buildMuseApprovalDecideParams(mapped, mapped.id, 'allow_always')
     expect(params['always_scope']).toBe('entity')
     expect(params['allow_always_scope']).toBe('entity')
+  })
+
+  it('preserves richer wrapped records including option scope and revision', () => {
+    const [row] = extractRawApprovalItems({
+      pending: [{ id: 'approval', decision_options: ['allow_always'] }],
+      result: { data: { pending_approvals: [{ approval: {
+        approval_id: 'approval', message_revision: 7,
+        decision_options: [{ kind: 'allow_always', label: { scope: 'entity' } }],
+        display: { permission_question: { text: 'Allow this?' } }
+      } }] } }
+    })
+    const approval = mapMuseApproval(row!)
+    expect(approval.title).toBe('Allow this?')
+    expect(buildMuseApprovalDecideParams(approval, approval.id, 'allow_always'))
+      .toMatchObject({ expected_message_revision: 7, always_scope: 'entity' })
+  })
+
+  it('deduplicates terminal entries before filtering pending rows regardless of response order', () => {
+    const pending = { id: 'decided', status: 'pending', message_revision: 4 }
+    const approved = { id: 'decided', status: 'approved' }
+    expect(extractRawApprovalItems([pending, approved])).toEqual([])
+    expect(extractRawApprovalItems([approved, pending])).toEqual([])
+    expect(extractRawApprovalItems({ pending: [pending], result: { recent_approvals: [approved] } })).toEqual([])
+  })
+
+  it('retains details across thinner snapshots and prevents resolved IDs from coming back', () => {
+    const ledger = new MuseApprovalSnapshots()
+    ledger.apply([{ id: 'approval', message_revision: 5, decision_options: [{ kind: 'deny_always', scope: 'entity' }] }])
+    const [row] = ledger.apply([{ id: 'approval', decision_options: ['deny_always'] }])
+    expect(buildMuseApprovalDecideParams(mapMuseApproval(row!), 'approval', 'deny_always'))
+      .toMatchObject({ expected_message_revision: 5, always_scope: 'entity' })
+    ledger.resolve('approval')
+    expect(ledger.apply([{ id: 'approval', status: 'pending' }])).toEqual([])
   })
 })

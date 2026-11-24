@@ -4,18 +4,20 @@
  * Implements:
  * - Per-account headers (`x-client-id`, `x-product-name: manus-agents`, `Connect-Protocol-Version: 1`,
  *   `Authorization: Bearer ...` / `x-manus-api-key`)
- * - `ProviderIdentityGuard` pre/post account fingerprint check
+ * - Credential identity checking on retries
  * - Single-flight 401 refresh retry (`forceRefreshCueAuth`)
  * - `CueQuotaMapper` clamping `used + reserved > limit` to `0`, separating `purchasedRemainingCredits`,
  *   and decoupling `quotaUnavailable` (401/403 on billing) from chat online status.
  */
+import { createHash } from 'node:crypto'
 import {
+  currentCueAuthForIdentity,
   CUE_CONNECT_BASE,
   cueFetcherForAccount,
   forceRefreshCueAuth,
   loadCueTokens
 } from './cueAuth'
-import { getCueMainAuth, type CueMainAuth } from './cueAuthStore'
+import type { CueMainAuth } from './cueAuthStore'
 import { getOrCreateCueDeviceId } from './cueDeviceId'
 
 export interface CueAgentSummary {
@@ -233,11 +235,14 @@ async function executeCueHttpOnce(
     body?: unknown
     baseUrl?: string
     fetchImpl?: typeof fetch
-  }
+  },
+  isRetry = false
 ): Promise<{ status: number; ok: boolean; data: unknown }> {
   const base = (opts.baseUrl || auth.baseUrl || CUE_CONNECT_BASE).replace(/\/+$/, '')
   const url = path.startsWith('http') ? path : `${base}${path.startsWith('/') ? path : `/${path}`}`
-  const fetcher = cueFetcherForAccount(auth.accountId, opts.fetchImpl)
+  const fetcher = cueFetcherForAccount(auth.accountId, opts.fetchImpl, isRetry ? () => {
+    if (!currentCueAuthForIdentity(auth)) throw new Error('Cue 账号在重试前已更改')
+  } : undefined)
   const method = opts.method ?? (opts.body !== undefined ? 'POST' : 'GET')
   const res = await fetcher(url, {
     method,
@@ -266,27 +271,27 @@ export async function callCueApi(
     fetchImpl?: typeof fetch
   } = {}
 ): Promise<{ status: number; ok: boolean; data: unknown }> {
-  let auth = await loadCueTokens(accountId)
+  const auth = await loadCueTokens(accountId)
   if (!auth) {
     return { status: 401, ok: false, data: { error: 'Not signed in to Cue' } }
   }
-  const initialFingerprint = auth.accountFingerprint
-
-  let result = await executeCueHttpOnce(auth, path, opts)
-  if (result.status === 401 && auth.refreshToken) {
-    const refreshed = await forceRefreshCueAuth(accountId, opts.baseUrl || auth.baseUrl, opts.fetchImpl)
-    if (refreshed) {
-      auth = refreshed
-      result = await executeCueHttpOnce(auth, path, opts)
-    }
-  } else {
-    // ProviderIdentityGuard: if another concurrent call already refreshed the token or switched account
-    const latest = getCueMainAuth(accountId)
-    if (result.status === 401 && latest && latest.accountFingerprint !== initialFingerprint) {
-      result = await executeCueHttpOnce(latest, path, opts)
+  const result = await executeCueHttpOnce(auth, path, opts)
+  if (result.status !== 401) return result
+  if (auth.refreshToken) {
+    try {
+      await forceRefreshCueAuth(accountId, opts.baseUrl || auth.baseUrl, opts.fetchImpl, auth)
+    } catch (error) {
+      if (currentCueAuthForIdentity(auth) !== undefined) throw error
     }
   }
-
+  const current = currentCueAuthForIdentity(auth)
+  if (current && current !== auth) {
+    try {
+      return await executeCueHttpOnce(current, path, opts, true)
+    } catch (error) {
+      if (currentCueAuthForIdentity(auth)) throw error
+    }
+  }
   return result
 }
 
@@ -478,7 +483,7 @@ const CUE_HISTORY_CONTAINER_KEYS = [
 function collectCueHistoryIntoMap(
   raw: unknown,
   byId: Map<string, CueHistoryMessage>,
-  indexRef: { count: number }
+  page = 0
 ): void {
   const rawItems: unknown[] = []
   const visited = new WeakSet<object>()
@@ -503,16 +508,25 @@ function collectCueHistoryIntoMap(
 
   collectEvents(raw)
 
-  for (const item of rawItems) {
+  const occurrences = new Map<string, number>()
+  for (const [index, item] of rawItems.entries()) {
     const ev = asRecord(item)
     if (!ev || ev['type'] !== 'chat') continue
     const sender = nonEmptyString(ev['sender'])?.toLowerCase()
     if (sender !== 'user' && sender !== 'assistant') continue
     const text = readChatText(ev)
     if (!text) continue
-    indexRef.count += 1
-    const id = nonEmptyString(ev['id']) ?? `cue_hist_${indexRef.count}`
-    const createdAtMs = toEpochMs(ev['timestamp'] ?? ev['createdAt'] ?? ev['created_at'], indexRef.count)
+    const timestamp = ev['timestamp'] ?? ev['createdAt'] ?? ev['created_at']
+    let id = nonEmptyString(ev['id'] ?? ev['eventId'] ?? ev['event_id'] ?? ev['messageId'])
+    if (!id) {
+      const material = JSON.stringify([sender, timestamp, text])
+      const occurrence = (occurrences.get(material) ?? 0) + 1
+      occurrences.set(material, occurrence)
+      id = `cue_hist_${createHash('sha256').update(material).digest('hex').slice(0, 24)}_${occurrence}`
+    }
+    if (byId.has(id)) continue
+    // Older pages sort first even when the API omits timestamps.
+    const createdAtMs = toEpochMs(timestamp, index - page * 1_000_000)
     byId.set(id, {
       id,
       role: sender === 'user' ? 'user' : 'bot',
@@ -524,7 +538,7 @@ function collectCueHistoryIntoMap(
 
 export function extractCueHistoryMessages(raw: unknown): CueHistoryMessage[] {
   const byId = new Map<string, CueHistoryMessage>()
-  collectCueHistoryIntoMap(raw, byId, { count: 0 })
+  collectCueHistoryIntoMap(raw, byId)
   return [...byId.values()].sort((a, b) => a.createdAtMs - b.createdAtMs)
 }
 
@@ -574,7 +588,6 @@ export async function fetchCueSessionHistory(
   const limit = Math.max(1, Math.min(300, opts?.limit ?? 300))
   const maxPages = Math.max(1, Math.min(30, opts?.maxPages ?? 20))
   const byId = new Map<string, CueHistoryMessage>()
-  const indexRef = { count: 0 }
   let anyOk = false
   let lastStatus = 200
 
@@ -598,7 +611,7 @@ export async function fetchCueSessionHistory(
     lastStatus = res.status
     if (!res.ok) break
     anyOk = true
-    collectCueHistoryIntoMap(res.data, byId, indexRef)
+    collectCueHistoryIntoMap(res.data, byId, page)
     const next = getSessionViewPagination(res.data)
     if (!next.hasMoreBefore || !next.beforeCursor || seenViewCursors.has(next.beforeCursor)) {
       break
@@ -629,7 +642,7 @@ export async function fetchCueSessionHistory(
       lastStatus = res.status
       if (!res.ok) break
       anyOk = true
-      collectCueHistoryIntoMap(res.data, byId, indexRef)
+      collectCueHistoryIntoMap(res.data, byId, page)
       const root = asRecord(res.data)
       const sessionRec = asRecord(root?.['session'])
       const hasMoreBefore =

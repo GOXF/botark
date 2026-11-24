@@ -3,8 +3,11 @@ import { createId } from '@shared/id'
 import type { MuseMainEvent } from '@shared/ipc'
 import {
   KNOWN_APPROVAL_DECISIONS,
+  MuseApprovalSnapshots,
+  type MuseApprovalStreamMetadata,
   buildMuseApprovalDecideParams,
-  extractRawApprovalItems,
+  extractMuseApprovalRecord,
+  isTerminalMuseApproval,
   mapMuseApproval
 } from '@shared/museApprovals'
 import { getBotHubBridge } from './electronBridge'
@@ -98,6 +101,22 @@ async function museChatItemsFromAttachments(
   return items
 }
 
+type MuseClientEvent = MuseMainEvent & MuseApprovalStreamMetadata & { sendId?: string; sessionId?: string }
+
+interface ApprovalState {
+  ledger: MuseApprovalSnapshots
+  version: number
+  read?: Promise<MuseApproval[]>
+}
+
+interface PendingSend {
+  id: string
+  message: OutgoingMessage
+  accepted: boolean
+  delivered: boolean
+  sessionId?: string
+}
+
 export class MuseAdapter implements PlatformAdapter {
   readonly id = 'meta-muse' as const
   readonly name = 'Meta Muse'
@@ -106,10 +125,10 @@ export class MuseAdapter implements PlatformAdapter {
   private readonly statuses = new Map<string, ConnectionStatus>()
   private readonly listeners = new Set<AdapterListener>()
   private readonly pendingApprovals = new Map<string, MuseApproval[]>()
-  /** Keys `${accountId}:${conversationId}` delivered via main-process stream events. */
-  private readonly streamDelivered = new Set<string>()
-  /** onAccepted of the send in flight: the first stream event proves the platform took it. */
-  private readonly pendingAccept = new Map<string, () => void>()
+  private readonly approvalStates = new Map<string, ApprovalState>()
+  private readonly sends = new Map<string, PendingSend>()
+  private readonly activeSends = new Map<string, PendingSend>()
+  private readonly approvalPolling = new Map<string, { timer: ReturnType<typeof setInterval>; users: number }>()
   private bridgeUnsub: Unsubscribe | null = null
 
   constructor() {
@@ -128,15 +147,16 @@ export class MuseAdapter implements PlatformAdapter {
     this.bridgeUnsub = b.muse.onEvent((event) => this.handleMainEvent(event))
   }
 
-  private handleMainEvent(event: MuseMainEvent): void {
+  private handleMainEvent(event: MuseClientEvent): void {
     switch (event.type) {
       case 'status': {
         const s = event.status
+        const busy = this.activeSends.has(s.accountId)
         const status: ConnectionStatus = !s.signedIn
           ? 'offline'
           : s.pendingApprovals > 0
             ? 'attention'
-            : s.ready
+            : s.ready && !busy
               ? 'online'
               : 'busy'
         this.setStatus(
@@ -147,6 +167,7 @@ export class MuseAdapter implements PlatformAdapter {
         break
       }
       case 'login': {
+        if (!event.signedIn) this.clearApprovals(event.accountId)
         this.emit({
           type: 'login',
           accountId: event.accountId,
@@ -158,24 +179,25 @@ export class MuseAdapter implements PlatformAdapter {
         this.setStatus(event.accountId, event.signedIn ? 'online' : 'offline')
         break
       }
-      case 'approvals': {
-        const pending = extractRawApprovalItems(event.pending)
-          .map(mapMuseApproval)
-          .filter((a) => a.id)
-        this.pendingApprovals.set(event.accountId, pending)
-        this.emit({ type: 'approvals', accountId: event.accountId, pending })
-        if (pending.length > 0) {
-          this.setStatus(event.accountId, 'attention')
-        } else if (this.getStatus(event.accountId) === 'attention') {
-          this.setStatus(event.accountId, 'online')
+      case 'approvals':
+        this.applyApprovals(event.accountId, this.approvalState(event.accountId), event.pending, event)
+        break
+      case 'sent': {
+        const send = this.correlatedSend(event)
+        if (send && !send.accepted) {
+          send.accepted = true
+          send.sessionId = event.sessionId ?? send.sessionId
+          try {
+            send.message.onAccepted?.()
+          } catch (error) {
+            console.error('[muse adapter] acceptance callback failed', error)
+          }
         }
         break
       }
-      case 'sent':
-        // Server ack of the user message; stream events may be a previous turn.
-        this.pendingAccept.get(event.accountId)?.()
-        break
       case 'stream': {
+        const send = this.correlatedSend(event)
+        if (event.sendId && !send) break
         const widgets = event.widgets as MuseOptionWidget[] | undefined
         const tools = event.tools as import('../types').MuseToolCall[] | undefined
         const media = event.media as import('../types').MuseMediaPart[] | undefined
@@ -185,6 +207,7 @@ export class MuseAdapter implements PlatformAdapter {
             type: 'typing',
             conversationId: event.conversationId ?? event.accountId,
             accountId: event.accountId,
+            sessionId: event.sessionId ?? send?.sessionId,
             isTyping: true
           })
           if (event.text || widgets?.length || richWidgets?.length || tools?.length || media?.length) {
@@ -193,6 +216,7 @@ export class MuseAdapter implements PlatformAdapter {
               messageId: event.messageId,
               conversationId: event.conversationId ?? event.accountId,
               accountId: event.accountId,
+              sessionId: event.sessionId ?? send?.sessionId,
               text: event.text || '',
               widgets,
               richWidgets,
@@ -207,10 +231,11 @@ export class MuseAdapter implements PlatformAdapter {
             type: 'typing',
             conversationId,
             accountId: event.accountId,
+            sessionId: event.sessionId ?? send?.sessionId,
             isTyping: false
           })
           if (event.text || widgets?.length || richWidgets?.length || tools?.length || media?.length) {
-            this.streamDelivered.add(`${event.accountId}:${conversationId}`)
+            if (send) send.delivered = true
             const message: IncomingMessage & {
               widgets?: MuseOptionWidget[]
               richWidgets?: import('../types').MuseRichWidget[]
@@ -220,6 +245,7 @@ export class MuseAdapter implements PlatformAdapter {
               id: event.messageId,
               conversationId,
               accountId: event.accountId,
+              sessionId: event.sessionId ?? send?.sessionId,
               text: event.text || '',
               createdAt: Date.now(),
               widgets,
@@ -229,8 +255,10 @@ export class MuseAdapter implements PlatformAdapter {
             }
             this.emit({ type: 'message', message })
           }
-          const pending = this.pendingApprovals.get(event.accountId) ?? []
-          this.setStatus(event.accountId, pending.length ? 'attention' : 'online')
+          if (!send && !this.activeSends.has(event.accountId)) {
+            const pending = this.pendingApprovals.get(event.accountId) ?? []
+            this.setStatus(event.accountId, pending.length ? 'attention' : 'online')
+          }
         }
         break
       }
@@ -244,7 +272,7 @@ export class MuseAdapter implements PlatformAdapter {
           busy: event.busy,
           ctaLabel: event.ctaLabel
         }
-        this.emit({ type: 'activity', accountId: event.accountId, activity })
+        this.emit({ type: 'activity', accountId: event.accountId, sessionId: event.sessionId, activity })
         const needsApproval =
           activity.code === 'needs_approval' ||
           /approval|confirm|permission/i.test(activity.code) ||
@@ -318,138 +346,117 @@ export class MuseAdapter implements PlatformAdapter {
     await this.bridge().cancelLogin(accountId)
     this.accounts.delete(accountId)
     this.statuses.delete(accountId)
-    this.pendingApprovals.delete(accountId)
+    this.clearApprovals(accountId)
   }
 
   async disconnect(accountId: string): Promise<void> {
     this.setStatus(accountId, 'offline')
   }
 
-  /** Returns a disposer; call it when the send settles. */
-  private trackAccept(message: OutgoingMessage): () => void {
-    const cb = message.onAccepted
-    if (!cb) return () => undefined
-    const accept = () => {
-      dispose()
-      cb()
+  private correlatedSend(event: { accountId: string; conversationId?: string; sendId?: string }): PendingSend | undefined {
+    const send = event.sendId && this.sends.get(event.sendId)
+    if (!send || send.message.accountId !== event.accountId || send.message.conversationId !== event.conversationId) return
+    return send
+  }
+
+  private pollApprovals(accountId: string): () => void {
+    let poll = this.approvalPolling.get(accountId)
+    if (!poll) {
+      poll = { users: 0, timer: setInterval(() => void this.listApprovals(accountId).catch(() => undefined), 3000) }
+      this.approvalPolling.set(accountId, poll)
     }
-    const dispose = () => {
-      if (this.pendingAccept.get(message.accountId) === accept) this.pendingAccept.delete(message.accountId)
+    const active = poll
+    active.users++
+    return () => {
+      if (--active.users === 0) {
+        clearInterval(active.timer)
+        this.approvalPolling.delete(accountId)
+      }
     }
-    this.pendingAccept.set(message.accountId, accept)
-    return dispose
   }
 
   async sendMessage(message: OutgoingMessage): Promise<SendReceipt> {
-    const status = this.getStatus(message.accountId)
+    message.signal?.throwIfAborted()
+    const { accountId, conversationId } = message
+    const status = this.getStatus(accountId)
     if (status === 'offline' || status === 'error') {
       throw new AdapterError('not-connected', 'Sign in to muse.ai first (open the web session).')
     }
-
     this.bindBridgeEvents()
-    this.setStatus(message.accountId, 'busy')
-    const disposeAccept = this.trackAccept(message)
-    // A turn that needs a Sentinel (egress) approval blocks until the user decides,
-    // so surface pending cards while waiting instead of timing out into "error".
-    const approvalPoll = setInterval(() => void this.listApprovals(message.accountId).catch(() => {}), 3000)
-    this.emit({
-      type: 'typing',
-      conversationId: message.conversationId,
-      accountId: message.accountId,
-      isTyping: true
-    })
-
+    const muse = this.bridge()
+    const id = createId('mm_out')
+    const send: PendingSend = { id, message, accepted: false, delivered: false, sessionId: message.sessionId }
+    this.sends.set(id, send)
+    this.activeSends.set(accountId, send)
+    this.setStatus(accountId, 'busy')
+    const stopPoll = this.pollApprovals(accountId)
+    const typing = (isTyping: boolean) => this.emit({ type: 'typing', conversationId, accountId, sessionId: send.sessionId, isTyping })
+    const isCurrent = () => this.activeSends.get(accountId) === send
+    let dispatched = false
+    const requestStop = () => {
+      if (!dispatched) return
+      const request = { accountId, method: 'chat.stop_turn', sendId: id }
+      void muse.rpc(request).catch(() => undefined)
+    }
+    message.signal?.addEventListener('abort', requestStop, { once: true })
+    typing(true)
     try {
-      const result = (await this.bridge().rpc({
-        accountId: message.accountId,
-        method: 'chat.stream',
-        conversationId: message.conversationId,
+      const attachments = await museChatItemsFromAttachments(muse, accountId, message.attachments)
+      message.signal?.throwIfAborted()
+      if (!isCurrent()) throw new Error('Muse turn superseded')
+      const request = {
+        accountId, method: 'chat.stream', conversationId, sendId: id,
         params: {
-          ...(message.sessionId ? { session_id: message.sessionId } : {}),
-          // Main fills node_id (stable device id) + capabilities per transport.
-          items: [
-            ...(message.text.trim() ? [{ type: 'text', text: message.text }] : []),
-            ...await museChatItemsFromAttachments(this.bridge(), message.accountId, message.attachments)
-          ]
+          ...(message.sessionId !== undefined ? { session_id: message.sessionId } : {}),
+          items: [...(message.text.trim() ? [{ type: 'text', text: message.text }] : []), ...attachments]
         }
-      })) as unknown
-
-      const resultObj = result && typeof result === 'object' ? (result as Record<string, unknown>) : null
-      const ackSessionId =
-        resultObj && typeof resultObj['session_id'] === 'string'
-          ? (resultObj['session_id'] as string)
-          : undefined
-      const receipt: SendReceipt = {
-        messageId: createId('mm_out'),
-        acceptedAt: Date.now(),
-        sessionId: ackSessionId
       }
-      const text = extractText(result)
-      const deliveredKey = `${message.accountId}:${message.conversationId}`
-      const deliveredViaStream = this.streamDelivered.delete(deliveredKey)
-
-      // Stream events already posted the assistant bubble when conversationId was set.
-      if (!deliveredViaStream) {
-        if (!text) {
-          throw new AdapterError('no-reply', 'Muse 已收到消息，但等待超时仍没有回复')
-        }
-        this.emit({
-          type: 'typing',
-          conversationId: message.conversationId,
-          accountId: message.accountId,
-          isTyping: false
-        })
-        const fromResult =
-          resultObj && typeof resultObj['assistant_message_id'] === 'string'
-            ? (resultObj['assistant_message_id'] as string)
-            : ''
-        const assistantId = fromResult || createId('mm_in')
+      dispatched = true
+      const result = await muse.rpc(request).catch((error) => {
+        if (error instanceof Error && /Muse turn timed out/.test(error.message)) throw new AdapterError('timeout', error.message)
+        throw error
+      })
+      message.signal?.throwIfAborted()
+      const resultObj = result && typeof result === 'object' ? result as Record<string, unknown> : null
+      const receipt: SendReceipt = {
+        messageId: id,
+        acceptedAt: Date.now(),
+        sessionId: typeof resultObj?.['session_id'] === 'string' ? resultObj['session_id'] : send.sessionId
+      }
+      send.sessionId = receipt.sessionId
+      if (!send.delivered) {
+        const text = extractText(result)
+        if (!text) throw new AdapterError('no-reply', 'Muse 已收到消息，但等待超时仍没有回复')
         this.emit({
           type: 'message',
           message: {
-            id: assistantId,
-            conversationId: message.conversationId,
-            accountId: message.accountId,
-            text,
-            createdAt: Date.now(),
-            replyTo: receipt.messageId
+            id: typeof resultObj?.['assistant_message_id'] === 'string' ? resultObj['assistant_message_id'] : createId('mm_in'),
+            conversationId, accountId, sessionId: receipt.sessionId, text, createdAt: Date.now(), replyTo: receipt.messageId
           }
         })
-      } else if (!text) {
-        // Stream said done with empty text: delivered, but nothing came back.
-        throw new AdapterError('no-reply', 'Muse 已收到消息，但没有返回内容')
       }
-      const pending = this.pendingApprovals.get(message.accountId) ?? []
-      this.setStatus(message.accountId, pending.length ? 'attention' : 'online')
+      if (isCurrent()) this.setStatus(accountId, this.pendingApprovals.get(accountId)?.length ? 'attention' : 'online')
       return receipt
     } catch (error) {
-      this.emit({
-        type: 'typing',
-        conversationId: message.conversationId,
-        accountId: message.accountId,
-        isTyping: false
-      })
-      const pending = await this.listApprovals(message.accountId).catch(() => [] as MuseApproval[])
-      if (pending.length) {
-        this.setStatus(message.accountId, 'attention')
-      } else if (error instanceof AdapterError && (error.code === 'timeout' || error.code === 'no-reply')) {
-        // Still signed in — a slow/blocked turn is not a login problem.
-        this.setStatus(message.accountId, 'online')
-      } else {
-        const next = statusAfterSendFailure(error)
-        this.setStatus(
-          message.accountId,
-          next,
-          next === 'error' ? (error instanceof Error ? error.message : String(error)) : undefined
-        )
+      if (isCurrent()) {
+        const pending = this.pendingApprovals.get(accountId) ?? []
+        const next = pending.length ? 'attention' : statusAfterSendFailure(error)
+        this.setStatus(accountId, next, next === 'error' ? (error instanceof Error ? error.message : String(error)) : undefined)
+        if (!message.signal?.aborted) void this.listApprovals(accountId).catch(() => undefined)
       }
       throw error
     } finally {
-      clearInterval(approvalPoll)
-      disposeAccept()
+      stopPoll()
+      this.sends.delete(id)
+      message.signal?.removeEventListener('abort', requestStop)
+      if (isCurrent()) {
+        this.activeSends.delete(accountId)
+        typing(false)
+      } else if (this.activeSends.get(accountId)?.message.conversationId !== conversationId) {
+        typing(false)
+      }
     }
   }
-
 
   async selectOptionWidget(args: {
     accountId: string
@@ -491,29 +498,54 @@ export class MuseAdapter implements PlatformAdapter {
     }
   }
 
-  async listApprovals(accountId: string): Promise<MuseApproval[]> {
-    const status = this.getStatus(accountId)
-    // Allow fetching even when status === 'error' (e.g. a previous chat turn timed out
-    // while Sentinel was waiting for approval); only skip when signed out / offline.
-    if (status === 'offline') return []
-    let raw: unknown
-    try {
-      raw = await this.bridge().rpc({ accountId, method: 'egress.approvals', params: {} })
-    } catch (error) {
-      console.warn('[muse] listApprovals', error)
+  private approvalState(accountId: string): ApprovalState {
+    let state = this.approvalStates.get(accountId)
+    if (!state) {
+      state = { ledger: new MuseApprovalSnapshots(), version: 0 }
+      this.approvalStates.set(accountId, state)
+    }
+    return state
+  }
+
+  private clearApprovals(accountId: string): void {
+    this.pendingApprovals.delete(accountId)
+    this.approvalStates.delete(accountId)
+  }
+
+  private applyApprovals(accountId: string, state: ApprovalState, raw: unknown, metadata: MuseApprovalStreamMetadata): MuseApproval[] {
+    if (this.approvalStates.get(accountId) !== state ||
+        (metadata.approvalVersion !== undefined && metadata.approvalVersion <= state.version)) {
       return this.pendingApprovals.get(accountId) ?? []
     }
-    const pending = extractRawApprovalItems(raw)
-      .map(mapMuseApproval)
-      .filter((a) => a.id)
+    if (metadata.approvalVersion !== undefined) state.version = metadata.approvalVersion
+    const pending = state.ledger.apply(raw, metadata.terminalApprovalIds).map(mapMuseApproval)
     this.pendingApprovals.set(accountId, pending)
     this.emit({ type: 'approvals', accountId, pending })
-    if (pending.length) {
-      this.setStatus(accountId, 'attention')
-    } else if (status === 'attention' || status === 'error') {
-      this.setStatus(accountId, 'online')
-    }
+    const status = this.getStatus(accountId)
+    if (pending.length > 0) this.setStatus(accountId, 'attention')
+    else if (status === 'attention' || status === 'error') this.setStatus(accountId, this.activeSends.has(accountId) ? 'busy' : 'online')
     return pending
+  }
+
+  async listApprovals(accountId: string): Promise<MuseApproval[]> {
+    if (this.getStatus(accountId) === 'offline') return []
+    const state = this.approvalState(accountId)
+    if (state.read) return state.read
+    const versionAtStart = state.version
+    const read = (async () => {
+      try {
+        const raw = await this.bridge().rpc({ accountId, method: 'egress.approvals', params: {} })
+        const metadata = raw && typeof raw === 'object' ? raw as MuseApprovalStreamMetadata : {}
+        if (metadata.approvalVersion === undefined && state.version !== versionAtStart) return this.pendingApprovals.get(accountId) ?? []
+        return this.applyApprovals(accountId, state, raw, metadata)
+      } catch {
+        return this.pendingApprovals.get(accountId) ?? []
+      }
+    })().finally(() => {
+      if (state.read === read) state.read = undefined
+    })
+    state.read = read
+    return read
   }
 
   async decideApproval(
@@ -522,6 +554,8 @@ export class MuseAdapter implements PlatformAdapter {
     decision: ApprovalDecision | string,
     opts?: { scope?: string; opensUrl?: string }
   ): Promise<void> {
+    const state = this.approvalState(accountId)
+    if (state.ledger.isResolved(approvalId)) return
     let approval = (this.pendingApprovals.get(accountId) ?? []).find((a) => a.id === approvalId)
     if (!approval) {
       try {
@@ -530,13 +564,19 @@ export class MuseAdapter implements PlatformAdapter {
           method: 'egress.approval',
           params: { approval_id: approvalId }
         })
-        if (detail && typeof detail === 'object' && !Array.isArray(detail)) {
-          approval = mapMuseApproval(detail as Record<string, unknown>)
+        const record = extractMuseApprovalRecord(detail)
+        if (record && isTerminalMuseApproval(record)) {
+          state.ledger.resolve(approvalId)
+          this.applyApprovals(accountId, state, state.ledger.pending, {})
+          return
         }
+        if (record) approval = mapMuseApproval(record)
       } catch {
         /* fallback to default scope resolution */
       }
     }
+
+    if (this.approvalStates.get(accountId) !== state || state.ledger.isResolved(approvalId)) return
 
     const matchedOption = approval?.decisionOptionDetails?.find(
       (o) => o.kind === decision && (!opts?.scope || o.scope === opts.scope)
@@ -551,12 +591,15 @@ export class MuseAdapter implements PlatformAdapter {
     }
 
     const params = buildMuseApprovalDecideParams(approval, approvalId, decision, opts?.scope)
-    await this.bridge().rpc({
-      accountId,
-      method: 'egress.approval.decide',
-      params
-    })
-    await this.listApprovals(accountId)
+    const result = await this.bridge().rpc({ accountId, method: 'egress.approval.decide', params })
+    const verdict = result as { ok?: boolean; success?: boolean } | undefined
+    if (verdict?.ok === false || verdict?.success === false) throw new Error('Muse rejected the approval decision')
+    if (this.approvalStates.get(accountId) === state) {
+      state.read = undefined
+      state.ledger.resolve(approvalId)
+      this.applyApprovals(accountId, state, state.ledger.pending, {})
+      await this.listApprovals(accountId)
+    }
   }
 
   async listConnectors(accountId: string): Promise<MuseConnector[]> {

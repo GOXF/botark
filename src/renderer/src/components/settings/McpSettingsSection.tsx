@@ -1,5 +1,6 @@
 import { dsBotServer } from '@shared/dsBotMcp'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { createMutex } from '@shared/proxyPool'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import {
   CheckCircle2,
   ChevronDown,
@@ -17,12 +18,14 @@ import {
   Unlink
 } from 'lucide-react'
 import type {
+  McpConfigScope,
   McpServerConfigInput,
   McpTransportType,
   WorkspaceRequest,
   WorkspaceServerView,
   WorkspaceView
 } from '@shared/workspace'
+import { useShallow } from 'zustand/react/shallow'
 import { ArkMcpNodeSvg, ArkWorkspaceVaultSvg } from '@/components/ui/ArkGlyphs'
 import { Button } from '@/components/ui/Button'
 import { SwitchPill } from '@/components/ui/Controls'
@@ -43,22 +46,29 @@ export interface McpSettingsSectionProps {
   onUpdated?: (view: WorkspaceView) => void
 }
 
-function parseArgsText(raw: string): string[] {
-  const trimmed = raw.trim()
-  if (!trimmed) return []
+const QUOTED_ESCAPES: Readonly<Record<string, string>> = { n: '\n', r: '\r', t: '\t', b: '\b', f: '\f' }
+
+function formatArgsText(args: readonly string[]): string {
+  return args.map((arg) => arg && !/[\s"'\\\u0000-\u001f]/.test(arg) ? arg : JSON.stringify(arg)).join(' ')
+}
+
+function parseArgsText(raw: string, syntaxError: string): string[] {
   const args: string[] = []
   let current = ''
   let quote: '"' | "'" | null = null
-  let escaped = false
-  for (let i = 0; i < trimmed.length; i++) {
-    const ch = trimmed[i]!
-    if (escaped) {
-      current += ch
-      escaped = false
-      continue
-    }
+  let started = false
+  for (let i = 0; i < raw.length; i++) {
+    const ch = raw[i]!
     if (ch === '\\' && quote !== "'") {
-      escaped = true
+      const escaped = raw[++i]
+      if (escaped === undefined) throw new Error(syntaxError)
+      if (quote === '"' && escaped === 'u' && /^[0-9a-f]{4}$/i.test(raw.slice(i + 1, i + 5))) {
+        current += String.fromCharCode(parseInt(raw.slice(i + 1, i + 5), 16))
+        i += 4
+      } else {
+        current += quote === '"' && Object.hasOwn(QUOTED_ESCAPES, escaped) ? QUOTED_ESCAPES[escaped] : escaped
+      }
+      started = true
       continue
     }
     if (quote) {
@@ -68,18 +78,22 @@ function parseArgsText(raw: string): string[] {
     }
     if (ch === '"' || ch === "'") {
       quote = ch
+      started = true
       continue
     }
     if (/\s/.test(ch)) {
-      if (current) {
+      if (started) {
         args.push(current)
         current = ''
+        started = false
       }
       continue
     }
     current += ch
+    started = true
   }
-  if (current) args.push(current)
+  if (quote) throw new Error(syntaxError)
+  if (started) args.push(current)
   return args
 }
 
@@ -122,10 +136,62 @@ export function McpSettingsSection({
   const locale = usePrefsStore((s) => s.locale)
   const L = (zh: string, en: string) => (locale === 'en' ? en : zh)
 
-  const rooms = useRooms((s) => s.rooms)
-  const [scope, setScope] = useState(initialScope)
+  const roomLabels = useRooms(useShallow((s) => Object.fromEntries(s.rooms.map(({ id, title }) => [id, title]))))
+  const [selection, setSelection] = useState(() => ({ scope: initialScope, revision: 0 }))
+  const selected = useRef(selection)
+  const [mutationLock] = useState(createMutex)
+
+  const changeScope = (scope: string) => {
+    if (selected.current.scope === scope) return
+    const next = { scope, revision: selected.current.revision + 1 }
+    selected.current = next
+    setSelection(next)
+  }
+
+  const scopeOptions = useMemo(
+    () => [
+      { value: '__global__', label: L('全局默认 (__global__)', 'Global (__global__)') },
+      ...Object.entries(roomLabels).map(([value, title]) => ({ value, label: L(`群聊 · ${title}`, `Room · ${title}`) }))
+    ],
+    [roomLabels, locale]
+  )
+
+  return (
+    <McpScopeSettings
+      key={selection.revision}
+      scope={selection.scope}
+      isCurrentScope={() => selected.current === selection}
+      scopeOptions={scopeOptions}
+      onScopeChange={changeScope}
+      mutationLock={mutationLock}
+      onUpdated={onUpdated}
+    />
+  )
+}
+
+function McpScopeSettings({
+  scope,
+  isCurrentScope,
+  scopeOptions,
+  onScopeChange,
+  mutationLock,
+  onUpdated
+}: {
+  scope: string
+  isCurrentScope: () => boolean
+  scopeOptions: { value: string; label: string }[]
+  onScopeChange: (scope: string) => void
+  mutationLock: ReturnType<typeof createMutex>
+  onUpdated?: (view: WorkspaceView) => void
+}) {
+  const locale = usePrefsStore((s) => s.locale)
+  const L = (zh: string, en: string) => (locale === 'en' ? en : zh)
+  const requestId = useRef(0)
+  const pending = useRef(false)
+  const onUpdatedRef = useRef(onUpdated)
+  useLayoutEffect(() => { onUpdatedRef.current = onUpdated }, [onUpdated])
   const [view, setView] = useState<WorkspaceView>()
-  const [loading, setLoading] = useState(false)
+  const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
   const [hint, setHint] = useState<string>()
   const [error, setError] = useState<string>()
@@ -136,9 +202,11 @@ export function McpSettingsSection({
   const [formOpen, setFormOpen] = useState(false)
   const [editing, setEditing] = useState<WorkspaceServerView | undefined>()
   const [formName, setFormName] = useState('')
-  const [formTransport, setFormTransport] = useState<McpTransportType>('stdio')
+  const [formTransport, setFormTransport] = useState<McpTransportType | 'auto'>('stdio')
   const [formCommand, setFormCommand] = useState('')
   const [formArgs, setFormArgs] = useState('')
+  const [argsEdited, setArgsEdited] = useState(false)
+  const isStdio = formTransport === 'stdio' || (formTransport === 'auto' && Boolean(editing?.command))
   const [formCwd, setFormCwd] = useState('')
   const [formUrl, setFormUrl] = useState('')
   const [formSecrets, setFormSecrets] = useState('')
@@ -155,78 +223,113 @@ export function McpSettingsSection({
   const [pasteAutoStart, setPasteAutoStart] = useState(true)
   const [pasteError, setPasteError] = useState<string>()
 
-  const refresh = useCallback(async () => {
+  const refresh = async () => {
     const bridge = getBridge()?.workspace
-    if (!bridge) return
-    setLoading(true)
-    try {
-      const next = await bridge.manage(scope, { op: 'status' })
-      setView(next)
-      onUpdated?.(next)
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
-    } finally {
-      setLoading(false)
-    }
-  }, [scope, onUpdated])
-
-  useEffect(() => {
-    void refresh()
-  }, [refresh])
-
-  const runManage = async (
-    request: Exclude<WorkspaceRequest, { op: 'run' }>,
-    onDone?: (next: WorkspaceView) => void
-  ) => {
-    const bridge = getBridge()?.workspace
+    if (pending.current || !isCurrentScope()) return
     if (!bridge) {
-      setError(L('需要在 Electron 桌面端中管理 MCP 服务', 'Electron desktop bridge unavailable'))
+      setLoading(false)
       return
     }
-    setBusy(true)
+    const request = ++requestId.current
+    const isCurrent = () => requestId.current === request && isCurrentScope()
+    setLoading(true)
     setError(undefined)
-    setHint(undefined)
+    setConfirmDelete(null)
     try {
-      const next = await bridge.manage(scope, request)
+      await mutationLock(() => undefined)
+      if (!isCurrent()) return
+      const next = await bridge.manage(scope, { op: 'status' })
+      if (!isCurrent()) return
       setView(next)
-      onUpdated?.(next)
-      onDone?.(next)
+      onUpdatedRef.current?.(next)
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
-      const refreshed = await bridge.manage(scope, { op: 'status' }).catch(() => undefined)
-      if (refreshed) setView(refreshed)
+      if (isCurrent()) setError(err instanceof Error ? err.message : String(err))
     } finally {
-      setBusy(false)
+      if (isCurrent()) setLoading(false)
     }
   }
 
-  const scopeType = scope === '__global__' ? 'global' : 'scope'
-  const existingDsBot = view?.servers.find((s) => s.name === 'ds-bot' && s.scope === scopeType)
+  useLayoutEffect(() => () => { requestId.current++ }, [])
+  useEffect(() => {
+    void refresh()
+  }, [scope])
+
+  const runManage = async (
+    request: Exclude<WorkspaceRequest, { op: 'run' }>,
+    onDone?: (next: WorkspaceView) => void,
+    showError = setError
+  ) => {
+    if (!isCurrentScope() || pending.current) return
+    const bridge = getBridge()?.workspace
+    if (!bridge) {
+      showError(L('需要在 Electron 桌面端中管理 MCP 服务', 'Electron desktop bridge unavailable'))
+      return
+    }
+    const id = ++requestId.current
+    const isCurrent = () => requestId.current === id && isCurrentScope()
+    pending.current = true
+    setLoading(false)
+    setBusy(true)
+    setError(undefined)
+    setHint(undefined)
+    setConfirmDelete(null)
+    try {
+      const next = await mutationLock(() => isCurrent() ? bridge.manage(scope, request) : undefined)
+      if (!next || !isCurrent()) return
+      setView(next)
+      onUpdatedRef.current?.(next)
+      if (!isCurrent()) return
+      onDone?.(next)
+    } catch (err) {
+      if (!isCurrent()) return
+      showError(err instanceof Error ? err.message : String(err))
+      const refreshed = await mutationLock(() =>
+        isCurrent() ? bridge.manage(scope, { op: 'status' }) : undefined
+      ).catch(() => undefined)
+      if (refreshed && isCurrent()) {
+        setView(refreshed)
+        onUpdatedRef.current?.(refreshed)
+      }
+    } finally {
+      pending.current = false
+      if (isCurrent()) setBusy(false)
+    }
+  }
+
+  const scopeType: McpConfigScope = scope === '__global__' ? 'global' : 'scope'
+  const rowActionsDisabled = busy || loading || !view
+  const ownerFor = (server: WorkspaceServerView): McpConfigScope => server.scope ?? scopeType
+  const rowKey = (server: WorkspaceServerView) => `${ownerFor(server)}:${server.name}`
+  const canUseRow = (server: WorkspaceServerView) =>
+    isCurrentScope() && !rowActionsDisabled && view?.servers.includes(server)
+  const existingDsBot = view?.servers.find((server) => server.name === 'ds-bot' && ownerFor(server) === scopeType)
 
   async function connectDsBot() {
     try {
       const server = dsBotServer(Number(dsBotPort), dsBotToken, scopeType)
       setFormError(undefined)
       await runManage({ op: 'upsert', server, autoStart: true }, (next) => {
-        const connected = next.servers.find((s) => s.name === server.name && s.scope === scopeType)
+        const connected = next.servers.find((item) => item.name === server.name && ownerFor(item) === scopeType)
         if (!connected?.running) {
           setFormError(connected?.lastError || L('DS Bot 连接失败', 'Could not connect to DS Bot'))
           return
         }
         setDsBotToken('')
         setDsBotOpen(false)
-      })
+      }, setFormError)
     } catch (err) {
       setFormError(err instanceof Error ? err.message : String(err))
     }
   }
 
   const openCreate = () => {
+    if (!isCurrentScope()) return
     setEditing(undefined)
     setFormName('')
     setFormTransport('stdio')
     setFormCommand('')
     setFormArgs('')
+    setArgsEdited(false)
     setFormCwd('')
     setFormUrl('')
     setFormSecrets('')
@@ -236,18 +339,13 @@ export function McpSettingsSection({
   }
 
   const openEdit = (srv: WorkspaceServerView) => {
+    if (!canUseRow(srv)) return
     setEditing(srv)
     setFormName(srv.name)
-    const resolved =
-      srv.resolvedTransport ??
-      (srv.transport && srv.transport !== 'auto'
-        ? srv.transport
-        : srv.command
-          ? 'stdio'
-          : 'streamable-http')
-    setFormTransport(resolved)
+    setFormTransport(srv.transport ?? srv.resolvedTransport ?? (srv.command ? 'stdio' : 'streamable-http'))
     setFormCommand(srv.command ?? '')
-    setFormArgs((srv.args ?? []).join(' '))
+    setFormArgs(formatArgsText(srv.args ?? []))
+    setArgsEdited(false)
     setFormCwd(srv.cwd ?? '')
     setFormUrl(srv.url ?? '')
     setFormSecrets('')
@@ -257,8 +355,7 @@ export function McpSettingsSection({
   }
 
   const handleSaveForm = async (autoStart: boolean) => {
-    const bridge = getBridge()?.workspace
-    if (!bridge) return
+    if (!isCurrentScope()) return
     setFormError(undefined)
     const cleanName = formName.trim()
     if (!cleanName) {
@@ -266,32 +363,38 @@ export function McpSettingsSection({
       return
     }
     let parsedSecrets: Record<string, string> | undefined
+    let args: string[] | undefined
     try {
-      parsedSecrets = parseKeyValueLines(
-        formSecrets,
-        formTransport === 'stdio' ? 'env' : 'headers'
-      )
+      parsedSecrets = parseKeyValueLines(formSecrets, isStdio ? 'env' : 'headers')
+      if (isStdio) {
+        args = editing && !argsEdited
+          ? editing.args
+          : parseArgsText(formArgs, L('参数包含未结束的引号或转义字符', 'Arguments contain an unfinished quote or escape'))
+      }
     } catch (err) {
       setFormError(err instanceof Error ? err.message : String(err))
       return
     }
 
-    const targetScope = editing?.scope ?? (scope === '__global__' ? 'global' : 'scope')
+    const config: Pick<McpServerConfigInput, 'name' | 'transport' | 'enabled' | 'targetScope' | 'keepExistingSecrets'> = {
+      name: cleanName,
+      transport: formTransport,
+      ...(editing?.enabled !== undefined ? { enabled: editing.enabled } : {}),
+      targetScope: editing ? ownerFor(editing) : scopeType,
+      keepExistingSecrets: editing ? keepSecrets : false
+    }
     let server: McpServerConfigInput
-    if (formTransport === 'stdio') {
+    if (isStdio) {
       if (!formCommand.trim()) {
         setFormError(L('请输入启动命令', 'Command is required'))
         return
       }
       server = {
-        name: cleanName,
-        transport: 'stdio',
+        ...config,
         command: formCommand.trim(),
-        args: parseArgsText(formArgs),
+        ...(args !== undefined ? { args } : {}),
         ...(formCwd.trim() ? { cwd: formCwd.trim() } : {}),
-        ...(parsedSecrets ? { env: parsedSecrets } : !editing || !keepSecrets ? { env: {} } : {}),
-        targetScope,
-        keepExistingSecrets: editing ? keepSecrets : false
+        ...(parsedSecrets ? { env: parsedSecrets } : !editing || !keepSecrets ? { env: {} } : {})
       }
     } else {
       const cleanUrl = formUrl.trim()
@@ -300,74 +403,42 @@ export function McpSettingsSection({
         return
       }
       server = {
-        name: cleanName,
-        transport: formTransport,
+        ...config,
         url: cleanUrl,
         ...(parsedSecrets
           ? { headers: parsedSecrets }
           : !editing || !keepSecrets
             ? { headers: {} }
-            : {}),
-        targetScope,
-        keepExistingSecrets: editing ? keepSecrets : false
+            : {})
       }
     }
 
-    setBusy(true)
-    setError(undefined)
-    setHint(undefined)
-    try {
-      const next = await bridge.manage(
-        scope,
-        editing
-          ? { op: 'update', previousName: editing.name, server, autoStart }
-          : { op: 'upsert', server, autoStart }
-      )
-      setView(next)
-      onUpdated?.(next)
+    const shouldStart = editing?.enabled !== false && (autoStart || editing?.running === true)
+    await runManage(editing
+      ? { op: 'update', previousName: editing.name, server, autoStart: shouldStart }
+      : { op: 'upsert', server, autoStart: shouldStart }, (next) => {
       setFormOpen(false)
+      const running = next.servers.some((item) => item.name === cleanName && ownerFor(item) === server.targetScope && item.running)
       setHint(
-        autoStart
+        running
           ? L(`已保存并启动 MCP 服务「${cleanName}」`, `Saved & started "${cleanName}"`)
           : L(`已保存 MCP 服务「${cleanName}」`, `Saved "${cleanName}"`)
       )
-    } catch (err) {
-      setFormError(err instanceof Error ? err.message : String(err))
-      const refreshed = await bridge.manage(scope, { op: 'status' }).catch(() => undefined)
-      if (refreshed) setView(refreshed)
-    } finally {
-      setBusy(false)
-    }
+    }, setFormError)
   }
 
   const handleImportJson = async () => {
-    const bridge = getBridge()?.workspace
-    if (!bridge) return
+    if (!isCurrentScope()) return
     setPasteError(undefined)
     if (!rawJson.trim()) {
       setPasteError(L('请粘贴 mcpServers / servers JSON 配置', 'Please paste JSON config'))
       return
     }
-    setBusy(true)
-    setError(undefined)
-    setHint(undefined)
-    try {
-      const next = await bridge.manage(scope, {
-        op: 'importJson',
-        rawJson,
-        targetScope: scope === '__global__' ? 'global' : 'scope',
-        autoStart: pasteAutoStart
-      })
-      setView(next)
-      onUpdated?.(next)
+    await runManage({ op: 'importJson', rawJson, targetScope: scopeType, autoStart: pasteAutoStart }, (next) => {
       setPasteOpen(false)
       setRawJson('')
       setHint(L(`已导入 ${next.importedCount ?? 0} 个 MCP 服务`, `Imported ${next.importedCount ?? 0} MCP server(s)`))
-    } catch (err) {
-      setPasteError(err instanceof Error ? err.message : String(err))
-    } finally {
-      setBusy(false)
-    }
+    }, setPasteError)
   }
 
   const servers = view?.servers ?? []
@@ -375,17 +446,6 @@ export function McpSettingsSection({
   const externalTools = useMemo(
     () => (view?.tools ?? []).filter((t) => t.name.includes('__')),
     [view?.tools]
-  )
-
-  const scopeOptions = useMemo(
-    () => [
-      { value: '__global__', label: L('全局默认 (__global__)', 'Global (__global__)') },
-      ...rooms.map((r) => ({
-        value: r.id,
-        label: L(`群聊 · ${r.title}`, `Room · ${r.title}`)
-      }))
-    ],
-    [rooms, locale]
   )
 
   return (
@@ -409,25 +469,25 @@ export function McpSettingsSection({
             variant="pill"
             aria-label={L('切换作用域', 'Select scope')}
             value={scope}
-            onValueChange={setScope}
+            onValueChange={onScopeChange}
             options={scopeOptions}
           />
           <Button size="sm" variant="secondary" disabled={loading || busy} onClick={() => void refresh()}>
             <RefreshCw className={cn('size-3.5', loading && 'animate-spin')} />
             {L('刷新', 'Refresh')}
           </Button>
-          <Button size="sm" variant="secondary" disabled={busy} onClick={() => setPasteOpen(true)}>
+          <Button size="sm" variant="secondary" disabled={busy || loading} onClick={() => setPasteOpen(true)}>
             <ClipboardPaste className="size-3.5" />
             {L('粘贴 JSON', 'Paste JSON')}
           </Button>
-          <Button size="sm" variant="secondary" disabled={busy || loading || !view} onClick={() => {
+          <Button size="sm" variant="secondary" disabled={rowActionsDisabled} onClick={() => {
             if (existingDsBot) return openEdit(existingDsBot)
             setDsBotPort('8797')
             setFormError(undefined)
             setError(undefined)
             setDsBotOpen(true)
           }}>DS Bot</Button>
-          <Button size="sm" variant="primary" disabled={busy} onClick={openCreate}>
+          <Button size="sm" variant="primary" disabled={busy || loading} onClick={openCreate}>
             <Plus className="size-3.5" />
             {L('添加服务', 'Add Server')}
           </Button>
@@ -482,7 +542,7 @@ export function McpSettingsSection({
           <Button
             size="sm"
             variant="secondary"
-            disabled={busy}
+            disabled={busy || loading}
             onClick={() =>
               void runManage({ op: 'import', targetScope: scope === '__global__' ? 'global' : 'scope' }, (next) => {
                 if (next.canceled) return
@@ -500,7 +560,7 @@ export function McpSettingsSection({
             <Button
               size="sm"
               variant="secondary"
-              disabled={busy}
+              disabled={busy || loading}
               onClick={() =>
                 void runManage({ op: 'unbind' }, () =>
                   setHint(L('已解除工作区目录绑定，MCP 服务保留', 'Directory unbound; servers kept'))
@@ -514,7 +574,7 @@ export function McpSettingsSection({
             <Button
               size="sm"
               variant="secondary"
-              disabled={busy}
+              disabled={busy || loading}
               onClick={() =>
                 void runManage({ op: 'bind' }, (next) => {
                   if (!next.canceled && next.directory) {
@@ -531,7 +591,7 @@ export function McpSettingsSection({
           <Button
             size="sm"
             variant="primary"
-            disabled={busy}
+            disabled={busy || loading}
             onClick={() =>
               void runManage(
                 {
@@ -556,7 +616,9 @@ export function McpSettingsSection({
 
       {/* Server List Card */}
       <div className="overflow-hidden rounded-2xl border border-line bg-surface shadow-soft">
-        {servers.length === 0 ? (
+        {loading && !view ? (
+          <p className="px-6 py-10 text-center text-[13px] text-ink-muted">{L('正在加载 MCP 服务…', 'Loading MCP servers…')}</p>
+        ) : servers.length === 0 ? (
           <div className="flex flex-col items-center justify-center gap-3 px-6 py-10 text-center">
             <ArkWorkspaceVaultSvg className="size-8 text-ink-faint" />
             <div className="text-[13.5px] font-medium text-ink">
@@ -569,11 +631,11 @@ export function McpSettingsSection({
               )}
             </p>
             <div className="flex flex-wrap items-center gap-2">
-              <Button size="sm" variant="primary" onClick={openCreate}>
+              <Button size="sm" variant="primary" disabled={busy || loading} onClick={openCreate}>
                 <Plus className="size-3.5" />
                 {L('手动添加 MCP', 'Add MCP')}
               </Button>
-              <Button size="sm" variant="secondary" onClick={() => setPasteOpen(true)}>
+              <Button size="sm" variant="secondary" disabled={busy || loading} onClick={() => setPasteOpen(true)}>
                 <ClipboardPaste className="size-3.5" />
                 {L('粘贴 mcpServers JSON', 'Paste JSON')}
               </Button>
@@ -589,11 +651,12 @@ export function McpSettingsSection({
                     `${srv.name.replace(/[^a-zA-Z0-9_-]+/g, '_').replace(/^_+|_+$/g, '') || 'mcp'}__`
                   )
               )
-              const expanded = Boolean(expandedTools[srv.name])
-              const isConfirming = confirmDelete === srv.name
+              const row = rowKey(srv)
+              const expanded = Boolean(expandedTools[row])
+              const isConfirming = confirmDelete === row
               const secretCount = (srv.envKeys?.length ?? 0) + (srv.headerKeys?.length ?? 0)
               return (
-                <div key={`${srv.scope ?? 'scope'}:${srv.name}`} className="flex flex-col gap-2 p-4">
+                <div key={row} className="flex flex-col gap-2 p-4">
                   <div className="flex flex-wrap items-center justify-between gap-3">
                     <div className="flex min-w-0 flex-1 items-center gap-2.5">
                       <ArkMcpNodeSvg
@@ -634,24 +697,24 @@ export function McpSettingsSection({
                       <SwitchPill
                         size="sm"
                         checked={srv.running}
-                        disabled={busy}
+                        disabled={rowActionsDisabled}
                         aria-label={`${srv.running ? L('停止', 'Stop') : L('启动', 'Start')} ${srv.name}`}
                         onCheckedChange={() =>
-                          void runManage({
+                          canUseRow(srv) && void runManage({
                             op: srv.running ? 'stop' : 'start',
                             server: srv.name,
-                            targetScope: srv.scope
+                            targetScope: ownerFor(srv)
                           })
                         }
                       />
                       <Button
                         size="sm"
                         variant="ghost"
-                        disabled={busy}
+                        disabled={rowActionsDisabled}
                         title={L('重启', 'Restart')}
                         onClick={() =>
-                          void runManage(
-                            { op: 'restart', server: srv.name, targetScope: srv.scope },
+                          canUseRow(srv) && void runManage(
+                            { op: 'restart', server: srv.name, targetScope: ownerFor(srv) },
                             () => setHint(L(`已重启「${srv.name}」`, `Restarted "${srv.name}"`))
                           )
                         }
@@ -662,7 +725,7 @@ export function McpSettingsSection({
                       <Button
                         size="sm"
                         variant="ghost"
-                        disabled={busy}
+                        disabled={rowActionsDisabled}
                         title={L('编辑', 'Edit')}
                         onClick={() => openEdit(srv)}
                         className="h-7 px-2"
@@ -673,11 +736,12 @@ export function McpSettingsSection({
                         <Button
                           size="sm"
                           variant="danger-confirm"
-                          disabled={busy}
+                          disabled={rowActionsDisabled}
                           onClick={() => {
+                            if (!canUseRow(srv) || confirmDelete !== row) return
                             setConfirmDelete(null)
                             void runManage(
-                              { op: 'remove', server: srv.name, targetScope: srv.scope },
+                              { op: 'remove', server: srv.name, targetScope: ownerFor(srv) },
                               () => setHint(L(`已删除「${srv.name}」`, `Removed "${srv.name}"`))
                             )
                           }}
@@ -689,9 +753,9 @@ export function McpSettingsSection({
                         <Button
                           size="sm"
                           variant="ghost"
-                          disabled={busy}
+                          disabled={rowActionsDisabled}
                           title={L('删除', 'Remove')}
-                          onClick={() => setConfirmDelete(srv.name)}
+                          onClick={() => { if (canUseRow(srv)) setConfirmDelete(row) }}
                           className="h-7 px-2 hover:text-status-error"
                         >
                           <Trash2 className="size-3.5" />
@@ -703,13 +767,14 @@ export function McpSettingsSection({
                   <div className="flex flex-wrap items-center justify-between gap-2 text-[12px] text-ink-muted">
                     <span className="truncate font-mono">
                       {srv.command
-                        ? `${srv.command} ${(srv.args ?? []).join(' ')}`.trim()
+                        ? `${srv.command} ${formatArgsText(srv.args ?? [])}`.trim()
                         : srv.url}
                     </span>
                     <button
                       type="button"
+                      disabled={rowActionsDisabled}
                       onClick={() =>
-                        setExpandedTools((prev) => ({ ...prev, [srv.name]: !prev[srv.name] }))
+                        canUseRow(srv) && setExpandedTools((prev) => ({ ...prev, [row]: !prev[row] }))
                       }
                       className="inline-flex items-center gap-1 text-[11.5px] font-medium text-accent-600 hover:underline"
                     >
@@ -782,7 +847,7 @@ export function McpSettingsSection({
       {/* Add / Edit Server Dialog */}
       <Dialog
         open={formOpen}
-        onOpenChange={setFormOpen}
+        onOpenChange={(next) => { if (!pending.current) setFormOpen(next) }}
         title={editing ? L('编辑 MCP 服务', 'Edit MCP Server') : L('添加 MCP 服务', 'Add MCP Server')}
         footer={
           <>
@@ -792,7 +857,7 @@ export function McpSettingsSection({
             <Button variant="secondary" size="sm" disabled={busy} onClick={() => void handleSaveForm(false)}>
               {L('保存', 'Save')}
             </Button>
-            <Button variant="primary" size="sm" disabled={busy} onClick={() => void handleSaveForm(true)}>
+            <Button variant="primary" size="sm" disabled={busy || editing?.enabled === false} onClick={() => void handleSaveForm(true)}>
               {busy && <Loader2 className="animate-spin" />}
               {L('保存并启动', 'Save & Start')}
             </Button>
@@ -809,19 +874,20 @@ export function McpSettingsSection({
           </Field>
 
           <Field label={L('传输协议', 'Transport')}>
-            <SegmentedControl<McpTransportType>
+            <SegmentedControl<McpTransportType | 'auto'>
               value={formTransport}
               onValueChange={setFormTransport}
               fullWidth
               options={[
                 { value: 'stdio', label: 'stdio' },
                 { value: 'streamable-http', label: 'Streamable HTTP' },
-                { value: 'sse', label: 'SSE' }
+                { value: 'sse', label: 'SSE' },
+                ...(!isStdio || formTransport === 'auto' ? [{ value: 'auto' as const, label: L('自动', 'Auto') }] : [])
               ]}
             />
           </Field>
 
-          {formTransport === 'stdio' ? (
+          {isStdio ? (
             <>
               <Field label={L('启动命令', 'Command')}>
                 <TextInput
@@ -834,7 +900,10 @@ export function McpSettingsSection({
               <Field label={L('参数', 'Arguments')}>
                 <TextInput
                   value={formArgs}
-                  onChange={(e) => setFormArgs(e.target.value)}
+                  onChange={(e) => {
+                    setArgsEdited(true)
+                    setFormArgs(e.target.value)
+                  }}
                   placeholder="-y @upstash/context7-mcp"
                   className="font-mono"
                 />
@@ -919,7 +988,7 @@ export function McpSettingsSection({
       {/* Paste JSON Dialog */}
       <Dialog
         open={pasteOpen}
-        onOpenChange={setPasteOpen}
+        onOpenChange={(next) => { if (!pending.current) setPasteOpen(next) }}
         title={L('粘贴 MCP JSON 配置', 'Paste MCP JSON Config')}
         footer={
           <>

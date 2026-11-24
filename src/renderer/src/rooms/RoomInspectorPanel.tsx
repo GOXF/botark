@@ -29,6 +29,7 @@ import {
   moveMemberToRoom,
   removeMember,
   renameRoom,
+  roomSlackDestination,
   updateRoomConfig,
   useRooms
 } from './roomStore'
@@ -55,6 +56,7 @@ export function RoomInspectorPanel({ room }: { room: CollabRoom }) {
   const selectBot = useBotStore((s) => s.selectBot)
   const speaker = useRooms((s) => s.speakers[room.id])
   const audience = useRooms((s) => s.externalAudiences[room.id])
+  const slackDestination = roomSlackDestination(room)
   const allRooms = useRooms((s) => s.rooms)
   const [tab, setTab] = useState<RoomTab>('overview')
   const [editing, setEditing] = useState(false)
@@ -428,7 +430,7 @@ export function RoomInspectorPanel({ room }: { room: CollabRoom }) {
           {tab === 'workspace' && (
             <WorkspaceTools
               scope={room.id}
-              recipient={roomRecipient(room, audience)}
+              recipient={roomRecipient(room, slackDestination ? `Slack ${slackDestination.channel}` : audience)}
               hermesAccount={hermesAccount}
               variant="inspector"
               append={(reference) =>

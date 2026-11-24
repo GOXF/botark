@@ -5,7 +5,7 @@ import { registerWorkspaceIpc, stopWorkspaces } from './mcp/hub'
 import { registerWorkspacePortalIpc, stopWorkspacePortals } from './mcp/workspacePortal'
 import { appendFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
-import { app, BrowserWindow, shell, type Rectangle } from 'electron'
+import { app, autoUpdater, BrowserWindow, shell, type Rectangle } from 'electron'
 import { attachWebViewManager, registerWebViewIpc } from './webViewIpc'
 import { attachMuseSessionManager, disposeAllMuseManagers, registerMuseIpc } from './muse/museIpc'
 // GOXF fork: fork-aware updater (upstream + portable prompts) instead of electron-updater.
@@ -44,6 +44,12 @@ let mainWindow: BrowserWindow | null = null
 let quitting = false
 let readyForDeepLinks = false
 const pendingCueCallbacks: string[] = []
+
+if (isMac) {
+  autoUpdater.on('before-quit-for-update', () => {
+    quitting = true
+  })
+}
 
 function dispatchCueCallback(rawUrl: string): void {
   if (!readyForDeepLinks) {
@@ -268,35 +274,46 @@ function createPopoutWindow(query: Record<string, string>, bounds?: Rectangle): 
   return win
 }
 
-let cookiesFlushed = false
+let shutdownStarted = false
+let shutdownFinished = false
+
 app.on('before-quit', (event) => {
   quitting = true
-  // GOXF: write session cookies (Hark login) before quitting; never hold the quit longer than 1.5s.
-  if (!cookiesFlushed) {
-    event.preventDefault()
-    void Promise.race([flushSessionCookies().catch(() => undefined), new Promise((r) => setTimeout(r, 1_500))])
-      .finally(() => { cookiesFlushed = true; app.quit() })
-    return
-  }
-  void stopSlack()
-  stopWorkspaces()
-  void stopWorkspacePortals()
+  if (shutdownFinished) return
+  event.preventDefault()
+  if (shutdownStarted) return
+  shutdownStarted = true
   stopGrokAccountWatch('*')
   closeCelsiusWatcher('*')
   cancelHarkWatch('*')
   cancelAllHermesRuns('*')
   cancelAllAntigravityRuns('*')
   stopCueAccountWatch('*')
-  void stopMobileSyncServer()
   disposeAllMuseManagers()
-  void closeAllLocalProxyBridges()
+  const cleanup = Promise.allSettled([
+    // GOXF: write session cookies (Hark login) before quitting.
+    flushSessionCookies(),
+    stopSlack(),
+    stopWorkspaces(),
+    stopWorkspacePortals(),
+    stopMobileSyncServer(),
+    closeAllLocalProxyBridges()
+  ])
+  const deadline = new Promise<void>((resolve) => {
+    const timer = setTimeout(resolve, 2500)
+    timer.unref?.()
+  })
+  void Promise.race([cleanup, deadline]).finally(() => {
+    shutdownFinished = true
+    app.quit()
+  })
 })
 
 app.whenReady().then(async () => {
   if (!gotLock) return
   hardenVaultFilePermissions()
-  // Before any partition loads: otherwise the first requests go direct.
-  await Promise.race([applyAllStoredProxies(), new Promise((r) => setTimeout(r, 5_000))])
+  // Finish restoring the Chromium partitions before starting account clients.
+  await applyAllStoredProxies()
   // GOXF: put back session cookies Electron dropped at the last quit, before any page loads.
   await startSessionCookiePersistence().catch(() => undefined)
   registerWebViewIpc()

@@ -1,14 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { HermesAdapter } from '@adapters/hermes/HermesAdapter'
 import { adapterRegistry } from '@adapters/registry'
-import type { PlatformAdapter, SendReceipt } from '@adapters/types'
-import type { Bot } from '@/types'
-import { useBotStore } from './botStore'
+import type { PlatformAdapter, PlatformId, SendReceipt } from '@adapters/types'
+import type { Bot, BotAccount, ChatMessage } from '@/types'
+import { flushWorkspacePersistence, useBotStore } from './botStore'
+import { SEND_HARD_TIMEOUT_MS, SEND_STILL_PENDING_TEXT, SEND_TIMEOUT_TEXT } from './delivery'
 
 function deferred<T>() {
   let resolve!: (value: T) => void
-  const promise = new Promise<T>((done) => { resolve = done })
-  return { promise, resolve }
+  let reject!: (reason: unknown) => void
+  const promise = new Promise<T>((done, fail) => { resolve = done; reject = fail })
+  return { promise, resolve, reject }
 }
 
 const bot: Bot = {
@@ -34,16 +36,29 @@ const store = useBotStore.getState
 
 function mockHermesSend(sendMessage: PlatformAdapter['sendMessage']) {
   const adapter = new HermesAdapter()
-  vi.spyOn(adapter, 'sendMessage').mockImplementation(sendMessage)
+  const send = vi.spyOn(adapter, 'sendMessage').mockImplementation(sendMessage)
   vi.spyOn(adapterRegistry, 'get').mockReturnValue(adapter)
+  return send
 }
+
+const chatMessage = (id: string, patch: Partial<ChatMessage> = {}): ChatMessage => ({
+  ...row(id), role: 'user', botId: bot.id, accountId: bot.activeAccountId, ...patch
+})
+const connected = (platformId: PlatformId, id = bot.activeAccountId): BotAccount => ({
+  id, platformId, displayName: id, handle: '', status: 'online'
+})
 
 describe('session navigation', () => {
   beforeEach(() => {
-    useBotStore.setState({ bots: [bot], messages: {}, accounts: {}, replyingTo: {} })
+    useBotStore.setState({
+      bots: [bot], messages: {}, accounts: {}, replyingTo: {}, typing: {}, activity: {},
+      chatActionErrors: {}, hermesSessionErrors: {}, selectedBotId: bot.id
+    })
   })
 
   afterEach(() => {
+    flushWorkspacePersistence()
+    vi.useRealTimers()
     vi.unstubAllGlobals()
     vi.restoreAllMocks()
   })
@@ -113,6 +128,139 @@ describe('session navigation', () => {
     await firstLoad
 
     expect(store().messages[bot.id]?.map((m) => m.id)).toEqual(['fresh'])
+  })
+
+  it.each([
+    () => Promise.reject(new Error('Muse request failed')),
+    () => Promise.resolve({ sessionId: null }),
+    () => Promise.resolve({ sessionId: '   ' })
+  ])('keeps the current Muse transcript on a rejected or invalid session creation', async (startSession) => {
+    const previous = [chatMessage('kept')]
+    useBotStore.setState({ bots: [{ ...bot, platformId: 'meta-muse' }], messages: { [bot.id]: previous } })
+    vi.stubGlobal('window', { electron: { muse: { startSession } } })
+    await store().startNewMuseSession(bot.id)
+    expect(store().bots[0]?.activeSessionId).toBe('initial')
+    expect(store().messages[bot.id]).toBe(previous)
+    expect(store().chatActionErrors[bot.id]).toMatch(/Muse (request failed|returned no session ID)/)
+  })
+
+  it('clears a pending quote, active typing and busy activity when switching sessions within one bot', async () => {
+    const account = { ...connected('meta-muse'), status: 'busy' as const }
+    useBotStore.setState({
+      bots: [{ ...bot, platformId: 'meta-muse' }], accounts: { [account.id]: account },
+      messages: { [bot.id]: [chatMessage('kept')] },
+      typing: { [bot.id]: true },
+      activity: { [account.id]: { code: 'work', text: 'Working', busy: true, emoji: null } }
+    })
+    store().setReplyTarget(bot.id, { messageId: 'kept', entryId: 'kept', quote: 'old quote', role: 'user' })
+    vi.stubGlobal('window', { electron: { muse: { startSession: async () => ({ sessionId: 'new' }) } } })
+    await store().startNewMuseSession(bot.id)
+
+    expect(store().bots[0]?.activeSessionId).toBe('new')
+    expect(store().messages[bot.id]).toEqual([])
+    expect(store().replyingTo[bot.id]).toBeUndefined()
+    expect(store().typing[bot.id]).toBeUndefined()
+    expect(store().activity[account.id]).toBeUndefined()
+    expect(store().accounts[account.id]?.status).toBe('online')
+  })
+
+  it.each(['meta-muse', 'hermes', 'antigravity'] as const)(
+    'merges %s history with messages sent and streamed during a history load',
+    async (platformId) => {
+      const history = deferred<unknown>()
+      const account = connected(platformId)
+      useBotStore.setState({
+        bots: [{ ...bot, platformId }], accounts: { [account.id]: account },
+        messages: { [bot.id]: [chatMessage('old transcript')] }
+      })
+      vi.spyOn(adapterRegistry, 'get').mockReturnValue({
+        sendMessage: async () => ({ acceptedAt: 10, messageId: 'sent', sessionId: 'selected' })
+      } as unknown as PlatformAdapter)
+      vi.stubGlobal('window', { electron: {
+        muse: { loadSessionHistory: () => history.promise },
+        hermes: { rpc: () => history.promise },
+        antigravity: { rpc: () => history.promise }
+      } })
+      const load = platformId === 'meta-muse' ? store().switchMuseSession
+        : platformId === 'hermes' ? store().switchHermesSession : store().switchAntigravitySession
+      const loading = load(bot.id, 'selected')
+      const now = Date.now()
+      await store().sendMessage(bot.id, 'repeat')
+      await store().sendMessage(bot.id, 'repeat')
+      store().applyMessageDelta('streaming', bot.id, account.id, 'current streaming text')
+      store().applyMessageDelta('local-answer', bot.id, account.id, 'final snapshot with a different ID')
+      const rows = [
+        { ...row('history'), createdAt: now - 1000 },
+        { ...row('stored-user'), text: 'repeat', createdAt: now },
+        { ...row('streaming'), role: platformId === 'meta-muse' ? 'bot' : 'assistant', text: 'stale', createdAt: now },
+        { ...row('remote-answer'), role: platformId === 'meta-muse' ? 'bot' : 'assistant', text: 'final snapshot with a different ID', createdAt: now },
+        { ...row('later-history'), createdAt: now + 20_000 }
+      ]
+      history.resolve(platformId === 'meta-muse' ? rows
+        : { ok: true, data: platformId === 'hermes' ? rows : { messages: rows } })
+      await loading
+      const messages = store().messages[bot.id] ?? []
+      expect(messages.map((message) => message.text)).toEqual([
+        'history', 'repeat', 'repeat', 'current streaming text', 'final snapshot with a different ID', 'later-history'
+      ])
+      expect(messages.filter((message) => message.id === 'streaming')).toHaveLength(1)
+      expect(messages.filter((message) => message.id === 'local-answer')).toHaveLength(1)
+      expect(messages.filter((message) => message.text === 'repeat').map((message) => message.delivery)).toEqual(['sent', 'sent'])
+    }
+  )
+
+  it('does not let a Cue history request block or replace history for a different agent', async () => {
+    const first = deferred<unknown>()
+    const second = deferred<unknown>()
+    const latest = deferred<unknown>()
+    const rpc = vi.fn().mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise).mockReturnValueOnce(latest.promise)
+    const account = connected('cue')
+    useBotStore.setState({ bots: [{ ...bot, platformId: 'cue', selectedAgentId: 'a', activeSessionId: undefined }], accounts: { [account.id]: account } })
+    vi.stubGlobal('window', { electron: { cue: { rpc } } })
+    const pending = store().hydrateCueBotHistory(bot.id)
+    store().setSelectedAgent(bot.id, 'b')
+    store().setSelectedAgent(bot.id, 'a')
+    const response = (sessionId: string) => ({ ok: true, data: {
+      sessionId, messages: [{ id: sessionId, text: sessionId, role: 'bot', createdAtMs: 1 }]
+    } })
+    latest.resolve(response('new-a'))
+    await latest.promise
+    second.resolve(response('old-b'))
+    first.resolve(response('old-a'))
+    await pending
+    expect(rpc).toHaveBeenCalledTimes(3)
+    expect(store().bots[0]?.activeSessionId).toBe('new-a')
+    expect(store().messages[bot.id]?.map((message) => message.id)).toEqual(['new-a'])
+  })
+
+  it('rejects a Hark snapshot that identifies a different session', async () => {
+    const rpc = vi.fn().mockResolvedValue({ ok: true, data: { conversationId: 'unrequested', messages: [] } })
+    const messages = [chatMessage('kept')]
+    useBotStore.setState({ bots: [{ ...bot, platformId: 'hark' }], messages: { [bot.id]: messages } })
+    vi.stubGlobal('window', { electron: { hark: { rpc } } })
+    await expect(store().switchHarkSession(bot.id, 'asked')).rejects.toThrow('Hark returned a different conversation')
+    expect(store().bots[0]?.activeSessionId).toBe('initial')
+    expect(store().messages[bot.id]).toBe(messages)
+  })
+
+  it('keeps a Hark project selection in flight when the account reconnects', async () => {
+    const account = connected('hark')
+    const project = deferred<unknown>()
+    const rpc = vi.fn().mockReturnValueOnce(project.promise)
+      .mockResolvedValue({ ok: true, data: { conversationId: 'incorrect-refresh', messages: [] } })
+    vi.spyOn(adapterRegistry, 'get').mockReturnValue({
+      connect: async () => 'online'
+    } as unknown as PlatformAdapter)
+    vi.stubGlobal('window', { electron: { hark: { rpc } } })
+    useBotStore.setState({
+      bots: [{ ...bot, platformId: 'hark', activeSessionId: undefined }], accounts: { [account.id]: account }
+    })
+    const switching = store().switchHarkSession(bot.id, 'project')
+    await store().connectAccount(account.id)
+    project.resolve({ ok: true, data: { conversationId: 'project', messages: [] } })
+    await switching
+    expect(rpc).toHaveBeenCalledOnce()
+    expect(store().bots[0]?.activeSessionId).toBe('project')
   })
 
   it('does not repopulate a fresh Antigravity chat with history from the previous session', async () => {
@@ -197,6 +345,92 @@ describe('session navigation', () => {
 
     expect(store().bots[0]?.activeSessionId).toBe('assigned-by-platform')
     expect(store().messages[bot.id]?.[0]?.delivery).toBe('sent')
+  })
+
+  it.each(['receipt', 'error'] as const)('holds delivery through timeout until a late %s settles', async (outcome) => {
+    vi.useFakeTimers()
+    const first = deferred<SendReceipt>()
+    const retry = deferred<SendReceipt>()
+    let oldAcceptance: (() => void) | undefined
+    const sent = mockHermesSend((message) => {
+      if (!oldAcceptance) {
+        oldAcceptance = message.onAccepted
+        return first.promise
+      }
+      return retry.promise
+    })
+    const sending = store().sendMessage(bot.id, 'Keep one transport open')
+    const id = store().messages[bot.id]![0]!.id
+    await vi.advanceTimersByTimeAsync(SEND_HARD_TIMEOUT_MS)
+    await sending
+    expect(store().messages[bot.id]?.[0]).toMatchObject({ delivery: 'no-reply', error: SEND_STILL_PENDING_TEXT })
+
+    await store().retryMessage(bot.id, id)
+    expect(sent).toHaveBeenCalledTimes(1)
+    expect(store().messages[bot.id]?.[0]).toMatchObject({ delivery: 'no-reply', error: SEND_STILL_PENDING_TEXT })
+    if (outcome === 'receipt') {
+      first.resolve({ messageId: 'first', acceptedAt: 2, sessionId: 'initial' })
+      await first.promise
+      expect(store().messages[bot.id]?.[0]?.delivery).toBe('sent')
+      await store().retryMessage(bot.id, id)
+      expect(sent).toHaveBeenCalledTimes(1)
+    } else {
+      first.reject(new Error('transport went away'))
+      await first.promise.catch(() => undefined)
+      expect(store().messages[bot.id]?.[0]).toMatchObject({ delivery: 'no-reply', error: SEND_TIMEOUT_TEXT })
+      const retrying = store().retryMessage(bot.id, id)
+      oldAcceptance?.()
+      expect(store().messages[bot.id]?.[0]?.delivery).toBe('sending')
+      expect(sent).toHaveBeenCalledTimes(2)
+      retry.resolve({ messageId: 'retry', acceptedAt: 3 })
+      await retrying
+      expect(store().messages[bot.id]?.[0]?.delivery).toBe('sent')
+    }
+  })
+
+  it('finishes removing a Cue account after its connect settles and discards the refresh already in flight', async () => {
+    const connection = deferred<'online'>()
+    const roster = deferred<unknown>()
+    const account = connected('cue')
+    const rpc = vi.fn().mockReturnValue(roster.promise)
+    const disconnect = vi.fn().mockResolvedValue(undefined)
+    const clearAuth = vi.fn().mockResolvedValue(undefined)
+    vi.spyOn(adapterRegistry, 'get').mockReturnValue({
+      connect: () => connection.promise, disconnect
+    } as unknown as PlatformAdapter)
+    vi.stubGlobal('window', { electron: { cue: { rpc, clearAuth } } })
+    useBotStore.setState({ bots: [{ ...bot, platformId: 'cue', accountIds: [account.id] }], accounts: { [account.id]: account } })
+    const refresh = store().syncCueAccountBots(account.id)
+    await vi.waitFor(() => expect(rpc).toHaveBeenCalledWith({ op: 'listAgents', accountId: account.id }))
+    const connecting = store().connectAccount(account.id)
+    const removing = store().removeBot(bot.id)
+    roster.resolve({ ok: true, data: [{ id: 'agent', name: 'Agent' }] })
+    expect(await refresh).toBe(0)
+    expect(store().bots).toEqual([])
+    expect(store().accounts[account.id]).toBeUndefined()
+    connection.resolve('online')
+    await Promise.all([connecting, removing])
+    expect(disconnect).toHaveBeenCalledExactlyOnceWith(account.id)
+    expect(clearAuth).toHaveBeenCalledExactlyOnceWith(account.id)
+    expect(store().bots).toEqual([])
+  })
+
+  it('does not recreate a deleted Cue bot from a shared account roster already loading', async () => {
+    const account = connected('cue')
+    const roster = deferred<unknown>()
+    const first = { ...bot, platformId: 'cue' as const, accountIds: [account.id], selectedAgentId: 'gone' }
+    useBotStore.setState({
+      bots: [first, { ...first, id: 'kept', selectedAgentId: 'kept' }], accounts: { [account.id]: account }
+    })
+    const rpc = vi.fn().mockReturnValue(roster.promise)
+    vi.stubGlobal('window', { electron: { cue: { rpc } } })
+    const refresh = store().syncCueAccountBots(account.id)
+    await vi.waitFor(() => expect(rpc).toHaveBeenCalled())
+    await store().removeBot(first.id)
+    roster.resolve({ ok: true, data: [{ id: 'gone' }, { id: 'kept' }] })
+    expect(await refresh).toBe(0)
+    expect(store().bots.map((item) => item.id)).toEqual(['kept'])
+    expect(store().accounts[account.id]).toBeDefined()
   })
 
   it.each([

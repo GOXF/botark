@@ -1,9 +1,21 @@
-import { describe, expect, it } from 'vitest'
+import { createElement } from 'react'
+import { renderToStaticMarkup } from 'react-dom/server'
+import { describe, expect, it, vi } from 'vitest'
+import { useBotStore } from '@/store/botStore'
+import { InfoPanel } from './InfoPanel'
 import {
   getPlatformInspector,
   PLATFORM_INSPECTORS,
   resolveInspectorTab
 } from './platformInspector'
+
+vi.mock('@/store/botStore', async (importOriginal) => {
+  const original = await importOriginal<typeof import('@/store/botStore')>()
+  return {
+    ...original,
+    useBotStore: Object.assign(vi.fn(original.useBotStore), original.useBotStore)
+  }
+})
 
 describe('platformInspector', () => {
   it('defines distinct, authentic inspector tabs for each platform', () => {
@@ -62,5 +74,19 @@ describe('platformInspector', () => {
     expect(resolveInspectorTab('grok', 'computer')).toBe('computer')
     expect(resolveInspectorTab('hermes', 'computer')).toBe('computer')
     expect(resolveInspectorTab('hermes', 'library')).toBe('overview')
+  })
+
+  it.each([
+    { infoPanelOpen: false, settingsOpen: false },
+    { infoPanelOpen: true, settingsOpen: true }
+  ])('does not read the selected bot or render inspector sections while hidden (%j)', (visibility) => {
+    const getBots = vi.fn(() => {
+      throw new Error('The hidden inspector read the bot list')
+    })
+    const state = { ...useBotStore.getState(), ...visibility, get bots() { return getBots() } }
+    vi.mocked(useBotStore).mockImplementationOnce((selector) => selector(state))
+
+    expect(renderToStaticMarkup(createElement(InfoPanel))).toBe('')
+    expect(getBots).not.toHaveBeenCalled()
   })
 })

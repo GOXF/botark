@@ -1,3 +1,5 @@
+import { constants } from 'node:fs'
+import { open } from 'node:fs/promises'
 import { basename } from 'node:path'
 import { parse as parseYaml } from 'yaml'
 import type { McpServerConfigInput, McpTransportType } from '@shared/workspace'
@@ -25,6 +27,32 @@ export interface ParseConfigOptions {
 
 const CONTROL_CHAR_RE = /[\x00-\x1f\x7f]/
 const VAR_RE = /\$\{([^}]+)\}/g
+export const MAX_MCP_CONFIG_BYTES = 2 * 1024 * 1024
+
+function checkConfigSize(bytes: number): void {
+  if (bytes > MAX_MCP_CONFIG_BYTES) throw new Error('MCP 配置文件不能超过 2 MiB')
+}
+
+export async function readMcpConfigFile(path: string): Promise<string> {
+  const file = await open(path, constants.O_RDONLY | constants.O_NONBLOCK | (constants.O_NOFOLLOW ?? 0))
+  try {
+    const info = await file.stat()
+    if (!info.isFile()) throw new Error('请选择普通的 MCP 配置文件')
+    checkConfigSize(info.size)
+    const buffer = Buffer.allocUnsafe(info.size + 1)
+    let offset = 0
+    while (offset < buffer.length) {
+      const { bytesRead } = await file.read(buffer, offset, buffer.length - offset, offset)
+      if (!bytesRead) break
+      offset += bytesRead
+    }
+    checkConfigSize(offset)
+    if (offset === buffer.length) throw new Error('MCP 配置文件已变更，请重试')
+    return buffer.toString('utf8', 0, offset)
+  } finally {
+    await file.close()
+  }
+}
 
 /**
  * Strip UTF-8 BOM, JSONC line/block comments outside string literals,
@@ -446,6 +474,7 @@ export function parseMcpConfigText(
   rawText: string,
   options?: ParseConfigOptions
 ): ParsedMcpServer[] {
+  checkConfigSize(Buffer.byteLength(rawText))
   const stripped = stripJsonCommentsAndBom(rawText)
   if (!stripped) throw new Error('MCP 配置内容为空')
   let parsed: unknown
@@ -461,6 +490,7 @@ export function parseHermesYamlMcpServers(
   rawYaml: string,
   options?: ParseConfigOptions
 ): ParsedMcpServer[] {
+  checkConfigSize(Buffer.byteLength(rawYaml))
   const parsed = parseYaml(rawYaml) as unknown
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return []
   const obj = parsed as Record<string, unknown>

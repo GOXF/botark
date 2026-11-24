@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest'
-import { routeSlackMessage, splitSlackText } from './routing'
+import { canPostToSlackBinding, routeSlackMessage, splitSlackText } from './routing'
 
 const bindings = [{ roomId: 'r', channel: 'C1', thread: '1.0' }]
 const event = { type: 'message', text: '<@UBOT> @Muse review', user: 'U1', channel: 'C1', ts: '2.0', thread_ts: '1.0' }
@@ -16,6 +16,13 @@ it('filters bots, edited messages and unrelated channels', () => {
 })
 it('isolates subsequent top-level discussions in channel mode', () => {
   expect(routeSlackMessage([{ roomId: 'r', channel: 'C1', defaultThread: '0.0' }], event, 'UBOT')?.fork).toBe(true)
+})
+it('carries the binding generation and rejects stale reply destinations', () => {
+  const binding = { ...bindings[0]!, bindingGeneration: 2 }
+  expect(routeSlackMessage([binding], event, 'UBOT')).toMatchObject({ bindingGeneration: 2 })
+  expect(canPostToSlackBinding(binding, { bindingGeneration: 1, channel: 'C1', thread: '1.0' })).toBe(false)
+  expect(canPostToSlackBinding(binding, { bindingGeneration: 2, channel: 'C1', thread: '3.0' })).toBe(false)
+  expect(canPostToSlackBinding(binding, { bindingGeneration: 2, channel: 'C1', thread: '1.0' })).toBe(true)
 })
 it('preserves long unicode messages across Slack posts', () => {
   const input = '🙂'.repeat(12002)

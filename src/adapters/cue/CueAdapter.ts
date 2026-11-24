@@ -7,7 +7,8 @@
  * - Full `AbortSignal` support for `stopRoom` cancellation
  */
 import { createId } from '@shared/id'
-import type { CueMainEvent, CueRpcRequest, CueRpcResponse } from '@shared/ipc'
+import type { CueRpcRequest, CueRpcResponse } from '@shared/ipc'
+import type { CueTurnEvent } from './events'
 import { getBotHubBridge } from '../meta-muse/electronBridge'
 import { statusAfterSendFailure } from '../sendFailure'
 import {
@@ -29,6 +30,7 @@ export interface CueAgentItem {
   id: string
   name: string
   description?: string
+  sessionId?: string
   avatarShape?: string
   avatarColor?: string
 }
@@ -45,10 +47,12 @@ function extractCueAgents(payload: unknown): CueAgentItem[] {
     const rec = item as Record<string, unknown>
     const id = String(rec['id'] ?? rec['agentId'] ?? rec['agent_id'] ?? '').trim()
     if (!id) continue
+    const sessionId = rec['sessionId'] ?? rec['sessionUid'] ?? rec['session_uid'] ?? rec['taskId'] ?? rec['task_id']
     out.push({
       id,
       name: String(rec['name'] ?? rec['title'] ?? 'Cue').trim() || 'Cue',
       description: typeof rec['description'] === 'string' ? rec['description'] : undefined,
+      sessionId: typeof sessionId === 'string' ? sessionId : undefined,
       avatarShape: typeof rec['avatarShape'] === 'string' ? rec['avatarShape'] : undefined,
       avatarColor: typeof rec['avatarColor'] === 'string' ? rec['avatarColor'] : undefined
     })
@@ -65,6 +69,10 @@ export class CueAdapter implements PlatformAdapter {
   private readonly agentsByAccount = new Map<string, CueAgentItem[]>()
   private readonly convAgentByAccount = new Map<string, Map<string, string>>()
   private readonly pendingApprovals = new Map<string, MuseApproval[]>()
+  private readonly sendQueues = new Map<string, Promise<SendReceipt>>()
+  private readonly sendingByAccount = new Map<string, number>()
+  private readonly pendingSends = new Map<string, { accountId: string; accept: () => void; isCurrent: () => boolean }>()
+  private readonly credentialGenerations = new Map<string, number>()
   private readonly listeners = new Set<AdapterListener>()
   private bridgeUnsub: Unsubscribe | null = null
 
@@ -78,8 +86,18 @@ export class CueAdapter implements PlatformAdapter {
     this.bridgeUnsub = bridge.onEvent((event) => this.handleMainEvent(event))
   }
 
-  private handleMainEvent(event: CueMainEvent): void {
+  private handleMainEvent(event: CueTurnEvent): void {
+    const pending = event.requestId ? this.pendingSends.get(event.requestId) : undefined
+    if (event.requestId && (pending?.accountId !== event.accountId || !pending.isCurrent())) return
+    if (event.type === 'accepted') {
+      pending?.accept()
+      return
+    }
     if (event.type === 'auth') {
+      if (event.signedIn || !event.windowClosed) {
+        const generation = this.credentialGenerations.get(event.accountId) ?? 0
+        this.credentialGenerations.set(event.accountId, generation + 1)
+      }
       if (event.signedIn) {
         const prev = this.accounts.get(event.accountId)
         const handle = event.handle ?? event.accountSlot ?? prev?.handle ?? event.accountId
@@ -117,7 +135,7 @@ export class CueAdapter implements PlatformAdapter {
     if (event.type === 'activity') {
       if (event.busy) {
         this.setStatus(event.accountId, 'busy')
-      } else if (this.getStatus(event.accountId) !== 'attention') {
+      } else if (!this.sendingByAccount.has(event.accountId) && this.getStatus(event.accountId) !== 'attention') {
         this.setStatus(event.accountId, 'online')
       }
       this.emit({
@@ -326,10 +344,38 @@ export class CueAdapter implements PlatformAdapter {
       this.getBoundAgentId(message.accountId, message.conversationId) ??
       this.listCachedAgents(message.accountId)[0]?.id
 
+    // OpenAPI separates delivery from polling and carries no turn ID, so reserve
+    // the session through both RPCs. Native IPC also serializes by its resolved session.
+    const knownSession = message.sessionId ?? this.listCachedAgents(message.accountId).find((item) => item.id === agentId)?.sessionId
+    const key = JSON.stringify([message.accountId, knownSession || agentId])
+    const credentialGeneration = this.credentialGenerations.get(message.accountId)
+    const isCurrent = () => this.credentialGenerations.get(message.accountId) === credentialGeneration
+    const send = (this.sendQueues.get(key) ?? Promise.resolve()).catch(() => undefined)
+      .then(() => this.sendTurn(message, bridge, agentId, isCurrent))
+    this.sendQueues.set(key, send)
+    try {
+      return await send
+    } finally {
+      if (this.sendQueues.get(key) === send) this.sendQueues.delete(key)
+    }
+  }
+
+  private async sendTurn(
+    message: OutgoingMessage,
+    bridge: NonNullable<NonNullable<ReturnType<typeof getBotHubBridge>>['cue']>,
+    agentId: string | undefined,
+    isCurrent: () => boolean
+  ): Promise<SendReceipt> {
+    const assertCredentials = () => {
+      if (!isCurrent()) throw new AdapterError('network', 'Cue 账号在发送期间已更改')
+    }
+    if (message.signal?.aborted) throw new AdapterError('network', 'Aborted')
+    assertCredentials()
     if (!message.conversationId.startsWith('room-turn-') && agentId) {
       this.bindConversationAgent(message.conversationId, agentId, message.accountId)
     }
 
+    this.sendingByAccount.set(message.accountId, (this.sendingByAccount.get(message.accountId) ?? 0) + 1)
     this.setStatus(message.accountId, 'busy')
     this.emit({
       type: 'typing',
@@ -339,10 +385,19 @@ export class CueAdapter implements PlatformAdapter {
       isTyping: true
     })
 
+    const requestId = createId('cue_req')
+    let accepted = false
+    const accept = () => {
+      if (accepted) return
+      accepted = true
+      message.onAccepted?.()
+    }
+    this.pendingSends.set(requestId, { accountId: message.accountId, accept, isCurrent })
     try {
-      const req: CueRpcRequest = {
+      const req: CueRpcRequest & { requestId: string } = {
         accountId: message.accountId,
         op: 'sendMessage',
+        requestId,
         agentId,
         sessionId: message.sessionId,
         conversationId: message.conversationId,
@@ -358,7 +413,8 @@ export class CueAdapter implements PlatformAdapter {
           res.message || `Cue sendMessage failed (${res.status})`
         )
       }
-      message.onAccepted?.()
+      accept()
+      assertCredentials()
       const data = (res.data && typeof res.data === 'object' ? res.data : {}) as Record<
         string,
         unknown
@@ -375,6 +431,7 @@ export class CueAdapter implements PlatformAdapter {
         const until = Date.now() + 120_000
         while (Date.now() < until) {
           message.signal?.throwIfAborted()
+          assertCredentials()
           const polled = await bridge.rpc({
             accountId: message.accountId,
             op: 'watchUntilReply',
@@ -383,6 +440,7 @@ export class CueAdapter implements PlatformAdapter {
             expectedUserText: message.text
           })
           message.signal?.throwIfAborted()
+          assertCredentials()
           if (!polled.ok) {
             throw new AdapterError(polled.status === 401 || polled.status === 403 ? 'not-connected' : 'network', polled.message)
           }
@@ -414,19 +472,24 @@ export class CueAdapter implements PlatformAdapter {
         accountId: message.accountId,
         isTyping: false
       })
-      this.setStatus(message.accountId, 'online')
+      if (this.sendingByAccount.get(message.accountId) === 1) this.setStatus(message.accountId, 'online')
 
-      if (replyText) {
+      const replies = Array.isArray(data.replies)
+        ? data.replies as Array<{ id: string; text: string }>
+        : replyText ? [{ id: replyId, text: replyText }] : []
+      for (const reply of replies) {
+        const incoming = {
+          id: reply.id,
+          conversationId: message.conversationId,
+          sessionId,
+          accountId: message.accountId,
+          text: reply.text,
+          createdAt: Date.now(),
+          authoritative: true
+        }
         this.emit({
           type: 'message',
-          message: {
-            id: replyId,
-            conversationId: message.conversationId,
-            sessionId,
-            accountId: message.accountId,
-            text: replyText,
-            createdAt: Date.now()
-          }
+          message: incoming
         })
       }
 
@@ -434,7 +497,7 @@ export class CueAdapter implements PlatformAdapter {
         messageId: typeof data['messageId'] === 'string' ? data['messageId'] : replyId,
         acceptedAt: Date.now(),
         sessionId,
-        ...(replyText ? {} : { noReply: true })
+        ...(replies.some((reply) => reply.text) ? {} : { noReply: true })
       }
     } catch (error) {
       this.emit({
@@ -444,14 +507,22 @@ export class CueAdapter implements PlatformAdapter {
         accountId: message.accountId,
         isTyping: false
       })
+      if (!isCurrent()) throw error
       if (message.signal?.aborted) {
-        this.setStatus(message.accountId, 'online')
+        if (this.sendingByAccount.get(message.accountId) === 1) this.setStatus(message.accountId, 'online')
         throw error instanceof AdapterError ? error : new AdapterError('network', 'Aborted')
       }
       const next = statusAfterSendFailure(error)
       const detail = error instanceof Error ? error.message : String(error)
-      this.setStatus(message.accountId, next, next === 'error' ? detail : undefined)
+      if (next === 'error' || this.sendingByAccount.get(message.accountId) === 1) {
+        this.setStatus(message.accountId, next, next === 'error' ? detail : undefined)
+      }
       throw error instanceof AdapterError ? error : new AdapterError('network', detail)
+    } finally {
+      this.pendingSends.delete(requestId)
+      const remaining = (this.sendingByAccount.get(message.accountId) ?? 1) - 1
+      if (remaining) this.sendingByAccount.set(message.accountId, remaining)
+      else this.sendingByAccount.delete(message.accountId)
     }
   }
 

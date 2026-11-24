@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { createId } from '@shared/id'
 import {
   parseMuseBatch,
@@ -18,6 +18,11 @@ import { useT } from '@/lib/i18n'
 import { autoAssignProxyPool, useBotStore } from '@/store/botStore'
 
 type RowState = 'waiting' | 'running' | 'ok' | 'failed' | 'needs-human' | 'cancelled' | 'skipped'
+const provisionalAccounts = new Set<string>()
+
+export function keepMuseBatchProxyAssignments(keepIds: readonly string[]): string[] {
+  return [...new Set([...keepIds, ...provisionalAccounts])]
+}
 
 interface Row {
   id: string
@@ -73,9 +78,19 @@ function StateIcon({ state }: { state: RowState }) {
   return <Circle className={cn(cls, 'text-ink-muted')} aria-hidden />
 }
 
-/** Paste or load `email | inbox_url` lines; each becomes its own Muse bot via email one-time-code login. */
-const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+function waitForRetry(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    const finish = () => {
+      clearTimeout(timer)
+      signal.removeEventListener('abort', finish)
+      resolve()
+    }
+    const timer = setTimeout(finish, ms)
+    signal.addEventListener('abort', finish, { once: true })
+  })
+}
 
+/** Paste or load `email | inbox_url` lines to sign in separate Muse bots with email codes. */
 export function MuseBatchImport({ onDone, onBusyChange }: { onDone: () => void; onBusyChange?: (busy: boolean) => void }) {
   const t = useT()
   const addBot = useBotStore((s) => s.addBot)
@@ -83,8 +98,10 @@ export function MuseBatchImport({ onDone, onBusyChange }: { onDone: () => void; 
   const [rows, setRows] = useState<Row[]>([])
   const [concurrency, setConcurrency] = useState(1)
   const [running, setRunning] = useState(false)
+  const [preparationError, setPreparationError] = useState(false)
   const rowsRef = useRef<Row[]>([])
-  const stopRef = useRef(false)
+  const runRef = useRef<AbortController | null>(null)
+  const draining = useRef(false)
   const fileRef = useRef<HTMLInputElement>(null)
   const parsed = useMemo(() => parseMuseBatch(text), [text])
   const muse = getBridge()?.muse
@@ -94,16 +111,30 @@ export function MuseBatchImport({ onDone, onBusyChange }: { onDone: () => void; 
     setRows(rowsRef.current)
   }
 
-  const adopt = (row: Row) => {
+  const release = (accountId: string) => {
+    if (!accountId) return
+    provisionalAccounts.delete(accountId)
+    void muse?.cancelLogin(accountId).catch(() => {})
+  }
+
+  const adopt = (row: Row, signal: AbortSignal) => {
+    if (signal.aborted) return release(row.accountId)
     const local = row.email.split('@')[0] ?? 'Muse'
-    const taken = useBotStore.getState().bots.map((b) => b.name)
+    const { bots, accounts } = useBotStore.getState()
+    if (row.importKey && Object.values(accounts).some((account) =>
+      account.platformId === 'meta-muse' && account.importKey === row.importKey
+    )) {
+      release(row.accountId)
+      return patch(row.id, { state: 'skipped', reason: undefined })
+    }
     addBot({
       id: row.botId,
       platformId: 'meta-muse',
-      name: freshName(`Muse · ${local}`, taken),
+      name: freshName(`Muse · ${local}`, bots.map((bot) => bot.name)),
       accounts: [{ key: row.accountId, accountId: row.accountId, displayName: local, handle: '', importKey: row.importKey }],
       background: true
     })
+    provisionalAccounts.delete(row.accountId)
     patch(row.id, { state: 'ok', reason: undefined })
   }
 
@@ -114,31 +145,38 @@ export function MuseBatchImport({ onDone, onBusyChange }: { onDone: () => void; 
     return muse.onEvent((event) => {
       if (event.type !== 'login') return
       const row = rowsRef.current.find((r) => r.accountId === event.accountId && r.state === 'needs-human')
-      if (!row) return
-      if (event.signedIn) adopt(row)
+      const signal = runRef.current?.signal
+      if (!row || !signal || signal.aborted) return
+      if (event.signedIn) adopt(row, signal)
       else if (event.windowClosed) {
-        void muse.cancelLogin(row.accountId).catch(() => {})
+        release(row.accountId)
         patch(row.id, { state: 'failed', reason: 'window-closed' })
       }
     })
   }, [muse])
 
   const busy = running || rows.some((r) => r.state === 'running' || r.state === 'needs-human')
-  useEffect(() => onBusyChange?.(busy), [busy, onBusyChange])
+  useLayoutEffect(() => onBusyChange?.(busy), [busy, onBusyChange])
 
   // Leaving the dialog drops half-made sessions (never ones already adopted).
-  useEffect(
+  const abortRun = () => {
+    runRef.current?.abort()
+    for (const row of rowsRef.current) {
+      if (row.state === 'running' || row.state === 'needs-human') release(row.accountId)
+    }
+  }
+
+  useLayoutEffect(
     () => () => {
-      stopRef.current = true
-      for (const r of rowsRef.current) {
-        if (r.state === 'running' || r.state === 'needs-human') void muse?.cancelLogin(r.accountId).catch(() => {})
-      }
+      abortRun()
+      runRef.current = null
+      draining.current = false
     },
     []
   )
 
   /** One clean login attempt with a fresh account id (and so a fresh partition). */
-  const attemptOnce = async (row: Row): Promise<{ res: MuseAutoLoginResult; accountId: string; botId: string }> => {
+  const attemptOnce = async (row: Row, signal: AbortSignal): Promise<{ res: MuseAutoLoginResult; accountId: string; botId: string }> => {
     const accountId = createId('acc')
     const botId = createId('bot')
     const attempts = (rowsRef.current.find((r) => r.id === row.id)?.attempts ?? row.attempts) + 1
@@ -149,8 +187,9 @@ export function MuseBatchImport({ onDone, onBusyChange }: { onDone: () => void; 
     const inFlight = rowsRef.current
       .filter((r) => r.accountId && (r.state === 'running' || r.state === 'needs-human'))
       .map((r) => ({ id: r.accountId, platformId: 'meta-muse' }))
+    provisionalAccounts.add(accountId)
     await autoAssignProxyPool([accountId], [...inFlight, { id: accountId, platformId: 'meta-muse' }]).catch(() => undefined)
-    if (stopRef.current) return { res: { ok: false, reason: 'cancelled' }, accountId, botId }
+    if (signal.aborted) return { res: { ok: false, reason: 'cancelled' }, accountId, botId }
     try {
       const res = await muse!.autoLogin({ botId, accountId, email: row.email, inboxUrl: row.inboxUrl })
       return { res, accountId, botId }
@@ -159,52 +198,72 @@ export function MuseBatchImport({ onDone, onBusyChange }: { onDone: () => void; 
     }
   }
 
-  const runOne = async (row: Row) => {
+  const runOne = async (row: Row, signal: AbortSignal) => {
     if (!muse?.autoLogin) return patch(row.id, { state: 'failed', reason: 'unavailable' })
     for (;;) {
-      const { res, accountId, botId } = await attemptOnce(row)
+      const { res, accountId, botId } = await attemptOnce(row, signal)
       const current = { ...row, accountId, botId }
-      if (res.ok) return adopt(current)
-      if (stopRef.current || res.reason === 'cancelled') {
-        void muse.cancelLogin(accountId).catch(() => {})
+      if (signal.aborted) return release(accountId)
+      if (res.ok) return adopt(current, signal)
+      if (res.reason === 'cancelled') {
+        release(accountId)
         return patch(row.id, { state: 'cancelled', reason: 'cancelled' })
       }
       if (res.reason === 'needs-human' && res.canShow) return patch(row.id, { state: 'needs-human', reason: res.reason })
-      void muse.cancelLogin(accountId).catch(() => {})
+      release(accountId)
       const attempts = rowsRef.current.find((r) => r.id === row.id)?.attempts ?? 1
       const reason = res.reason ?? 'timeout'
       if (!shouldAutoRetry(reason, attempts)) return patch(row.id, { state: 'failed', reason })
       // Transient failure: show why, back off, then try again from scratch.
       patch(row.id, { reason })
-      await wait(retryDelayMs(attempts))
-      if (stopRef.current) return patch(row.id, { state: 'cancelled', reason: 'cancelled' })
+      await waitForRetry(retryDelayMs(attempts), signal)
+      if (signal.aborted) return
     }
   }
 
-  const drain = async () => {
-    stopRef.current = false
-    setRunning(true)
+  const drain = async (signal: AbortSignal) => {
     const worker = async () => {
-      for (;;) {
-        if (stopRef.current) return
+      while (!signal.aborted) {
         const next = rowsRef.current.find((r) => r.state === 'waiting')
         if (!next) return
-        patch(next.id, { state: 'running' })
-        await runOne(next)
+        await runOne(next, signal)
       }
     }
     await Promise.all(Array.from({ length: concurrency }, worker))
-    setRunning(false)
   }
 
-  const start = async () => {
-    // Re-importing the same list used to create a second bot per email.
+  const run = async (prepare?: (signal: AbortSignal) => Promise<void>) => {
+    if (draining.current) return
+    const previous = runRef.current
+    const controller = previous && !previous.signal.aborted ? previous : new AbortController()
+    runRef.current = controller
+    draining.current = true
+    setRunning(true)
+    setPreparationError(false)
+    try {
+      if (prepare) await prepare(controller.signal)
+      await drain(controller.signal)
+    } catch {
+      if (!controller.signal.aborted) {
+        cancel()
+        setPreparationError(true)
+      }
+    } finally {
+      if (runRef.current === controller) {
+        draining.current = false
+        setRunning(false)
+      }
+    }
+  }
+
+  const start = () => run(async (signal) => {
+    const keys = await Promise.all(parsed.items.map((item) => museImportKey(item.email)))
+    if (signal.aborted) return
     const imported = new Set(
       Object.values(useBotStore.getState().accounts)
         .filter((a) => a.platformId === 'meta-muse' && a.importKey)
-        .map((a) => a.importKey!)
+        .map((a) => a.importKey)
     )
-    const keys = await Promise.all(parsed.items.map((item) => museImportKey(item.email)))
     rowsRef.current = parsed.items.map((item, i) => ({
       id: createId('row'),
       line: item.line,
@@ -213,30 +272,31 @@ export function MuseBatchImport({ onDone, onBusyChange }: { onDone: () => void; 
       importKey: keys[i],
       botId: '',
       accountId: '',
-      state: imported.has(keys[i]!) ? 'skipped' : 'waiting',
+      state: imported.has(keys[i]) ? 'skipped' : 'waiting',
       attempts: 0
     }))
     setRows(rowsRef.current)
-    void drain()
-  }
+  })
 
   const cancel = () => {
-    stopRef.current = true
+    abortRun()
     for (const r of rowsRef.current) {
-      if (r.state === 'running') void muse?.cancelLogin(r.accountId).catch(() => {})
-      if (r.state === 'waiting') patch(r.id, { state: 'cancelled', reason: 'cancelled' })
+      if (r.state === 'waiting' || r.state === 'running' || r.state === 'needs-human') {
+        patch(r.id, { state: 'cancelled', reason: 'cancelled' })
+      }
     }
   }
 
   const retry = (row?: Row) => {
+    if (draining.current && runRef.current?.signal.aborted) return
     for (const r of rowsRef.current) {
       if (row ? r.id === row.id : r.state === 'failed' || r.state === 'cancelled') {
-        if (r.state === 'needs-human') void muse?.cancelLogin(r.accountId).catch(() => {})
+        if (r.state === 'needs-human') release(r.accountId)
         // A manual retry gets a fresh set of automatic attempts.
-        patch(r.id, { state: 'waiting', reason: undefined, attempts: 0 })
+        patch(r.id, { state: 'waiting', accountId: '', reason: undefined, attempts: 0 })
       }
     }
-    if (!running) void drain()
+    if (!draining.current) void run()
   }
 
   const counts = rows.reduce<Record<RowState, number>>(
@@ -313,17 +373,23 @@ export function MuseBatchImport({ onDone, onBusyChange }: { onDone: () => void; 
               ]}
             />
           </div>
-          <Button className="ml-auto" variant="primary" disabled={parsed.items.length === 0} onClick={() => void start()}>
-            {t('Import {n}', { n: String(parsed.items.length) })}
-          </Button>
+          {running ? (
+            <Button className="ml-auto" onClick={cancel}>{t('Cancel')}</Button>
+          ) : (
+            <Button className="ml-auto" variant="primary" disabled={parsed.items.length === 0} onClick={() => void start()}>
+              {t('Import {n}', { n: String(parsed.items.length) })}
+            </Button>
+          )}
         </div>
+        {preparationError && <p role="alert" className="text-[12px] text-status-error">{t('Something went wrong.')}</p>}
       </div>
     )
   }
 
-  const finished = !running && counts.waiting === 0 && counts.running === 0
+  const finished = !busy && counts.waiting === 0
   return (
     <div className="flex animate-veil-in flex-col gap-3">
+      {preparationError && <p role="alert" className="text-[12px] text-status-error">{t('Something went wrong.')}</p>}
       <div className="flex items-center gap-3 text-[12px] text-ink-secondary tabular-nums">
         <span>{t('{done}/{total} done', { done: String(counts.ok), total: String(rows.length) })}</span>
         {counts.failed > 0 && <span className="text-status-error">{t('{n} failed', { n: String(counts.failed) })}</span>}
@@ -363,7 +429,7 @@ export function MuseBatchImport({ onDone, onBusyChange }: { onDone: () => void; 
         ))}
       </ul>
       <div className="flex items-center gap-2">
-        {running ? (
+        {running || counts['needs-human'] > 0 ? (
           <Button onClick={cancel}>{t('Cancel')}</Button>
         ) : (
           (counts.failed > 0 || counts.cancelled > 0) && <Button onClick={() => retry()}>{t('Retry failed')}</Button>

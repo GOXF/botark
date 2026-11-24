@@ -59,6 +59,11 @@ describe("pickFreshCode", () => {
   it("does not accept a stale code just because the baseline was empty-er", () => {
     expect(pickFreshCode(["111111"], ["111111", "111111"])).toBeUndefined()
   })
+
+  it('skips codes from every prior inbox read and preserves page order among new codes', () => {
+    const baseline = ['111111', '222222', '111111']
+    expect(pickFreshCode(baseline, ['222222', '111111', '444444', '333333'])).toBe('444444')
+  })
 })
 
 describe("retry policy", () => {

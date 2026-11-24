@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Check, Copy, Cpu, ExternalLink, FileText, Link2, RefreshCw, Sparkles } from 'lucide-react'
-import type { CueAuthStatus } from '@shared/ipc'
+import type { CueAuthStatus, CueRpcRequest } from '@shared/ipc'
 import { EmptyLine, Section } from '@/components/info/Section'
 import { RefreshButton } from '@/components/muse/RefreshButton'
 import { Button } from '@/components/ui/Button'
@@ -13,6 +13,22 @@ import { useBotStore } from '@/store/botStore'
 import type { Bot, BotAccount } from '@/types'
 
 const EMPTY_LIST: unknown[] = []
+const cueReads = new Map<string, Promise<unknown>>()
+
+function readOnce<T>(key: readonly unknown[], load: () => Promise<T>): Promise<T> {
+  const serialized = JSON.stringify(key)
+  const existing = cueReads.get(serialized)
+  if (existing) return existing as Promise<T>
+  const request = Promise.resolve().then(load).finally(() => cueReads.delete(serialized))
+  cueReads.set(serialized, request)
+  return request
+}
+
+function readCueRpc(request: CueRpcRequest) {
+  const cue = getBridge()?.cue
+  if (!cue?.rpc) return Promise.reject(new Error('Cue IPC unavailable'))
+  return readOnce(['rpc', request], () => cue.rpc(request))
+}
 
 interface CueQuotaSnapshot {
   limitCredits: number | null
@@ -49,9 +65,7 @@ async function callCueEndpoint(
   body: unknown = {},
   method: 'GET' | 'POST' = 'POST'
 ): Promise<unknown> {
-  const cue = getBridge()?.cue
-  if (!cue?.rpc) throw new Error('Cue IPC unavailable')
-  const res = await cue.rpc({ accountId, op: 'call', path, method, body })
+  const res = await readCueRpc({ accountId, op: 'call', path, method, body })
   if (!res.ok) throw new Error(res.message || `HTTP ${res.status}`)
   return res.data
 }
@@ -108,8 +122,7 @@ function pickCueAgentMeta(raw: unknown, selectedAgentId?: string): CueAgentMeta 
   const items = parseCueAgentList(raw)
   if (items.length === 0) return null
   if (selectedAgentId) {
-    const exact = items.find((item) => item.id === selectedAgentId)
-    if (exact) return exact
+    return items.find((item) => item.id === selectedAgentId) ?? null
   }
   return items[0] ?? null
 }
@@ -126,37 +139,44 @@ function formatBytes(size: number): string {
  * Silently swallows unavailable/retired upstream RPCs via `cleanSidebarError`.
  */
 function useCueSectionLoader<T>(
-  accountId: string,
+  accountId: string | undefined,
   loader: () => Promise<T>,
   deps: ReadonlyArray<unknown>,
-  fallback: T
+  fallback: T,
+  loadOffline = false
 ) {
-  const status = useBotStore((s) => s.accounts[accountId]?.status)
-  const [data, setData] = useState<T>(fallback)
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState<string>()
+  const isOnline = useBotStore((s) => isOnlineAccountStatus(accountId ? s.accounts[accountId]?.status : undefined))
+  const key = JSON.stringify([accountId, ...deps, isOnline])
+  const scope = useMemo(() => ({ key }), [key])
+  const current = useRef(scope)
+  current.current = scope
+  const inFlight = useRef<{ scope: typeof scope; promise: Promise<void> } | undefined>(undefined)
+  const [result, setResult] = useState<{ scope: typeof scope; data?: T; loading: boolean; error?: string }>()
 
-  const refresh = useCallback(async () => {
-    setLoading(true)
-    setError(undefined)
-    try {
-      const next = await loader()
-      setData(next)
-    } catch (err) {
-      setError(cleanSidebarError(err))
-    } finally {
-      setLoading(false)
-    }
+  const refresh = useCallback(() => {
+    if (current.current !== scope) return Promise.resolve()
+    if (inFlight.current?.scope === scope) return inFlight.current.promise
+    setResult((previous) => ({ scope, data: previous?.scope === scope ? previous.data : undefined, loading: true }))
+    const promise = Promise.resolve().then(loader).then((data) => {
+      if (current.current === scope) setResult({ scope, data, loading: false })
+    }, (error: unknown) => {
+      if (current.current === scope) {
+        setResult((previous) => ({ scope, data: previous?.data, error: cleanSidebarError(error), loading: false }))
+      }
+    }).finally(() => {
+      if (inFlight.current?.scope === scope) inFlight.current = undefined
+    })
+    inFlight.current = { scope, promise }
+    return promise
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [accountId, ...deps])
+  }, [scope])
 
   useEffect(() => {
-    if (isOnlineAccountStatus(status)) {
-      void refresh()
-    }
-  }, [refresh, status])
+    if (isOnline || loadOffline) void refresh()
+  }, [refresh, isOnline, loadOffline])
 
-  return { data, loading, error, refresh, isOnline: isOnlineAccountStatus(status) }
+  const visible = result?.scope === scope ? result : undefined
+  return { data: visible?.data ?? fallback, loading: visible?.loading ?? false, error: visible?.error, refresh, isOnline }
 }
 
 /**
@@ -312,65 +332,34 @@ export function CueAccountAuthSection({ accountId }: { accountId: string }) {
 export function CueOverviewSection({ bot, account }: { bot: Bot; account?: BotAccount }) {
   const syncCueAccountBots = useBotStore((s) => s.syncCueAccountBots)
 
-  const [authStatus, setAuthStatus] = useState<CueAuthStatus | null>(null)
-  const [quota, setQuota] = useState<CueQuotaSnapshot | null>(null)
-  const [agentMeta, setAgentMeta] = useState<CueAgentMeta | null>(null)
   const [syncing, setSyncing] = useState(false)
 
   const accountId = account?.id
-  const accountStatus = account?.status
+  const connected = isOnlineAccountStatus(account?.status)
   const selectedAgentId = bot.selectedAgentId
 
-  const refreshCueInfo = useCallback(async () => {
-    const cue = getBridge()?.cue
-    if (!cue || !accountId) return
-    const isOnline = isOnlineAccountStatus(accountStatus)
-    const [st, qRes, aRes] = await Promise.all([
-      cue.authStatus?.(accountId).catch(() => null),
-      isOnline ? cue.rpc?.({ accountId, op: 'quota' }).catch(() => null) : Promise.resolve(null),
-      isOnline
-        ? cue.rpc?.({ accountId, op: 'listAgents' }).catch(() => null)
-        : Promise.resolve(null)
-    ])
-    if (st) setAuthStatus(st)
-    if (qRes && qRes.ok) {
-      setQuota(readCueQuota(qRes.data))
-    }
-    if (aRes && aRes.ok) {
-      setAgentMeta(pickCueAgentMeta(aRes.data, selectedAgentId))
-    }
-  }, [accountId, accountStatus, selectedAgentId])
-
-  useEffect(() => {
-    let cancelled = false
-    const cue = getBridge()?.cue
-    if (!cue || !accountId) return
-    void (async () => {
-      const isOnline = isOnlineAccountStatus(accountStatus)
+  const { data: { authStatus, quota, agentMeta }, refresh: refreshCueInfo } = useCueSectionLoader<{
+    authStatus?: CueAuthStatus | null; quota?: CueQuotaSnapshot | null; agentMeta?: CueAgentMeta | null
+  }>(
+    accountId,
+    async () => {
+      const cue = getBridge()?.cue
+      if (!cue || !accountId) return {}
       const [st, qRes, aRes] = await Promise.all([
-        cue.authStatus?.(accountId).catch(() => null),
-        isOnline ? cue.rpc?.({ accountId, op: 'quota' }).catch(() => null) : Promise.resolve(null),
-        isOnline
-          ? cue.rpc?.({ accountId, op: 'listAgents' }).catch(() => null)
-          : Promise.resolve(null)
+        readOnce(['authStatus', accountId], () => cue.authStatus(accountId)).catch(() => null),
+        connected ? readCueRpc({ accountId, op: 'quota' }).catch(() => null) : null,
+        connected ? readCueRpc({ accountId, op: 'listAgents' }).catch(() => null) : null
       ])
-      if (cancelled) return
-      if (st) setAuthStatus(st)
-      if (qRes && qRes.ok) {
-        setQuota(readCueQuota(qRes.data))
-      } else if (!isOnline) {
-        setQuota(null)
+      return {
+        authStatus: st,
+        quota: qRes?.ok ? readCueQuota(qRes.data) : null,
+        agentMeta: aRes?.ok ? pickCueAgentMeta(aRes.data, selectedAgentId) : null
       }
-      if (aRes && aRes.ok) {
-        setAgentMeta(pickCueAgentMeta(aRes.data, selectedAgentId))
-      } else if (!isOnline) {
-        setAgentMeta(null)
-      }
-    })()
-    return () => {
-      cancelled = true
-    }
-  }, [accountId, accountStatus, selectedAgentId])
+    },
+    [bot.activeSessionId, selectedAgentId, connected],
+    {},
+    true
+  )
 
   if (!account) return null
 
@@ -782,7 +771,7 @@ export function CueComputerSection({
       const cue = getBridge()?.cue
       if (!cue?.rpc) return {}
       const [agentsRes, sessRaw] = await Promise.all([
-        cue.rpc({ accountId, op: 'listAgents' }).catch(() => null),
+        readCueRpc({ accountId, op: 'listAgents' }).catch(() => null),
         sessionId
           ? callCueEndpoint(accountId, '/session.v1.SessionService/GetSession', {
               sessionUid: sessionId,
@@ -931,7 +920,7 @@ export function CueAgentsSection({
     async () => {
       const cue = getBridge()?.cue
       if (!cue?.rpc) return []
-      const res = await cue.rpc({ accountId, op: 'listAgents' })
+      const res = await readCueRpc({ accountId, op: 'listAgents' })
       if (!res.ok) throw new Error(res.message || '加载 Cue Agent 列表失败')
       return parseCueAgentList(res.data)
     },
@@ -1045,7 +1034,7 @@ export function CueAgentContactsSection({
       const cue = getBridge()?.cue
       if (!cue?.rpc) return { collaborators: [] }
       const [agentsRes, sessRaw] = await Promise.all([
-        cue.rpc({ accountId, op: 'listAgents' }).catch(() => null),
+        readCueRpc({ accountId, op: 'listAgents' }).catch(() => null),
         sessionId
           ? callCueEndpoint(accountId, '/session.v1.SessionService/GetSession', {
               sessionUid: sessionId,

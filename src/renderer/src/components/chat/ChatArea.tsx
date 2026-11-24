@@ -1,6 +1,8 @@
 import { HarkBrowserCard } from '../hark/HarkBrowserCard'
 import { HarkAskCards, useHarkAsks } from '../hark/HarkAskCard'
-import { useCallback, useMemo, type ReactNode } from 'react'
+import { MuseBrowserCard } from '../muse/MuseBrowserCard'
+import { memo, useCallback, type ReactNode } from 'react'
+import { useShallow } from 'zustand/react/shallow'
 import type { AttachmentMeta, PlatformId } from '@adapters/types'
 import { ArkDrawerToggleSvg } from '@/components/ui/ArkGlyphs'
 import { BotAvatar } from '@/components/ui/Avatar'
@@ -9,7 +11,7 @@ import { getPlatformInspector } from '@/components/info/platformInspector'
 import { OnboardingStage } from '@/components/onboarding/OnboardingGuide'
 import { getBotAccounts } from '@/lib/selectors'
 import { useBotStore } from '@/store/botStore'
-import type { Bot, ChatMessage } from '@/types'
+import type { Bot, BotAccount, ChatMessage } from '@/types'
 import { ChatHeader } from './ChatHeader'
 import { Composer } from './Composer'
 import { MessageList } from './MessageList'
@@ -20,6 +22,10 @@ import { t } from '@/lib/i18n'
 import { ChatApprovals } from './ApprovalCard'
 
 const NO_MESSAGES: ChatMessage[] = []
+const NO_ACCOUNTS: BotAccount[] = []
+const ChatComposer = memo(Composer)
+const ChatWebSession = memo(WebSessionPane)
+const MUSE_BROWSER_HINT = /浏览器|云电脑|(?:^|[_\W])(?:browser|computer|open[_ ]url|navigate|screenshot)(?=$|[_\W])/i
 
 const STARTERS = [
   t('What can you help me with?'),
@@ -108,7 +114,8 @@ export function ChatArea({
   const shownId = useBotStore((s) => (paneBotId === undefined ? s.selectedBotId : paneBotId))
   const bot = useBotStore((s) => s.bots.find((b) => b.id === shownId))
   const sessionError = useBotStore((s) => shownId ? s.hermesSessionErrors[shownId] : undefined)
-  const accountMap = useBotStore((s) => s.accounts)
+  const chatActionError = useBotStore((s) => shownId ? s.chatActionErrors[shownId] : undefined)
+  const accounts = useBotStore(useShallow((s) => bot ? getBotAccounts(bot, s.accounts) : NO_ACCOUNTS))
   const messages = useBotStore((s) => (shownId ? s.messages[shownId] : undefined) ?? NO_MESSAGES)
   const typing = useBotStore((s) => (shownId ? s.typing[shownId] === true : false))
   const sendMessage = useBotStore((s) => s.sendMessage)
@@ -128,8 +135,7 @@ export function ChatArea({
   const activeDocument = useBotStore((s) => s.activeDocument)
   const setActiveDocument = useBotStore((s) => s.setActiveDocument)
 
-  const accounts = useMemo(() => (bot ? getBotAccounts(bot, accountMap) : []), [bot, accountMap])
-  const activeAccount = bot ? accountMap[bot.activeAccountId] : undefined
+  const activeAccount = accounts.find((account) => account.id === bot?.activeAccountId)
   const botId = bot?.id
 
   const onSend = useCallback(
@@ -145,7 +151,7 @@ export function ChatArea({
     [botId, retryMessage]
   )
   const onCancel = useCallback(() => {
-    if (botId) void cancelGeneration(botId)
+    if (botId) void cancelGeneration(botId).catch((error: unknown) => console.error('[bothub] Could not stop generation', error))
   }, [botId, cancelGeneration])
   const onConnect = useCallback((accountId: string) => void connectAccount(accountId), [connectAccount])
   const onMuseLogin = useCallback((accountId: string) => void openMuseLogin(accountId), [openMuseLogin])
@@ -218,20 +224,35 @@ export function ChatArea({
     activeAccount?.status === 'attention'
   const showWebSession =
     focused && webSessionOpen && !!activeAccount && getPlatformInspector(bot.platformId).supportsWebSession
+  const latestMuseReply = bot.platformId === 'meta-muse'
+    ? messages.findLast((message) => message.role === 'bot' && message.accountId === activeAccount?.id)
+    : undefined
+  const latestMessage = messages.at(-1)
+  const museBrowserHint = Boolean(latestMessage && latestMessage.accountId === activeAccount?.id && (
+    latestMessage.richWidgets?.some((widget) => widget.kind === 'session_card' && widget.cardType !== 'vault') ||
+    latestMessage.tools?.some((tool) => MUSE_BROWSER_HINT.test(`${tool.name} ${tool.toolType ?? ''}`)) ||
+    MUSE_BROWSER_HINT.test(latestMessage.text)
+  ))
 
   return (
     <div className="flex min-h-0 flex-1 overflow-hidden">
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-        <ChatHeader bot={bot} accounts={accounts} compact={compact} extra={headerExtra} merged={merged} leading={headerLeading} />
+        <ChatHeader key={JSON.stringify([bot.id, bot.activeAccountId])} bot={bot}
+          compact={compact} extra={headerExtra} merged={merged} leading={headerLeading} />
         {sessionError && (
           <p role="alert" className="mx-6 my-2 text-[13px] text-status-error">
             {t('Could not start a new conversation. {reason}', { reason: sessionError })}
           </p>
         )}
+        {chatActionError && <p role="alert" className="mx-6 my-2 text-[13px] text-status-error">{chatActionError}</p>}
         {showWebSession && activeAccount ? (
-          <WebSessionPane key={`${bot.id}:${activeAccount.id}`} bot={bot} account={activeAccount} />
+          <ChatWebSession key={`${bot.id}:${activeAccount.id}`} bot={bot} account={activeAccount} />
         ) : (
           <>
+            {bot.platformId === 'meta-muse' && activeAccount && canSend && (
+              <MuseBrowserCard accountId={activeAccount.id} sessionId={bot.activeSessionId}
+                replyId={latestMuseReply?.id} typing={typing} activeHint={museBrowserHint} />
+            )}
             {messages.length === 0 && !typing ? (
               <ConversationIntro
                 bot={bot}
@@ -261,7 +282,7 @@ export function ChatArea({
             {bot.platformId === 'hark' && activeAccount && (
               <HarkAskCards accountId={activeAccount.id} sessionId={bot.activeSessionId} asks={harkAsks} />
             )}
-            <Composer
+            <ChatComposer
               key={bot.id}
               bot={bot}
               account={activeAccount}

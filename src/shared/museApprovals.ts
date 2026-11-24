@@ -43,7 +43,7 @@ export interface MuseApproval {
   raw?: unknown
 }
 
-const TERMINAL_STATUSES = new Set(['approved', 'denied', 'timed_out', 'expired', 'cancelled', 'canceled'])
+const TERMINAL_STATUSES = new Set(['approved', 'allowed', 'denied', 'rejected', 'timed_out', 'expired', 'cancelled', 'canceled', 'resolved', 'decided'])
 
 export const KNOWN_APPROVAL_DECISIONS = new Set<ApprovalDecision>([
   'allow_once',
@@ -102,66 +102,146 @@ function isSpaceReaderEligible(raw: Record<string, unknown> | undefined): boolea
   return false
 }
 
-/**
- * Extract all pending Sentinel approval records from legacy (`pending`),
- * snapshot (`pending_approvals`), combined (`{ pending: [], pending_approvals: [...] }`),
- * wrapped (`{ result / data }`), or raw array responses without letting an empty
- * `pending: []` shadow `pending_approvals`.
- */
+function approvalId(row: Record<string, unknown>): string | undefined {
+  return firstStr(row['approval_id'], row['id'])
+}
+
+export function isTerminalMuseApproval(row: Record<string, unknown>): boolean {
+  const status = nonEmptyStr(row['status'])?.toLowerCase()
+  return Boolean(status && TERMINAL_STATUSES.has(status)) ||
+    (!status && Boolean(nonEmptyStr(row['decision']) || row['decided_at_ms']))
+}
+
+function approvalRichness(row: Record<string, unknown>): number {
+  const display = asObj(row['display'])
+  const options = parseDecisionOptionDetails(row)
+  return Number(Boolean(display)) + 2 * Number(Boolean(asObj(display?.['permission_question']))) +
+    2 * options.filter((option) => option.scope || option.label || option.labelKind || option.opensUrl).length +
+    Number(Boolean(asObj(row['payload']))) + Number(row['message_revision'] != null)
+}
+
+function mergeApprovalRows(left: Record<string, unknown>, right: Record<string, unknown>): Record<string, unknown> {
+  const leftTerminal = isTerminalMuseApproval(left)
+  const rightTerminal = isTerminalMuseApproval(right)
+  if (leftTerminal !== rightTerminal) return leftTerminal ? left : right
+  const revision = (row: Record<string, unknown>) => Number(row['message_revision'] ?? -1)
+  const leftRevision = revision(left)
+  const rightRevision = revision(right)
+  const differentRevisions = leftRevision >= 0 && rightRevision >= 0 && leftRevision !== rightRevision
+  const preferRight = differentRevisions
+    ? rightRevision > leftRevision
+    : approvalRichness(right) >= approvalRichness(left)
+  const preferred = preferRight ? right : left
+  const other = preferRight ? left : right
+  const merged = { ...other, ...Object.fromEntries(Object.entries(preferred).filter(([, value]) => value != null && value !== '')) }
+  for (const key of ['display', 'payload', 'scope']) {
+    const fields = asObj(preferred[key])
+    if (fields && asObj(other[key])) {
+      merged[key] = { ...asObj(other[key]), ...Object.fromEntries(Object.entries(fields).filter(([, value]) => value != null && value !== '')) }
+    }
+  }
+  const optionRichness = (row: Record<string, unknown>) => parseDecisionOptionDetails(row)
+    .reduce((score, option) => score + 1 + Number(Boolean(option.label || option.labelKind || option.opensUrl)) + 4 * Number(Boolean(option.scope)), 0)
+  if ((!differentRevisions || !Array.isArray(preferred['decision_options'])) && optionRichness(other) > optionRichness(preferred)) {
+    merged['decision_options'] = other['decision_options']
+  }
+  return merged
+}
+
+/** Read a detail response, including wrapped and flat records. */
+export function extractMuseApprovalRecord(raw: unknown, depth = 0): Record<string, unknown> | undefined {
+  const root = asObj(raw)
+  if (!root || depth > 5) return undefined
+  const nested = [root['approval'], root['result'], root['data']]
+    .map((inner) => extractMuseApprovalRecord(inner, depth + 1)).find(Boolean)
+  if (!approvalId(root)) return nested
+  return nested && approvalId(nested) === approvalId(root) ? mergeApprovalRows(root, nested) : root
+}
+
+/** Deduplicate the entire snapshot before separating pending and terminal records. */
+export function extractMuseApprovalSnapshot(raw: unknown): { pending: Record<string, unknown>[]; terminalIds: string[] } {
+  const byId = new Map<string, Record<string, unknown>>()
+  const unkeyed: Record<string, unknown>[] = []
+  const visit = (container: unknown, recent = false, depth = 0): void => {
+    if (depth > 5) return
+    if (Array.isArray(container)) {
+      for (const rawRow of container) {
+        const row = extractMuseApprovalRecord(rawRow) ?? asObj(rawRow)
+        if (!row) continue
+        const id = approvalId(row)
+        if (!id) {
+          if (!recent && !isTerminalMuseApproval(row)) unkeyed.push(row)
+          continue
+        }
+        if (recent && !isTerminalMuseApproval(row)) continue
+        const previous = byId.get(id)
+        byId.set(id, previous ? mergeApprovalRows(previous, row) : row)
+      }
+      return
+    }
+    const root = asObj(container)
+    if (!root) return
+    for (const key of ['pending', 'approvals', 'items', 'pending_approvals', 'result', 'data']) {
+      visit(root[key], recent, depth + 1)
+    }
+    for (const key of ['recent', 'recent_approvals', 'history', 'resolved_approvals']) {
+      visit(root[key], true, depth + 1)
+    }
+  }
+  visit(raw)
+  const pending = [...unkeyed]
+  const terminalIds: string[] = []
+  for (const [id, row] of byId) {
+    if (isTerminalMuseApproval(row)) terminalIds.push(id)
+    else pending.push(row)
+  }
+  return { pending, terminalIds }
+}
+
 export function extractRawApprovalItems(raw: unknown): Record<string, unknown>[] {
-  if (!raw || typeof raw !== 'object') return []
-  if (Array.isArray(raw)) {
-    const out: Record<string, unknown>[] = []
-    const seen = new Set<string>()
-    for (const item of raw) {
-      const rec = asObj(item)
-      if (!rec) continue
-      const status = nonEmptyStr(rec['status'])?.toLowerCase()
-      if (status && TERMINAL_STATUSES.has(status)) continue
-      const id = firstStr(rec['approval_id'], rec['id']) ?? ''
-      if (id) {
-        if (seen.has(id)) continue
-        seen.add(id)
-      }
-      out.push(rec)
+  return extractMuseApprovalSnapshot(raw).pending
+}
+
+export interface MuseApprovalStreamMetadata {
+  approvalVersion?: number
+  terminalApprovalIds?: string[]
+}
+
+/** Keep terminal approvals and the richest known pending details for this account. */
+export class MuseApprovalSnapshots {
+  private readonly terminal = new Set<string>()
+  private current = new Map<string, Record<string, unknown>>()
+
+  resolve(id: string): void {
+    this.terminal.add(id)
+    this.current.delete(id)
+  }
+
+  get terminalIds(): string[] {
+    return [...this.terminal]
+  }
+
+  get pending(): Record<string, unknown>[] {
+    return [...this.current.values()]
+  }
+
+  isResolved(id: string): boolean {
+    return this.terminal.has(id)
+  }
+
+  apply(raw: unknown, terminalIds: readonly string[] = []): Record<string, unknown>[] {
+    const snapshot = extractMuseApprovalSnapshot(raw)
+    for (const id of [...snapshot.terminalIds, ...terminalIds]) this.resolve(id)
+    const next = new Map<string, Record<string, unknown>>()
+    for (const row of snapshot.pending) {
+      const id = approvalId(row)
+      if (!id || this.terminal.has(id)) continue
+      const previous = this.current.get(id)
+      next.set(id, previous ? mergeApprovalRows(previous, row) : row)
     }
-    return out
+    this.current = next
+    return [...next.values()]
   }
-  const root = raw as Record<string, unknown>
-  const containers: Record<string, unknown>[] = [root]
-  for (const wrapperKey of ['result', 'data']) {
-    const inner = asObj(root[wrapperKey])
-    if (inner) containers.push(inner)
-  }
-
-  const combined: Record<string, unknown>[] = []
-  const seenIds = new Set<string>()
-
-  const pushArray = (candidate: unknown) => {
-    if (!Array.isArray(candidate) || candidate.length === 0) return
-    for (const item of candidate) {
-      const rec = asObj(item)
-      if (!rec) continue
-      const status = nonEmptyStr(rec['status'])?.toLowerCase()
-      if (status && TERMINAL_STATUSES.has(status)) continue
-      const id = firstStr(rec['approval_id'], rec['id']) ?? ''
-      if (id) {
-        if (seenIds.has(id)) continue
-        seenIds.add(id)
-      }
-      combined.push(rec)
-    }
-  }
-
-  for (const container of containers) {
-    // Prefer snapshot shape (`pending_approvals`) first so rich `display` / `decision_options` win on dedup.
-    pushArray(container['pending_approvals'])
-    pushArray(container['pending'])
-    pushArray(container['approvals'])
-    pushArray(container['items'])
-  }
-
-  return combined
 }
 
 /**
@@ -172,14 +252,14 @@ export function parseDecisionOptionDetails(raw: Record<string, unknown>): MuseAp
   const list = raw['decision_options']
   if (!Array.isArray(list) || list.length === 0) return []
   const out: MuseApprovalOption[] = []
-  const seen = new Set<string>()
+  const seen = new Map<string, number>()
   for (const entry of list) {
     if (typeof entry === 'string') {
       const kind = entry.trim()
       if (!kind) continue
       const dedup = `${kind}:`
       if (seen.has(dedup)) continue
-      seen.add(dedup)
+      seen.set(dedup, out.length)
       out.push({ kind })
       continue
     }
@@ -200,15 +280,19 @@ export function parseDecisionOptionDetails(raw: Record<string, unknown>): MuseAp
     const opensUrl = firstStr(obj['opens_url'], obj['opensUrl'], obj['url'])
     const safeUrl = opensUrl && /^https?:\/\//i.test(opensUrl) ? opensUrl : undefined
     const dedup = `${kind}:${scope ?? ''}`
-    if (seen.has(dedup)) continue
-    seen.add(dedup)
-    out.push({
+    const option = {
       kind,
       ...(label ? { label } : {}),
       ...(labelKind ? { labelKind } : {}),
       ...(scope ? { scope } : {}),
       ...(safeUrl ? { opensUrl: safeUrl } : {})
-    })
+    }
+    const prev = seen.get(dedup)
+    if (prev !== undefined) out[prev] = { ...out[prev], ...option }
+    else {
+      seen.set(dedup, out.length)
+      out.push(option)
+    }
   }
   return out
 }
@@ -249,7 +333,8 @@ function extractHost(raw: Record<string, unknown>, variants: Record<string, unkn
   return undefined
 }
 
-export function mapMuseApproval(raw: Record<string, unknown>): MuseApproval {
+export function mapMuseApproval(record: Record<string, unknown>): MuseApproval {
+  const raw = extractMuseApprovalRecord(record) ?? record
   const display = asObj(raw['display']) ?? {}
   const permissionQuestion = asObj(display['permission_question']) ?? asObj(raw['permission_question'])
   const payload = asObj(raw['payload'])
@@ -303,7 +388,7 @@ export function mapMuseApproval(raw: Record<string, unknown>): MuseApproval {
 
   return {
     id,
-    status: firstStr(raw['status']) ?? 'pending',
+    status: firstStr(raw['status'])?.toLowerCase() ?? 'pending',
     title,
     hasExplicitTitle: Boolean(explicitTitle),
     detail,

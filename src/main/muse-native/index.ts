@@ -8,12 +8,16 @@ import { join } from 'node:path'
 import { app, session as electronSession } from 'electron'
 import { MuseChatChannel } from './chat'
 import { MuseNativeGateway } from './gateway'
-import { applyProxyToPartition, createProxyAgent } from '../muse/accountProxy'
+import { createProxyAgent } from '../muse/accountProxy'
 
 export { MuseGatewayError, MuseNativeGateway } from './gateway'
 export {
   MuseChatChannel,
   streamChat,
+  createMuseTurnDeadline,
+  isMuseStop,
+  museEventSessionId,
+  MUSE_STREAM_STOPPED,
   MUSE_STREAM_SUPERSEDED,
   selectOptionWidget,
   MUSE_CHAT_CAPABILITIES,
@@ -100,18 +104,17 @@ export class MuseNativeRegistry {
     let c = this.clients.get(accountId)
     if (c) return c
     const ses = electronSession.fromPartition(this.partitionFor(accountId))
-    void applyProxyToPartition(accountId).catch((e) =>
-      console.warn(`[muse-native] ${accountId} proxy apply failed`, e)
-    )
     const gateway = new MuseNativeGateway({
       fetch: (url, init) => ses.fetch(url, init),
       keepAlive: true,
       resolveAgent: () => createProxyAgent(accountId),
       log: (msg, extra) => console.info(`[muse-native] ${accountId}`, msg, extra ?? '')
     })
-    gateway.on('phase', (p: string, err: string | null) => this.onPhase?.(accountId, p, err))
     c = { accountId, nodeId: nodeIdFor(accountId), gateway, chat: new MuseChatChannel(gateway) }
     this.clients.set(accountId, c)
+    gateway.on('phase', (p: string, err: string | null) => {
+      if (this.clients.get(accountId)?.gateway === gateway) this.onPhase?.(accountId, p, err)
+    })
     return c
   }
 
@@ -122,9 +125,9 @@ export class MuseNativeRegistry {
   dispose(accountId: string): void {
     const c = this.clients.get(accountId)
     if (!c) return
+    this.clients.delete(accountId)
     c.chat.stop()
     c.gateway.close()
-    this.clients.delete(accountId)
   }
 }
 

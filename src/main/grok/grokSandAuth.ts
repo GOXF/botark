@@ -23,6 +23,8 @@ import { readJsonFile, writeJsonAtomic } from '../jsonFile'
 import { applyProxyToPartition, loadAccountTransportProxyUrl } from '../muse/accountProxy'
 import { proxyFetch } from '../proxyTransport'
 import { partitionForAccount } from '../webContentsViewManager'
+import { clearGrokMainAuth, getGrokMainAuth, setGrokMainAuth, type GrokMainAuth } from './grokAuthStore'
+import { restartGrokAccountWatch, stopGrokAccountWatch } from './grokWatchManager'
 
 export const SAND_CLIENT_ID = 'KbZUR41cY7W6zRSdpSUJ7I7mLYBKOCmB'
 const API = 'https://api2.cursor.sh'
@@ -118,6 +120,32 @@ function inferSubjectFromJwt(token: string): string | undefined {
 
 export function extractAccountHandleFromJwt(token: string): string | undefined {
   return inferSubjectFromJwt(token)
+}
+
+function sameJwtIdentity(a: string, b: string): boolean {
+  const left = decodeJwtPayload(a)
+  const right = decodeJwtPayload(b)
+  const issuer = left?.['iss']
+  const subject = left?.['sub']
+  return typeof issuer === 'string' && issuer.length > 0 && typeof subject === 'string' && subject.length > 0 &&
+    issuer === right?.['iss'] && subject === right?.['sub']
+}
+
+function withMatchingCredentialDefaults(tokens: SandTokens, opts: {
+  existing?: SandTokens | null; refreshToken?: string; teamId?: string; accountSlot?: string
+}): SandTokens {
+  const previous = opts.existing && sameJwtIdentity(tokens.accessToken, opts.existing.accessToken) ? opts.existing : undefined
+  const refreshToken = tokens.refreshToken ?? (opts.refreshToken?.trim() || previous?.refreshToken)
+  const inheritedRefresh = Boolean(refreshToken && refreshToken === previous?.refreshToken)
+  return {
+    ...tokens,
+    refreshToken,
+    authId: inferSubjectFromJwt(tokens.accessToken) ?? tokens.authId ?? opts.accountSlot ?? previous?.authId,
+    selectedTeamId: tokens.selectedTeamId ?? (opts.teamId?.trim() || previous?.selectedTeamId),
+    xaiIssuer: tokens.xaiIssuer ?? (inheritedRefresh ? previous?.xaiIssuer : undefined),
+    xaiClientId: tokens.xaiClientId ?? (inheritedRefresh ? previous?.xaiClientId : undefined),
+    authKind: inheritedRefresh && previous?.authKind === 'xai' ? 'xai' : tokens.authKind
+  }
 }
 
 /**
@@ -276,7 +304,8 @@ export async function exchangeSandUserApiKey(
       accept: 'application/json',
       authorization: `Bearer ${apiKey.trim()}`
     },
-    body: JSON.stringify({})
+    body: JSON.stringify({}),
+    signal: AbortSignal.timeout(25_000)
   })
   if (!res.ok) return null
   const body = await res.json().catch(() => null)
@@ -343,9 +372,6 @@ export async function parseAnyGrokCredentialInput(
   const trimmed = rawInput.trim()
   if (!trimmed) return null
 
-  const fallbackRefresh = opts.refreshToken?.trim() || opts.existing?.refreshToken
-  const fallbackTeam = opts.teamId?.trim() || opts.existing?.selectedTeamId
-
   // 1. JSON object or array
   if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
     try {
@@ -353,16 +379,7 @@ export async function parseAnyGrokCredentialInput(
       const candidate = Array.isArray(parsedJson) ? parsedJson[0] : parsedJson
       const sand = parseSandTokens(candidate)
       if (sand?.accessToken) {
-        return {
-          ...sand,
-          refreshToken: sand.refreshToken ?? fallbackRefresh,
-          authId:
-            extractAccountHandleFromJwt(sand.accessToken) ??
-            sand.authId ??
-            opts.accountSlot ??
-            opts.existing?.authId,
-          selectedTeamId: sand.selectedTeamId ?? fallbackTeam
-        }
+        return withMatchingCredentialDefaults(sand, opts)
       }
       // Also support JSON cookie array from browser extensions: [{ name: "WorkosCursorSessionToken", value: "..." }]
       if (Array.isArray(parsedJson)) {
@@ -374,13 +391,11 @@ export async function parseAnyGrokCredentialInput(
             if (/workos.*session|cursor.*session/i.test(name) && val) {
               const fromCookie = parseWorkosCookieOrToken(val)
               if (fromCookie) {
-                return {
+                return withMatchingCredentialDefaults({
                   accessToken: fromCookie.accessToken,
-                  refreshToken: fallbackRefresh,
-                  authId: fromCookie.accountSlot ?? opts.accountSlot ?? opts.existing?.authId,
-                  selectedTeamId: fallbackTeam,
+                  authId: fromCookie.accountSlot,
                   authKind: 'cursor'
-                }
+                }, opts)
               }
             }
           }
@@ -394,13 +409,11 @@ export async function parseAnyGrokCredentialInput(
   // 2. Cookie / WorkOS token / Bearer JWT
   const cookieOrJwt = parseWorkosCookieOrToken(trimmed)
   if (cookieOrJwt) {
-    return {
+    return withMatchingCredentialDefaults({
       accessToken: cookieOrJwt.accessToken,
-      refreshToken: fallbackRefresh,
-      authId: cookieOrJwt.accountSlot ?? opts.accountSlot ?? opts.existing?.authId,
-      selectedTeamId: fallbackTeam,
+      authId: cookieOrJwt.accountSlot,
       authKind: 'cursor'
-    }
+    }, opts)
   }
 
   // 3. API key exchange (`key_...` / `crsr_...` / non-JWT token)
@@ -414,13 +427,7 @@ export async function parseAnyGrokCredentialInput(
       fetchImpl: opts.fetchImpl
     }).catch(() => null)
     if (exchanged?.accessToken) {
-      return {
-        ...exchanged,
-        authId:
-          extractAccountHandleFromJwt(exchanged.accessToken) ??
-          exchanged.authId ??
-          opts.accountSlot
-      }
+      return withMatchingCredentialDefaults(exchanged, opts)
     }
   }
 
@@ -509,7 +516,8 @@ export async function refreshSandToken(
         'content-type': 'application/x-www-form-urlencoded',
         accept: 'application/json'
       },
-      body: params.toString()
+      body: params.toString(),
+      signal: AbortSignal.timeout(25_000)
     })
     if (res.status === 400 || res.status === 401 || res.status === 403) {
       const errBody = (await res.json().catch(() => ({}))) as Record<string, unknown>
@@ -524,7 +532,7 @@ export async function refreshSandToken(
       typeof body['access_token'] === 'string' ? body['access_token'] : undefined
     if (!accessToken) return { shouldLogout: true }
     const rotated =
-      typeof body['refresh_token'] === 'string' ? body['refresh_token'] : refreshToken
+      typeof body['refresh_token'] === 'string' ? body['refresh_token'] : undefined
     const expiresIn = typeof body['expires_in'] === 'number' ? body['expires_in'] : undefined
     return {
       shouldLogout: false,
@@ -547,7 +555,8 @@ export async function refreshSandToken(
       client_id: SAND_CLIENT_ID,
       grant_type: 'refresh_token',
       refresh_token: refreshToken
-    })
+    }),
+    signal: AbortSignal.timeout(25_000)
   })
   if (res.status === 400 || res.status === 401 || res.status === 403) {
     return { shouldLogout: true }
@@ -564,7 +573,7 @@ export async function refreshSandToken(
       ? (body['refresh_token'] as string)
       : typeof body['refreshToken'] === 'string'
         ? (body['refreshToken'] as string)
-        : refreshToken
+        : undefined
   return {
     shouldLogout: false,
     tokens: {
@@ -602,156 +611,229 @@ function writeFile(store: StoreFile): void {
   writeJsonAtomic(storePath(), store)
 }
 
-/** persistSandTokens reads, awaits encryption, then writes: serialize it. */
 const withTokenStoreLock = createMutex()
+const credentialRevisions = new Map<string, number>()
+let revisionCounter = 0
+let resetRevision = 0
 
-async function assertEncryptionAvailable(): Promise<void> {
-  const available = await safeStorage.isAsyncEncryptionAvailable()
-  if (!available) {
-    throw new Error('safeStorage encryption unavailable; refusing to store Grok tokens in plaintext')
+export function grokCredentialRevision(accountId: string): number {
+  return credentialRevisions.get(accountId) ?? resetRevision
+}
+
+function reviseCredential(accountId: string): void {
+  credentialRevisions.set(accountId, ++revisionCounter)
+}
+
+const credentialSignals = new Map<string, AbortController>()
+
+export function activeGrokCredentialSignal(accountId: string): AbortSignal {
+  let controller = credentialSignals.get(accountId)
+  if (!controller) credentialSignals.set(accountId, (controller = new AbortController()))
+  return controller.signal
+}
+
+function invalidateCredentialSignals(accountId: string): void {
+  if (accountId === '*') {
+    for (const controller of credentialSignals.values()) controller.abort()
+    credentialSignals.clear()
+    return
+  }
+  credentialSignals.get(accountId)?.abort()
+  credentialSignals.delete(accountId)
+}
+
+async function encryptTokens(tokens: SandTokens): Promise<StoredEntry> {
+  const enc = await safeStorage.encryptStringAsync(JSON.stringify(tokens))
+  return { enc: enc.toString('base64') }
+}
+
+/** Called under the store lock with a fresh file snapshot. */
+async function readCredential(accountId: string): Promise<GrokMainAuth | undefined> {
+  const memory = getGrokMainAuth(accountId)
+  if (memory) return memory
+  const store = readFile()
+  const entry = Object.hasOwn(store, accountId) ? store[accountId] : undefined
+  if (!entry?.enc) return undefined
+  try {
+    const available = await safeStorage.isAsyncEncryptionAvailable()
+    if (!available && !entry.plain) return undefined
+    const buf = Buffer.from(entry.enc, 'base64')
+    const decrypted = entry.plain
+      ? { result: buf.toString('utf8'), shouldReEncrypt: true }
+      : await safeStorage.decryptStringAsync(buf)
+    const tokens = available ? parseSandTokens(JSON.parse(decrypted.result)) : null
+    if (entry.plain && !tokens) {
+      delete store[accountId]
+      writeFile(store)
+    }
+    if (!tokens) return undefined
+    if (decrypted.shouldReEncrypt) {
+      try {
+        store[accountId] = await encryptTokens(tokens)
+        writeFile(store)
+      } catch (error) {
+        if (entry.plain) throw error
+      }
+    }
+    const credential = { tokens }
+    setGrokMainAuth(accountId, credential)
+    return credential
+  } catch {
+    // A legacy plaintext entry must not survive a failed migration.
+    if (entry.plain) {
+      delete store[accountId]
+      writeFile(store)
+    }
+    return undefined
   }
 }
 
-/** Encrypt and write sand tokens. Throws if safeStorage cannot encrypt. */
-export async function persistSandTokens(accountId: string, tokens: SandTokens): Promise<void> {
-  await assertEncryptionAvailable()
-  const enc = await safeStorage.encryptStringAsync(JSON.stringify(tokens))
-  await withTokenStoreLock(() => {
-    const store = readFile()
-    store[accountId] = { enc: enc.toString('base64') }
-    writeFile(store)
+/** Commit simultaneous credential changes and watch identity changes in order. */
+async function writeCredential(accountId: string, tokens: SandTokens, previous?: GrokMainAuth, machineId?: string): Promise<GrokMainAuth> {
+  const store = readFile()
+  let encrypted: StoredEntry | undefined
+  try {
+    if (await safeStorage.isAsyncEncryptionAvailable()) encrypted = await encryptTokens(tokens)
+  } catch {
+    /* The credential can still be used in memory. */
+  }
+  if (encrypted) {
+    writeFile({ ...store, [accountId]: encrypted })
+  } else {
+    // A memory-only replacement must still invalidate the prior disk credential.
+    if (Object.hasOwn(store, accountId)) {
+      delete store[accountId]
+      writeFile(store)
+    }
+    console.warn('[grok] safeStorage unavailable; using a memory-only session')
+  }
+  const credential = { tokens, machineId: machineId ?? previous?.machineId }
+  setGrokMainAuth(accountId, credential)
+  return credential
+}
+
+function changedIdentity(old: SandTokens | undefined, current: SandTokens): boolean {
+  return Boolean(old && (old.selectedTeamId !== current.selectedTeamId ||
+    (old.accessToken !== current.accessToken && !sameJwtIdentity(old.accessToken, current.accessToken))))
+}
+
+export async function replaceGrokCredentials(
+  accountId: string,
+  resolveTokens: (existing: SandTokens | undefined) => Promise<SandTokens | null> | SandTokens | null,
+  opts: { expectedRevision?: number; machineId?: string; committed?: (credential: GrokMainAuth) => void } = {}
+): Promise<GrokMainAuth | null> {
+  return withTokenStoreLock(async () => {
+    if (opts.expectedRevision !== undefined && opts.expectedRevision !== grokCredentialRevision(accountId)) return null
+    const previous = await readCredential(accountId)
+    const tokens = await resolveTokens(previous?.tokens)
+    if (!tokens) return null
+    const credential = await writeCredential(accountId, tokens, previous, opts.machineId)
+    reviseCredential(accountId)
+    invalidateCredentialSignals(accountId)
+    if (changedIdentity(previous?.tokens, tokens)) restartGrokAccountWatch(accountId)
+    opts.committed?.(credential)
+    return credential
   })
 }
 
-const refreshInFlight = new Map<
-  string,
-  Promise<{ accessToken: string; selectedTeamId?: string } | null>
->()
-
-function refreshAndPersist(
-  accountId: string,
-  tokens: SandTokens,
-  fetchImpl?: typeof fetch
-): Promise<{ accessToken: string; selectedTeamId?: string } | null> {
-  const running = refreshInFlight.get(accountId)
-  if (running) return running
-  const doFetch = grokFetcherForAccount(accountId, fetchImpl)
-  const run = (async () => {
-    const result = await refreshSandToken(tokens.refreshToken!, doFetch, {
-      issuer: tokens.xaiIssuer,
-      clientId: tokens.xaiClientId
-    })
-    if (result.shouldLogout) {
-      clearSandTokens(accountId)
-      return null
-    }
-    if (!result.tokens) return null
-    const merged: SandTokens = {
-      accessToken: result.tokens.accessToken,
-      refreshToken: result.tokens.refreshToken ?? tokens.refreshToken,
-      authId: tokens.authId,
-      selectedTeamId: result.tokens.selectedTeamId ?? tokens.selectedTeamId,
-      xaiIssuer: result.tokens.xaiIssuer ?? tokens.xaiIssuer,
-      xaiClientId: result.tokens.xaiClientId ?? tokens.xaiClientId,
-      expiresAtMs: result.tokens.expiresAtMs,
-      authKind: result.tokens.authKind ?? tokens.authKind
-    }
-    await persistSandTokens(accountId, merged)
-    return { accessToken: merged.accessToken, selectedTeamId: merged.selectedTeamId }
-  })().finally(() => refreshInFlight.delete(accountId))
-  refreshInFlight.set(accountId, run)
-  return run
+export function loadGrokCredential(accountId: string): Promise<GrokMainAuth | undefined> {
+  return withTokenStoreLock(() => readCredential(accountId))
 }
 
-/**
- * Decrypt sand tokens for an account.
- * Migrates any legacy `plain` entries to encrypted form when encryption is available;
- * otherwise deletes them (fail closed — never return plaintext-on-disk tokens).
- */
-export async function loadSandTokens(accountId: string): Promise<SandTokens | null> {
-  const store = readFile()
-  const entry = store[accountId]
-  if (!entry?.enc) return null
-  try {
-    const buf = Buffer.from(entry.enc, 'base64')
-    const available = await safeStorage.isAsyncEncryptionAvailable()
-    if (entry.plain) {
-      if (!available) {
-        delete store[accountId]
-        writeFile(store)
-        return null
-      }
-      const tokens = parseSandTokens(JSON.parse(buf.toString('utf8')))
-      if (!tokens) {
-        delete store[accountId]
-        writeFile(store)
-        return null
-      }
-      const enc = await safeStorage.encryptStringAsync(JSON.stringify(tokens))
-      store[accountId] = { enc: enc.toString('base64') }
+function clearCredential(accountId: string): void {
+  if (accountId === '*') {
+    writeFile({})
+    resetRevision = ++revisionCounter
+    credentialRevisions.clear()
+  } else {
+    const store = readFile()
+    if (Object.hasOwn(store, accountId)) {
+      delete store[accountId]
       writeFile(store)
-      return tokens
     }
-    if (!available) return null
-    const decrypted = await safeStorage.decryptStringAsync(buf)
-    const tokens = parseSandTokens(JSON.parse(decrypted.result))
-    if (tokens && decrypted.shouldReEncrypt) {
+    reviseCredential(accountId)
+  }
+  invalidateCredentialSignals(accountId)
+  clearGrokMainAuth(accountId)
+  stopGrokAccountWatch(accountId)
+}
+
+export function clearGrokCredentials(accountId: string, cleared?: () => void): Promise<void> {
+  return withTokenStoreLock(() => {
+    clearCredential(accountId)
+    cleared?.()
+  })
+}
+
+interface RefreshFlight {
+  revision: number
+  result: Promise<GrokMainAuth | undefined>
+}
+const refreshInFlight = new Map<string, RefreshFlight>()
+
+async function refreshCredential(
+  accountId: string,
+  fetchImpl?: typeof fetch,
+  rejectedAccessToken?: string,
+  force = false,
+  expectedRevision?: number
+): Promise<GrokMainAuth | undefined> {
+  const { credential, flight } = await withTokenStoreLock(async () => {
+    if (expectedRevision !== undefined && expectedRevision !== grokCredentialRevision(accountId)) return {}
+    const credential = await readCredential(accountId)
+    const tokens = credential?.tokens
+    if (!tokens?.refreshToken) return { credential: force ? undefined : credential }
+    if (rejectedAccessToken && tokens.accessToken !== rejectedAccessToken) return { credential }
+    const expiresAt = tokenExpMs(tokens.accessToken, tokens.expiresAtMs)
+    if (!force && (expiresAt === null || expiresAt - Date.now() >= REFRESH_MARGIN_MS)) return { credential }
+    const revision = grokCredentialRevision(accountId)
+    const existing = refreshInFlight.get(accountId)
+    if (existing?.revision === revision) return { flight: existing.result }
+
+    // Release the store lock during HTTP, then commit against the originating login revision.
+    const flight = (async () => {
       try {
-        const enc = await safeStorage.encryptStringAsync(JSON.stringify(tokens))
-        store[accountId] = { enc: enc.toString('base64') }
-        writeFile(store)
-      } catch {
-        /* keep old ciphertext */
+        const result = await refreshSandToken(tokens.refreshToken!, grokFetcherForAccount(accountId, fetchImpl), {
+          issuer: tokens.xaiIssuer, clientId: tokens.xaiClientId
+        })
+        return await withTokenStoreLock(async () => {
+          if (revision !== grokCredentialRevision(accountId)) return undefined
+          if (result.shouldLogout) {
+            clearCredential(accountId)
+            return undefined
+          }
+          if (!result.tokens) return undefined
+          const refreshed = withMatchingCredentialDefaults({ ...result.tokens, authKind: result.tokens.authKind ?? tokens.authKind }, { existing: tokens })
+          const current = await writeCredential(accountId, refreshed, credential)
+          if (changedIdentity(tokens, refreshed)) {
+            reviseCredential(accountId)
+            invalidateCredentialSignals(accountId)
+            restartGrokAccountWatch(accountId)
+          }
+          return current
+        })
+      } finally {
+        if (refreshInFlight.get(accountId)?.revision === revision) refreshInFlight.delete(accountId)
       }
-    }
-    return tokens
-  } catch {
-    return null
-  }
+    })()
+    refreshInFlight.set(accountId, { revision, result: flight })
+    return { flight }
+  })
+  return flight ? await flight : credential
 }
 
-export function clearSandTokens(accountId: string): void {
-  const store = readFile()
-  if (store[accountId]) {
-    delete store[accountId]
-    writeFile(store)
-  }
-}
-
-export function clearAllSandTokens(): void {
-  writeFile({})
-}
-
-/** Account ids that currently have a persisted sand-token blob. */
-export function listPersistedSandAccountIds(): string[] {
-  return Object.keys(readFile())
-}
-
-/** Force an oauth/token refresh regardless of expiry. Clears tokens on logout. */
+/** A 401 retries only within the originating credential revision. */
 export async function forceRefreshSandAccessToken(
   accountId: string,
-  fetchImpl?: typeof fetch
-): Promise<{ accessToken: string; selectedTeamId?: string } | null> {
-  const tokens = await loadSandTokens(accountId)
-  if (!tokens?.refreshToken) return null
-  return refreshAndPersist(accountId, tokens, fetchImpl)
+  fetchImpl?: typeof fetch,
+  rejectedAccessToken?: string,
+  expectedRevision?: number
+): Promise<GrokMainAuth | undefined> {
+  return refreshCredential(accountId, fetchImpl, rejectedAccessToken, true, expectedRevision)
 }
 
-/** Return a valid accessToken, refreshing when within 5min of expiry. */
-export async function getValidSandAccessToken(
-  accountId: string,
-  fetchImpl?: typeof fetch
-): Promise<{ accessToken: string; selectedTeamId?: string } | null> {
-  const tokens = await loadSandTokens(accountId)
-  if (!tokens?.accessToken) return null
-  const expMs = tokenExpMs(tokens.accessToken, tokens.expiresAtMs)
-  const needsRefresh = expMs != null && expMs - Date.now() < REFRESH_MARGIN_MS
-  if (needsRefresh && tokens.refreshToken) {
-    const refreshed = await refreshAndPersist(accountId, tokens, fetchImpl)
-    if (refreshed) return refreshed
-    if (!(await loadSandTokens(accountId))) return null
-  }
-  return { accessToken: tokens.accessToken, selectedTeamId: tokens.selectedTeamId }
+export function getValidGrokCredential(accountId: string, fetchImpl?: typeof fetch): Promise<GrokMainAuth | undefined> {
+  return refreshCredential(accountId, fetchImpl)
 }
 
 // ---------------- interactive login window ----------------
@@ -789,6 +871,7 @@ export async function runSandLogin(
   if (existing && !existing.isDestroyed()) existing.close()
 
   // Enforce per-account proxy on the shared partition BEFORE opening the login window.
+  const revision = grokCredentialRevision(accountId)
   await applyProxyToPartition(accountId)
 
   const { verifier, challenge, uuid } = createPkce()
@@ -979,10 +1062,8 @@ export async function runSandLogin(
       isAborted: () => closed,
       maxAttempts: opts.maxAttempts
     })
-    try {
-      await persistSandTokens(accountId, tokens)
-    } catch (error) {
-      console.warn('[grok] safeStorage persist failed after sand login; memory-only session', error)
+    if (closed || !await replaceGrokCredentials(accountId, () => tokens, { expectedRevision: revision })) {
+      throw new Error('sand login superseded')
     }
     return { tokens, clickedConfirm }
   } finally {

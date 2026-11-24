@@ -2,12 +2,14 @@ import { randomUUID } from 'node:crypto'
 import { chmodSync, existsSync, mkdirSync, renameSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
+import { setTimeout as delayDotRequest } from 'node:timers/promises'
 import WebSocket from 'ws'
 import { DIRECT_PROXY_URL, proxyFetch, proxyWsAgent } from '../proxyTransport'
 import { guessMediaMimeFromName, inferMediaMime } from '../mediaMime'
 import { readJsonFile } from '../jsonFile'
 import { requireValidProxyUrl } from '../proxyUrl'
 import { applyProxyToPartition, loadAccountProxyUrl, loadAccountTransportProxyUrl, ProxyConfigUnreadableError } from '../muse/accountProxy'
+import { resolveDotTarget, type DotTarget } from '@shared/dotTarget'
 import type {
   DotAuthStatus,
   MuseMediaPartView,
@@ -104,8 +106,8 @@ export type DotRealtimeCallback = (
         type: 'message'
         accountId: string
         botId?: string
-        dotId?: string
-        roomId: string
+        target: DotRoomTarget
+        turnId?: string
         message: DotRoomMessage
         done: boolean
       }
@@ -113,8 +115,8 @@ export type DotRealtimeCallback = (
         type: 'activity'
         accountId: string
         botId?: string
-        dotId?: string
-        roomId: string
+        target: DotRoomTarget
+        turnId?: string
         code: string
         text?: string
         busy: boolean
@@ -160,6 +162,11 @@ function resolveStorePath(): string {
 }
 
 const accountStore = new Map<string, DotStoredAccount>()
+const credentialRevisions = new Map<string, number>()
+const targetGenerations = new Map<string, number>()
+const profileSelections = new Map<string, AbortController>()
+const signedOutAccounts = new Set<string>()
+const tokenRefreshes = new Map<string, { revision: number; promise: Promise<DotStoredAccount> }>()
 /**
  * Entries whose tokens could not be decrypted right now (Keychain denied,
  * safeStorage not ready). They are written back untouched; dropping them
@@ -194,26 +201,44 @@ function getSafeStorage(): {
   return { ss: null, inElectron: false }
 }
 
-async function resolveDotProxyUrl(
-  accountId: string,
-  explicitProxyUrl?: string
-): Promise<string | undefined> {
-  const explicit = explicitProxyUrl?.trim()
-  if (explicit) return explicit
-  // Throws ProxyConfigUnreadableError if a proxy is stored in accountProxy but unreadable
+async function resolveDotProxyUrl(accountId: string): Promise<string | undefined> {
   const globalProxy = await loadAccountTransportProxyUrl(accountId)
   if (globalProxy && globalProxy !== DIRECT_PROXY_URL) return globalProxy
   return getStoredDotAccount(accountId)?.proxyUrl ?? globalProxy
 }
 
-const activeTurnBotIds = new Map<string, string>()
+export function getDotCredentialRevision(accountId: string): number {
+  return credentialRevisions.get(accountId) ?? 0
+}
+
+function advanceCredentialRevision(accountId: string): number {
+  const revision = getDotCredentialRevision(accountId) + 1
+  credentialRevisions.set(accountId, revision)
+  return revision
+}
+
+function requireCredentialRevision(accountId: string, revision: number): void {
+  if (getDotCredentialRevision(accountId) !== revision) {
+    throw new DotApiError(409, 'Dot credentials changed during the request')
+  }
+}
+
+export function getDotTargetGeneration(accountId: string): number {
+  return targetGenerations.get(accountId) ?? 0
+}
+
+function requireTargetGeneration(accountId: string, generation: number): void {
+  if (getDotTargetGeneration(accountId) !== generation) {
+    throw new DotApiError(409, 'The active Dot profile changed during the request')
+  }
+}
 
 export function isEphemeralRoomTurnBotId(botId?: string): boolean {
   return Boolean(botId && botId.startsWith('room-turn-'))
 }
 
 function ensureStoreLoaded(): void {
-  if (storeLoaded && accountStore.size > 0) return
+  if (storeLoaded && (accountStore.size > 0 || unreadableEntries.size === 0)) return
   storeLoaded = true
   storeLoadFailed = false
   try {
@@ -236,7 +261,7 @@ function ensureStoreLoaded(): void {
       const { ss } = getSafeStorage()
       let migratedPlaintext = false
       for (const [k, v] of Object.entries(raw)) {
-        if (!v || typeof v !== 'object') continue
+        if (!v || typeof v !== 'object' || signedOutAccounts.has(k)) continue
         let accessToken = typeof v.accessToken === 'string' ? v.accessToken : ''
         let refreshToken = typeof v.refreshToken === 'string' ? v.refreshToken : undefined
         if (typeof v.encTokens === 'string' && v.encTokens) {
@@ -258,6 +283,7 @@ function ensureStoreLoaded(): void {
           migratedPlaintext = true
         }
         if (accessToken) {
+          unreadableEntries.delete(k)
           const { encTokens: _enc, ...rest } = v
           const cleanBotId = isEphemeralRoomTurnBotId(rest.botId) ? undefined : rest.botId
           if (cleanBotId !== rest.botId) migratedPlaintext = true
@@ -401,6 +427,9 @@ export function patchStoredDotAccount(
   if ('botId' in sanitizedPatch && isEphemeralRoomTurnBotId(sanitizedPatch.botId)) {
     delete sanitizedPatch.botId
   }
+  if (Object.entries(sanitizedPatch).every(([key, value]) => prev[key as keyof DotStoredAccount] === value)) {
+    return prev
+  }
   const next: DotStoredAccount = {
     ...prev,
     ...sanitizedPatch,
@@ -408,14 +437,20 @@ export function patchStoredDotAccount(
     updatedAtMs: Date.now()
   }
   accountStore.set(accountId, next)
+  if (next.activeDotId !== prev.activeDotId || next.roomId !== prev.roomId || next.threadId !== prev.threadId) {
+    targetGenerations.set(accountId, getDotTargetGeneration(accountId) + 1)
+    if (activeDotTurns.get(accountId)?.target) abortDotTurn(accountId)
+    closeCelsiusWatcher(accountId)
+  }
   saveStore()
   return next
 }
 
 export function clearStoredDotAccount(accountId: string): void {
   ensureStoreLoaded()
-  cancelWatchDotRoomReply(accountId)
-  closeCelsiusWatcher(accountId)
+  advanceCredentialRevision(accountId)
+  signedOutAccounts.add(accountId)
+  disconnectDotAccount(accountId)
   accountStore.delete(accountId)
   unreadableEntries.delete(accountId)
   saveStore()
@@ -423,9 +458,10 @@ export function clearStoredDotAccount(accountId: string): void {
 
 export function clearAllStoredDotAccounts(): void {
   ensureStoreLoaded()
-  for (const id of accountStore.keys()) {
-    cancelWatchDotRoomReply(id)
-    closeCelsiusWatcher(id)
+  for (const id of new Set([...accountStore.keys(), ...unreadableEntries.keys(), ...credentialRevisions.keys()])) {
+    advanceCredentialRevision(id)
+    signedOutAccounts.add(id)
+    disconnectDotAccount(id)
   }
   accountStore.clear()
   unreadableEntries.clear()
@@ -450,9 +486,12 @@ export function upsertDotCredentials(
     proxyUrl?: string
     botId?: string
     mode?: 'dot' | 'native'
-  }
+  },
+  revision?: number,
+  refreshing = false
 ): DotStoredAccount {
   ensureStoreLoaded()
+  if (revision !== undefined) requireCredentialRevision(accountId, revision)
   const prev = accountStore.get(accountId)
   const decoded = decodeChatGptJwt(input.accessToken)
   const chatgptAccountId =
@@ -468,10 +507,11 @@ export function upsertDotCredentials(
     prev?.displayName ||
     'Dot'
   const planType = input.planType?.trim() || decoded.planType || prev?.planType
+  const changedIdentity = Boolean(prev?.chatgptAccountId && chatgptAccountId !== prev.chatgptAccountId)
   const next: DotStoredAccount = {
     accountId,
     accessToken: input.accessToken.trim(),
-    refreshToken: input.refreshToken?.trim() || prev?.refreshToken,
+    refreshToken: input.refreshToken?.trim() || (changedIdentity ? undefined : prev?.refreshToken),
     clientId: input.clientId?.trim() || decoded.clientId || prev?.clientId || DOT_CODEX_CLIENT_ID,
     deviceId: prev?.deviceId || randomUUID(),
     chatgptAccountId,
@@ -479,11 +519,11 @@ export function upsertDotCredentials(
     email,
     displayName,
     planType,
-    expiresAtMs: decoded.expiresAtMs || prev?.expiresAtMs,
+    expiresAtMs: decoded.expiresAtMs ?? (prev?.accessToken === input.accessToken.trim() ? prev?.expiresAtMs : undefined),
     proxyUrl: requireValidProxyUrl(input.proxyUrl) ?? prev?.proxyUrl,
-    activeDotId: prev?.activeDotId,
-    roomId: prev?.roomId,
-    threadId: prev?.threadId,
+    activeDotId: changedIdentity ? undefined : prev?.activeDotId,
+    roomId: changedIdentity ? undefined : prev?.roomId,
+    threadId: changedIdentity ? undefined : prev?.threadId,
     botId:
       input.botId && !isEphemeralRoomTurnBotId(input.botId)
         ? input.botId
@@ -493,6 +533,12 @@ export function upsertDotCredentials(
     effort: prev?.effort ?? 'medium',
     updatedAtMs: Date.now()
   }
+  if (!refreshing) {
+    advanceCredentialRevision(accountId)
+    if (prev) disconnectDotAccount(accountId)
+  }
+  signedOutAccounts.delete(accountId)
+  unreadableEntries.delete(accountId)
   accountStore.set(accountId, next)
   saveStore()
   return next
@@ -505,6 +551,8 @@ async function exchangeDotRefreshToken(
 ): Promise<{ accessToken: string; refreshToken: string }> {
   const res = await proxyFetch(proxyUrl, DOT_OAUTH_TOKEN_URL, {
     method: 'POST',
+    redirect: 'error',
+    signal: AbortSignal.timeout(25_000),
     headers: {
       'Content-Type': 'application/json',
       Accept: 'application/json',
@@ -552,19 +600,23 @@ export async function importDotCredentialsFromRaw(
   extra?: { refreshToken?: string; chatgptAccountId?: string; proxyUrl?: string }
 ): Promise<DotStoredAccount> {
   const trimmed = (rawInput ?? '').trim()
-  // Token exchanges must use the account proxy even when re-importing
-  // without one in the form (the stored proxy is kept by upsert).
-  const authProxyUrl = await resolveDotProxyUrl(accountId, extra?.proxyUrl)
   const extraRt = extra?.refreshToken?.trim()
 
   if (!trimmed && !extraRt) {
     throw new DotApiError(400, 'Empty credential input (provide access_token, refresh_token, or JSON)')
   }
+  const explicitProxy = requireValidProxyUrl(extra?.proxyUrl)
+  const revision = advanceCredentialRevision(accountId)
+  const accountProxy = explicitProxy ?? (await loadAccountProxyUrl(accountId))
+  requireCredentialRevision(accountId, revision)
+  const authProxyUrl = accountProxy ?? getStoredDotAccount(accountId)?.proxyUrl
+  const commit = (input: Parameters<typeof upsertDotCredentials>[1]) =>
+    upsertDotCredentials(accountId, input, revision)
 
   // Case 0: Only refreshToken was provided in extra (or rawInput is empty)
   if (!trimmed && extraRt) {
     const exchanged = await exchangeDotRefreshToken(extraRt, undefined, authProxyUrl)
-    return upsertDotCredentials(accountId, {
+    return commit({
       accessToken: exchanged.accessToken,
       refreshToken: exchanged.refreshToken,
       chatgptAccountId: extra?.chatgptAccountId,
@@ -586,7 +638,7 @@ export async function importDotCredentialsFromRaw(
         /* use provided access_token if refresh fails */
       }
     }
-    return upsertDotCredentials(accountId, {
+    return commit({
       accessToken: at,
       refreshToken: rt,
       chatgptAccountId: extra?.chatgptAccountId,
@@ -602,7 +654,7 @@ export async function importDotCredentialsFromRaw(
     // Check if it contains a Bearer JWT access_token
     const m = trimmed.match(/(eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)/)
     if (m?.[1]) {
-      return upsertDotCredentials(accountId, {
+      return commit({
         accessToken: m[1],
         refreshToken: extraRt,
         chatgptAccountId: extra?.chatgptAccountId,
@@ -613,7 +665,7 @@ export async function importDotCredentialsFromRaw(
     const rtCandidate = trimmed.replace(/^Bearer\s+/i, '').trim()
     if (rtCandidate.length >= 16 && !/\s/.test(rtCandidate)) {
       const exchanged = await exchangeDotRefreshToken(rtCandidate, undefined, authProxyUrl)
-      return upsertDotCredentials(accountId, {
+      return commit({
         accessToken: exchanged.accessToken,
         refreshToken: exchanged.refreshToken,
         chatgptAccountId: extra?.chatgptAccountId,
@@ -669,6 +721,7 @@ export async function importDotCredentialsFromRaw(
   }
 
   let accessToken = String(rec['access_token'] ?? rec['accessToken'] ?? '').trim()
+  const importedProxy = requireValidProxyUrl(typeof rec['proxy_url'] === 'string' ? rec['proxy_url'] : undefined)
   let refreshToken =
     extraRt ||
     (typeof rec['refresh_token'] === 'string' ? rec['refresh_token'].trim() : undefined) ||
@@ -682,7 +735,7 @@ export async function importDotCredentialsFromRaw(
     const exchanged = await exchangeDotRefreshToken(
       refreshToken,
       clientId || decoded.clientId,
-      authProxyUrl || (typeof rec['proxy_url'] === 'string' ? rec['proxy_url'] : undefined)
+      accountProxy ?? importedProxy ?? authProxyUrl
     )
     accessToken = exchanged.accessToken
     refreshToken = exchanged.refreshToken
@@ -713,15 +766,14 @@ export async function importDotCredentialsFromRaw(
   const planType =
     (typeof rec['plan_type'] === 'string' ? rec['plan_type'] : undefined) ||
     (typeof accObj['planType'] === 'string' ? accObj['planType'] : undefined)
-  const proxyUrl =
-    extra?.proxyUrl || (typeof rec['proxy_url'] === 'string' ? rec['proxy_url'] : undefined)
+  const proxyUrl = explicitProxy ?? importedProxy
   const botId =
     typeof rec['botId'] === 'string' && !isEphemeralRoomTurnBotId(rec['botId'])
       ? rec['botId']
       : undefined
   const mode = rec['mode'] === 'native' || rec['mode'] === 'dot' ? rec['mode'] : undefined
 
-  return upsertDotCredentials(accountId, {
+  return commit({
     accessToken,
     refreshToken,
     clientId,
@@ -741,26 +793,33 @@ export async function importDotCredentialsFromRaw(
 export async function refreshDotAccessToken(accountId: string): Promise<DotStoredAccount> {
   ensureStoreLoaded()
   const acc = accountStore.get(accountId)
-  if (!acc?.refreshToken) {
+  const refreshToken = acc?.refreshToken
+  if (!acc || !refreshToken) {
     throw new DotApiError(401, 'No refresh_token available for Dot account')
   }
+  const revision = getDotCredentialRevision(accountId)
+  const inFlight = tokenRefreshes.get(accountId)
+  if (inFlight?.revision === revision) return inFlight.promise
 
-  const exchanged = await exchangeDotRefreshToken(
-    acc.refreshToken,
-    acc.clientId,
-    await resolveDotProxyUrl(accountId, acc.proxyUrl)
-  )
-
-  return upsertDotCredentials(accountId, {
-    accessToken: exchanged.accessToken,
-    refreshToken: exchanged.refreshToken,
-    clientId: acc.clientId,
-    chatgptAccountId: acc.chatgptAccountId,
-    email: acc.email,
-    displayName: acc.displayName,
-    planType: acc.planType,
-    proxyUrl: acc.proxyUrl
-  })
+  const promise = (async () => {
+    const proxyUrl = await resolveDotProxyUrl(accountId)
+    requireCredentialRevision(accountId, revision)
+    const exchanged = await exchangeDotRefreshToken(refreshToken, acc.clientId, proxyUrl)
+    return upsertDotCredentials(accountId, {
+      ...exchanged,
+      clientId: acc.clientId,
+      chatgptAccountId: acc.chatgptAccountId,
+      email: acc.email,
+      displayName: acc.displayName,
+      planType: acc.planType
+    }, revision, true)
+  })()
+  tokenRefreshes.set(accountId, { revision, promise })
+  try {
+    return await promise
+  } finally {
+    if (tokenRefreshes.get(accountId)?.promise === promise) tokenRefreshes.delete(accountId)
+  }
 }
 
 /**
@@ -768,25 +827,29 @@ export async function refreshDotAccessToken(accountId: string): Promise<DotStore
  * if the user signed in via the interactive login window.
  */
 export async function trySyncFromElectronPartition(
-  accountId: string
+  accountId: string,
+  ownsLoginAttempt: () => boolean,
+  signal?: AbortSignal
 ): Promise<DotStoredAccount | undefined> {
+  const revision = getDotCredentialRevision(accountId)
   try {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const electron = require('electron') as typeof import('electron')
     if (!electron?.session?.fromPartition) return undefined
     await applyProxyToPartition(accountId)
+    if (!ownsLoginAttempt() || revision !== getDotCredentialRevision(accountId)) return undefined
     const ses = electron.session.fromPartition(`persist:bothub-account-${accountId}`)
     const res = await ses.fetch('https://chatgpt.com/api/auth/session', {
       headers: {
         Accept: 'application/json',
         'User-Agent': CHROME_UA
       },
-      signal: AbortSignal.timeout(20_000)
+      signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(20_000)]) : AbortSignal.timeout(20_000)
     })
     if (!res.ok) return undefined
     const data = (await res.json()) as Record<string, unknown>
     const accessToken = typeof data['accessToken'] === 'string' ? data['accessToken'] : ''
-    if (!accessToken) return undefined
+    if (!accessToken || !ownsLoginAttempt() || revision !== getDotCredentialRevision(accountId)) return undefined
     const userObj =
       data['user'] && typeof data['user'] === 'object'
         ? (data['user'] as Record<string, unknown>)
@@ -801,27 +864,28 @@ export async function trySyncFromElectronPartition(
       email: typeof userObj['email'] === 'string' ? userObj['email'] : undefined,
       displayName: typeof userObj['name'] === 'string' ? userObj['name'] : undefined,
       planType: typeof accObj['planType'] === 'string' ? accObj['planType'] : undefined
-    })
+    }, revision)
   } catch (err) {
     if (err instanceof ProxyConfigUnreadableError) throw err
     return undefined
   }
 }
 
-export async function ensureValidDotAccount(accountId: string): Promise<DotStoredAccount> {
+export async function ensureValidDotAccount(accountId: string, signal?: AbortSignal): Promise<DotStoredAccount> {
+  signal?.throwIfAborted()
   ensureStoreLoaded()
-  let acc = accountStore.get(accountId)
-  if (!acc) {
-    acc = await trySyncFromElectronPartition(accountId)
-  }
+  const acc = accountStore.get(accountId)
   if (!acc || !acc.accessToken) {
     throw new DotApiError(401, 'Not signed in to Dot (import token or sign in first)')
   }
   // Refresh proactively if expiring within 5 minutes
   if (acc.expiresAtMs && acc.expiresAtMs < Date.now() + 5 * 60_000 && acc.refreshToken) {
+    const revision = getDotCredentialRevision(accountId)
     try {
-      acc = await refreshDotAccessToken(accountId)
+      return await waitForDotRequest(refreshDotAccessToken(accountId), signal)
     } catch (err) {
+      signal?.throwIfAborted()
+      requireCredentialRevision(accountId, revision)
       console.warn('[dot] proactive token refresh failed, continuing with current token', err)
     }
   }
@@ -829,14 +893,13 @@ export async function ensureValidDotAccount(accountId: string): Promise<DotStore
 }
 
 export async function getDotAuthStatus(accountId: string): Promise<DotAuthStatus> {
-  ensureStoreLoaded()
-  let acc = accountStore.get(accountId)
-  if (!acc) {
-    acc = await trySyncFromElectronPartition(accountId)
-  }
+  let acc = getStoredDotAccount(accountId)
   if (!acc || !acc.accessToken) {
     return { accountId, signedIn: false }
   }
+  const accountProxy = await loadAccountProxyUrl(accountId).catch(() => true)
+  acc = getStoredDotAccount(accountId)
+  if (!acc?.accessToken) return { accountId, signedIn: false }
   return {
     accountId,
     signedIn: true,
@@ -853,7 +916,7 @@ export async function getDotAuthStatus(accountId: string): Promise<DotAuthStatus
     hasRefreshToken: Boolean(acc.refreshToken),
     expiresAtMs: acc.expiresAtMs,
     updatedAt: acc.updatedAtMs,
-    hasProxy: Boolean(acc.proxyUrl || (await loadAccountProxyUrl(accountId).catch(() => true)))
+    hasProxy: Boolean(accountProxy || acc.proxyUrl)
   }
 }
 
@@ -863,6 +926,21 @@ export interface DotApiRequestOptions {
   query?: Record<string, string | undefined>
   body?: unknown
   headers?: Record<string, string>
+  signal?: AbortSignal
+}
+
+async function waitForDotRequest<T>(request: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return request
+  let abort!: () => void
+  try {
+    return await Promise.race([request, new Promise<never>((_, reject) => {
+      abort = () => reject(signal.reason)
+      signal.addEventListener('abort', abort, { once: true })
+      if (signal.aborted) abort()
+    })])
+  } finally {
+    signal.removeEventListener('abort', abort)
+  }
 }
 
 function dotClientHeaders(
@@ -894,10 +972,13 @@ export async function callDotApi<T = unknown>(
   accountId: string,
   opts: DotApiRequestOptions
 ): Promise<T> {
-  let acc = await ensureValidDotAccount(accountId)
+  const { signal } = opts
+  const revision = getDotCredentialRevision(accountId)
+  let acc = await ensureValidDotAccount(accountId, signal)
+  signal?.throwIfAborted()
+  requireCredentialRevision(accountId, revision)
   if (!acc.deviceId) {
-    acc.deviceId = randomUUID()
-    saveStore()
+    acc = patchStoredDotAccount(accountId, { deviceId: randomUUID() }) ?? acc
   }
   const method = opts.method ?? (opts.body !== undefined ? 'POST' : 'GET')
   const relPath = opts.path.startsWith('/') ? opts.path : `/${opts.path}`
@@ -915,12 +996,16 @@ export async function callDotApi<T = unknown>(
       headers['Content-Type'] = 'application/json'
       bodyPayload = JSON.stringify(opts.body)
     }
-    const effectiveProxy = await resolveDotProxyUrl(accountId, cred.proxyUrl)
+    const effectiveProxy = await waitForDotRequest(resolveDotProxyUrl(accountId), signal)
+    signal?.throwIfAborted()
+    requireCredentialRevision(accountId, revision)
+    const deadline = AbortSignal.timeout(30_000)
     return proxyFetch(effectiveProxy, url.toString(), {
       method,
       headers,
       body: bodyPayload,
-      signal: AbortSignal.timeout(30_000)
+      redirect: 'error',
+      signal: signal ? AbortSignal.any([signal, deadline]) : deadline
     })
   }
 
@@ -929,24 +1014,31 @@ export async function callDotApi<T = unknown>(
   let lastErr: unknown
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     if (attempt > 0) {
-      await new Promise((r) => setTimeout(r, 400 * attempt))
+      await delayDotRequest(400 * attempt, undefined, { signal })
     }
     try {
       res = await doFetch(acc)
       if (res.status === 401 && acc.refreshToken) {
-        acc = await refreshDotAccessToken(accountId)
+        void res.body?.cancel().catch(() => undefined)
+        signal?.throwIfAborted()
+        requireCredentialRevision(accountId, revision)
+        const current = getStoredDotAccount(accountId)
+        acc = current && current.accessToken !== acc.accessToken
+          ? current
+          : await waitForDotRequest(refreshDotAccessToken(accountId), signal)
         res = await doFetch(acc)
       }
       if (
         (res.status === 429 || res.status === 502 || res.status === 503 || res.status === 504) &&
         attempt + 1 < maxAttempts
       ) {
+        void res.body?.cancel().catch(() => undefined)
         continue
       }
       break
     } catch (err) {
       lastErr = err
-      if (attempt + 1 >= maxAttempts) throw err
+      if (signal?.aborted || revision !== getDotCredentialRevision(accountId) || attempt + 1 >= maxAttempts) throw err
     }
   }
   if (!res) {
@@ -954,6 +1046,8 @@ export async function callDotApi<T = unknown>(
   }
 
   const text = await res.text()
+  signal?.throwIfAborted()
+  requireCredentialRevision(accountId, revision)
   let parsed: unknown = text
   if (text) {
     try {
@@ -1005,14 +1099,15 @@ function normalizeDotProfile(raw: Record<string, unknown>): DotProfile {
 
 export async function listDots(
   accountId: string,
-  ensureDefault = true
+  signal?: AbortSignal
 ): Promise<{ items: DotProfile[]; activeDot?: DotProfile }> {
   let res: { items?: Record<string, unknown>[] }
   try {
     res = await callDotApi<{ items?: Record<string, unknown>[] }>(accountId, {
       method: 'GET',
       path: '/tbo',
-      query: { limit: '25' }
+      query: { limit: '25' },
+      signal
     })
   } catch (err) {
     if (err instanceof DotApiError && (err.status === 404 || err.status === 403)) {
@@ -1024,38 +1119,59 @@ export async function listDots(
     throw err
   }
 
-  let items = (Array.isArray(res?.items) ? res.items : [])
+  const items = (Array.isArray(res?.items) ? res.items : [])
+    .filter((item) => item && typeof item === 'object')
     .map(normalizeDotProfile)
     .filter((d) => d.id && d.status !== 'deleting')
 
-  if (items.length === 0 && ensureDefault) {
-    const created = await createDot(accountId, { displayName: 'Dot', hasExisting: false })
-    items = [created]
-  }
-
   const acc = getStoredDotAccount(accountId)
-  let activeDot =
+  const activeDot =
     (acc?.activeDotId ? items.find((d) => d.id === acc.activeDotId) : undefined) ??
     items.find((d) => d.isPrimary) ??
     items[0]
 
-  if (activeDot) {
-    patchStoredDotAccount(accountId, {
-      mode: 'dot',
-      activeDotId: activeDot.id,
-      roomId: activeDot.messagingRoomId,
-      threadId: activeDot.activeRootThreadId
-    })
-    void ensureCelsiusWatcher(accountId, activeDot.messagingRoomId)
-  }
-
   return { items, activeDot }
+}
+
+function activateDotProfile(accountId: string, profile: DotProfile, botId?: string): DotRoomTarget {
+  if (!profile.id || !profile.messagingRoomId) throw new DotApiError(404, 'No active Dot room found')
+  patchStoredDotAccount(accountId, {
+    activeDotId: profile.id,
+    roomId: profile.messagingRoomId,
+    threadId: profile.activeRootThreadId,
+    ...(botId ? { botId } : {})
+  })
+  void ensureCelsiusWatcher(accountId, profile.messagingRoomId)
+  return {
+    dotId: profile.id,
+    roomId: profile.messagingRoomId,
+    threadId: profile.activeRootThreadId,
+    generation: getDotTargetGeneration(accountId)
+  }
+}
+
+export async function initializeDots(accountId: string, signal?: AbortSignal) {
+  requireStableDotProfile(accountId)
+  const generation = getDotTargetGeneration(accountId)
+  const revision = getDotCredentialRevision(accountId)
+  const listed = await listDots(accountId, signal)
+  signal?.throwIfAborted()
+  requireCredentialRevision(accountId, revision)
+  requireTargetGeneration(accountId, generation)
+  const activeDot = listed.activeDot ?? await createDot(accountId, { hasExisting: false, signal })
+  signal?.throwIfAborted()
+  requireCredentialRevision(accountId, revision)
+  requireTargetGeneration(accountId, generation)
+  const target = activateDotProfile(accountId, activeDot)
+  return { items: listed.activeDot ? listed.items : [activeDot], activeDot, target }
 }
 
 export async function createDot(
   accountId: string,
-  opts?: { displayName?: string; color?: string; hasExisting?: boolean }
+  opts?: { displayName?: string; color?: string; hasExisting?: boolean; signal?: AbortSignal }
 ): Promise<DotProfile> {
+  const generation = getDotTargetGeneration(accountId)
+  const revision = getDotCredentialRevision(accountId)
   const existing =
     opts?.hasExisting !== undefined
       ? opts.hasExisting
@@ -1063,15 +1179,19 @@ export async function createDot(
           await callDotApi<{ items?: unknown[] }>(accountId, {
             method: 'GET',
             path: '/tbo',
-            query: { limit: '5' }
+            query: { limit: '5' },
+            signal: opts?.signal
           }).catch(() => ({ items: [] }))
         ).items?.length
         ? true
         : false
 
+  requireTargetGeneration(accountId, generation)
+  requireCredentialRevision(accountId, revision)
   const raw = await callDotApi<Record<string, unknown>>(accountId, {
     method: 'POST',
     path: '/tbo',
+    signal: opts?.signal,
     body: {
       display_name: opts?.displayName?.trim() || 'Dot',
       ...(opts?.color ? { color: opts.color } : {}),
@@ -1081,47 +1201,122 @@ export async function createDot(
     }
   })
 
-  const profile = normalizeDotProfile(raw)
-  patchStoredDotAccount(accountId, {
-    activeDotId: profile.id,
-    roomId: profile.messagingRoomId,
-    threadId: profile.activeRootThreadId
-  })
-  void ensureCelsiusWatcher(accountId, profile.messagingRoomId)
-  return profile
+  return normalizeDotProfile(raw)
 }
 
-export async function getDot(accountId: string, dotId: string): Promise<DotProfile> {
+export async function getDot(accountId: string, dotId: string, signal?: AbortSignal): Promise<DotProfile> {
   const raw = await callDotApi<Record<string, unknown>>(accountId, {
     method: 'GET',
-    path: `/tbo/${encodeURIComponent(dotId)}`
+    path: `/tbo/${encodeURIComponent(dotId)}`,
+    signal
   })
   return normalizeDotProfile(raw)
 }
 
 export async function deleteDot(accountId: string, dotId: string): Promise<unknown> {
-  return callDotApi(accountId, {
+  const result = await callDotApi(accountId, {
     method: 'DELETE',
     path: `/tbo/${encodeURIComponent(dotId)}`
   })
+  if (getStoredDotAccount(accountId)?.activeDotId === dotId) {
+    patchStoredDotAccount(accountId, { activeDotId: undefined, roomId: undefined, threadId: undefined })
+  }
+  return result
 }
 
-const activeRoomWatches = new Map<string, () => void>()
+interface DotRoomTarget extends DotTarget {
+  roomId: string
+  threadId?: string
+  generation: number
+}
 
-export function cancelWatchDotRoomReply(accountId: string): void {
-  const finish = activeRoomWatches.get(accountId)
-  if (finish) {
-    activeRoomWatches.delete(accountId)
-    finish()
+interface DotTurn {
+  id: string
+  botId?: string
+  target?: DotRoomTarget
+  controller: AbortController
+  interruptNative?: () => void
+}
+
+const activeDotTurns = new Map<string, DotTurn>()
+const runtimeInterrupts = new Map<string, { promise: Promise<void>; controller: AbortController }>()
+const nativeConnections = new Map<string, Set<(error: Error) => void>>()
+
+function requireStableDotProfile(accountId: string): void {
+  if (profileSelections.has(accountId)) throw new DotApiError(409, 'A Dot profile switch is in progress')
+}
+
+export async function selectDotProfile(accountId: string, dotId: string, botId?: string) {
+  profileSelections.get(accountId)?.abort()
+  const selection = new AbortController()
+  profileSelections.set(accountId, selection)
+  const { signal } = selection
+  const generation = invalidateDotTarget(accountId)
+  const revision = getDotCredentialRevision(accountId)
+  try {
+    const dot = await getDot(accountId, dotId, signal)
+    requireTargetGeneration(accountId, generation)
+    requireCredentialRevision(accountId, revision)
+    if (dot.id !== dotId) throw new DotApiError(409, 'The Dot profile ID changed')
+    if (!dot.messagingRoomId) throw new DotApiError(404, 'No active Dot room found')
+    const history = await fetchRoomHistory(accountId, {
+      dotId, roomId: dot.messagingRoomId, threadId: dot.activeRootThreadId, generation
+    }, { signal })
+    requireTargetGeneration(accountId, generation)
+    requireCredentialRevision(accountId, revision)
+    profileSelections.delete(accountId)
+    const target = activateDotProfile(accountId, dot, botId)
+    ensureRoomPoller(accountId, dot.messagingRoomId, history.messages)
+    return { ...history, ...target, dot }
+  } finally {
+    if (profileSelections.get(accountId) === selection) {
+      profileSelections.delete(accountId)
+      void ensureCelsiusWatcher(accountId, getStoredDotAccount(accountId)?.roomId)
+    }
   }
+}
+
+function beginDotTurn(accountId: string, id: string = randomUUID(), botId?: string): DotTurn {
+  abortDotTurn(accountId)
+  const turn = { id, botId, controller: new AbortController() }
+  activeDotTurns.set(accountId, turn)
+  return turn
+}
+
+function abortDotTurn(accountId: string, turnId?: string): DotTurn | undefined {
+  const turn = activeDotTurns.get(accountId)
+  if (!turn || (turnId && turn.id !== turnId)) return
+  activeDotTurns.delete(accountId)
+  try {
+    turn.interruptNative?.()
+  } catch {
+    /* The socket can close before the interrupt is sent. */
+  }
+  turn.controller.abort(new DotApiError(499, 'Dot turn cancelled'))
+  return turn
+}
+
+function invalidateDotTarget(accountId: string): number {
+  const generation = getDotTargetGeneration(accountId) + 1
+  targetGenerations.set(accountId, generation)
+  abortDotTurn(accountId)
+  closeCelsiusWatcher(accountId)
+  return generation
+}
+
+export function disconnectDotAccount(accountId: string): void {
+  profileSelections.get(accountId)?.abort()
+  profileSelections.delete(accountId)
+  invalidateDotTarget(accountId)
+  runtimeInterrupts.get(accountId)?.controller.abort()
+  for (const close of nativeConnections.get(accountId) ?? []) close(new DotApiError(499, 'Dot disconnected'))
 }
 
 export async function pauseDotRuntime(accountId: string, dotId?: string): Promise<unknown> {
   const acc = getStoredDotAccount(accountId)
   const targetDotId = dotId || acc?.activeDotId
-  cancelWatchDotRoomReply(accountId)
-  // Also interrupt any active native AppServer turn
-  await interruptNativeTurn(accountId).catch(() => undefined)
+  const turn = activeDotTurns.get(accountId)
+  if (!turn?.target || !targetDotId || turn.target.dotId === targetDotId) abortDotTurn(accountId)
   if (!targetDotId) return { ok: true }
   return callDotApi(accountId, {
     method: 'POST',
@@ -1141,44 +1336,62 @@ export async function resumeDotRuntime(accountId: string, dotId?: string): Promi
   })
 }
 
-export async function cancelDotTurn(accountId: string, dotId?: string): Promise<unknown> {
-  cancelWatchDotRoomReply(accountId)
-  await interruptNativeTurn(accountId).catch(() => undefined)
-  const acc = getStoredDotAccount(accountId)
-  const targetDotId = dotId || acc?.activeDotId
-  if (targetDotId) {
-    await callDotApi(accountId, {
-      method: 'POST',
-      path: `/tbo/${encodeURIComponent(targetDotId)}/runtime/pause`,
-      body: {}
-    }).catch(() => undefined)
-    // Resume after a brief delay so the container remains ready for the next message
-    setTimeout(() => {
-      void callDotApi(accountId, {
+export async function cancelDotTurn(accountId: string, dotId?: string, turnId?: string): Promise<unknown> {
+  const turn = abortDotTurn(accountId, turnId)
+  const targetDotId = turn ? turn.target?.dotId : turnId ? undefined : dotId || getStoredDotAccount(accountId)?.activeDotId
+  if (!targetDotId) return { ok: true }
+
+  const previous = runtimeInterrupts.get(accountId)
+  if (previous) {
+    await previous.promise
+    return { ok: true }
+  }
+
+  const revision = getDotCredentialRevision(accountId)
+  const controller = new AbortController()
+  const { signal } = controller
+  const promise = (async () => {
+    try {
+      await callDotApi(accountId, {
+        method: 'POST',
+        path: `/tbo/${encodeURIComponent(targetDotId)}/runtime/pause`,
+        body: {},
+        signal
+      })
+      await delayDotRequest(600, undefined, { signal })
+      requireCredentialRevision(accountId, revision)
+      await callDotApi(accountId, {
         method: 'POST',
         path: `/tbo/${encodeURIComponent(targetDotId)}/runtime/resume`,
-        body: {}
-      }).catch(() => undefined)
-    }, 600)
+        body: {},
+        signal
+      })
+    } catch {
+      /* A failed interrupt should not block the next turn. */
+    }
+  })()
+  runtimeInterrupts.set(accountId, { promise, controller })
+  try {
+    await promise
+  } finally {
+    if (runtimeInterrupts.get(accountId)?.promise === promise) runtimeInterrupts.delete(accountId)
   }
   return { ok: true }
 }
 
 export async function listDotThreads(accountId: string, dotId?: string): Promise<unknown> {
+  requireStableDotProfile(accountId)
+  const generation = getDotTargetGeneration(accountId)
   const acc = getStoredDotAccount(accountId)
-  const targetDotId = dotId || acc?.activeDotId
-  if (!targetDotId) {
-    const { activeDot } = await listDots(accountId, true)
-    if (!activeDot) return { items: [] }
-    return callDotApi(accountId, {
-      method: 'GET',
-      path: `/tbo/${encodeURIComponent(activeDot.id)}/threads`
-    })
-  }
-  return callDotApi(accountId, {
+  const targetDotId = dotId || acc?.activeDotId || (await listDots(accountId)).activeDot?.id
+  if (!targetDotId) return { items: [] }
+  requireTargetGeneration(accountId, generation)
+  const result = await callDotApi(accountId, {
     method: 'GET',
     path: `/tbo/${encodeURIComponent(targetDotId)}/threads`
   })
+  requireTargetGeneration(accountId, generation)
+  return result
 }
 
 export function inferDotFileMimeType(name?: string, rawMime?: string): string {
@@ -1245,7 +1458,7 @@ export function dotAttachmentsToMedia(
 }
 
 export function normalizeRoomMessage(raw: Record<string, unknown>, fallbackRoomId = ''): DotRoomMessage {
-  const id = String(raw['id'] ?? '')
+  const id = String(raw['id'] ?? raw['message_id'] ?? '')
   const roomId = String(raw['room_id'] ?? fallbackRoomId)
   const accountUserId = String(raw['account_user_id'] ?? '')
   const isBot =
@@ -1328,29 +1541,36 @@ export function normalizeRoomMessage(raw: Record<string, unknown>, fallbackRoomI
   }
 }
 
-export async function listRoomMessages(
-  accountId: string,
-  opts?: { roomId?: string; dotId?: string; limit?: number; after?: string }
-): Promise<{ roomId: string; dotId?: string; messages: DotRoomMessage[]; hasMore: boolean }> {
-  let acc = getStoredDotAccount(accountId)
-  let roomId = opts?.roomId || acc?.roomId
-  let dotId = opts?.dotId || acc?.activeDotId
-
-  if (!roomId) {
-    const { activeDot } = await listDots(accountId, true)
-    if (!activeDot || !activeDot.messagingRoomId) {
-      return { roomId: '', dotId: activeDot?.id, messages: [], hasMore: false }
-    }
-    roomId = activeDot.messagingRoomId
-    dotId = activeDot.id
-    acc = getStoredDotAccount(accountId)
+async function pinDotRoom(accountId: string, requested: DotTarget, signal?: AbortSignal): Promise<DotRoomTarget> {
+  requireStableDotProfile(accountId)
+  const generation = getDotTargetGeneration(accountId)
+  const acc = getStoredDotAccount(accountId)
+  const target = resolveDotTarget(requested, acc)
+  if (target.roomId && target.dotId === acc?.activeDotId) {
+    return { ...target, roomId: target.roomId, threadId: acc?.threadId, generation }
   }
+  if (!target.dotId) return (await initializeDots(accountId, signal)).target
+  const profile = await getDot(accountId, target.dotId, signal)
+  signal?.throwIfAborted()
+  requireTargetGeneration(accountId, generation)
+  if (target.dotId !== profile.id) throw new DotApiError(409, 'The Dot profile ID changed')
+  return activateDotProfile(accountId, profile)
+}
 
+interface RoomHistoryOptions {
+  limit?: number
+  after?: string
+  signal?: AbortSignal
+}
+
+async function fetchRoomHistory(accountId: string, target: DotRoomTarget, opts?: RoomHistoryOptions) {
+  const { roomId } = target
+  requireTargetGeneration(accountId, target.generation)
   // IMPORTANT: Calpico room messages API enforces `limit <= 32` (HTTP 422 if > 32).
   const limit = Math.max(1, Math.min(32, opts?.limit ?? 32))
   const res = await callDotApi<{
-    items?: Record<string, unknown>[]
-    data?: Record<string, unknown>[]
+    items?: unknown[]
+    data?: unknown[]
     has_more?: boolean
   }>(accountId, {
     method: 'GET',
@@ -1358,22 +1578,45 @@ export async function listRoomMessages(
     query: {
       limit: String(limit),
       ...(opts?.after ? { after: opts.after } : {})
-    }
+    },
+    signal: opts?.signal
   })
-
+  requireTargetGeneration(accountId, target.generation)
   const list = Array.isArray(res?.items)
     ? res.items
     : Array.isArray(res?.data)
       ? res.data
       : []
-  const messages = list.map((m) => normalizeRoomMessage(m, roomId)).filter((m) => m.id)
-  void ensureRoomPoller(accountId, roomId, messages)
+  const messages: DotRoomMessage[] = []
+  for (const item of list) {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) continue
+    try {
+      const raw = item as Record<string, unknown>
+      const id = raw['id'] ?? raw['message_id']
+      if (typeof id !== 'string' && typeof id !== 'number') continue
+      const message = normalizeRoomMessage(raw, roomId)
+      if (message.id && message.roomId === roomId) messages.push(message)
+    } catch {
+      /* A malformed record does not invalidate the rest of the page. */
+    }
+  }
   return {
-    roomId,
-    dotId,
+    ...target,
     messages,
     hasMore: Boolean(res?.has_more)
   }
+}
+
+export async function listRoomMessages(accountId: string, opts?: DotTarget & RoomHistoryOptions) {
+  const account = getStoredDotAccount(accountId)
+  if (account?.mode === 'native' && !opts?.dotId && !opts?.roomId) {
+    return { roomId: '', messages: [], hasMore: false }
+  }
+  const target = await pinDotRoom(accountId, opts ?? {}, opts?.signal)
+  const history = await fetchRoomHistory(accountId, target, opts)
+  requireTargetGeneration(accountId, target.generation)
+  ensureRoomPoller(accountId, target.roomId, history.messages)
+  return history
 }
 
 export async function downloadDotFile(
@@ -1387,6 +1630,7 @@ export async function downloadDotFile(
   dataBase64: string
   text?: string
 }> {
+  const revision = getDotCredentialRevision(accountId)
   const acc = await ensureValidDotAccount(accountId)
   let targetUrl = opts.url?.trim() || ''
   let fileId = opts.fileId?.trim() || ''
@@ -1477,22 +1721,33 @@ export async function downloadDotFile(
     throw new DotApiError(404, '无法解析 Dot 文件下载链接')
   }
 
-  const fetchUrl = async (u: string): Promise<Response> => {
-    const isChatgptApi = u.startsWith(DOT_ORIGIN)
-    const effectiveProxy = await resolveDotProxyUrl(accountId, acc.proxyUrl)
-    return proxyFetch(effectiveProxy, u, {
-      headers: {
-        ...(isChatgptApi
-          ? {
-              Authorization: `Bearer ${acc.accessToken}`,
-              ...(acc.chatgptAccountId ? { 'chatgpt-account-id': acc.chatgptAccountId } : {}),
-              Origin: DOT_ORIGIN,
-              Referer: `${DOT_ORIGIN}/dots`
-            }
-          : {}),
-        'User-Agent': CHROME_UA
+  const fetchUrl = async (rawUrl: string): Promise<Response> => {
+    const expected = new URL(DOT_ORIGIN)
+    const effectiveProxy = await resolveDotProxyUrl(accountId)
+    const deadline = AbortSignal.timeout(30_000)
+    let url = new URL(rawUrl, expected)
+    for (let redirects = 0; redirects <= 5; redirects++) {
+      if (url.protocol !== 'https:' || url.username || url.password) {
+        throw new DotApiError(400, 'Invalid Dot file URL')
       }
-    })
+      requireCredentialRevision(accountId, revision)
+      const current = getStoredDotAccount(accountId) ?? acc
+      const headers = url.origin === expected.origin
+        ? {
+            Authorization: `Bearer ${current.accessToken}`,
+            ...(current.chatgptAccountId ? { 'chatgpt-account-id': current.chatgptAccountId } : {}),
+            Origin: DOT_ORIGIN,
+            Referer: `${DOT_ORIGIN}/dots`,
+            'User-Agent': CHROME_UA
+          }
+        : { 'User-Agent': CHROME_UA }
+      const response = await proxyFetch(effectiveProxy, url.href, { headers, redirect: 'manual', signal: deadline })
+      const location = response.headers.get('location')
+      if (response.status < 300 || response.status >= 400 || !location) return response
+      void response.body?.cancel().catch(() => undefined)
+      url = new URL(location, url)
+    }
+    throw new DotApiError(502, 'Too many Dot file redirects')
   }
 
   let res = await fetchUrl(targetUrl)
@@ -1512,6 +1767,7 @@ export async function downloadDotFile(
   }
 
   const ab = await res.arrayBuffer()
+  requireCredentialRevision(accountId, revision)
   const buf = Buffer.from(ab)
   const finalName = fileName || 'document'
   const mimeType = inferMediaMime({
@@ -1558,7 +1814,9 @@ export function closeRoomLiveStream(accountId: string, roomId?: string): void {
 }
 
 export async function triggerRoomLivePush(accountId: string, roomId: string): Promise<void> {
-  if (!roomId) return
+  const acc = getStoredDotAccount(accountId)
+  if (!roomId || acc?.roomId !== roomId) return
+  const target = { dotId: acc.activeDotId, roomId, generation: getDotTargetGeneration(accountId) }
   const key = `${accountId}:${roomId}`
   const existing = activeRoomLiveStreams.get(key)
   if (existing && Date.now() - existing.startedAt < 10 * 60 * 1000) {
@@ -1571,12 +1829,14 @@ export async function triggerRoomLivePush(accountId: string, roomId: string): Pr
   // Refresh after 10 minutes
   const maxTimer = setTimeout(() => {
     ac.abort()
-    activeRoomLiveStreams.delete(key)
+    if (activeRoomLiveStreams.get(key)?.ac === ac) activeRoomLiveStreams.delete(key)
   }, 10 * 60 * 1000)
 
   try {
-    const acc = await ensureValidDotAccount(accountId)
-    const effectiveProxy = await resolveDotProxyUrl(accountId, acc.proxyUrl)
+    const acc = await ensureValidDotAccount(accountId, ac.signal)
+    const effectiveProxy = await resolveDotProxyUrl(accountId)
+    ac.signal.throwIfAborted()
+    requireTargetGeneration(accountId, target.generation)
     const res = await proxyFetch(effectiveProxy, `${DOT_API_BASE}/messaging/rooms/${encodeURIComponent(roomId)}/live`, {
       method: 'POST',
       headers: {
@@ -1587,26 +1847,34 @@ export async function triggerRoomLivePush(accountId: string, roomId: string): Pr
         Referer: `${DOT_ORIGIN}/dots`,
         'User-Agent': CHROME_UA
       },
+      redirect: 'error',
       signal: ac.signal
     })
     if (!res.ok || !res.body) return
     let buffer = ''
-    for await (const chunk of res.body as unknown as AsyncIterable<Uint8Array>) {
-      buffer += Buffer.from(chunk).toString('utf8')
-      const lines = buffer.split(/\r?\n/)
-      buffer = lines.pop() ?? ''
+    const decoder = new TextDecoder()
+    const processLines = (lines: string[]) => {
       for (const line of lines) {
         if (!line.startsWith('data:')) continue
         const jsonStr = line.slice(5).trim()
         if (!jsonStr || jsonStr === '[DONE]') continue
         try {
           const ev = JSON.parse(jsonStr) as Record<string, unknown>
-          handleCalpicoEventPayload(accountId, ev, roomId)
+          handleCalpicoEventPayload(accountId, ev, target)
         } catch {
           /* ignore */
         }
       }
     }
+    for await (const chunk of res.body as unknown as AsyncIterable<Uint8Array>) {
+      ac.signal.throwIfAborted()
+      buffer += decoder.decode(chunk, { stream: true })
+      const lines = buffer.split(/\r?\n/)
+      buffer = lines.pop() ?? ''
+      if (buffer.length > 1024 * 1024) return
+      processLines(lines)
+    }
+    if (!ac.signal.aborted) processLines([buffer + decoder.decode()])
   } catch {
     /* stream closed or aborted */
   } finally {
@@ -1632,9 +1900,11 @@ export interface DotUploadAttachmentInput {
  */
 export async function uploadDotRoomAttachment(
   accountId: string,
-  file: DotUploadAttachmentInput
+  file: DotUploadAttachmentInput,
+  signal?: AbortSignal
 ): Promise<Record<string, unknown>> {
-  const acc = await ensureValidDotAccount(accountId)
+  const revision = getDotCredentialRevision(accountId)
+  signal?.throwIfAborted()
   const bytes = Buffer.from(file.dataBase64, 'base64')
   const fileName = file.name || 'attachment'
   const mimeType = inferMediaMime({
@@ -1650,6 +1920,7 @@ export async function uploadDotRoomAttachment(
   }>(accountId, {
     method: 'POST',
     path: '/files',
+    signal,
     body: {
       file_name: fileName,
       file_size: bytes.byteLength,
@@ -1664,7 +1935,10 @@ export async function uploadDotRoomAttachment(
     throw new DotApiError(502, 'Dot 文件上传初始化失败（缺少 upload_url）')
   }
 
-  const effectiveProxy = await resolveDotProxyUrl(accountId, acc.proxyUrl)
+  const effectiveProxy = await resolveDotProxyUrl(accountId)
+  signal?.throwIfAborted()
+  requireCredentialRevision(accountId, revision)
+  const deadline = AbortSignal.timeout(120_000)
   const isAzureBlob = /blob\.core\.windows\.net/i.test(uploadUrl)
   const putRes = await proxyFetch(effectiveProxy, uploadUrl, {
     method: 'PUT',
@@ -1672,7 +1946,8 @@ export async function uploadDotRoomAttachment(
       'Content-Type': mimeType,
       ...(isAzureBlob ? { 'x-ms-blob-type': 'BlockBlob' } : {})
     },
-    body: new Uint8Array(bytes)
+    body: new Uint8Array(bytes),
+    signal: signal ? AbortSignal.any([signal, deadline]) : deadline
   })
   if (!putRes.ok) {
     throw new DotApiError(putRes.status, `Dot 文件上传失败 (${putRes.status})`)
@@ -1681,8 +1956,11 @@ export async function uploadDotRoomAttachment(
   await callDotApi(accountId, {
     method: 'POST',
     path: `/files/${encodeURIComponent(fileId)}/uploaded`,
-    body: {}
+    body: {},
+    signal
   }).catch(() => undefined)
+  signal?.throwIfAborted()
+  requireCredentialRevision(accountId, revision)
 
   return {
     attachment_id: randomUUID(),
@@ -1697,29 +1975,20 @@ export async function uploadDotRoomAttachment(
   }
 }
 
-export async function sendRoomMessage(
+async function sendRoomMessage(
   accountId: string,
-  opts: { roomId?: string; dotId?: string; text: string; attachments?: DotUploadAttachmentInput[] }
+  target: DotRoomTarget,
+  opts: { text: string; attachments?: DotUploadAttachmentInput[]; signal: AbortSignal }
 ): Promise<{ roomId: string; dotId?: string; message: DotRoomMessage }> {
-  const acc = getStoredDotAccount(accountId)
-  let roomId = opts.roomId || acc?.roomId
-  let dotId = opts.dotId || acc?.activeDotId
-
-  if (!roomId) {
-    const { activeDot } = await listDots(accountId, true)
-    if (!activeDot) throw new DotApiError(404, 'No active Dot room found')
-    roomId = activeDot.messagingRoomId
-    dotId = activeDot.id
-  }
-
-  void ensureCelsiusWatcher(accountId, roomId)
-  void triggerRoomLivePush(accountId, roomId)
+  const { roomId, dotId, generation } = target
+  opts.signal.throwIfAborted()
+  requireTargetGeneration(accountId, generation)
 
   const uploadedAttachments: Record<string, unknown>[] = []
   if (opts.attachments && opts.attachments.length > 0) {
     for (const att of opts.attachments) {
       if (!att.dataBase64) continue
-      uploadedAttachments.push(await uploadDotRoomAttachment(accountId, att))
+      uploadedAttachments.push(await uploadDotRoomAttachment(accountId, att, opts.signal))
     }
   }
 
@@ -1730,9 +1999,11 @@ export async function sendRoomMessage(
     ? `${opts.text}\n\n(Note for room delivery: do not use any external/search/code/file tools, but do send your final response text directly into this chat room.)`
     : opts.text
 
+  requireTargetGeneration(accountId, generation)
   const raw = await callDotApi<Record<string, unknown>>(accountId, {
     method: 'POST',
     path: `/messaging/rooms/${encodeURIComponent(roomId)}/messages`,
+    signal: opts.signal,
     body: {
       content: {
         text: wireText,
@@ -1742,6 +2013,7 @@ export async function sendRoomMessage(
       idempotency_token: randomUUID()
     }
   })
+  requireTargetGeneration(accountId, generation)
 
   const message = normalizeRoomMessage(raw, roomId)
   message.text = opts.text
@@ -1754,214 +2026,170 @@ export async function sendRoomMessage(
 // ============================================================================
 
 interface CelsiusWatcherState {
-  accountId: string
-  ws: WebSocket | null
-  subscribedRooms: Set<string>
-  seenMessageIds: Set<string>
+  controller: AbortController
+  ws?: WebSocket
   reconnectTimer?: NodeJS.Timeout
   pingTimer?: NodeJS.Timeout
-  closed: boolean
 }
 
-const celsiusWatchers = new Map<string, CelsiusWatcherState>()
-
 interface RoomPollerState {
-  accountId: string
-  roomId: string
+  target: DotRoomTarget
+  controller: AbortController
+  request?: AbortController
   timer?: NodeJS.Timeout
   lastActiveAt: number
   busy: boolean
-  knownSignatures: Map<string, string>
-  closed: boolean
+  seeded: boolean
+  seenMessageIds: Map<string, string>
 }
 
+const celsiusWatchers = new Map<string, CelsiusWatcherState>()
 const roomPollers = new Map<string, RoomPollerState>()
+const MAX_SEEN_MESSAGE_IDS = 512
 
 function messageSignature(msg: DotRoomMessage): string {
-  const attSig = (msg.attachments ?? [])
-    .map((a) => `${a.fileId || a.attachmentId}:${a.name || ''}:${Boolean(a.downloadUrl)}`)
-    .join('|')
-  return `${msg.text.length}:${msg.text.slice(-32)}:${attSig}`
+  return JSON.stringify([msg.text, msg.attachments ?? []])
+}
+
+function rememberRoomMessage(poller: RoomPollerState | undefined, msg: DotRoomMessage): boolean {
+  if (!poller) return true
+  const signature = messageSignature(msg)
+  if (poller.seenMessageIds.get(msg.id) === signature) return false
+  poller.seenMessageIds.delete(msg.id)
+  poller.seenMessageIds.set(msg.id, signature)
+  if (poller.seenMessageIds.size > MAX_SEEN_MESSAGE_IDS) {
+    const oldest = poller.seenMessageIds.keys().next().value
+    if (oldest !== undefined) poller.seenMessageIds.delete(oldest)
+  }
+  return true
 }
 
 export function bumpDotRoomActivity(accountId: string, roomId?: string, busy = true): void {
-  const st = roomPollers.get(accountId)
-  if (st) {
-    if (roomId) st.roomId = roomId
-    st.lastActiveAt = Date.now()
-    st.busy = busy
-  }
+  const poller = roomPollers.get(accountId)
+  if (!poller || (roomId && poller.target.roomId !== roomId)) return
+  poller.lastActiveAt = Date.now()
+  poller.busy = busy
 }
 
-export function ensureRoomPoller(
-  accountId: string,
-  roomId?: string,
-  seedMessages?: DotRoomMessage[]
-): void {
-  const acc = getStoredDotAccount(accountId)
-  const targetRoomId = roomId || acc?.roomId || ''
-  if (!targetRoomId) return
+function turnForRoom(accountId: string, target: DotRoomTarget): DotTurn | undefined {
+  const turn = activeDotTurns.get(accountId)
+  if (turn?.target?.generation === target.generation && turn.target.roomId === target.roomId) return turn
+  return undefined
+}
 
-  let st = roomPollers.get(accountId)
-  if (st && !st.closed) {
-    st.roomId = targetRoomId
+export function ensureRoomPoller(accountId: string, roomId: string, seedMessages?: DotRoomMessage[]): void {
+  const acc = getStoredDotAccount(accountId)
+  if (!acc || !roomId || acc.roomId !== roomId) return
+  const target = { dotId: acc.activeDotId, roomId, generation: getDotTargetGeneration(accountId) }
+  const existing = roomPollers.get(accountId)
+  if (existing) {
     if (seedMessages) {
-      for (const m of seedMessages) {
-        st.knownSignatures.set(m.id, messageSignature(m))
-      }
+      for (const message of seedMessages) rememberRoomMessage(existing, message)
+      existing.seeded = true
     }
     return
   }
 
-  st = {
-    accountId,
-    roomId: targetRoomId,
+  const poller: RoomPollerState = {
+    target,
+    controller: new AbortController(),
     lastActiveAt: Date.now(),
     busy: false,
-    knownSignatures: new Map<string, string>(),
-    closed: false
+    seeded: Boolean(seedMessages),
+    seenMessageIds: new Map()
   }
-  if (seedMessages) {
-    for (const m of seedMessages) {
-      st.knownSignatures.set(m.id, messageSignature(m))
-    }
-  }
-  roomPollers.set(accountId, st)
+  for (const message of seedMessages ?? []) rememberRoomMessage(poller, message)
+  roomPollers.set(accountId, poller)
 
   const tick = async () => {
-    const cur = roomPollers.get(accountId)
-    if (!cur || cur.closed) return
-    const curAcc = getStoredDotAccount(accountId)
-    if (!curAcc || !cur.roomId) return
-
-    try {
-      const res = await callDotApi<{
-        items?: Record<string, unknown>[]
-        data?: Record<string, unknown>[]
-      }>(accountId, {
-        method: 'GET',
-        path: `/messaging/rooms/${encodeURIComponent(cur.roomId)}/messages`,
-        query: { limit: '12' }
-      })
-      const rawList = Array.isArray(res?.items)
-        ? res.items
-        : Array.isArray(res?.data)
-          ? res.data
-          : []
-      const msgs = rawList.map((m) => normalizeRoomMessage(m, cur.roomId)).filter((m) => m.id)
-      const hadSeed = cur.knownSignatures.size > 0
-      for (const m of msgs) {
-        const sig = messageSignature(m)
-        const prevSig = cur.knownSignatures.get(m.id)
-        cur.knownSignatures.set(m.id, sig)
-        if (hadSeed && m.role === 'bot' && (m.text || m.attachments?.length) && prevSig !== sig) {
-          cur.lastActiveAt = Date.now()
-          emitRealtime({
-            type: 'message',
-            accountId,
-            botId: activeTurnBotIds.get(accountId) ?? curAcc.botId,
-            dotId: curAcc.activeDotId,
-            roomId: cur.roomId,
-            message: m,
-            done: true
-          })
+    if (poller.controller.signal.aborted) return
+    if (!turnForRoom(accountId, target)) {
+      const request = new AbortController()
+      poller.request = request
+      try {
+        const { messages } = await fetchRoomHistory(accountId, target, { limit: 12, signal: request.signal })
+        request.signal.throwIfAborted()
+        for (const message of messages) {
+          const fresh = rememberRoomMessage(poller, message)
+          if (poller.seeded && fresh && message.role === 'bot' && (message.text || message.attachments?.length)) {
+            poller.lastActiveAt = Date.now()
+            emitRealtime({
+              type: 'message',
+              accountId,
+              botId: getStoredDotAccount(accountId)?.botId,
+              target,
+              message,
+              done: true
+            })
+          }
         }
+        poller.seeded = true
+      } catch {
+        /* Retry transient errors on the next interval. */
+      } finally {
+        poller.request = undefined
       }
-    } catch {
-      /* ignore transient poll error */
     }
-
-    if (cur.closed) return
-    const recentlyActive = cur.busy || Date.now() - cur.lastActiveAt < 6 * 60 * 1000
-    const nextDelay = recentlyActive ? 3000 : 12000
-    cur.timer = setTimeout(() => void tick(), nextDelay)
+    if (!poller.controller.signal.aborted) {
+      const recentlyActive = poller.busy || Date.now() - poller.lastActiveAt < 6 * 60 * 1000
+      poller.timer = setTimeout(() => void tick(), recentlyActive ? 3000 : 12000)
+    }
   }
-
-  st.timer = setTimeout(() => void tick(), 3500)
+  poller.timer = setTimeout(() => void tick(), 3500)
 }
 
-export function handleCalpicoEventPayload(
+function handleCalpicoEventPayload(
   accountId: string,
   ev: Record<string, unknown>,
-  fallbackRoomId = ''
+  target: DotRoomTarget
 ): void {
+  if (getDotTargetGeneration(accountId) !== target.generation) return
+  const acc = getStoredDotAccount(accountId)
+  if (!acc || acc.roomId !== target.roomId || acc.activeDotId !== target.dotId) return
   const evType = String(ev['type'] ?? '')
   const payload = (ev['payload'] as Record<string, unknown> | undefined) ?? ev
-  const evRoomId = String(payload['room_id'] ?? ev['room_id'] ?? fallbackRoomId)
-  const acc = getStoredDotAccount(accountId)
-  const st = celsiusWatchers.get(accountId)
+  const evRoomId = String(payload['room_id'] ?? ev['room_id'] ?? target.roomId)
+  if (evRoomId !== target.roomId) return
+
+  const turn = turnForRoom(accountId, target)
+  const route = {
+    accountId,
+    botId: turn?.botId ?? acc.botId,
+    target,
+    turnId: turn?.id
+  }
 
   if (evType === 'calpico-message-add' || evType === 'calpico-message-update') {
     const msgRaw = payload['message'] as Record<string, unknown> | undefined
-    if (!msgRaw) return
-    const msg = normalizeRoomMessage(msgRaw, evRoomId || acc?.roomId || '')
-    if (msg.role === 'bot' && (msg.text || msg.attachments?.length)) {
-      st?.seenMessageIds.add(msg.id)
-      const poller = roomPollers.get(accountId)
-      poller?.knownSignatures.set(msg.id, messageSignature(msg))
-      bumpDotRoomActivity(accountId, msg.roomId, true)
-      emitRealtime({
-        type: 'message',
-        accountId,
-        botId: activeTurnBotIds.get(accountId) ?? acc?.botId,
-        dotId: acc?.activeDotId,
-        roomId: msg.roomId,
-        message: msg,
-        done: true
-      })
-    }
+    if (!msgRaw || typeof msgRaw !== 'object') return
+    const message = normalizeRoomMessage(msgRaw, evRoomId)
+    if (!message.id || message.roomId !== target.roomId || message.role !== 'bot' || (!message.text && !message.attachments?.length)) return
+    const poller = roomPollers.get(accountId)
+    if (poller && !rememberRoomMessage(poller, message)) return
+    bumpDotRoomActivity(accountId, target.roomId, true)
+    emitRealtime({ type: 'message', ...route, message, done: true })
   } else if (evType === 'calpico-is-responding-heartbeat') {
-    const typing = Boolean(payload['typing'])
-    bumpDotRoomActivity(accountId, evRoomId || acc?.roomId, typing)
+    const busy = Boolean(payload['typing'])
+    bumpDotRoomActivity(accountId, target.roomId, busy)
     emitRealtime({
       type: 'activity',
-      accountId,
-      botId: activeTurnBotIds.get(accountId) ?? acc?.botId,
-      dotId: acc?.activeDotId,
-      roomId: evRoomId || acc?.roomId || '',
-      code: typing ? 'thinking' : 'idle',
-      text: typing ? 'Dot is responding…' : undefined,
-      busy: typing
+      ...route,
+      code: busy ? 'thinking' : 'idle',
+      text: busy ? 'Dot is responding…' : undefined,
+      busy
     })
   } else if (evType === 'calpico-room-live' || evType === 'calpico-room-live-state') {
-    const threads = Array.isArray(payload['threads'])
-      ? (payload['threads'] as Record<string, unknown>[])
-      : []
-    const first = threads[0]
-    if (!first) {
-      bumpDotRoomActivity(accountId, evRoomId || acc?.roomId, false)
-      emitRealtime({
-        type: 'activity',
-        accountId,
-        botId: activeTurnBotIds.get(accountId) ?? acc?.botId,
-        dotId: acc?.activeDotId,
-        roomId: evRoomId || acc?.roomId || '',
-        code: 'idle',
-        text: undefined,
-        busy: false
-      })
-      return
-    }
-    const turnStatus = String(first['turn_status'] ?? '')
-    const actObj =
-      first['activity_status'] && typeof first['activity_status'] === 'object'
-        ? (first['activity_status'] as Record<string, unknown>)
-        : {}
-    const statusType = String(actObj['status_type'] ?? '')
-    const statusLabel = typeof actObj['status_label'] === 'string' ? actObj['status_label'] : undefined
-    const summary = typeof first['summary'] === 'string' ? first['summary'] : undefined
-    const busy =
-      turnStatus === 'in_progress' ||
-      (statusType !== '' && statusType.toLowerCase() !== 'ready')
-    bumpDotRoomActivity(accountId, evRoomId || acc?.roomId, busy)
+    const threads = Array.isArray(payload['threads']) ? payload['threads'] : []
+    const first = threads[0] as Record<string, unknown> | undefined
+    const activity = first?.['activity_status'] as Record<string, unknown> | undefined
+    const statusType = String(activity?.['status_type'] ?? '').toLowerCase()
+    const busy = first?.['turn_status'] === 'in_progress' || (statusType !== '' && statusType !== 'ready')
+    bumpDotRoomActivity(accountId, target.roomId, busy)
     emitRealtime({
       type: 'activity',
-      accountId,
-      botId: activeTurnBotIds.get(accountId) ?? acc?.botId,
-      dotId: acc?.activeDotId,
-      roomId: evRoomId || acc?.roomId || '',
-      code: busy ? statusType.toLowerCase() || 'thinking' : 'idle',
-      text: busy ? statusLabel || summary || statusType || 'Thinking…' : undefined,
+      ...route,
+      code: busy ? statusType || 'thinking' : 'idle',
+      text: busy ? String(activity?.['status_label'] || first?.['summary'] || 'Thinking…') : undefined,
       busy
     })
   }
@@ -1969,189 +2197,114 @@ export function handleCalpicoEventPayload(
 
 export function closeCelsiusWatcher(accountId: string): void {
   if (accountId === '*') {
-    for (const [, v] of activeRoomLiveStreams.entries()) v.ac.abort()
-    activeRoomLiveStreams.clear()
-    for (const [, poller] of roomPollers.entries()) {
-      poller.closed = true
-      if (poller.timer) clearTimeout(poller.timer)
-    }
-    roomPollers.clear()
-    for (const [, st] of celsiusWatchers.entries()) {
-      st.closed = true
-      if (st.reconnectTimer) clearTimeout(st.reconnectTimer)
-      if (st.pingTimer) clearInterval(st.pingTimer)
-      try {
-        st.ws?.close()
-      } catch {
-        /* ignore */
-      }
-    }
-    celsiusWatchers.clear()
+    const ids = new Set([
+      ...celsiusWatchers.keys(),
+      ...roomPollers.keys(),
+      ...activeDotTurns.keys(),
+      ...nativeConnections.keys(),
+      ...runtimeInterrupts.keys(),
+      ...profileSelections.keys()
+    ])
+    for (const id of ids) disconnectDotAccount(id)
     return
   }
+
   closeRoomLiveStream(accountId)
   const poller = roomPollers.get(accountId)
   if (poller) {
-    poller.closed = true
-    if (poller.timer) clearTimeout(poller.timer)
     roomPollers.delete(accountId)
+    poller.controller.abort()
+    poller.request?.abort()
+    clearTimeout(poller.timer)
   }
-  const st = celsiusWatchers.get(accountId)
-  if (!st) return
-  st.closed = true
-  if (st.reconnectTimer) clearTimeout(st.reconnectTimer)
-  if (st.pingTimer) clearInterval(st.pingTimer)
-  try {
-    st.ws?.close()
-  } catch {
-    /* ignore */
+  const watcher = celsiusWatchers.get(accountId)
+  if (watcher) {
+    celsiusWatchers.delete(accountId)
+    watcher.controller.abort()
+    clearTimeout(watcher.reconnectTimer)
+    clearInterval(watcher.pingTimer)
+    watcher.ws?.terminate()
   }
-  celsiusWatchers.delete(accountId)
 }
 
 export function rebindDotAccountNetwork(accountId: string): void {
-  const hadWatcher = celsiusWatchers.get(accountId)
-  const hadPoller = roomPollers.get(accountId)
-  if (!hadWatcher && !hadPoller) return
-  const roomId =
-    hadPoller?.roomId ||
-    (hadWatcher ? [...hadWatcher.subscribedRooms][0] : undefined)
-  closeCelsiusWatcher(accountId)
-  void ensureCelsiusWatcher(accountId, roomId).catch(() => undefined)
+  const wasWatching = celsiusWatchers.has(accountId) || roomPollers.has(accountId)
+  disconnectDotAccount(accountId)
+  // The account proxy settings have taken over this account's routing.
+  patchStoredDotAccount(accountId, { proxyUrl: undefined })
+  if (wasWatching) void ensureCelsiusWatcher(accountId, getStoredDotAccount(accountId)?.roomId)
 }
 
 export async function ensureCelsiusWatcher(accountId: string, roomId?: string): Promise<void> {
-  if (roomId) {
-    ensureRoomPoller(accountId, roomId)
-    void triggerRoomLivePush(accountId, roomId)
-  }
-  let st = celsiusWatchers.get(accountId)
-  if (st && !st.closed && st.ws && st.ws.readyState === WebSocket.OPEN) {
-    if (roomId && !st.subscribedRooms.has(roomId)) {
-      st.subscribedRooms.add(roomId)
-      try {
-        st.ws.send(
-          JSON.stringify([
-            {
-              command: { type: 'subscribe', topic_id: `calpico-room-live:${roomId}` },
-              id: Math.floor(Math.random() * 100000) + 10
-            }
-          ])
-        )
-      } catch {
-        /* ignore */
-      }
-    }
-    return
-  }
+  const acc = getStoredDotAccount(accountId)
+  if (!acc || !roomId || acc.roomId !== roomId || profileSelections.has(accountId)) return
+  ensureRoomPoller(accountId, roomId)
+  void triggerRoomLivePush(accountId, roomId)
+  if (celsiusWatchers.has(accountId)) return
 
-  if (st && !st.closed && st.ws && st.ws.readyState === WebSocket.CONNECTING) {
-    if (roomId) st.subscribedRooms.add(roomId)
-    return
+  const target = { dotId: acc.activeDotId, roomId, generation: getDotTargetGeneration(accountId) }
+  const watcher: CelsiusWatcherState = { controller: new AbortController() }
+  celsiusWatchers.set(accountId, watcher)
+  const { signal } = watcher.controller
+  const ownsWatcher = () => !signal.aborted &&
+    celsiusWatchers.get(accountId) === watcher && getDotTargetGeneration(accountId) === target.generation
+  const reconnect = () => {
+    if (!ownsWatcher()) return
+    clearInterval(watcher.pingTimer)
+    watcher.ws = undefined
+    watcher.reconnectTimer = setTimeout(() => {
+      if (!ownsWatcher()) return
+      celsiusWatchers.delete(accountId)
+      void ensureCelsiusWatcher(accountId, roomId)
+    }, 4000)
   }
-
   try {
     const info = await callDotApi<{ websocket_url?: string }>(accountId, {
       method: 'GET',
-      path: '/celsius/ws/user'
+      path: '/celsius/ws/user',
+      signal
     })
-    if (!info?.websocket_url) return
-
-    st = {
-      accountId,
-      ws: null,
-      subscribedRooms: new Set(roomId ? [roomId] : []),
-      seenMessageIds: st?.seenMessageIds ?? new Set<string>(),
-      closed: false
+    const proxy = await resolveDotProxyUrl(accountId)
+    if (!ownsWatcher()) return
+    if (!info?.websocket_url) {
+      reconnect()
+      return
     }
-    celsiusWatchers.set(accountId, st)
-
-    const effectiveProxy = await resolveDotProxyUrl(accountId, getStoredDotAccount(accountId)?.proxyUrl)
-    const ws = new WebSocket(info.websocket_url, {
-      agent: proxyWsAgent(effectiveProxy),
-      headers: {
-        Origin: DOT_ORIGIN,
-        'User-Agent': CHROME_UA
-      }
+    const socketUrl = new URL(info.websocket_url)
+    if (socketUrl.protocol !== 'wss:') throw new DotApiError(502, 'Invalid Celsius WebSocket URL')
+    const ws = new WebSocket(socketUrl, {
+      agent: proxyWsAgent(proxy),
+      handshakeTimeout: 15_000,
+      headers: { Origin: DOT_ORIGIN, 'User-Agent': CHROME_UA }
     })
-    st.ws = ws
-
-    ws.on('open', () => {
-      if (!st || st.closed) return
-      if (st.pingTimer) clearInterval(st.pingTimer)
-      st.pingTimer = setInterval(() => {
-        if (!st || st.closed || ws.readyState !== WebSocket.OPEN) return
-        try {
-          ws.ping()
-        } catch {
-          /* ignore */
-        }
+    watcher.ws = ws
+    ws.on('error', () => ws.terminate())
+    ws.once('close', reconnect)
+    ws.once('open', () => {
+      if (!ownsWatcher()) return
+      watcher.pingTimer = setInterval(() => {
+        if (ownsWatcher() && ws.readyState === WebSocket.OPEN) ws.ping()
       }, 25_000)
-      const acc = getStoredDotAccount(accountId)
-      if (acc?.roomId) st.subscribedRooms.add(acc.roomId)
-      const cmds: unknown[] = [
-        {
-          command: {
-            type: 'connect',
-            presence: { type: 'presence', state: 'foreground' }
-          },
-          id: 1
-        },
-        {
-          command: {
-            type: 'subscribe',
-            topic_id: 'calpico-chatgpt-messaging'
-          },
-          id: 2
-        }
-      ]
-      let nextId = 3
-      for (const rId of st.subscribedRooms) {
-        cmds.push({
-          command: {
-            type: 'subscribe',
-            topic_id: `calpico-room-live:${rId}`
-          },
-          id: nextId++
-        })
-      }
-      try {
-        ws.send(JSON.stringify(cmds))
-      } catch {
-        /* ignore */
-      }
+      ws.send(JSON.stringify([
+        { command: { type: 'connect', presence: { type: 'presence', state: 'foreground' } }, id: 1 },
+        { command: { type: 'subscribe', topic_id: 'calpico-chatgpt-messaging' }, id: 2 },
+        { command: { type: 'subscribe', topic_id: `calpico-room-live:${roomId}` }, id: 3 }
+      ]))
     })
-
     ws.on('message', (data) => {
-      if (!st || st.closed) return
+      if (!ownsWatcher()) return
       try {
         const frame = JSON.parse(data.toString()) as Record<string, unknown>
-        if (frame['type'] !== 'message') return
-        const ev = frame['payload'] as Record<string, unknown> | undefined
-        if (!ev || typeof ev !== 'object') return
-        handleCalpicoEventPayload(accountId, ev, roomId)
+        const event = frame['payload']
+        if (frame['type'] === 'message' && event && typeof event === 'object') {
+          handleCalpicoEventPayload(accountId, event as Record<string, unknown>, target)
+        }
       } catch {
-        /* ignore malformed frame */
+        /* Ignore malformed frames. */
       }
-    })
-
-    ws.on('close', () => {
-      if (!st || st.closed) return
-      if (st.pingTimer) {
-        clearInterval(st.pingTimer)
-        st.pingTimer = undefined
-      }
-      st.ws = null
-      st.reconnectTimer = setTimeout(() => {
-        void ensureCelsiusWatcher(accountId, roomId)
-      }, 4000)
-    })
-
-    ws.on('error', () => {
-      /* handled by close */
     })
   } catch {
-    /* ignore */
+    reconnect()
   }
 }
 
@@ -2161,425 +2314,318 @@ export async function ensureCelsiusWatcher(accountId: string, roomId?: string): 
  */
 export async function sendAndWatchDotRoomReply(
   accountId: string,
-  opts: {
+  opts: DotTarget & {
+    turnId?: string
     botId?: string
-    dotId?: string
-    roomId?: string
     text: string
     attachments?: DotUploadAttachmentInput[]
     timeoutMs?: number
-    onMessage?: (msg: DotRoomMessage, done: boolean, stillBusy?: boolean) => void
+    onMessage?: (msg: DotRoomMessage, done: boolean, stillBusy?: boolean, target?: DotTarget) => void
     onActivity?: (code: string, text: string | undefined, busy: boolean) => void
     /** The user message is in the room (before any reply). */
     onSent?: () => void
   }
-): Promise<{
-  roomId: string
-  sentMessage: DotRoomMessage
-  replies: DotRoomMessage[]
-}> {
-  const ephemeralBotId = isEphemeralRoomTurnBotId(opts.botId) ? opts.botId! : undefined
-  if (opts.botId && !ephemeralBotId) {
-    patchStoredDotAccount(accountId, { botId: opts.botId })
-  }
-
-  let beforeSnap: { roomId: string; messages: DotRoomMessage[] }
-  let sent: { roomId: string; message: DotRoomMessage }
-  if (ephemeralBotId) {
-    activeTurnBotIds.set(accountId, ephemeralBotId)
-  }
+): Promise<{ roomId: string; sentMessage: DotRoomMessage; replies: DotRoomMessage[] }> {
+  const turn = beginDotTurn(accountId, opts.turnId, opts.botId)
+  const { signal } = turn.controller
   try {
-    beforeSnap = await listRoomMessages(accountId, {
-      roomId: opts.roomId,
-      dotId: opts.dotId,
-      limit: 32
-    }).catch(() => ({ roomId: opts.roomId || '', messages: [] as DotRoomMessage[] }))
+    const target = await pinDotRoom(accountId, opts, signal)
+    signal.throwIfAborted()
+    requireTargetGeneration(accountId, target.generation)
+    turn.target = target
+    const poller = roomPollers.get(accountId)
+    poller?.request?.abort()
 
-    if (beforeSnap.roomId) {
-      await ensureCelsiusWatcher(accountId, beforeSnap.roomId).catch(() => undefined)
+    if (opts.botId && !isEphemeralRoomTurnBotId(opts.botId)) {
+      patchStoredDotAccount(accountId, { botId: opts.botId })
     }
+    void ensureCelsiusWatcher(accountId, target.roomId)
+    const interrupt = runtimeInterrupts.get(accountId)
+    if (interrupt) await waitForDotRequest(interrupt.promise, signal)
+    const before = await fetchRoomHistory(accountId, target, { limit: 32, signal }).catch(() => undefined)
+    signal.throwIfAborted()
+    requireTargetGeneration(accountId, target.generation)
+    const sent = await sendRoomMessage(accountId, target, { ...opts, signal })
+    signal.throwIfAborted()
+    opts.onSent?.()
 
-    sent = await sendRoomMessage(accountId, {
-      roomId: opts.roomId || beforeSnap.roomId || undefined,
-      dotId: opts.dotId,
-      text: opts.text,
-      attachments: opts.attachments
-    })
-  } catch (err) {
-    if (ephemeralBotId && activeTurnBotIds.get(accountId) === ephemeralBotId) {
-      activeTurnBotIds.delete(accountId)
-    }
-    throw err
-  }
-  const beforeIds = new Set(beforeSnap.messages.map((m) => m.id))
-  opts.onSent?.()
-  const roomId = sent.roomId
-  const sentId = sent.message.id
-  const sentCreatedAtMs = sent.message.createdAtMs || Date.now()
-  beforeIds.add(sentId)
-  bumpDotRoomActivity(accountId, roomId, true)
+    const { roomId } = target
+    const beforeIds = new Set(before?.messages.map((m) => m.id))
+    const sentId = sent.message.id
+    const sentCreatedAtMs = sent.message.createdAtMs || Date.now()
+    beforeIds.add(sentId)
+    bumpDotRoomActivity(accountId, roomId, true)
 
-  const timeoutMs = opts.timeoutMs ?? 300_000
-  const startedAt = Date.now()
+    const startedAt = Date.now()
+    const repliesById = new Map<string, DotRoomMessage>()
+    const emittedSignatures = new Map<string, string>()
+    let lastBusy = true
+    let lastReplyAt = 0
+    let idleEmptyChecks = 0
+    let recoverySent = false
+    let threadId = target.threadId
 
-  const repliesById = new Map<string, DotRoomMessage>()
-  const emittedSignatures = new Map<string, string>()
-  let lastBusy = true
-  let lastReplyAt = 0
-  let idleEmptyChecks = 0
-  let recoverySent = false
+    opts.onActivity?.('thinking', 'Thinking…', true)
 
-  opts.onActivity?.('thinking', 'Thinking…', true)
-
-  return new Promise((resolve) => {
-    let finished = false
-    let pollTimer: NodeJS.Timeout | undefined
-
-    const finish = () => {
-      if (finished) return
-      finished = true
-      if (ephemeralBotId && activeTurnBotIds.get(accountId) === ephemeralBotId) {
-        activeTurnBotIds.delete(accountId)
-      }
-      if (activeRoomWatches.get(accountId) === finish) {
-        activeRoomWatches.delete(accountId)
-      }
-      if (pollTimer) clearTimeout(pollTimer)
-      unsub()
-      bumpDotRoomActivity(accountId, roomId, false)
-      opts.onActivity?.('idle', undefined, false)
-      resolve({
-        roomId,
-        sentMessage: sent.message,
-        replies: [...repliesById.values()]
-      })
-    }
-
-    cancelWatchDotRoomReply(accountId)
-    activeRoomWatches.set(accountId, finish)
-
-    const isNewBotReply = (msg: DotRoomMessage): boolean => {
-      if (msg.role !== 'bot' || (!msg.text && !msg.attachments?.length)) return false
-      if (beforeIds.has(msg.id)) return false
-      if (msg.createdAtMs && msg.createdAtMs < sentCreatedAtMs - 5000) return false
-      return true
-    }
-
-    const looksLikeInProgressAck = (msg: DotRoomMessage): boolean => isDotAckMessage(msg)
-
-    const triggerSilentTurnRecovery = async (reason: 'transplant_idle' | 'empty_turn_idle') => {
-      if (finished || recoverySent) return
-      recoverySent = true
-      idleEmptyChecks = 0
-      lastBusy = true
-      opts.onActivity?.(
-        'thinking',
-        reason === 'transplant_idle'
-          ? 'Dot 容器刚完成自动迁移，正在自动续发任务获取回复…'
-          : 'Dot 已在内部完成计算，正在同步回复到聊天室…',
-        true
-      )
-      try {
-        await listDots(accountId, false).catch(() => undefined)
-        const followUpPrompt =
-          reason === 'transplant_idle'
-            ? `请继续直接完成刚才这条任务并把完整结果发到当前聊天室：\n\n${opts.text}`
-            : '请把你刚才针对上一条消息生成的完整结果直接发送到当前聊天室中（不要只留在内部输出）。'
-        const nudge = await sendRoomMessage(accountId, {
-          roomId,
-          dotId: opts.dotId,
-          text: followUpPrompt
-        })
-        beforeIds.add(nudge.message.id)
-      } catch {
-        /* ignore recovery error */
-      }
-    }
-
-    const checkStillBusyAndMaybeFinish = async () => {
-      if (finished || repliesById.size === 0) return
-      const allReplies = [...repliesById.values()]
-      const latestMsg = allReplies[allReplies.length - 1]!
-      const isExplicitAck = looksLikeInProgressAck(latestMsg)
-      const isTransplantOnly =
-        allReplies.every((m) => m.turnTrigger === 'aeon_transplant') && allReplies.length > 0
-
-      if (latestMsg.turnTrigger === 'aeon_transplant') {
-        await listDots(accountId, false).catch(() => undefined)
+    return await new Promise((resolve, reject) => {
+      let finished = false
+      let pollTimer: NodeJS.Timeout | undefined
+      const ownsTurn = () => !finished && !signal.aborted &&
+        activeDotTurns.get(accountId) === turn && getDotTargetGeneration(accountId) === target.generation
+      const finish = () => {
+        if (finished) return
+        finished = true
+        clearTimeout(pollTimer)
+        clearTimeout(deadline)
+        signal.removeEventListener('abort', finish)
+        unsub()
+        if (signal.aborted) {
+          reject(signal.reason)
+          return
+        }
+        bumpDotRoomActivity(accountId, roomId, false)
+        opts.onActivity?.('idle', undefined, false)
+        resolve({ roomId, sentMessage: sent.message, replies: [...repliesById.values()] })
+        turn.controller.abort()
       }
 
-      const rootBusy = await isDotRootThreadBusy(accountId).catch(() => null)
-      if (rootBusy === true) {
+      const recordReply = (msg: DotRoomMessage) => {
+        if (!ownsTurn() || msg.role !== 'bot' || (!msg.text && !msg.attachments?.length)) return
+        if (beforeIds.has(msg.id) || msg.createdAtMs < sentCreatedAtMs - 5000) return
+        const signature = messageSignature(msg)
+        if (emittedSignatures.get(msg.id) === signature) return
+        rememberRoomMessage(roomPollers.get(accountId), msg)
+        repliesById.set(msg.id, msg)
+        emittedSignatures.set(msg.id, signature)
+        lastReplyAt = Date.now()
+        idleEmptyChecks = 0
+        if (opts.onMessage) {
+          opts.onMessage(msg, true, isDotAckMessage(msg), target)
+        } else {
+          emitRealtime({
+            type: 'message', accountId, botId: opts.botId ?? getStoredDotAccount(accountId)?.botId,
+            target, message: msg, done: true
+          })
+        }
+      }
+
+      const recover = async (transplant: boolean) => {
+        if (!ownsTurn() || recoverySent) return
+        recoverySent = true
+        idleEmptyChecks = 0
         lastBusy = true
         opts.onActivity?.(
           'thinking',
-          latestMsg.turnTrigger === 'aeon_transplant'
-            ? 'Dot 容器已切换并正在恢复上下文继续处理…'
-            : 'Dot 正在后台处理并生成后续回复/文件…',
+          transplant
+            ? 'Dot 容器刚完成自动迁移，正在自动续发任务获取回复…'
+            : 'Dot 已在内部完成计算，正在同步回复到聊天室…',
           true
         )
-        return
+        try {
+          const text = transplant
+            ? `请继续直接完成刚才这条任务并把完整结果发到当前聊天室：\n\n${opts.text}`
+            : '请把你刚才针对上一条消息生成的完整结果直接发送到当前聊天室中（不要只留在内部输出）。'
+          const nudge = await sendRoomMessage(accountId, target, { text, signal })
+          if (ownsTurn()) beforeIds.add(nudge.message.id)
+        } catch {
+          /* A failed recovery still allows any late reply to arrive. */
+        }
       }
-      // Even if root thread briefly reports idle right after an explicit Phase-1 ack, give an 8s grace window
-      if (isExplicitAck && Date.now() - lastReplyAt < 8_000) {
-        opts.onActivity?.('thinking', 'Dot 正在后台处理并生成后续回复/文件…', true)
-        return
-      }
-      // If the only reply was an `aeon_transplant` recovery notice and the new container went idle without answering, auto-continue once
-      // Only when Dot positively reports idle: this re-posts the prompt as the user.
-      if (isTransplantOnly && !recoverySent && rootBusy === false) {
-        await triggerSilentTurnRecovery('transplant_idle')
-        return
-      }
-      finish()
-    }
 
-    const recordAndEmitReply = (msg: DotRoomMessage) => {
-      const sig = messageSignature(msg)
-      const prevSig = emittedSignatures.get(msg.id)
-      repliesById.set(msg.id, msg)
-      if (prevSig !== sig) {
-        emittedSignatures.set(msg.id, sig)
-        lastReplyAt = Date.now()
-        idleEmptyChecks = 0
-        if (msg.turnTrigger === 'aeon_transplant') {
-          void listDots(accountId, false).catch(() => undefined)
-        }
-        const ackLike = looksLikeInProgressAck(msg)
-        opts.onMessage?.(msg, true, ackLike)
-      }
-    }
-
-    const unsub = onDotRealtimeEvent((ev) => {
-      if (ev.accountId !== accountId) return
-      if (ev.roomId && ev.roomId !== roomId) return
-      if (ev.type === 'activity') {
-        lastBusy = ev.busy
-        opts.onActivity?.(ev.code, ev.text, ev.busy)
-        if (!ev.busy && repliesById.size > 0) {
-          setTimeout(() => void checkStillBusyAndMaybeFinish(), 600)
-        }
-      } else if (ev.type === 'message') {
-        if (isNewBotReply(ev.message)) {
-          recordAndEmitReply(ev.message)
-          if (!lastBusy) {
-            setTimeout(() => void checkStillBusyAndMaybeFinish(), 600)
-          }
-        }
-      }
-    })
-
-    const pollOnce = async () => {
-      if (finished) return
-      if (Date.now() - startedAt > timeoutMs) {
-        finish()
-        return
-      }
-      void triggerRoomLivePush(accountId, roomId)
-      try {
-        const listed = await listRoomMessages(accountId, {
-          roomId,
-          after: sentId,
-          limit: 16
-        })
-        for (const m of listed.messages) {
-          if (isNewBotReply(m)) {
-            recordAndEmitReply(m)
-          }
-        }
-        if (repliesById.size > 0 && (!lastBusy || Date.now() - lastReplyAt > 2500)) {
-          await checkStillBusyAndMaybeFinish()
-          if (finished) return
-        } else if (repliesById.size === 0 && Date.now() - startedAt > 6_000) {
-          const rootBusy = await isDotRootThreadBusy(accountId).catch(() => null)
-          if (rootBusy === null) {
-            // Status unknown (no thread id / read failed): never nudge on a
-            // guess, just give up quietly after a longer wait.
-            if (Date.now() - startedAt > 60_000) idleEmptyChecks++
-          } else if (!rootBusy && !lastBusy) {
-            idleEmptyChecks++
-          } else if (!rootBusy && Date.now() - startedAt > 15_000) {
-            idleEmptyChecks++
-          } else {
-            idleEmptyChecks = 0
-          }
-          if (idleEmptyChecks >= 2) {
-            if (!recoverySent && rootBusy === false) {
-              await triggerSilentTurnRecovery('empty_turn_idle')
-            } else if (idleEmptyChecks >= 4 || (rootBusy === null && idleEmptyChecks >= 2)) {
+      const checkRootBusy = () => threadId ? isDotRootThreadBusy(accountId, threadId, signal) : Promise.resolve(null)
+      const pollOnce = async () => {
+        if (!ownsTurn()) return
+        void triggerRoomLivePush(accountId, roomId)
+        try {
+          const listed = await fetchRoomHistory(accountId, target, { after: sentId, limit: 16, signal })
+          if (!ownsTurn()) return
+          for (const msg of listed.messages) recordReply(msg)
+          const replies = [...repliesById.values()]
+          const latest = replies.at(-1)
+          if (latest && (!lastBusy || Date.now() - lastReplyAt > 2500)) {
+            const transplant = latest.turnTrigger === 'aeon_transplant'
+            if (transplant && target.dotId) {
+              const profile = await getDot(accountId, target.dotId, signal)
+              if (!ownsTurn()) return
+              if (profile.messagingRoomId !== roomId) {
+                finish()
+                return
+              }
+              threadId = profile.activeRootThreadId
+            }
+            const rootBusy = await checkRootBusy()
+            if (!ownsTurn()) return
+            if (rootBusy || (isDotAckMessage(latest) && Date.now() - lastReplyAt < 8000)) {
+              lastBusy = true
+              opts.onActivity?.('thinking', 'Dot 正在后台处理并生成后续回复/文件…', true)
+            } else if (!recoverySent && rootBusy === false && replies.every((m) => m.turnTrigger === 'aeon_transplant')) {
+              await recover(true)
+            } else {
               finish()
-              return
+            }
+          } else if (!latest && Date.now() - startedAt > 6000) {
+            const rootBusy = await checkRootBusy()
+            if (!ownsTurn()) return
+            const quietFor = Date.now() - startedAt
+            if (rootBusy === null) {
+              if (quietFor > 60_000) idleEmptyChecks++
+            } else if (!rootBusy && (!lastBusy || quietFor > 15_000)) {
+              idleEmptyChecks++
+            } else {
+              idleEmptyChecks = 0
+            }
+            if (idleEmptyChecks >= 2) {
+              if (!recoverySent && rootBusy === false) await recover(false)
+              else if (idleEmptyChecks >= 4 || rootBusy === null) finish()
             }
           }
+        } catch {
+          /* Retry transient poll errors while the same turn is active. */
         }
-      } catch {
-        /* ignore transient poll error */
+        if (ownsTurn()) pollTimer = setTimeout(() => void pollOnce(), 1800)
       }
-      if (!finished) {
-        pollTimer = setTimeout(() => void pollOnce(), 1800)
-      }
-    }
 
-    pollTimer = setTimeout(() => void pollOnce(), 1400)
-  })
+      const unsub = onDotRealtimeEvent((event) => {
+        if (!ownsTurn() || event.accountId !== accountId || event.turnId !== turn.id) return
+        if (event.type === 'activity') {
+          lastBusy = event.busy
+          opts.onActivity?.(event.code, event.text, event.busy)
+        } else {
+          recordReply(event.message)
+        }
+      })
+      const deadline = setTimeout(finish, opts.timeoutMs ?? 300_000)
+      signal.addEventListener('abort', finish, { once: true })
+      if (signal.aborted) finish()
+      else pollTimer = setTimeout(() => void pollOnce(), 1400)
+    })
+  } finally {
+    if (activeDotTurns.get(accountId) === turn) activeDotTurns.delete(accountId)
+  }
 }
 
 // ============================================================================
 // Codex Cloud App-Server WebSocket (`wss://codex-cloud-backend.chatgpt.com/`)
 // ============================================================================
 
-interface ActiveNativeSession {
-  ws: WebSocket
-  threadId?: string
-  turnId?: string
-  abort?: () => void
-}
-
-const activeNativeSessions = new Map<string, ActiveNativeSession>()
-
-export async function interruptNativeTurn(accountId: string): Promise<void> {
-  const active = activeNativeSessions.get(accountId)
-  if (!active) return
-  if (active.ws.readyState === WebSocket.OPEN && active.threadId && active.turnId) {
-    try {
-      active.ws.send(
-        JSON.stringify({
-          jsonrpc: '2.0',
-          id: 999,
-          method: 'turn/interrupt',
-          params: { threadId: active.threadId, turnId: active.turnId }
-        })
-      )
-    } catch {
-      /* ignore */
-    }
-  }
-  active.abort?.()
-}
-
 async function withAppServerWs<T>(
   accountId: string,
-  fn: ( helpers: {
+  fn: (helpers: {
     call: (method: string, params?: unknown) => Promise<unknown>
     ws: WebSocket
     account: DotStoredAccount
+    signal: AbortSignal
   }) => Promise<T>,
-  timeoutMs = 35_000
+  timeoutMs = 35_000,
+  turnSignal?: AbortSignal
 ): Promise<T> {
-  const acc = await ensureValidDotAccount(accountId)
-  const effectiveProxy = await resolveDotProxyUrl(accountId, acc.proxyUrl)
-  return new Promise<T>((resolve, reject) => {
-    const ws = new WebSocket(
-      DOT_APP_SERVER_WS_URL,
-      ['codex-app-server', 'codex-client.browser', `openai-bearer.${acc.accessToken}`],
-      {
-        agent: proxyWsAgent(effectiveProxy),
-        headers: {
-          Origin: DOT_ORIGIN,
-          'User-Agent': CHROME_UA
+  const controller = new AbortController()
+  const signal = turnSignal ? AbortSignal.any([turnSignal, controller.signal]) : controller.signal
+  const close = (error: Error) => controller.abort(error)
+  const connections = nativeConnections.get(accountId) ?? new Set()
+  connections.add(close)
+  nativeConnections.set(accountId, connections)
+  const timeout = setTimeout(() => close(new DotApiError(504, 'Dot App-Server WebSocket timed out')), timeoutMs)
+  const revision = getDotCredentialRevision(accountId)
+  try {
+    const account = await ensureValidDotAccount(accountId, signal)
+    const effectiveProxy = await waitForDotRequest(resolveDotProxyUrl(accountId), signal)
+    signal.throwIfAborted()
+    requireCredentialRevision(accountId, revision)
+    return await new Promise<T>((resolve, reject) => {
+      const ws = new WebSocket(
+        DOT_APP_SERVER_WS_URL,
+        ['codex-app-server', 'codex-client.browser', `openai-bearer.${account.accessToken}`],
+        {
+          agent: proxyWsAgent(effectiveProxy),
+          headers: { Origin: DOT_ORIGIN, 'User-Agent': CHROME_UA }
         }
+      )
+
+      let nextId = 1
+      let settled = false
+      const pending = new Map<number, { resolve: (value: unknown) => void; reject: (error: unknown) => void }>()
+      const cleanup = (error: unknown) => {
+        settled = true
+        signal.removeEventListener('abort', onAbort)
+        ws.off('message', onResponse)
+        ws.off('open', onOpen)
+        ws.off('close', onClose)
+        for (const request of pending.values()) request.reject(error)
+        pending.clear()
+        controller.abort(error)
+        if (ws.readyState === WebSocket.CONNECTING) ws.terminate()
+        else ws.close()
       }
-    )
-
-    let nextId = 1
-    const pending = new Map<
-      number,
-      { resolve: (v: unknown) => void; reject: (e: Error) => void }
-    >()
-    let settled = false
-
-    const timer = setTimeout(() => {
-      if (settled) return
-      settled = true
-      try {
-        ws.close()
-      } catch {
-        /* ignore */
+      const fail = (error: unknown) => {
+        if (settled) return
+        cleanup(error)
+        reject(error)
       }
-      reject(new DotApiError(504, 'Dot App-Server WebSocket timed out'))
-    }, timeoutMs)
+      const onAbort = () => fail(signal.reason)
+      const onClose = () => fail(new DotApiError(502, 'App-Server WebSocket closed unexpectedly'))
 
-    const cleanup = () => {
-      clearTimeout(timer)
-      try {
-        ws.close()
-      } catch {
-        /* ignore */
-      }
-    }
-
-    const call = (method: string, params: unknown = {}): Promise<unknown> =>
-      new Promise((res, rej) => {
-        const id = nextId++
-        pending.set(id, { resolve: res, reject: rej })
-        ws.send(JSON.stringify({ jsonrpc: '2.0', id, method, params }))
-      })
-
-    ws.on('message', (data) => {
-      try {
-        const msg = JSON.parse(data.toString()) as {
-          id?: number
-          result?: unknown
-          error?: { code?: number; message?: string }
-        }
-        if (typeof msg.id === 'number' && pending.has(msg.id)) {
-          const p = pending.get(msg.id)!
-          pending.delete(msg.id)
-          if (msg.error) {
-            p.reject(new DotApiError(400, msg.error.message || 'JSON-RPC error', msg.error))
-          } else {
-            p.resolve(msg.result)
-          }
-        }
-      } catch {
-        /* ignore */
-      }
-    })
-
-    ws.on('open', async () => {
-      try {
-        await call('initialize', {
-          clientInfo: {
-            name: 'chatgpt-web',
-            title: 'ChatGPT Dot',
-            version: '1.0.0'
-          },
-          capabilities: {
-            experimentalApi: true
+      const call = (method: string, params: unknown = {}): Promise<unknown> =>
+        new Promise((resolveCall, rejectCall) => {
+          signal.throwIfAborted()
+          const id = nextId++
+          pending.set(id, { resolve: resolveCall, reject: rejectCall })
+          try {
+            ws.send(JSON.stringify({ jsonrpc: '2.0', id, method, params }), (error) => {
+              if (error) fail(error)
+            })
+          } catch (error) {
+            fail(error)
           }
         })
-        ws.send(JSON.stringify({ jsonrpc: '2.0', method: 'initialized' }))
-        const out = await fn({ call, ws, account: acc })
-        if (!settled) {
-          settled = true
-          cleanup()
+
+      const onResponse = (data: WebSocket.RawData) => {
+        try {
+          const msg = JSON.parse(data.toString()) as {
+            id?: number
+            result?: unknown
+            error?: { message?: string }
+          }
+          if (typeof msg.id !== 'number') return
+          const request = pending.get(msg.id)
+          if (!request) return
+          pending.delete(msg.id)
+          if (msg.error) request.reject(new DotApiError(400, msg.error.message || 'JSON-RPC error', msg.error))
+          else request.resolve(msg.result)
+        } catch {
+          /* Ignore malformed frames. */
+        }
+      }
+      const onOpen = async () => {
+        try {
+          await call('initialize', {
+            clientInfo: { name: 'chatgpt-web', title: 'ChatGPT Dot', version: '1.0.0' },
+            capabilities: { experimentalApi: true }
+          })
+          signal.throwIfAborted()
+          ws.send(JSON.stringify({ jsonrpc: '2.0', method: 'initialized' }))
+          const out = await fn({ call, ws, account, signal })
+          if (settled) return
+          cleanup(new DotApiError(499, 'Dot App-Server request ended'))
           resolve(out)
-        }
-      } catch (err) {
-        if (!settled) {
-          settled = true
-          cleanup()
-          reject(err instanceof Error ? err : new Error(String(err)))
+        } catch (error) {
+          fail(error)
         }
       }
-    })
 
-    ws.on('error', (err) => {
-      if (!settled) {
-        settled = true
-        cleanup()
-        reject(err)
-      }
+      ws.on('error', fail)
+      ws.once('close', () => ws.off('error', fail))
+      ws.once('close', onClose)
+      ws.on('message', onResponse)
+      ws.once('open', onOpen)
+      signal.addEventListener('abort', onAbort, { once: true })
+      if (signal.aborted) onAbort()
     })
-
-    ws.on('close', () => {
-      if (!settled) {
-        settled = true
-        clearTimeout(timer)
-        reject(new DotApiError(502, 'App-Server WebSocket closed unexpectedly'))
-      }
-    })
-  })
+  } finally {
+    clearTimeout(timeout)
+    connections.delete(close)
+    if (connections.size === 0) nativeConnections.delete(accountId)
+  }
 }
 
 export async function getDotRateLimits(accountId: string): Promise<unknown> {
@@ -2632,6 +2678,7 @@ export async function streamDotNativeTurn(
   accountId: string,
   opts: {
     text: string
+    turnId?: string
     threadId?: string
     signal?: AbortSignal
     model?: string
@@ -2647,19 +2694,17 @@ export async function streamDotNativeTurn(
     onActivity?: (code: string, text: string | undefined, busy: boolean) => void
   }
 ): Promise<{ messageId: string; text: string; threadId: string; tools: MuseToolCallView[] }> {
-  if (opts.signal?.aborted) {
-    throw new DotApiError(499, 'Aborted')
-  }
-  const acc = await ensureValidDotAccount(accountId)
-  const model = opts.model || acc.model || 'gpt-6-astra'
-  const effort = opts.effort || acc.effort || 'medium'
+  requireStableDotProfile(accountId)
+  opts.signal?.throwIfAborted()
+  const turn = beginDotTurn(accountId, opts.turnId)
+  const signal = opts.signal
+    ? AbortSignal.any([opts.signal, turn.controller.signal])
+    : turn.controller.signal
 
-  return withAppServerWs(
-    accountId,
-    async ({ call, ws }) => {
-      if (opts.signal?.aborted) {
-        throw new DotApiError(499, 'Aborted')
-      }
+  try {
+    return await withAppServerWs(accountId, async ({ call, ws, account, signal }) => {
+      const model = opts.model || account.model || 'gpt-6-astra'
+      const effort = opts.effort || account.effort || 'medium'
       opts.onActivity?.('thinking', `Running ${model}…`, true)
 
       let threadId = ''
@@ -2697,9 +2742,18 @@ export async function streamDotNativeTurn(
         threadId = started?.thread?.id || randomUUID()
       }
 
-      const sessionState: ActiveNativeSession = { ws, threadId }
-      activeNativeSessions.set(accountId, sessionState)
-
+      signal.throwIfAborted()
+      let remoteTurnId: string | undefined
+      const interrupt = () => {
+        if (!remoteTurnId || ws.readyState !== WebSocket.OPEN) return
+        ws.send(JSON.stringify({
+          jsonrpc: '2.0',
+          id: 999,
+          method: 'turn/interrupt',
+          params: { threadId, turnId: remoteTurnId }
+        }))
+      }
+      turn.interruptNative = interrupt
       let messageId = `dot_native_${randomUUID()}`
       let fullText = ''
       const toolsMap = new Map<string, MuseToolCallView>()
@@ -2719,26 +2773,19 @@ export async function streamDotNativeTurn(
         let settled = false
         const cleanupSession = () => {
           ws.off('message', onMsg)
-          if (activeNativeSessions.get(accountId) === sessionState) {
-            activeNativeSessions.delete(accountId)
-          }
-          opts.signal?.removeEventListener('abort', onSignalAbort)
+          signal.removeEventListener('abort', abortTurn)
+          turn.interruptNative = undefined
         }
-        const abortTurn = () => {
+        const fail = (error: unknown) => {
           if (settled) return
           settled = true
           cleanupSession()
-          opts.onActivity?.('idle', undefined, false)
-          reject(new DotApiError(499, 'Aborted'))
+          reject(error)
         }
-        const onSignalAbort = () => {
-          void interruptNativeTurn(accountId)
-          abortTurn()
-        }
-        sessionState.abort = abortTurn
-        opts.signal?.addEventListener('abort', onSignalAbort, { once: true })
+        const abortTurn = () => fail(signal.reason)
 
         const onMsg = (data: WebSocket.RawData) => {
+          if (settled || signal.aborted || activeDotTurns.get(accountId) !== turn) return
           try {
             const frame = JSON.parse(data.toString()) as {
               method?: string
@@ -2746,11 +2793,15 @@ export async function streamDotNativeTurn(
             }
             if (!frame.method) return
             const p = frame.params ?? {}
+            const eventThreadId = p['threadId']
+            const eventTurnId = p['turnId'] ?? (p['turn'] as { id?: unknown } | undefined)?.id
+            if (typeof eventThreadId === 'string' && eventThreadId !== threadId) return
+            if (remoteTurnId && typeof eventTurnId === 'string' && eventTurnId !== remoteTurnId) return
 
             if (frame.method === 'turn/started') {
               notifySent()
               const turn = p['turn'] as { id?: string } | undefined
-              if (turn?.id) sessionState.turnId = turn.id
+              if (turn?.id) remoteTurnId = turn.id
             } else if (frame.method === 'item/started') {
               const item = p['item'] as Record<string, unknown> | undefined
               if (!item) return
@@ -2822,8 +2873,9 @@ export async function streamDotNativeTurn(
         }
 
         ws.on('message', onMsg)
-        if (opts.signal?.aborted) {
-          onSignalAbort()
+        signal.addEventListener('abort', abortTurn, { once: true })
+        if (signal.aborted) {
+          abortTurn()
           return
         }
 
@@ -2834,20 +2886,17 @@ export async function streamDotNativeTurn(
           effort,
           serviceTier: 'fast'
         })
-          .then(() => {
+          .then((response) => {
+            if (settled || signal.aborted) return
+            const result = response as { turn?: { id?: string } } | undefined
+            remoteTurnId ??= result?.turn?.id
             notifySent()
-          })
-          .catch((err) => {
-            if (settled) return
-            settled = true
-            cleanupSession()
-            opts.onActivity?.('idle', undefined, false)
-            reject(err)
-          })
+          }, fail)
       })
-    },
-    120_000
-  )
+    }, 120_000, signal)
+  } finally {
+    if (activeDotTurns.get(accountId) === turn) activeDotTurns.delete(accountId)
+  }
 }
 
 // ============================================================================
@@ -2896,7 +2945,7 @@ export async function deleteDotPage(accountId: string, pageId: string): Promise<
  * thread id, or the read failed); callers must not treat that as idle,
  * because idle triggers an automatic follow-up message.
  */
-export async function isDotRootThreadBusy(accountId: string, threadId?: string): Promise<boolean | null> {
+export async function isDotRootThreadBusy(accountId: string, threadId?: string, signal?: AbortSignal): Promise<boolean | null> {
   const acc = getStoredDotAccount(accountId)
   const tid = threadId || acc?.threadId
   if (!tid) return null
@@ -2904,9 +2953,11 @@ export async function isDotRootThreadBusy(accountId: string, threadId?: string):
     const res = (await withAppServerWs(
       accountId,
       ({ call }) => call('thread/read', { threadId: tid }),
-      6_000
+      6_000,
+      signal
     )) as { thread?: { status?: { type?: string } } }
-    const statusType = String(res?.thread?.status?.type ?? 'idle').toLowerCase()
+    const statusType = res?.thread?.status?.type?.toLowerCase()
+    if (!statusType) return null
     return statusType !== 'idle' && statusType !== 'ready' && statusType !== 'completed'
   } catch {
     return null
@@ -3052,7 +3103,7 @@ export async function importDotMemorySnapshot(
     dotId?: string
     roomId?: string
     onActivity?: (code: string, text: string | undefined, busy: boolean) => void
-    onMessage?: (msg: DotRoomMessage, done: boolean) => void
+    onMessage?: (msg: DotRoomMessage, done: boolean, stillBusy?: boolean, target?: DotTarget) => void
   }
 ): Promise<{
   roomId: string

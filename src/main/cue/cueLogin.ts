@@ -7,7 +7,7 @@
  * browser on Google block/passkey prompts, and guards `cancelCueLogin` against
  * wiping already-authenticated sessions.
  */
-import { BrowserWindow, session as electronSession, shell, type WebContents } from 'electron'
+import { BrowserWindow, dialog, session as electronSession, shell, type WebContents } from 'electron'
 import { getAppWindowIcon } from '../appIcon'
 import {
   attachGoogleOAuthWebContentsGuard,
@@ -21,12 +21,17 @@ import {
 import { applyProxyToPartition } from '../muse/accountProxy'
 import { partitionForAccount } from '../webContentsViewManager'
 import {
+  cueCookieOrigin,
+  cueCookieCaptureAllowed,
+  cueCookiesForOrigin,
   decodeJwtClaims,
+  getCueCredentialRevision,
   hasValidCueAuth,
   looksLikeCueSessionCookie,
-  persistCueTokens
+  persistCueTokens,
+  selectCueSessionCookies
 } from './cueAuth'
-import { startCueBrowserLogin } from './cueDesktopHandoff'
+import { revokeCueLoginNonce, startCueBrowserLogin } from './cueDesktopHandoff'
 
 export const CUE_LOGIN_URL = 'https://cue.im/login'
 
@@ -34,6 +39,7 @@ const ALLOWED_CUE_OAUTH_HOST =
   /^(?:[\w-]+\.)*(?:cue\.im|manus\.im|manus\.ai|manuscdn\.com|google\.com|googleusercontent\.com|gstatic\.com|googleapis\.com|youtube\.com|apple\.com|icloud\.com|microsoft\.com|microsoftonline\.com|msftauth\.net|msauth\.net|live\.com|cloudflare\.com|hcaptcha\.com|stripe\.com|chromiumapp\.org)$/i
 
 const loginWindows = new Map<string, BrowserWindow>()
+const loginLaunches = new Map<string, symbol>()
 const loginChildWindows = new Map<string, Set<BrowserWindow>>()
 
 export type CueLoginEvent =
@@ -82,7 +88,8 @@ function hostAllowed(url: string): boolean {
 
 export async function tryCapturePartitionCookies(
   accountId: string,
-  wc?: WebContents
+  wc?: WebContents,
+  isCurrent?: () => boolean
 ): Promise<{
   captured: boolean
   handle?: string
@@ -90,19 +97,20 @@ export async function tryCapturePartitionCookies(
   accountSlot?: string
 }> {
   try {
+    if (!isCurrent && !cueCookieCaptureAllowed(accountId)) return { captured: false }
+    const revision = getCueCredentialRevision(accountId)
     const ses = electronSession.fromPartition(partitionForAccount(accountId))
     const cookies = await ses.cookies.get({})
-    const sessionCookies = cookies.filter((c) => looksLikeCueSessionCookie(c.name) && Boolean(c.value))
-    if (sessionCookies.length === 0) return { captured: false }
-    const primary =
-      sessionCookies.find((c) => c.name === 'cue_session_id' || c.name === 'session_id') ??
-      sessionCookies[0]!
+    const sessionCookies = selectCueSessionCookies(cookies.filter((cookie) => cookie.domain))
+    const primary = sessionCookies[0]
+    if (!primary) return { captured: false }
+    const scoped = cueCookiesForOrigin(sessionCookies, cueCookieOrigin(primary.domain))
     const jwtClaims = decodeJwtClaims(primary.value)
     let handle = jwtClaims.handle
     let displayName = jwtClaims.displayName
     let accountSlot = jwtClaims.handle
 
-    if (wc && !wc.isDestroyed()) {
+    if (wc && !wc.isDestroyed() && /^https:\/\/(?:[a-z0-9-]+\.)*cue\.im(?:\/|$)/i.test(wc.getURL())) {
       try {
         const rawUser = await wc.executeJavaScript(
           `(() => { try { return localStorage.getItem('UserService.userInfo') || ''; } catch { return ''; } })()`,
@@ -137,8 +145,8 @@ export async function tryCapturePartitionCookies(
       accountId,
       {
         accessToken: primary.value,
-        cookieHeader: sessionCookies.map((c) => `${c.name}=${c.value}`).join('; '),
-        cookieNames: sessionCookies.map((c) => c.name),
+        cookieHeader: scoped.map(({ name, value }) => `${name}=${value}`).join('; '),
+        cookieNames: scoped.map(({ name }) => name),
         cookies: sessionCookies.map((c) => ({
           name: c.name,
           value: c.value,
@@ -151,7 +159,8 @@ export async function tryCapturePartitionCookies(
         expiresAtMs: jwtClaims.expiresAtMs,
         authKind: 'session'
       },
-      { skipPartitionCookieWrite: true }
+      { skipPartitionCookieWrite: true, shouldSave: () =>
+        (isCurrent ? isCurrent() : cueCookieCaptureAllowed(accountId)) && revision === getCueCredentialRevision(accountId) }
     )
     return {
       captured: true,
@@ -169,8 +178,17 @@ export async function openCueLoginWindow(
   parent?: BrowserWindow,
   opts?: { openInBrowser?: boolean }
 ): Promise<void> {
+  const launch = Symbol()
+  loginLaunches.set(accountId, launch)
   // Fail-closed: enforce account proxy BEFORE any BrowserWindow or network activity.
-  await applyProxyToPartition(accountId)
+  try {
+    await applyProxyToPartition(accountId)
+  } catch (error) {
+    if (loginLaunches.get(accountId) === launch) loginLaunches.delete(accountId)
+    throw error
+  }
+  if (loginLaunches.get(accountId) !== launch) return
+  loginLaunches.delete(accountId)
 
   const partition = partitionForAccount(accountId)
   const ses = electronSession.fromPartition(partition)
@@ -180,6 +198,7 @@ export async function openCueLoginWindow(
     await startCueBrowserLogin(accountId)
     return
   }
+  revokeCueLoginNonce(accountId)
 
   const existing = loginWindows.get(accountId)
   if (existing && !existing.isDestroyed()) {
@@ -227,16 +246,21 @@ export async function openCueLoginWindow(
   let lastBlockCheckAt = 0
 
   const handOffToBrowser = () => {
-    void startCueBrowserLogin(accountId).catch((err) =>
-      console.warn('[cue] browser hand-off failed', err instanceof Error ? err.message : err)
-    )
+    void startCueBrowserLogin(accountId).catch((err) => {
+      if (!win.isDestroyed()) {
+        void dialog.showMessageBox(win, {
+          type: 'error', message: '无法打开 Cue 浏览器登录', detail: err instanceof Error ? err.message : String(err)
+        })
+      }
+    })
   }
 
   const finishIfCaptured = async (wc?: WebContents): Promise<void> => {
     if (settling || capturing || win.isDestroyed()) return
     capturing = true
     try {
-      const res = await tryCapturePartitionCookies(accountId, wc ?? win.webContents)
+      const res = await tryCapturePartitionCookies(accountId, wc ?? win.webContents,
+        () => !settling && !win.isDestroyed() && loginWindows.get(accountId) === win)
       if (!res.captured || settling || win.isDestroyed()) return
       settling = true
       emitLogin({
@@ -409,6 +433,7 @@ export async function openCueLoginWindow(
   win.on('closed', () => {
     ses.cookies.off('changed', onCookie)
     closeChildPopups()
+    if (loginWindows.get(accountId) !== win) return
     loginChildWindows.delete(accountId)
     loginWindows.delete(accountId)
     void (async () => {
@@ -448,6 +473,8 @@ body{display:flex;flex-direction:column;align-items:center;justify-content:cente
 export const CUE_LOADING_PAGE_URL = `data:text/html;charset=utf-8,${encodeURIComponent(CUE_LOADING_PAGE_HTML)}`
 
 export async function cancelCueLogin(accountId: string): Promise<void> {
+  revokeCueLoginNonce(accountId)
+  loginLaunches.delete(accountId)
   const win = loginWindows.get(accountId)
   loginWindows.delete(accountId)
   const children = loginChildWindows.get(accountId)
@@ -482,8 +509,18 @@ export async function cancelCueLogin(accountId: string): Promise<void> {
 }
 
 /** Close an embedded login window after the account signed in some other way (browser hand-off). */
-export function closeCueLoginWindow(accountId: string): void {
+export function closeCueLoginWindow(accountId: string, silent = false): void {
+  if (accountId === '*') {
+    loginLaunches.clear()
+    for (const id of loginWindows.keys()) closeCueLoginWindow(id, silent)
+    return
+  }
+  loginLaunches.delete(accountId)
   const win = loginWindows.get(accountId)
+  if (silent) {
+    loginWindows.delete(accountId)
+    loginChildWindows.delete(accountId)
+  }
   if (win && !win.isDestroyed()) {
     try {
       win.close()

@@ -1,8 +1,9 @@
 import { create } from 'zustand'
-import { createJSONStorage, persist } from 'zustand/middleware'
+import { persist, type PersistStorage } from 'zustand/middleware'
+import { shallow } from 'zustand/shallow'
 import { getPlatform } from '@adapters/platforms'
 import { adapterRegistry } from '@adapters/registry'
-import { AdapterError, type AttachmentMeta, type ConnectionStatus, type IncomingMessage, type PlatformId } from '@adapters/types'
+import { AdapterError, type AttachmentMeta, type ConnectionStatus, type IncomingMessage, type PlatformId, type SendReceipt } from '@adapters/types'
 import { createId } from '@shared/id'
 import { HARK_DRAFT_SESSION } from '@shared/harkProjects'
 import type { MobileSendCommand, MobileSendResult } from '@shared/mobileSync'
@@ -13,28 +14,87 @@ import type { MuseProxyPoolItemView } from '@shared/ipc'
 import { keepActivity } from './goxfActivity'
 import { canReloadHistory, hasUnsettledDelivery, trimMessages, TRIM_IDLE_AFTER_MS } from './messageTrim'
 import { usePrefsStore } from './prefsStore'
-import { clearNoReplyFlag, createSafeStorage, sanitizePersisted, SEND_HARD_TIMEOUT_MS, SendTimeoutError, toPersistedMessages, withTimeout, deliveryAfterError, createInFlightSet, hasLostAttachments, ATTACHMENTS_LOST_TEXT, deferWrites } from './delivery'
 import { comparableText, splitLeadingQuote } from '../lib/quoteText'
+import { getEventBot } from '@/services/sessionEvents'
+import {
+  ATTACHMENTS_LOST_TEXT, clearNoReplyFlag, createDeliveryAttempts, createSafeStorage, deliveryAfterError,
+  hasLostAttachments, sanitizePersisted, SEND_HARD_TIMEOUT_MS, SEND_STILL_PENDING_TEXT, SEND_TIMEOUT_TEXT,
+  SendTimeoutError, toPersistedMessages, withTimeout
+} from './delivery'
+import { markStalledReply, replyWatchdog } from './replyWatchdog'
 
-let warnedStorage = false
-const workspaceStorage = deferWrites(createJSONStorage<Partial<BotHubState>>(() =>
-  createSafeStorage(
-    () => (typeof localStorage === 'undefined' ? undefined : localStorage),
-    (error) => {
-      if (warnedStorage) return
-      warnedStorage = true
-      console.warn('[bothub] could not save workspace:', error instanceof Error ? error.name : 'error')
-    }
-  )
-)!, 1000)
-if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
-  window.addEventListener('pagehide', workspaceStorage.flush)
-  window.addEventListener('beforeunload', workspaceStorage.flush)
+let sourceAccounts: BotHubState['accounts'] | undefined
+let persistedAccounts: BotHubState['accounts'] = {}
+
+function partializeWorkspace(state: BotHubState) {
+  if (sourceAccounts !== state.accounts) {
+    sourceAccounts = state.accounts
+    const accounts = Object.fromEntries(Object.entries(state.accounts).map(([id, account]) => {
+      const { pending: _pending, ...saved } = account
+      const previous = persistedAccounts[id]
+      return [id, previous && shallow(previous, saved) ? previous : saved]
+    }))
+    if (!shallow(persistedAccounts, accounts)) persistedAccounts = accounts
+  }
+  return {
+    groups: state.groups,
+    bots: state.bots,
+    accounts: persistedAccounts,
+    messages: state.messages,
+    selectedBotId: state.selectedBotId,
+    collapsedGroups: state.collapsedGroups,
+    dismissedGrokAgents: state.dismissedGrokAgents,
+    trimmedBots: state.trimmedBots,
+    webSessionByBot: state.webSessionByBot,
+    infoPanelOpen: state.infoPanelOpen,
+    sidebarCollapsed: state.sidebarCollapsed,
+    sidebarWidth: state.sidebarWidth
+  }
 }
+
+type WorkspaceSnapshot = ReturnType<typeof partializeWorkspace>
+let lastWorkspace: WorkspaceSnapshot | undefined
+let warnedStorage = false
+const workspaceBacking = createSafeStorage(
+  () => (typeof localStorage === 'undefined' ? undefined : localStorage),
+  (error) => {
+    lastWorkspace = undefined
+    if (warnedStorage) return
+    warnedStorage = true
+    console.warn('[bothub] could not save workspace:', error instanceof Error ? error.name : 'error')
+  },
+  { debounceMs: 350 }
+)
+const workspaceStorage: PersistStorage<WorkspaceSnapshot> = {
+  getItem(name) {
+    const saved = workspaceBacking.getItem(name)
+    return saved ? JSON.parse(saved) : null
+  },
+  setItem(name, value) {
+    if (lastWorkspace && shallow(lastWorkspace, value.state)) return
+    const state = value.state
+    lastWorkspace = state
+    workspaceBacking.setItem(name, () => JSON.stringify({
+      ...value,
+      state: { ...state, messages: toPersistedMessages(state.messages) }
+    }))
+  },
+  removeItem(name) {
+    lastWorkspace = undefined
+    workspaceBacking.removeItem(name)
+  }
+}
+
+export const flushWorkspacePersistence = workspaceBacking.flush
+
+if (typeof window !== 'undefined') {
+  window.addEventListener?.('beforeunload', flushWorkspacePersistence)
+  window.addEventListener?.('pagehide', flushWorkspacePersistence)
+}
+if (typeof document !== 'undefined') document.addEventListener('visibilitychange', flushWorkspacePersistence)
 
 const NO_REPLY_TEXT = '已送达，但没有收到回复'
 /** Replies that appeared through stream deltas and have not had their final message yet (unread counts there). */
-const streamedReplies = new Set<string>()
 
 function electronBridge() {
   if (typeof window === 'undefined') return undefined
@@ -95,6 +155,7 @@ export interface BotHubState {
   /** Per-bot pending quote-reply target shown in Composer. */
   replyingTo: Record<string, ChatReplyTarget | undefined>
   hermesSessionErrors: Record<string, string | undefined>
+  chatActionErrors: Record<string, string | undefined>
   /** Per-account Grok agentIds explicitly removed from sidebar so auto-sync respects user deletion until manual sync. */
   dismissedGrokAgents: Record<string, string[]>
   /** Bots whose displayed list was cut while idle; their history reloads on next open. */
@@ -162,12 +223,14 @@ export interface BotHubState {
   /** Upsert a streaming assistant bubble (same id updated as deltas arrive). */
   applyMessageDelta: (messageId: string, conversationId: string, accountId: string, text: string, widgets?: import('@/types').ChatOptionWidget[], tools?: import('@/types').ChatToolCall[], media?: import('@/types').ChatMediaPart[], richWidgets?: import('@/types').ChatRichWidget[]) => void
   setTyping: (botId: string, isTyping: boolean) => void
+  finishReply: (botId: string, stalled?: boolean) => void
   setActivity: (accountId: string, activity: import('@/types').BotActivity | null) => void
   setMessageWidgets: (botId: string, messageId: string, widgets: import('@/types').ChatOptionWidget[]) => void
   selectChatOption: (botId: string, messageId: string, widgetId: string, selectedText: string, optionIndex: number) => Promise<void>
   cancelGeneration: (botId: string) => Promise<void>
   switchMuseSession: (botId: string, sessionId: string) => Promise<void>
   startNewMuseSession: (botId: string) => Promise<void>
+  startNewGrokSession: (botId: string) => Promise<void>
   applyHarkHistory: (botId: string, accountId: string, sessionId: string, messages: unknown[]) => void
   switchHarkSession: (botId: string, sessionId: string) => Promise<void>
   /** Resolves to the new Hark conversation id (undefined if the bot is gone). */
@@ -304,6 +367,12 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : 'Something went wrong.'
 }
 
+function omitKey<T>(record: Record<string, T>, key: string): Record<string, T> {
+  if (!(key in record)) return record
+  const { [key]: _removed, ...rest } = record
+  return rest
+}
+
 function prevMediaMerge(
   prev: import('@/types').ChatMediaPart[] | undefined,
   incoming: import('@/types').ChatMediaPart[] | undefined
@@ -357,66 +426,85 @@ function isOmittedPlaceholderText(text: string): boolean {
   return text.startsWith('[消息内容较大') || text.startsWith('[Message body omitted')
 }
 
-/** The local `msg_` user message that `h` (server history) is the copy of, if any. */
-function sentTwin(existing: ChatMessage[], h: ChatMessage): ChatMessage | undefined {
-  if (h.role !== 'user') return undefined
-  return existing.find((m) =>
-    m.role === 'user' && m.id.startsWith('msg_') &&
-    comparableText(m.text) === comparableText(h.text) && Math.abs(h.createdAt - m.createdAt) < 120_000)
-}
-
-function mergeHydratedMessages(existing: ChatMessage[], hydrated: ChatMessage[]): ChatMessage[] {
+function mergeHydratedMessages(
+  existing: ChatMessage[],
+  hydrated: ChatMessage[],
+  beforeRequest?: ChatMessage[]
+): ChatMessage[] {
   if (hydrated.length === 0) return existing
-  const targetAgentId = hydrated.find((m) => m.agentId)?.agentId
+  const { accountId, agentId } = hydrated[0]!
+  const baseline = beforeRequest && new Set(beforeRequest)
+  const liveIds = new Set<string>()
   const normalizedExisting = existing
-    .filter((m) => !targetAgentId || !m.agentId || m.agentId === targetAgentId)
-    .map((m) =>
-      m.id.startsWith('dot_dot_') ? { ...m, id: m.id.replace(/^dot_dot_/, 'dot_') } : m
-    )
+    .filter((m) => m.accountId === accountId && (!agentId || !m.agentId || m.agentId === agentId))
+    .map((m) => {
+      const normalized = m.id.startsWith('dot_dot_') ? { ...m, id: m.id.replace(/^dot_dot_/, 'dot_') } : m
+      if (baseline && !baseline.has(m)) liveIds.add(normalized.id)
+      return normalized
+    })
   const hydratedById = new Map(hydrated.map((m) => [m.id, m]))
   const existingById = new Map(normalizedExisting.map((m) => [m.id, m]))
-  // GOXF: local messages whose server copy already arrived; showing both is the brief double bubble.
-  const twinned = new Set<string>()
-  const mergedHydrated = hydrated.map((h) => {
-    const local = existingById.get(h.id) ?? sentTwin(normalizedExisting, h)
-    if (!local) return h
-    if (local.id !== h.id) twinned.add(local.id)
-    // The server copy of a message just sent: keep the pictures it was sent with.
-    if (local.id !== h.id) return local.attachments?.length && !h.attachments?.length ? { ...h, attachments: local.attachments } : h
-    const media = prevMediaMerge(local.media, h.media)
-    if (media === h.media) return h
-    return { ...h, media }
-  })
+  const fallbackRows = new Map<string, ChatMessage[]>()
+  const fallbackKey = (message: ChatMessage) => `${message.role}:${comparableText(message.text)}`
+  let earliestHydratedTs = Infinity
+  let latestHydratedTs = -Infinity
+  for (const message of hydratedById.values()) {
+    earliestHydratedTs = Math.min(earliestHydratedTs, message.createdAt)
+    latestHydratedTs = Math.max(latestHydratedTs, message.createdAt)
+    if (!message.text || existingById.has(message.id)) continue
+    const key = fallbackKey(message)
+    const matches = fallbackRows.get(key)
+    if (matches) matches.push(message)
+    else fallbackRows.set(key, [message])
+  }
   const keptLocal: ChatMessage[] = []
-  const earliestHydratedTs = hydrated[0]?.createdAt ?? 0
-
+  const localByHistoryId = new Map<string, ChatMessage>()
   for (const localMsg of normalizedExisting) {
-    if (hydratedById.has(localMsg.id) || twinned.has(localMsg.id)) continue
-    // If this was a local user message (`msg_...`) that now exists in `hydrated` from the server, skip the duplicate
-    if (
-      localMsg.role === 'user' &&
-      localMsg.id.startsWith('msg_') &&
-      (localMsg.delivery === 'sent' || localMsg.delivery === 'no-reply' || localMsg.delivery === 'accepted') &&
-      hydrated.some(
-        (h) =>
-          h.role === 'user' &&
-          comparableText(h.text) === comparableText(localMsg.text) &&
-          Math.abs(h.createdAt - localMsg.createdAt) < 120_000
-      )
-    ) {
-      continue
+    if (hydratedById.has(localMsg.id)) continue
+    const live = liveIds.has(localMsg.id)
+    if (localMsg.text && localMsg.delivery !== 'failed' && (live || (localMsg.role === 'user' &&
+        (localMsg.id.startsWith('msg_') || localMsg.id.startsWith('opt_'))))) {
+      const candidates = fallbackRows.get(fallbackKey(localMsg))
+      const match = candidates?.find((remote) => !localByHistoryId.has(remote.id) &&
+        Math.abs(remote.createdAt - localMsg.createdAt) < 120_000)
+      if (match) {
+        localByHistoryId.set(match.id, localMsg)
+        continue
+      }
     }
-    // Keep older history before the hydrated window, or in-flight/failed local messages, or newer real-time messages
     if (
+      live ||
       localMsg.delivery === 'sending' ||
       localMsg.delivery === 'accepted' ||
       localMsg.delivery === 'failed' ||
       localMsg.createdAt < earliestHydratedTs - 1000 ||
-      localMsg.createdAt > (hydrated[hydrated.length - 1]?.createdAt ?? 0) + 1000
+      localMsg.createdAt > latestHydratedTs + 1000
     ) {
       keptLocal.push(localMsg)
     }
   }
+
+  const mergedHydrated = Array.from(hydratedById.values(), (remote) => {
+    const local = existingById.get(remote.id) ?? localByHistoryId.get(remote.id)
+    if (!local) return remote
+    const live = liveIds.has(local.id)
+    const delivering = local.delivery === 'sending' || local.delivery === 'accepted' ||
+      local.error === SEND_STILL_PENDING_TEXT
+    return {
+      ...local,
+      ...remote,
+      id: delivering || live ? local.id : remote.id,
+      text: live && local.text && !isOmittedPlaceholderText(local.text) ? local.text : remote.text,
+      createdAt: live ? local.createdAt : remote.createdAt,
+      widgets: live ? local.widgets ?? remote.widgets : remote.widgets ?? local.widgets,
+      richWidgets: live ? local.richWidgets ?? remote.richWidgets : remote.richWidgets ?? local.richWidgets,
+      tools: live ? local.tools ?? remote.tools : remote.tools ?? local.tools,
+      media: prevMediaMerge(local.media, remote.media),
+      // GOXF: the server copy of a message just sent keeps the pictures it was sent with.
+      attachments: remote.attachments?.length ? remote.attachments : local.attachments,
+      ...(delivering ? { delivery: local.delivery, error: local.error } : { error: undefined })
+    }
+  })
 
   const combined = [...keptLocal, ...mergedHydrated]
   combined.sort((a, b) => a.createdAt - b.createdAt)
@@ -506,12 +594,13 @@ export async function cancelPlatformTurn(bot: Bot) {
       })
       .catch(() => undefined)
   } else if (bot.platformId === 'hermes' && bridge?.hermes?.rpc) {
-    await bridge.hermes
-      .rpc({
-        accountId: bot.activeAccountId,
-        op: 'stopRun'
-      })
-      .catch(() => undefined)
+    const res = await bridge.hermes.rpc({
+      accountId: bot.activeAccountId,
+      op: 'stopRun'
+    })
+    if (res && res.ok === false) {
+      throw new Error(res.message || '未能确认停止 Hermes 运行')
+    }
   } else if (bot.platformId === 'antigravity' && bridge?.antigravity?.cancelRun) {
     await bridge.antigravity.cancelRun(bot.activeAccountId).catch(() => undefined)
   }
@@ -624,21 +713,35 @@ export const useBotStore = create<BotHubState>()(
     sessionSelections.set(botId, selection)
     return selection
   }
-  const getBotForSessionSelection = (bot: Bot, selection: symbol | undefined) => {
-    if (sessionSelections.get(bot.id) !== selection) return undefined
+  const isCurrentSession = (bot: Bot, selection: symbol | undefined): boolean => {
+    if (sessionSelections.get(bot.id) !== selection) return false
     const current = get().bots.find((b) => b.id === bot.id)
-    if (!current || current.activeAccountId !== bot.activeAccountId || current.selectedAgentId !== bot.selectedAgentId) {
-      return undefined
-    }
-    return current
+    return Boolean(current && current.activeAccountId === bot.activeAccountId && current.selectedAgentId === bot.selectedAgentId &&
+      current.activeSessionId === bot.activeSessionId &&
+      current.hermesSessionKey === bot.hermesSessionKey)
   }
-  const setFreshSession = (botId: string, activeSessionId: string | undefined, hermesSessionKey?: string) =>
-    set((state) => ({
-      bots: state.bots.map((bot) => bot.id === botId
-        ? { ...bot, activeSessionId, ...(hermesSessionKey ? { hermesSessionKey } : {}) }
-        : bot),
-      messages: { ...state.messages, [botId]: [] }
-    }))
+  // Keep the previous transcript visible during a manual history load. The
+  // baseline identifies which messages are from that transcript at commit.
+  const transcriptTransitions = new Map<string, { sessionId: string; previous: ChatMessage[] }>()
+  const finalizedReplies = new WeakSet<ChatMessage>()
+  const accountGenerations = new Map<string, symbol>()
+  const cueRosterGenerations = new Map<string, symbol>()
+  const accountConnections = new Map<string, { transport?: Promise<ConnectionStatus> }>()
+  const cueCredentialImports = new Map<string, Promise<unknown>>()
+  const accountCleanup = new Map<string, Promise<void>>()
+  let workspaceGeneration = Symbol()
+  let credentialCleanup: Promise<void> | undefined
+  const invalidateAccount = (id: string) => accountGenerations.set(id, Symbol())
+  const watchAccount = (id: string) => {
+    const generation = accountGenerations.get(id)
+    const workspace = workspaceGeneration
+    return () => accountGenerations.get(id) === generation && workspaceGeneration === workspace
+  }
+
+  const invalidateCueRoster = (bot: Bot, accountIds: string[]) => {
+    if (bot.platformId !== 'cue') return
+    for (const accountId of accountIds) cueRosterGenerations.set(accountId, Symbol())
+  }
 
   const applyAccountLive = (
     accountsMap: Record<string, BotAccount>,
@@ -678,6 +781,82 @@ export const useBotStore = create<BotHubState>()(
     }
   }
 
+  const clearedTurn = (state: BotHubState, bot: Bot) => {
+    replyWatchdog.forget(bot.id)
+    const typing = omitKey(state.typing, bot.id)
+    const accountId = bot.activeAccountId
+    const otherTurn = state.bots.some((b) => b.id !== bot.id && b.activeAccountId === accountId && typing[b.id])
+    const activity = otherTurn ? state.activity : omitKey(state.activity, accountId)
+    const accounts = applySettleAccountBusy(state.accounts, activity, typing, state.bots, accountId)
+    return { typing, activity, accounts }
+  }
+
+  const clearedSession = (state: BotHubState, bot: Bot) => ({
+    ...clearedTurn(state, bot),
+    replyingTo: omitKey(state.replyingTo, bot.id),
+    chatActionErrors: omitKey(state.chatActionErrors, bot.id)
+  })
+
+  const withIncomingReply = (
+    state: BotHubState, bot: Bot, list: ChatMessage[], isNew: boolean, accounts = state.accounts
+  ) => {
+    const selected = state.selectedBotId === bot.id
+    const accountId = bot.activeAccountId
+    const account = accounts[accountId]
+    if (account && isNew) {
+      const unread = selected ? 0 : (account.unread ?? 0) + 1
+      if (unread !== (account.unread ?? 0)) accounts = { ...accounts, [accountId]: { ...account, unread } }
+    }
+    return {
+      accounts,
+      messages: { ...state.messages, [bot.id]: list },
+      bots: isNew && !selected
+        ? state.bots.map((b) => b.id === bot.id ? { ...b, unread: b.unread + 1 } : b)
+        : state.bots
+    }
+  }
+
+  const setFreshSession = (bot: Bot, activeSessionId: string | undefined, hermesSessionKey?: string) => {
+    transcriptTransitions.delete(bot.id)
+    set((state) => ({
+      ...clearedSession(state, bot),
+      bots: state.bots.map((b) => b.id === bot.id
+        ? { ...b, activeSessionId, ...(hermesSessionKey ? { hermesSessionKey } : {}) }
+        : b),
+      messages: { ...state.messages, [bot.id]: [] }
+    }))
+  }
+
+  const beginHistorySelection = (bot: Bot, sessionId: string) => {
+    const selection = markSessionSelection(bot.id)
+    const before = get().messages[bot.id] ?? []
+    if (bot.activeSessionId !== sessionId) {
+      transcriptTransitions.set(bot.id, { sessionId, previous: before })
+      set((state) => ({
+        ...clearedSession(state, bot),
+        bots: state.bots.map((b) => b.id === bot.id ? { ...b, activeSessionId: sessionId } : b)
+      }))
+    } else {
+      setChatActionError(bot.id)
+    }
+    return { selection, before, target: { ...bot, activeSessionId: sessionId } }
+  }
+
+  const commitHistory = (bot: Bot, selection: symbol, before: ChatMessage[], history: ChatMessage[]) => {
+    set((state) => {
+      if (!isCurrentSession(bot, selection)) return state
+      const transition = transcriptTransitions.get(bot.id)
+      const previous = transition && transition.sessionId === bot.activeSessionId
+        ? new Set(transition.previous.map((m) => m.id)) : undefined
+      transcriptTransitions.delete(bot.id)
+      const local = (state.messages[bot.id] ?? []).filter((m) => !previous?.has(m.id))
+      return {
+        messages: { ...state.messages, [bot.id]: mergeHydratedMessages(local, history, before) },
+        accounts: applyAccountLive(state.accounts, bot.activeAccountId, 'online', ['offline', 'error'])
+      }
+    })
+  }
+
   const ensureAccountLive = (
     accountId: string,
     phase: 'online' | 'busy',
@@ -701,44 +880,119 @@ export const useBotStore = create<BotHubState>()(
       return nextAccounts === state.accounts ? state : { accounts: nextAccounts }
     })
 
+  const pendingHarkSelections = new Map<string, symbol>()
   const loadHarkSession = async (bot: Bot, sessionId: string | undefined, selection: symbol | undefined) => {
     const accountId = bot.activeAccountId
     if (sessionId === HARK_DRAFT_SESSION) return // nothing on Hark yet
-    const result = await electronBridge()?.hark.rpc(sessionId
-      ? { accountId, op: 'conversationSnapshot', conversationId: sessionId }
-      : { accountId, op: 'mainConversation' })
-    if (!getBotForSessionSelection(bot, selection)) return
+    const accountIsCurrent = watchAccount(accountId)
+    const isCurrent = () => accountIsCurrent() && isCurrentSession(bot, selection)
+    const before = get().messages[bot.id] ?? []
+    let result
+    try {
+      result = await electronBridge()?.hark?.rpc(sessionId
+        ? { accountId, op: 'conversationSnapshot', conversationId: sessionId }
+        : { accountId, op: 'mainConversation' })
+    } catch (error) {
+      if (isCurrent()) throw error
+      return
+    }
+    if (!isCurrent()) return
     if (!result?.ok) throw new Error(result?.message ?? 'Hark unavailable')
-    const id = (result.data as { conversationId?: string }).conversationId
-    if (!id) throw new Error('Hark returned no conversation ID')
+    const id = (result.data as { conversationId?: string } | null)?.conversationId
+    if (typeof id !== 'string' || !id.trim()) throw new Error('Hark returned no conversation ID')
+    if (sessionId && sessionId !== id) throw new Error('Hark returned a different conversation')
     const history = harkHistory(result.data, bot.id, accountId)
-    set((state) => ({
-      bots: state.bots.map((b) => b.id === bot.id ? { ...b, activeSessionId: id } : b),
-      messages: { ...state.messages, [bot.id]: bot.activeSessionId === id
-        ? mergeHydratedMessages(state.messages[bot.id] ?? [], history) : history },
-      typing: { ...state.typing, [bot.id]: false },
-      accounts: applyAccountLive(state.accounts, accountId, 'online', ['offline', 'error'])
-    }))
-    get().setActivity(accountId, null)
+    set((state) => {
+      if (!isCurrent()) return state
+      const switched = Boolean(bot.activeSessionId && bot.activeSessionId !== id)
+      const turn = switched ? clearedSession(state, bot) : undefined
+      return {
+        ...turn,
+        ...(bot.activeSessionId !== id ? { bots: state.bots.map((b) => b.id === bot.id ? { ...b, activeSessionId: id } : b) } : {}),
+        messages: { ...state.messages, [bot.id]: switched ? history : mergeHydratedMessages(state.messages[bot.id] ?? [], history, before) },
+        accounts: applyAccountLive(turn?.accounts ?? state.accounts, accountId, 'online', ['offline', 'error'])
+      }
+    })
   }
 
   const setHermesSessionError = (botId: string, error?: string) =>
     set((state) => ({ hermesSessionErrors: { ...state.hermesSessionErrors, [botId]: error } }))
 
+  const setChatActionError = (botId: string, error?: string) =>
+    set((state) => {
+      if (state.chatActionErrors[botId] === error) return state
+      return {
+        chatActionErrors: error ? { ...state.chatActionErrors, [botId]: error } : omitKey(state.chatActionErrors, botId)
+      }
+    })
+
+  const reportHistoryError = (bot: Bot, selection: symbol, error: unknown) => {
+    if (isCurrentSession(bot, selection)) setChatActionError(bot.id, errorMessage(error))
+    return undefined
+  }
+
   const patchAccount = (accountId: string, patch: Partial<BotAccount>) =>
     set((state) => {
       const account = state.accounts[accountId]
       if (!account) return state
-      return { accounts: { ...state.accounts, [accountId]: { ...account, ...patch } } }
+      const next = { ...account, ...patch }
+      return shallow(account, next) ? state : { accounts: { ...state.accounts, [accountId]: next } }
     })
 
-  const inFlight = createInFlightSet()
+  const cleanupAccount = (account: BotAccount): Promise<void> => {
+    const { id: accountId, platformId } = account
+    const pending = accountCleanup.get(accountId)
+    if (pending) return pending
+    const connection = accountConnections.get(accountId)
+    const credentialImport = cueCredentialImports.get(accountId)
+    const job = Promise.resolve().then(async () => {
+      await Promise.allSettled([connection?.transport, credentialImport])
+      const bridge = electronBridge()
+      const adapter = adapterRegistry.get(platformId)
+      await Promise.resolve().then(() => adapter?.disconnect(accountId)).catch(() => undefined)
+      try {
+        if (platformId === 'meta-muse' && bridge?.muse?.signOut) {
+          await bridge.muse.signOut(accountId)
+        } else {
+          try {
+            const platformBridge = platformId === 'grok' ? bridge?.grok
+              : platformId === 'dot' ? bridge?.dot
+              : platformId === 'hark' ? bridge?.hark
+              : platformId === 'hermes' ? bridge?.hermes
+              : platformId === 'antigravity' ? bridge?.antigravity
+              : platformId === 'cue' ? bridge?.cue : undefined
+            await platformBridge?.clearAuth?.(accountId)
+          } finally {
+            if (platformId === 'grok') (adapter as { clearAuth?: (id: string) => void })?.clearAuth?.(accountId)
+            if (platformId !== 'hermes') await bridge?.webViews?.clearPartition?.(accountId)
+          }
+        }
+        patchAccount(accountId, { status: 'offline', statusDetail: 'Signed out', unread: 0 })
+      } catch (error) {
+        patchAccount(accountId, { statusDetail: errorMessage(error) })
+      }
+    }).finally(() => {
+      accountCleanup.delete(accountId)
+      patchAccount(accountId, { pending: false })
+      flushWorkspacePersistence()
+    })
+    accountCleanup.set(accountId, job)
+    patchAccount(accountId, { pending: true })
+    return job
+  }
+
+  const cueHistoryRequests = new Map<string, symbol | undefined>()
 
   const hydrateCueHistoryForBot = async (accountId: string, bot: Bot): Promise<number> => {
     const bridge = electronBridge()
-    if (!bridge?.cue?.rpc) return 0
-    const key = `cue_hist:${bot.id}`
-    if (!inFlight.enter(key)) return 0
+    if (!bridge?.cue?.rpc || accountId !== bot.activeAccountId) return 0
+    const selection = sessionSelections.get(bot.id)
+    const accountIsCurrent = watchAccount(accountId)
+    if (!isCurrentSession(bot, selection)) return 0
+    const key = JSON.stringify([bot.id, accountId, bot.selectedAgentId, bot.activeSessionId])
+    if (cueHistoryRequests.has(key) && cueHistoryRequests.get(key) === selection) return 0
+    cueHistoryRequests.set(key, selection)
+    const before = get().messages[bot.id] ?? []
     try {
       const res = await bridge.cue
         .rpc({
@@ -755,6 +1009,8 @@ export const useBotStore = create<BotHubState>()(
         typeof dataRec.sessionId === 'string' && dataRec.sessionId.trim()
           ? dataRec.sessionId.trim()
           : undefined
+      if ((bot.activeSessionId && resolvedSessionId && bot.activeSessionId !== resolvedSessionId) ||
+          !accountIsCurrent() || !isCurrentSession(bot, selection)) return 0
       const raw = dataRec.messages
       const hydrated: ChatMessage[] = []
       if (Array.isArray(raw)) {
@@ -780,47 +1036,27 @@ export const useBotStore = create<BotHubState>()(
       }
       if (hydrated.length > 0 || (resolvedSessionId && resolvedSessionId !== bot.activeSessionId)) {
         set((s) => ({
-          ...(resolvedSessionId
-            ? {
-                bots: s.bots.map((b) =>
-                  b.id === bot.id && !b.activeSessionId
-                    ? { ...b, activeSessionId: resolvedSessionId }
-                    : b
-                )
-              }
+          ...(resolvedSessionId && resolvedSessionId !== bot.activeSessionId
+            ? { bots: s.bots.map((b) => b.id === bot.id ? { ...b, activeSessionId: resolvedSessionId } : b) }
             : {}),
-          ...(hydrated.length > 0
-            ? {
-                messages: {
-                  ...s.messages,
-                  [bot.id]: mergeHydratedMessages(s.messages[bot.id] ?? [], hydrated)
-                }
-              }
-            : {})
+          messages: { ...s.messages, [bot.id]: mergeHydratedMessages(s.messages[bot.id] ?? [], hydrated, before) }
         }))
       }
       return hydrated.length
     } finally {
-      inFlight.leave(key)
+      if (cueHistoryRequests.get(key) === selection) cueHistoryRequests.delete(key)
     }
   }
+
+  const attempts = createDeliveryAttempts()
 
   /** Hand a stored user message to the bot's platform adapter. */
-  const deliver = async (botId: string, messageId: string) => {
-    const key = JSON.stringify([botId, messageId])
-    if (!inFlight.enter(key)) return
-    try {
-      await deliverOnce(botId, messageId)
-    } finally {
-      inFlight.leave(key)
-    }
-  }
-
-  const deliverOnce = async (botId: string, messageId: string) => {
+  const deliver = async (botId: string, messageId: string, retry = false) => {
     const state = get()
     const bot = state.bots.find((b) => b.id === botId)
     const message = state.messages[botId]?.find((m) => m.id === messageId)
-    if (!bot || !message) return
+    if (!bot || !message || bot.activeAccountId !== message.accountId ||
+        (message.agentId && message.agentId !== bot.selectedAgentId)) return
 
     const adapter = adapterRegistry.get(bot.platformId)
     if (!adapter) {
@@ -828,39 +1064,60 @@ export const useBotStore = create<BotHubState>()(
       return
     }
 
+    const key = JSON.stringify([botId, messageId])
+    const attempt = attempts.begin(key)
+    if (!attempt) return
+    const finish = () => attempts.finish(key, attempt)
+    const accountIsCurrent = watchAccount(message.accountId)
+    const isCurrent = () => attempts.isCurrent(key, attempt) && accountIsCurrent() &&
+      get().messages[botId]?.some((m) => m.id === messageId && m.accountId === message.accountId)
     const selection = sessionSelections.get(botId)
-    const applyReceipt = (receipt: import('@adapters/types').SendReceipt) => {
-      const current = getBotForSessionSelection(bot, selection)
-      if (
-        current &&
-        current.activeAccountId === message.accountId &&
-        current.activeSessionId === bot.activeSessionId &&
-        receipt.sessionId &&
-        receipt.sessionId !== current.activeSessionId
-      ) {
+    if (retry) updateMessage(botId, messageId, { delivery: 'sending', error: undefined })
+
+    const applyReceipt = (receipt: SendReceipt) => {
+      if (!isCurrent()) return
+      const loading = transcriptTransitions.get(botId)
+      if (receipt.sessionId && receipt.sessionId !== bot.activeSessionId && isCurrentSession(bot, selection) &&
+          (!loading || loading.sessionId !== bot.activeSessionId)) {
         patchBot(botId, () => ({ activeSessionId: receipt.sessionId }))
       }
-      updateMessage(
-        botId,
-        messageId,
-        receipt.noReply ? { delivery: 'no-reply', error: NO_REPLY_TEXT } : { delivery: 'sent', error: undefined }
-      )
+      const current = get().messages[botId]?.find((m) => m.id === messageId)
+      if (current?.delivery !== 'sent') {
+        updateMessage(botId, messageId, receipt.noReply
+          ? { delivery: 'no-reply', error: NO_REPLY_TEXT }
+          : { delivery: 'sent', error: undefined })
+      }
       ensureAccountLive(message.accountId, 'online', { onlyFrom: ['offline', 'error'] })
       settleAccountBusy(message.accountId, botId)
     }
 
     let accepted = false
+    let timedOut = false
     const onAccepted = (createdSessionId?: string) => {
-      if (accepted) return
+      if (accepted || !isCurrent()) return
       accepted = true
       // A draft project now exists on Hark: follow it, unless the user already moved on.
-      if (createdSessionId) {
-        const current = getBotForSessionSelection(bot, selection)
-        if (current?.activeSessionId === HARK_DRAFT_SESSION) patchBot(botId, () => ({ activeSessionId: createdSessionId }))
+      if (createdSessionId && bot.activeSessionId === HARK_DRAFT_SESSION && isCurrentSession(bot, selection)) {
+        patchBot(botId, () => ({ activeSessionId: createdSessionId }))
       }
       const current = get().messages[botId]?.find((m) => m.id === messageId)
       if (current?.delivery === 'sending') updateMessage(botId, messageId, { delivery: 'accepted', error: undefined })
       ensureAccountLive(message.accountId, 'online', { onlyFrom: ['offline', 'error'] })
+    }
+    const applyError = (error: unknown, late = false) => {
+      if (!isCurrent()) return
+      if (error instanceof SendTimeoutError && isCurrentSession(bot, selection)) get().finishReply(botId)
+      const current = get().messages[botId]?.find((m) => m.id === messageId)
+      if (!current || current.delivery === 'sent') return
+      if (error instanceof SendTimeoutError) {
+        updateMessage(botId, messageId, { delivery: 'no-reply', error: SEND_STILL_PENDING_TEXT })
+      } else if (error instanceof AdapterError && error.code === 'no-reply') {
+        updateMessage(botId, messageId, deliveryAfterError(accepted, 'no-reply', error.message || NO_REPLY_TEXT))
+      } else if (late && !accepted) {
+        updateMessage(botId, messageId, { delivery: 'no-reply', error: SEND_TIMEOUT_TEXT })
+      } else {
+        updateMessage(botId, messageId, deliveryAfterError(accepted, 'other', errorMessage(error)))
+      }
     }
 
     try {
@@ -872,6 +1129,7 @@ export const useBotStore = create<BotHubState>()(
         adapter.sendMessage({
           conversationId: botId,
           accountId: message.accountId,
+          agentId: bot.selectedAgentId,
           sessionId: bot.activeSessionId,
           ...(bot.hermesSessionKey ? { hermesSessionKey: bot.hermesSessionKey } : {}),
           text: outboundText,
@@ -881,21 +1139,21 @@ export const useBotStore = create<BotHubState>()(
           onAccepted
         }),
         SEND_HARD_TIMEOUT_MS,
-        // The adapter answered after we gave up: show what really happened.
         (late) => {
-          if (late.ok) applyReceipt(late.value)
+          try {
+            if (late.ok) applyReceipt(late.value)
+            else applyError(late.error, true)
+          } finally {
+            finish()
+          }
         }
       )
       applyReceipt(receipt)
     } catch (error) {
-      if (error instanceof AdapterError && error.code === 'no-reply') {
-        updateMessage(botId, messageId, deliveryAfterError(accepted, 'no-reply', error.message || NO_REPLY_TEXT))
-      } else if (error instanceof SendTimeoutError) {
-        updateMessage(botId, messageId, deliveryAfterError(accepted, 'timeout', error.message))
-        get().setTyping(botId, false)
-      } else {
-        updateMessage(botId, messageId, deliveryAfterError(accepted, 'other', errorMessage(error)))
-      }
+      timedOut = error instanceof SendTimeoutError
+      applyError(error)
+    } finally {
+      if (!timedOut) finish()
     }
   }
 
@@ -941,7 +1199,7 @@ export const useBotStore = create<BotHubState>()(
       return acc?.status === 'busy' || acc?.pending || state.activity[id]?.busy
     })) return true
     const list = state.messages[bot.id] ?? []
-    return hasUnsettledDelivery(list) || list.some((m) => streamedReplies.has(m.id))
+    return hasUnsettledDelivery(list)
   }
 
   /** One conversation's history through the platform's own history call (undefined: unavailable). */
@@ -1075,6 +1333,7 @@ export const useBotStore = create<BotHubState>()(
     activeDocument: null,
     replyingTo: {},
     hermesSessionErrors: {},
+    chatActionErrors: {},
     dismissedGrokAgents: {},
     trimmedBots: {},
 
@@ -1427,14 +1686,19 @@ export const useBotStore = create<BotHubState>()(
       const state = get()
       const bot = state.bots.find((b) => b.id === botId)
       if (!bot) return
-      sessionSelections.delete(botId)
+      markSessionSelection(botId)
+      transcriptTransitions.delete(botId)
+      pendingHarkSelections.delete(botId)
+      invalidateCueRoster(bot, bot.accountIds)
       const orphaned = bot.accountIds.filter((id) => !state.bots.some((b) => b.id !== botId && b.accountIds.includes(id)))
+      for (const accountId of orphaned) invalidateAccount(accountId)
+      const cleanup = orphaned.flatMap((id) => state.accounts[id] ? [cleanupAccount(state.accounts[id]!)] : [])
       const ordered = state.groups.flatMap((g) => state.bots.filter((b) => b.groupId === g.id))
       const index = ordered.findIndex((b) => b.id === botId)
       const neighbour = ordered[index + 1] ?? ordered[index - 1]
       set((s) => {
         const { [botId]: _messages, ...messages } = s.messages
-        const { [botId]: _typing, ...typing } = s.typing
+        const turn = clearedSession(s, bot)
         const { [botId]: _sessionError, ...hermesSessionErrors } = s.hermesSessionErrors
         let dismissedGrokAgents = s.dismissedGrokAgents
         if (
@@ -1452,21 +1716,18 @@ export const useBotStore = create<BotHubState>()(
           }
         }
         return {
+          ...turn,
           bots: s.bots.filter((b) => b.id !== botId),
           messages,
-          typing,
+          accounts: orphaned.reduce(omitKey<BotAccount>, turn.accounts),
+          activity: orphaned.reduce(omitKey, turn.activity),
           hermesSessionErrors,
           dismissedGrokAgents,
           selectedBotId: s.selectedBotId === botId ? (neighbour?.id ?? null) : s.selectedBotId
         }
       })
-      for (const accountId of orphaned) {
-        await get().signOutAccount(accountId)
-        set((s) => {
-          const { [accountId]: _removed, ...accounts } = s.accounts
-          return { accounts }
-        })
-      }
+      flushWorkspacePersistence()
+      await Promise.all(cleanup)
     },
 
     sendMessage: async (botId, text, attachments) => {
@@ -1522,8 +1783,9 @@ export const useBotStore = create<BotHubState>()(
 
     retryMessage: async (botId, messageId) => {
       const message = get().messages[botId]?.find((m) => m.id === messageId)
+      if (!message || (message.delivery !== 'failed' && message.delivery !== 'no-reply')) return
       // Retrying would silently drop the files (or send an empty message).
-      if (message && hasLostAttachments(message)) {
+      if (hasLostAttachments(message)) {
         // Keep "delivered" messages delivered: looking unsent invites a duplicate.
         updateMessage(botId, messageId, {
           delivery: message.delivery === 'no-reply' ? 'no-reply' : 'failed',
@@ -1531,119 +1793,64 @@ export const useBotStore = create<BotHubState>()(
         })
         return
       }
-      updateMessage(botId, messageId, { delivery: 'sending', error: undefined })
-      await deliver(botId, messageId)
+      await deliver(botId, messageId, true)
     },
 
     receiveMessage: (incoming) =>
       set((state) => {
-        const botId = state.bots.some((b) => b.id === incoming.conversationId)
-          ? incoming.conversationId
-          : state.bots.find((b) => b.accountIds.includes(incoming.accountId))?.id
-        if (!botId) return state
+        const targetBot = getEventBot(state.bots, incoming.accountId, incoming.conversationId, incoming.sessionId)
+        if (!targetBot) return state
+        const botId = targetBot.id
         const list = state.messages[botId] ?? []
-        const existingIdx = list.findIndex((m) => m.id === incoming.id)
-        const prevText = existingIdx >= 0 ? list[existingIdx]!.text : ''
-        const incomingText = incoming.text
-        const mergedText =
-          existingIdx < 0
-            ? incomingText
-            : !incomingText
-              ? prevText
-              : isOmittedPlaceholderText(prevText) && !isOmittedPlaceholderText(incomingText)
-                ? incomingText
-                : incomingText.length < prevText.length
-                  ? prevText
-                  : incomingText.startsWith(prevText) || prevText.length === 0
-                    ? incomingText
-                    : incomingText.length > prevText.length
-                      ? incomingText
-                      : prevText
-        const prevWidgets = existingIdx >= 0 ? list[existingIdx]!.widgets : undefined
-        const incomingWidgets = (incoming as { widgets?: ChatMessage['widgets'] }).widgets
-        const prevTools = existingIdx >= 0 ? list[existingIdx]!.tools : undefined
-        const incomingTools = (incoming as { tools?: ChatMessage['tools'] }).tools
-        const prevMedia = existingIdx >= 0 ? list[existingIdx]!.media : undefined
-        const incomingMedia = (incoming as { media?: ChatMessage['media'] }).media
-        const prevRich = existingIdx >= 0 ? list[existingIdx]!.richWidgets : undefined
-        const incomingRich = (incoming as { richWidgets?: ChatMessage['richWidgets'] }).richWidgets
-        const targetBot = state.bots.find((b) => b.id === botId)
+        const existingIdx = list.findIndex((m) => m.id === incoming.id && m.accountId === incoming.accountId)
+        const prev = list[existingIdx]
+        const authoritative = Boolean((incoming as { authoritative?: boolean }).authoritative)
+        const text = authoritative
+          ? incoming.text
+          : incoming.text && (!prev?.text || !isOmittedPlaceholderText(incoming.text))
+            ? incoming.text
+            : prev?.text ?? ''
         const message: ChatMessage = {
           id: incoming.id,
           botId,
           accountId: incoming.accountId,
-          ...(targetBot?.selectedAgentId ? { agentId: targetBot.selectedAgentId } : {}),
+          ...(targetBot.selectedAgentId ? { agentId: targetBot.selectedAgentId } : {}),
           role: 'bot',
-          text: mergedText,
-          createdAt: existingIdx >= 0 ? list[existingIdx]!.createdAt : incoming.createdAt,
-          widgets: incomingWidgets?.length ? incomingWidgets : prevWidgets,
-          tools: incomingTools?.length ? incomingTools : prevTools,
-          media: prevMediaMerge(prevMedia, incomingMedia),
-          richWidgets: incomingRich?.length ? incomingRich : prevRich
+          text,
+          createdAt: prev?.createdAt ?? incoming.createdAt,
+          widgets: incoming.widgets?.length ? incoming.widgets : prev?.widgets,
+          tools: incoming.tools?.length ? incoming.tools : prev?.tools,
+          media: prevMediaMerge(prev?.media, incoming.media),
+          richWidgets: incoming.richWidgets?.length ? incoming.richWidgets : prev?.richWidgets
         }
-        const selected = state.selectedBotId === botId
-        // A streamed reply (Hark, Muse) already exists from its deltas: its first final message is the new one.
-        const isNew = existingIdx < 0 || streamedReplies.delete(incoming.id)
-        let accounts = state.accounts
-        const account = accounts[incoming.accountId]
-        if (account) {
-          const unread = isNew ? (selected ? 0 : (account.unread ?? 0) + 1) : account.unread
-          if (unread !== account.unread) {
-            accounts = { ...accounts, [incoming.accountId]: { ...account, unread } }
-          }
-          if (account.status === 'offline' || account.status === 'error') {
-            accounts = applyAccountLive(accounts, incoming.accountId, 'online', ['offline', 'error'])
-          } else if (account.status === 'busy') {
-            accounts = applySettleAccountBusy(
-              accounts,
-              state.activity,
-              state.typing,
-              state.bots,
-              incoming.accountId,
-              botId
-            )
-          }
+        const liveAccounts = applyAccountLive(state.accounts, incoming.accountId, 'online', ['offline', 'error'])
+        const accounts = applySettleAccountBusy(liveAccounts, state.activity, state.typing, state.bots, incoming.accountId, botId)
+        if (prev && shallow(prev, message)) {
+          finalizedReplies.add(prev)
+          return accounts === state.accounts ? state : { accounts }
         }
-        const nextList =
-          existingIdx >= 0
-            ? list.map((m, i) => (i === existingIdx ? message : m))
-            : clearNoReplyFlag([...list, message])
-        return {
-          messages: { ...state.messages, [botId]: nextList },
-          accounts,
-          bots:
-            selected || !isNew
-              ? state.bots
-              : state.bots.map((b) => (b.id === botId ? { ...b, unread: b.unread + 1 } : b))
-        }
+        finalizedReplies.add(message)
+        const nextList = existingIdx >= 0
+          ? list.map((m, i) => (i === existingIdx ? message : m))
+          : clearNoReplyFlag([...list, message], incoming.accountId)
+        return withIncomingReply(state, targetBot, nextList, existingIdx < 0, accounts)
       }),
 
     applyMessageDelta: (messageId, conversationId, accountId, text, widgets, tools, media, richWidgets) =>
       set((state) => {
-        const botId = state.bots.some((b) => b.id === conversationId)
-          ? conversationId
-          : state.bots.find((b) => b.accountIds.includes(accountId))?.id
-        if (!botId) return state
+        const targetBot = getEventBot(state.bots, accountId, conversationId)
+        if (!targetBot) return state
+        const botId = targetBot.id
         const list = state.messages[botId] ?? []
-        const existingIdx = list.findIndex((m) => m.id === messageId)
+        const existingIdx = list.findIndex((m) => m.id === messageId && m.accountId === accountId)
         const liveAccounts = applyAccountLive(state.accounts, accountId, 'busy', ['offline', 'error'])
         if (existingIdx >= 0) {
-          const prev = list[existingIdx]!.text
+          const prevMsg = list[existingIdx]!
+          const prev = prevMsg.text
           // Reconnect/backfill can briefly send a shorter snapshot — never shrink,
           // unless replacing an omitted-body placeholder with hydrated real text.
-          const next =
-            !text
-              ? prev
-              : isOmittedPlaceholderText(prev) && !isOmittedPlaceholderText(text)
-                ? text
-                : text.length < prev.length
-                  ? prev
-                  : text.startsWith(prev) || prev.length === 0
-                    ? text
-                    : text.length > prev.length
-                      ? text
-                      : prev
-          const prevMsg = list[existingIdx]!
+          const next = text && ((text.length > prev.length && !finalizedReplies.has(prevMsg)) ||
+            (isOmittedPlaceholderText(prev) && !isOmittedPlaceholderText(text))) ? text : prev
           const nextWidgets = widgets?.length ? widgets : prevMsg.widgets
           const nextTools = tools?.length ? tools : prevMsg.tools
           const nextMedia = prevMediaMerge(prevMsg.media, media)
@@ -1657,31 +1864,19 @@ export const useBotStore = create<BotHubState>()(
           ) {
             return liveAccounts === state.accounts ? state : { accounts: liveAccounts }
           }
-          return {
-            accounts: liveAccounts,
-            messages: {
-              ...state.messages,
-              [botId]: list.map((m, i) =>
-                i === existingIdx
-                  ? {
-                      ...m,
-                      text: next,
-                      widgets: nextWidgets,
-                      tools: nextTools,
-                      media: nextMedia,
-                      richWidgets: nextRich
-                    }
-                  : m
-              )
-            }
+          const message = {
+            ...prevMsg, text: next, widgets: nextWidgets, tools: nextTools, media: nextMedia, richWidgets: nextRich
           }
+          if (finalizedReplies.has(prevMsg)) finalizedReplies.add(message)
+          const updated = list.slice()
+          updated[existingIdx] = message
+          return { accounts: liveAccounts, messages: { ...state.messages, [botId]: updated } }
         }
-        const targetBot = state.bots.find((b) => b.id === botId)
         const message: ChatMessage = {
           id: messageId,
           botId,
           accountId,
-          ...(targetBot?.selectedAgentId ? { agentId: targetBot.selectedAgentId } : {}),
+          ...(targetBot.selectedAgentId ? { agentId: targetBot.selectedAgentId } : {}),
           role: 'bot',
           text,
           createdAt: Date.now(),
@@ -1690,38 +1885,43 @@ export const useBotStore = create<BotHubState>()(
           media: media?.length ? media : undefined,
           richWidgets: richWidgets?.length ? richWidgets : undefined
         }
-        streamedReplies.add(messageId)
-        return {
-          accounts: liveAccounts,
-          messages: { ...state.messages, [botId]: clearNoReplyFlag([...list, message]) }
-        }
+        return withIncomingReply(state, targetBot, clearNoReplyFlag([...list, message], accountId), true, liveAccounts)
       }),
 
     setTyping: (botIdOrAccountId, isTyping) =>
       set((state) => {
-        const matchedBot = state.bots.some((b) => b.id === botIdOrAccountId)
-          ? state.bots.find((b) => b.id === botIdOrAccountId)
-          : state.bots.find((b) => b.accountIds.includes(botIdOrAccountId))
-        const botId = matchedBot?.id ?? botIdOrAccountId
-        const accId =
-          matchedBot?.activeAccountId ??
-          (state.accounts[botIdOrAccountId] ? botIdOrAccountId : undefined)
+        const matchedBot = state.bots.find((b) => b.id === botIdOrAccountId) ??
+          getEventBot(state.bots, botIdOrAccountId)
+        if (!matchedBot) return state
+        const { id: botId, activeAccountId: accId } = matchedBot
         const typingUnchanged = (state.typing[botId] === true) === isTyping
         const typing = typingUnchanged ? state.typing : { ...state.typing }
         if (!typingUnchanged) {
           if (isTyping) typing[botId] = true
           else delete typing[botId]
         }
-        let accounts = state.accounts
-        if (accId) {
-          accounts = isTyping
-            ? applyAccountLive(accounts, accId, 'busy', ['offline', 'error'])
-            : applySettleAccountBusy(accounts, state.activity, typing, state.bots, accId, botId)
-        }
+        const accounts = isTyping
+          ? applyAccountLive(state.accounts, accId, 'busy', ['offline', 'error'])
+          : applySettleAccountBusy(state.accounts, state.activity, typing, state.bots, accId, botId)
         if (typingUnchanged && accounts === state.accounts) return state
         return {
           ...(typingUnchanged ? {} : { typing }),
           ...(accounts === state.accounts ? {} : { accounts })
+        }
+      }),
+
+    finishReply: (botId, stalled = false) =>
+      set((state) => {
+        const bot = state.bots.find((b) => b.id === botId)
+        if (!bot) return state
+        const turn = clearedTurn(state, bot)
+        const list = state.messages[botId]
+        const messages = stalled && list ? markStalledReply(list, bot.activeAccountId) : list
+        if (messages === list && turn.typing === state.typing &&
+            turn.activity === state.activity && turn.accounts === state.accounts) return state
+        return {
+          ...turn,
+          ...(messages && messages !== list ? { messages: { ...state.messages, [botId]: messages } } : {})
         }
       }),
 
@@ -1754,7 +1954,8 @@ export const useBotStore = create<BotHubState>()(
             prev.text === activity.text &&
             prev.emoji === activity.emoji &&
             prev.busy === activity.busy &&
-            prev.subagents === activity.subagents
+            prev.subagents === activity.subagents &&
+            prev.ctaLabel === activity.ctaLabel
         )
         const nextActivity = activityUnchanged
           ? state.activity
@@ -1863,24 +2064,24 @@ export const useBotStore = create<BotHubState>()(
     cancelGeneration: async (botId) => {
       const bot = get().bots.find((b) => b.id === botId)
       if (!bot) return
-      get().setTyping(botId, false)
-      get().setActivity(bot.activeAccountId, null)
-      get().setAccountStatus(bot.activeAccountId, 'online')
-      await cancelPlatformTurn(bot)
+      const selection = sessionSelections.get(botId)
+      get().finishReply(botId)
+      setChatActionError(botId)
+      try {
+        await cancelPlatformTurn(bot)
+      } catch (error) {
+        if (isCurrentSession(bot, selection)) setChatActionError(botId, errorMessage(error))
+      }
     },
 
     switchMuseSession: async (botId, sessionId) => {
       const bot = get().bots.find((b) => b.id === botId)
       if (!bot || bot.platformId !== 'meta-muse') return
-      const selection = markSessionSelection(botId)
-      patchBot(botId, () => ({ activeSessionId: sessionId }))
+      const { selection, before, target } = beginHistorySelection(bot, sessionId)
       const hydrated = await fetchSessionMessages(bot, sessionId)
-      if (getBotForSessionSelection(bot, selection)?.activeSessionId !== sessionId) return
-      if (!hydrated) return
-      set((s) => ({
-        messages: { ...s.messages, [botId]: hydrated },
-        accounts: applyAccountLive(s.accounts, bot.activeAccountId, 'online', ['offline', 'error'])
-      }))
+        .catch((error) => reportHistoryError(target, selection, error))
+      if (!hydrated || !isCurrentSession(target, selection)) return
+      commitHistory(target, selection, before, hydrated)
     },
 
     startNewMuseSession: async (botId) => {
@@ -1888,16 +2089,42 @@ export const useBotStore = create<BotHubState>()(
       if (!bot || bot.platformId !== 'meta-muse') return
       const selection = markSessionSelection(botId)
       const bridge = electronBridge()
-      let newSessionId: string | undefined
-      if (bridge?.muse?.startSession) {
-        try {
-          const res = await bridge.muse.startSession(bot.activeAccountId)
-          if (res.sessionId) newSessionId = res.sessionId
-        } catch {
-          /* ignore */
+      setChatActionError(botId)
+      try {
+        if (!bridge?.muse?.startSession) throw new Error(t('Muse connection unavailable'))
+        const res = await bridge.muse.startSession(bot.activeAccountId)
+        const id = res?.sessionId
+        if (typeof id !== 'string' || !id.trim()) throw new Error(t('Muse returned no session ID'))
+        if (isCurrentSession(bot, selection)) setFreshSession(bot, id.trim())
+      } catch (error) {
+        if (isCurrentSession(bot, selection)) {
+          setChatActionError(botId, t('Could not start a new conversation. {reason}', { reason: errorMessage(error) }))
         }
       }
-      if (getBotForSessionSelection(bot, selection)) setFreshSession(botId, newSessionId)
+    },
+
+    startNewGrokSession: async (botId) => {
+      const bot = get().bots.find((b) => b.id === botId)
+      if (bot?.platformId !== 'grok' || !bot.selectedAgentId) return
+      const grok = electronBridge()?.grok
+      if (!grok?.rpc) throw new Error(t('Grok connection unavailable'))
+      const selection = markSessionSelection(botId)
+      let result
+      try {
+        result = await grok.rpc({
+          accountId: bot.activeAccountId,
+          op: 'call',
+          method: 'StartFreshGrokBotConversation',
+          params: { agent_id: bot.selectedAgentId }
+        })
+      } catch (error) {
+        if (isCurrentSession(bot, selection)) throw error
+        return
+      }
+      if (!isCurrentSession(bot, selection)) return
+      if (!result.ok) throw new Error(result.message)
+      setFreshSession(bot, undefined)
+      get().setSelectedAgent(botId, bot.selectedAgentId)
     },
 
     applyHarkHistory: (botId, accountId, sessionId, messages) => set((s) => {
@@ -1912,40 +2139,49 @@ export const useBotStore = create<BotHubState>()(
 
     switchHarkSession: async (botId, sessionId) => {
       const bot = get().bots.find((b) => b.id === botId)
-      if (bot) await loadHarkSession(bot, sessionId, markSessionSelection(botId))
+      if (bot?.platformId !== 'hark') return
+      const selection = markSessionSelection(botId)
+      pendingHarkSelections.set(botId, selection)
+      try {
+        await loadHarkSession(bot, sessionId, selection)
+      } finally {
+        if (pendingHarkSelections.get(botId) === selection) pendingHarkSelections.delete(botId)
+      }
     },
 
     startNewHarkSession: async (botId, title) => {
       const bot = get().bots.find((b) => b.id === botId)
-      if (!bot) return undefined
+      if (bot?.platformId !== 'hark') return undefined
       const selection = markSessionSelection(botId)
-      const result = await electronBridge()?.hark.rpc({ accountId: bot.activeAccountId, op: 'createConversation', title })
-      if (!result?.ok) throw new Error(result?.message ?? 'Hark unavailable')
-      const conversationId = (result.data as { conversationId: string }).conversationId
-      if (getBotForSessionSelection(bot, selection)) {
-        setFreshSession(botId, conversationId)
+      pendingHarkSelections.set(botId, selection)
+      try {
+        const result = await electronBridge()?.hark?.rpc({ accountId: bot.activeAccountId, op: 'createConversation', title })
+        if (!isCurrentSession(bot, selection)) return undefined
+        if (!result?.ok) throw new Error(result?.message ?? 'Hark unavailable')
+        const conversationId = (result.data as { conversationId?: string } | null)?.conversationId
+        if (typeof conversationId !== 'string' || !conversationId.trim()) throw new Error('Hark returned no conversation ID')
+        setFreshSession(bot, conversationId)
+        return conversationId
+      } finally {
+        if (pendingHarkSelections.get(botId) === selection) pendingHarkSelections.delete(botId)
       }
-      return conversationId
     },
 
     startHarkDraft: (botId) => {
       markSessionSelection(botId)
-      setFreshSession(botId, HARK_DRAFT_SESSION)
+      const bot = get().bots.find((b) => b.id === botId)
+      if (bot) setFreshSession(bot, HARK_DRAFT_SESSION)
     },
 
     switchHermesSession: async (botId, sessionId) => {
       const bot = get().bots.find((b) => b.id === botId)
       if (!bot || bot.platformId !== 'hermes') return
-      const selection = markSessionSelection(botId)
       setHermesSessionError(botId)
-      patchBot(botId, () => ({ activeSessionId: sessionId }))
+      const { selection, before, target } = beginHistorySelection(bot, sessionId)
       const hydrated = await fetchSessionMessages(bot, sessionId)
-      if (getBotForSessionSelection(bot, selection)?.activeSessionId !== sessionId) return
-      if (!hydrated) return
-      set((s) => ({
-        messages: { ...s.messages, [botId]: hydrated },
-        accounts: applyAccountLive(s.accounts, bot.activeAccountId, 'online', ['offline', 'error'])
-      }))
+        .catch((error) => reportHistoryError(target, selection, error))
+      if (!hydrated || !isCurrentSession(target, selection)) return
+      commitHistory(target, selection, before, hydrated)
     },
 
     startNewHermesSession: async (botId) => {
@@ -1961,19 +2197,19 @@ export const useBotStore = create<BotHubState>()(
           op: 'createSession',
           title: bot.name
         })
-        if (!getBotForSessionSelection(bot, selection)) return false
+        if (!isCurrentSession(bot, selection)) return false
         if (!res.ok) {
           if (![404, 405, 501].includes(res.status)) throw new Error(res.message)
           // Legacy gateways identify a conversation by X-Hermes-Session-Key.
-          setFreshSession(botId, undefined, createId('hermes'))
+          setFreshSession(bot, undefined, createId('hermes'))
           return true
         }
         const id = (res.data as { id?: unknown } | null)?.id
         if (typeof id !== 'string' || !id.trim()) throw new Error(t('Hermes returned no session ID'))
-        setFreshSession(botId, id, createId('hermes'))
+        setFreshSession(bot, id.trim(), createId('hermes'))
         return true
       } catch (error) {
-        if (getBotForSessionSelection(bot, selection)) setHermesSessionError(botId, errorMessage(error))
+        if (isCurrentSession(bot, selection)) setHermesSessionError(botId, errorMessage(error))
         return false
       }
     },
@@ -1981,22 +2217,18 @@ export const useBotStore = create<BotHubState>()(
     switchAntigravitySession: async (botId, sessionId) => {
       const bot = get().bots.find((b) => b.id === botId)
       if (!bot || bot.platformId !== 'antigravity') return
-      const selection = markSessionSelection(botId)
-      patchBot(botId, () => ({ activeSessionId: sessionId }))
+      const { selection, before, target } = beginHistorySelection(bot, sessionId)
       const hydrated = await fetchSessionMessages(bot, sessionId)
-      if (getBotForSessionSelection(bot, selection)?.activeSessionId !== sessionId) return
-      if (!hydrated) return
-      set((s) => ({
-        messages: { ...s.messages, [botId]: hydrated },
-        accounts: applyAccountLive(s.accounts, bot.activeAccountId, 'online', ['offline', 'error'])
-      }))
+        .catch((error) => reportHistoryError(target, selection, error))
+      if (!hydrated || !isCurrentSession(target, selection)) return
+      commitHistory(target, selection, before, hydrated)
     },
 
     startNewAntigravitySession: (botId) => {
       const bot = get().bots.find((b) => b.id === botId)
       if (!bot || bot.platformId !== 'antigravity') return
       markSessionSelection(botId)
-      setFreshSession(botId, undefined)
+      setFreshSession(bot, undefined)
     },
 
     loadConversation: async (botId, conversationId) => {
@@ -2026,38 +2258,45 @@ export const useBotStore = create<BotHubState>()(
     removeMemory: (botId, memoryId) =>
       patchBot(botId, (bot) => ({ memory: bot.memory.filter((m) => m.id !== memoryId) })),
 
-    removeAccountFromBot: (botId, accountId) =>
-      patchBot(botId, (bot) => {
-        // A bot always keeps at least one account.
-        if (bot.accountIds.length <= 1 || !bot.accountIds.includes(accountId)) return {}
-        const accountIds = bot.accountIds.filter((id) => id !== accountId)
-        if (bot.activeAccountId === accountId) markSessionSelection(botId)
-        return {
-          accountIds,
-          activeAccountId: bot.activeAccountId === accountId ? accountIds[0]! : bot.activeAccountId
-        }
-      }),
+    removeAccountFromBot: (botId, accountId) => {
+      const bot = get().bots.find((b) => b.id === botId)
+      if (!bot || bot.accountIds.length <= 1 || !bot.accountIds.includes(accountId)) return
+      if (bot.activeAccountId === accountId) {
+        const replacement = bot.accountIds.find((id) => id !== accountId)!
+        get().setActiveAccount(botId, replacement)
+      }
+      invalidateCueRoster(bot, [accountId])
+      patchBot(botId, (b) => ({ accountIds: b.accountIds.filter((id) => id !== accountId) }))
+    },
 
     setActiveAccount: (botId, accountId) => {
       set((state) => {
         const bot = state.bots.find((b) => b.id === botId && b.accountIds.includes(accountId))
         if (!bot) return state
-        if (bot.activeAccountId !== accountId) markSessionSelection(botId)
-        const account = state.accounts[accountId]
-        const resetProject = bot.platformId === 'hark' && bot.activeAccountId !== accountId
+        const changed = bot.activeAccountId !== accountId
+        if (changed) {
+          markSessionSelection(botId)
+          transcriptTransitions.delete(botId)
+        }
+        const turn = changed ? clearedSession(state, bot) : undefined
+        const accounts = turn?.accounts ?? state.accounts
+        const account = accounts[accountId]
+        const resetSession = changed && (bot.platformId === 'hark' || bot.platformId === 'cue')
         return {
-          ...(resetProject ? { messages: { ...state.messages, [botId]: [] } } : {}),
-          bots: state.bots.map((b) =>
-            b.id === botId && b.accountIds.includes(accountId) ? { ...b, activeAccountId: accountId, ...(b.platformId === 'hark' && b.activeAccountId !== accountId ? { activeSessionId: undefined } : {}) } : b
-          ),
-          accounts: account
-            ? { ...state.accounts, [accountId]: { ...account, unread: 0 } }
-            : state.accounts
+          ...turn,
+          ...(resetSession ? { messages: { ...state.messages, [botId]: [] } } : {}),
+          ...(changed ? { bots: state.bots.map((b) => b.id === botId
+            ? { ...b, activeAccountId: accountId, ...(resetSession ? { activeSessionId: undefined } : {}) }
+            : b) } : {}),
+          accounts: account?.unread ? { ...accounts, [accountId]: { ...account, unread: 0 } } : accounts
         }
       })
       const acc = get().accounts[accountId]
       if (acc && acc.status === 'offline') {
         void get().connectAccount(accountId)
+      } else if (acc?.platformId === 'cue') {
+        const bot = get().bots.find((b) => b.id === botId && b.activeAccountId === accountId)
+        if (bot) void hydrateCueHistoryForBot(accountId, bot)
       }
     },
 
@@ -2081,19 +2320,26 @@ export const useBotStore = create<BotHubState>()(
         | undefined
       const matchedAgent = grokAdapter?.listCachedAgents?.(botBefore.activeAccountId)?.find((a) => a.id === trimmed)
       const prevAgentId = botBefore.selectedAgentId
-      patchBot(botId, (b) => ({
+      const changed = prevAgentId !== trimmed
+      if (changed) transcriptTransitions.delete(botId)
+      const nextBot = {
+        ...botBefore,
         selectedAgentId: trimmed,
+        ...(prevAgentId && changed ? { activeSessionId: undefined } : {}),
         ...(matchedAgent?.avatarShape ? { avatarShape: matchedAgent.avatarShape } : {}),
         ...(matchedAgent?.avatarColor ? { avatarColor: matchedAgent.avatarColor } : {}),
-        ...(b.name === 'Grok Bot' && matchedAgent?.name ? { name: matchedAgent.name } : {})
-      }))
-      // Switching to a different agent clears the old agent's bubbles immediately
-      if (prevAgentId && prevAgentId !== trimmed) {
+        ...(botBefore.name === 'Grok Bot' && matchedAgent?.name ? { name: matchedAgent.name } : {})
+      }
+      if (!shallow(botBefore, nextBot)) {
         set((s) => ({
-          messages: {
-            ...s.messages,
-            [botId]: (s.messages[botId] ?? []).filter((m) => m.agentId === trimmed)
-          }
+          ...(changed ? clearedSession(s, botBefore) : {}),
+          bots: s.bots.map((b) => b.id === botId ? nextBot : b),
+          ...(prevAgentId && changed ? {
+            messages: {
+              ...s.messages,
+              [botId]: (s.messages[botId] ?? []).filter((m) => m.accountId === botBefore.activeAccountId && m.agentId === trimmed)
+            }
+          } : {})
         }))
       }
       try {
@@ -2111,8 +2357,7 @@ export const useBotStore = create<BotHubState>()(
               limit: 60
             })
             .then((res) => {
-              const latestBot = getBotForSessionSelection(bot, selection)
-              if (!latestBot || latestBot.activeSessionId !== bot.activeSessionId) return
+              if (!isCurrentSession(bot, selection)) return
               if (!res.ok || !res.data || typeof res.data !== 'object') return
               const root = res.data as Record<string, unknown>
               // Prefer pre-decoded, chronological `hydrated` array with presigned media URLs from main
@@ -2150,22 +2395,14 @@ export const useBotStore = create<BotHubState>()(
                         ? (s.messages[botId] ?? []).filter(
                             (m) => !m.agentId || m.agentId === trimmed
                           )
-                        : prevAgentId && prevAgentId !== trimmed
-                          ? hydrated
-                          : mergeHydratedMessages(s.messages[botId] ?? [], hydrated)
+                        : mergeHydratedMessages(s.messages[botId] ?? [], hydrated)
                   }
                 }))
               }
             })
             .catch(() => undefined)
         } else if (bot.platformId === 'cue' && bridge?.cue?.rpc) {
-          if (prevAgentId && prevAgentId !== trimmed) {
-            patchBot(botId, () => ({ activeSessionId: undefined }))
-          }
-          const updatedBot = get().bots.find((b) => b.id === botId)
-          if (updatedBot) {
-            void hydrateCueHistoryForBot(updatedBot.activeAccountId, updatedBot)
-          }
+          void hydrateCueHistoryForBot(bot.activeAccountId, bot)
         }
       } catch {
         /* ignore */
@@ -2180,64 +2417,25 @@ export const useBotStore = create<BotHubState>()(
 
     signOutAccount: async (accountId) => {
       const account = get().accounts[accountId]
-      if (!account || account.pending) return
-      patchAccount(accountId, { pending: true })
-      try {
-        const bridge = electronBridge()
-        if (account.platformId === 'meta-muse' && bridge?.muse?.signOut) {
-          await bridge.muse.signOut(accountId)
-        } else if (account.platformId === 'grok' && bridge?.grok?.clearAuth) {
-          await bridge.grok.clearAuth(accountId)
-          await bridge.webViews?.clearPartition?.(accountId)
-          const adapter = adapterRegistry.get('grok') as { clearAuth?: (id: string) => void }
-          adapter?.clearAuth?.(accountId)
-        } else if (account.platformId === 'dot' && bridge?.dot?.clearAuth) {
-          await bridge.dot.clearAuth(accountId)
-          await bridge.webViews?.clearPartition?.(accountId)
-        } else if (account.platformId === 'hark' && bridge?.hark?.clearAuth) {
-          await bridge.hark.clearAuth(accountId)
-          await bridge.webViews?.clearPartition?.(accountId)
-        } else if (account.platformId === 'hermes' && bridge?.hermes?.clearAuth) {
-          await bridge.hermes.clearAuth(accountId)
-        } else if (account.platformId === 'antigravity' && bridge?.antigravity?.clearAuth) {
-          await bridge.antigravity.clearAuth(accountId)
-          await bridge.webViews?.clearPartition?.(accountId)
-        } else if (account.platformId === 'cue' && bridge?.cue?.clearAuth) {
-          await bridge.cue.clearAuth(accountId)
-          await bridge.webViews?.clearPartition?.(accountId)
-        } else if (bridge?.webViews?.clearPartition) {
-          await bridge.webViews.clearPartition(accountId)
-        }
-        const adapter = adapterRegistry.get(account.platformId)
-        try {
-          await adapter?.disconnect(accountId)
-        } catch {
-          /* ignore */
-        }
-        patchAccount(accountId, { status: 'offline', statusDetail: 'Signed out', unread: 0 })
-      } catch (error) {
-        patchAccount(accountId, { statusDetail: errorMessage(error) })
-      } finally {
-        patchAccount(accountId, { pending: false })
-      }
+      if (!account) return
+      invalidateAccount(accountId)
+      await cleanupAccount(account)
     },
 
     removeAndClearAccount: async (botId, accountId) => {
-      await get().signOutAccount(accountId)
       get().removeAccountFromBot(botId, accountId)
-      set((state) => {
-        const { [accountId]: _removed, ...rest } = state.accounts
-        return { accounts: rest }
-      })
+      if (get().bots.some((b) => b.accountIds.includes(accountId))) return
+      await get().removeOrphanedAccount(accountId)
     },
 
     removeOrphanedAccount: async (accountId) => {
-      if (!get().accounts[accountId]) return
-      await get().signOutAccount(accountId).catch(() => undefined)
-      set((state) => {
-        const { [accountId]: _removed, ...rest } = state.accounts
-        return { accounts: rest }
-      })
+      const account = get().accounts[accountId]
+      if (!account || get().bots.some((b) => b.accountIds.includes(accountId))) return
+      invalidateAccount(accountId)
+      const cleanup = cleanupAccount(account)
+      set((state) => ({ accounts: omitKey(state.accounts, accountId), activity: omitKey(state.activity, accountId) }))
+      flushWorkspacePersistence()
+      await cleanup
     },
 
     setAccountStatus: (accountId, status, detail) => patchAccount(accountId, { status, statusDetail: detail }),
@@ -2245,10 +2443,17 @@ export const useBotStore = create<BotHubState>()(
     connectAccount: async (accountId) => {
       const account = get().accounts[accountId]
       const adapter = account && adapterRegistry.get(account.platformId)
-      if (!account || !adapter || account.pending) return
+      if (!account || !adapter || account.pending || credentialCleanup ||
+          accountCleanup.has(accountId) || accountConnections.has(accountId)) return
+      const isCurrent = watchAccount(accountId)
+      const connection: { transport?: Promise<ConnectionStatus> } = {}
+      accountConnections.set(accountId, connection)
       patchAccount(accountId, { pending: true, statusDetail: account.platformId === 'hark' ? '正在验证 Hark 会话…' : account.statusDetail })
       try {
-        const status = await adapter.connect(accountId)
+        if (!isCurrent()) return
+        connection.transport = adapter.connect(accountId)
+        const status = await connection.transport
+        if (!isCurrent()) return
         const isLive = status === 'online' || status === 'busy' || status === 'attention'
         patchAccount(accountId, {
           status,
@@ -2259,7 +2464,7 @@ export const useBotStore = create<BotHubState>()(
           void bridge?.hark
             ?.authStatus?.(accountId)
             .then((st) => {
-              if (st.handle || st.displayName) {
+              if (isCurrent() && (st.handle || st.displayName)) {
                 patchAccount(accountId, {
                   handle: st.handle || get().accounts[accountId]?.handle || account.handle,
                   displayName: st.displayName || get().accounts[accountId]?.displayName || account.displayName
@@ -2268,14 +2473,18 @@ export const useBotStore = create<BotHubState>()(
             })
             .catch(() => undefined)
           const bot = get().bots.find((b) => b.activeAccountId === accountId)
-          if (bot) void loadHarkSession(bot, bot.activeSessionId, sessionSelections.get(bot.id))
-            .catch((error) => patchAccount(accountId, { statusDetail: errorMessage(error) }))
+          const selection = bot && sessionSelections.get(bot.id)
+          if (bot && (!selection || pendingHarkSelections.get(bot.id) !== selection)) {
+            void loadHarkSession(bot, bot.activeSessionId, selection).catch((error) => {
+              if (isCurrent()) patchAccount(accountId, { statusDetail: errorMessage(error) })
+            })
+          }
         } else if (account.platformId === 'antigravity' && isLive) {
           const bridge = electronBridge()
           void bridge?.antigravity
             ?.authStatus?.(accountId)
             .then((st) => {
-              if (st.handle || st.displayName) {
+              if (isCurrent() && (st.handle || st.displayName)) {
                 patchAccount(accountId, {
                   handle: st.handle || get().accounts[accountId]?.handle || account.handle,
                   displayName: st.displayName || get().accounts[accountId]?.displayName || account.displayName
@@ -2292,7 +2501,7 @@ export const useBotStore = create<BotHubState>()(
             void bridge.dot
               .authStatus(accountId)
               .then((st) => {
-                if (st.handle || st.displayName) {
+                if (isCurrent() && (st.handle || st.displayName)) {
                   patchAccount(accountId, {
                     handle: st.handle || account.handle,
                     displayName: st.displayName || account.displayName
@@ -2303,7 +2512,7 @@ export const useBotStore = create<BotHubState>()(
             void bridge.dot
               .rpc({ accountId, op: 'listRoomMessages', limit: 32 })
               .then((res) => {
-                if (!res.ok || !res.data || typeof res.data !== 'object') return
+                if (!isCurrent() || !res.ok || !res.data || typeof res.data !== 'object') return
                 const d = res.data as {
                   roomId?: string
                   dotId?: string
@@ -2348,7 +2557,7 @@ export const useBotStore = create<BotHubState>()(
           void bridge?.grok
             ?.authStatus(accountId)
             .then((st) => {
-              if (st.accountSlot) {
+              if (isCurrent() && st.accountSlot) {
                 const latestAcc = get().accounts[accountId]
                 patchAccount(accountId, {
                   handle: st.accountSlot,
@@ -2362,9 +2571,12 @@ export const useBotStore = create<BotHubState>()(
           await get().syncCueAccountBots(accountId)
         }
       } catch (error) {
-        patchAccount(accountId, { status: 'error', statusDetail: errorMessage(error) })
+        if (isCurrent()) patchAccount(accountId, { status: 'error', statusDetail: errorMessage(error) })
       } finally {
-        patchAccount(accountId, { pending: false })
+        if (accountConnections.get(accountId) === connection) {
+          accountConnections.delete(accountId)
+          if (!accountCleanup.has(accountId)) patchAccount(accountId, { pending: false })
+        }
       }
     },
 
@@ -2459,6 +2671,8 @@ export const useBotStore = create<BotHubState>()(
     },
 
     syncGrokAccountBots: async (accountId, opts) => {
+      if (accountCleanup.has(accountId) || credentialCleanup) return 0
+      const isCurrent = watchAccount(accountId)
       const adapter = adapterRegistry.get('grok') as
         | {
             connect?: (id: string) => Promise<ConnectionStatus>
@@ -2487,6 +2701,7 @@ export const useBotStore = create<BotHubState>()(
       if (!get().accounts[accountId]) {
         const bridge = electronBridge()
         const authSt = await bridge?.grok?.authStatus?.(accountId).catch(() => null)
+        if (!isCurrent()) return 0
         const slot = authSt?.accountSlot || ''
         set((s) => ({
           accounts: {
@@ -2501,6 +2716,7 @@ export const useBotStore = create<BotHubState>()(
           }
         }))
         await adapter.connect?.(accountId).catch(() => undefined)
+        if (!isCurrent()) return 0
       }
 
       if (opts?.includeDismissed) {
@@ -2520,6 +2736,7 @@ export const useBotStore = create<BotHubState>()(
         agents.length > 0
           ? null
           : await electronBridge()?.grok?.authStatus?.(accountId).catch(() => null)
+      if (!isCurrent()) return 0
       const currentAcc = get().accounts[accountId]
       if (currentAcc && (agents.length > 0 || authSt?.signedIn)) {
         const patch: Partial<BotAccount> = {}
@@ -2810,7 +3027,7 @@ export const useBotStore = create<BotHubState>()(
     openCueLogin: async (accountId, openInBrowser = false) => {
       const account = get().accounts[accountId]
       const adapter = account && adapterRegistry.get(account.platformId)
-      if (!account || !adapter || account.pending) return
+      if (!account || !adapter || account.pending || credentialCleanup || accountCleanup.has(accountId)) return
       if (account.platformId !== 'cue') {
         await get().connectAccount(accountId)
         return
@@ -2819,6 +3036,7 @@ export const useBotStore = create<BotHubState>()(
         pending: true,
         statusDetail: openInBrowser ? '请在浏览器完成 Cue 登录授权…' : '请在弹出的窗口完成 Cue 登录…'
       })
+      const isCurrent = watchAccount(accountId)
       try {
         const bridge = electronBridge()
         if (bridge?.cue?.openLogin) {
@@ -2826,9 +3044,10 @@ export const useBotStore = create<BotHubState>()(
         } else if (adapter.openLogin) {
           await adapter.openLogin(accountId)
         }
+        if (!isCurrent()) return
         patchAccount(accountId, { pending: false })
         const authSt = await bridge?.cue?.authStatus?.(accountId).catch(() => null)
-        if (authSt?.signedIn) {
+        if (isCurrent() && authSt?.signedIn) {
           patchAccount(accountId, {
             pending: false,
             status: 'online',
@@ -2838,9 +3057,9 @@ export const useBotStore = create<BotHubState>()(
           await get().syncCueAccountBots(accountId)
         }
       } catch (error) {
-        patchAccount(accountId, { status: 'error', statusDetail: errorMessage(error), pending: false })
+        if (isCurrent()) patchAccount(accountId, { status: 'error', statusDetail: errorMessage(error), pending: false })
       } finally {
-        if (get().accounts[accountId]?.pending) {
+        if (isCurrent() && get().accounts[accountId]?.pending) {
           patchAccount(accountId, { pending: false })
         }
       }
@@ -2851,7 +3070,19 @@ export const useBotStore = create<BotHubState>()(
       if (!bridge?.cue?.importCredentials) {
         throw new Error('Cue IPC unavailable')
       }
-      const st = await bridge.cue.importCredentials({ accountId, credential })
+      if (credentialCleanup || accountCleanup.has(accountId)) throw new Error('Cue credentials are being cleared')
+      const isCurrent = watchAccount(accountId)
+      const cue = bridge.cue
+      const previous = cueCredentialImports.get(accountId)
+      const importing = (previous ?? Promise.resolve()).catch(() => undefined).then(() => {
+        if (!isCurrent()) throw new Error('Cue account changed while importing credentials')
+        return cue.importCredentials({ accountId, credential })
+      })
+      cueCredentialImports.set(accountId, importing)
+      const st = await importing.finally(() => {
+        if (cueCredentialImports.get(accountId) === importing) cueCredentialImports.delete(accountId)
+      })
+      if (!isCurrent()) return
       const handle = st.handle || st.accountSlot || ''
       set((s) => ({
         accounts: {
@@ -2873,27 +3104,29 @@ export const useBotStore = create<BotHubState>()(
     },
 
     syncCueAccountBots: async (accountId, opts) => {
+      const owner = get().accounts[accountId]
+      const hadOwner = Boolean(owner)
+      if (
+        (owner && owner.platformId !== 'cue') ||
+        (!owner && accountGenerations.has(accountId)) ||
+        credentialCleanup ||
+        accountCleanup.has(accountId)
+      ) {
+        return 0
+      }
+      const isCurrent = watchAccount(accountId)
+      const rosterGeneration = cueRosterGenerations.get(accountId)
+      const isRosterCurrent = () => isCurrent() && cueRosterGenerations.get(accountId) === rosterGeneration
+      const rosterSelections = new Map(get().bots.filter((b) => b.accountIds.includes(accountId)).map((b) => [
+        b.id, { bot: b, selection: sessionSelections.get(b.id) }
+      ]))
       const bridge = electronBridge()
       const authSt = await bridge?.cue?.authStatus?.(accountId).catch(() => null)
       const sessionSt = !authSt ? await bridge?.cue?.getSession?.(accountId).catch(() => null) : null
       const handle = (authSt?.handle || authSt?.accountSlot || sessionSt?.handle || sessionSt?.accountSlot || '').trim()
       const signedIn = Boolean(authSt?.signedIn ?? sessionSt?.signedIn ?? true)
 
-      set((s) => {
-        const prev = s.accounts[accountId]
-        return {
-          accounts: {
-            ...s.accounts,
-            [accountId]: {
-              id: accountId,
-              platformId: 'cue',
-              displayName: prev?.label || authSt?.displayName || handle || prev?.displayName || 'Cue',
-              handle: handle || prev?.handle || '',
-              status: signedIn ? 'online' : (prev?.status ?? 'offline')
-            }
-          }
-        }
-      })
+      if (!isRosterCurrent()) return 0
 
       let agents: Array<{ id: string; name: string; description?: string; sessionId?: string }> = []
       if (bridge?.cue?.rpc) {
@@ -2926,6 +3159,15 @@ export const useBotStore = create<BotHubState>()(
       }
 
       const state = get()
+      const currentAccount = state.accounts[accountId]
+      if (
+        !isRosterCurrent() ||
+        (currentAccount && currentAccount.platformId !== 'cue') ||
+        (hadOwner && !currentAccount) ||
+        accountCleanup.has(accountId)
+      ) {
+        return 0
+      }
       let groups = state.groups
       const existingForAccount = state.bots.filter(
         (b) => b.platformId === 'cue' && b.accountIds.includes(accountId)
@@ -2941,6 +3183,7 @@ export const useBotStore = create<BotHubState>()(
 
       let nextBots = [...state.bots]
       const nextMessages = { ...state.messages }
+      let nextState = state
       const claimedIds = new Set<string>()
       const incomingAgentIds = new Set(agents.map((a) => a.id))
       const isPlaceholderAgentId = (id: string | undefined): boolean =>
@@ -2994,11 +3237,25 @@ export const useBotStore = create<BotHubState>()(
           const preferredName = isPlaceholderUpgrade
             ? (handle ? `Cue · ${cleanAgent} (${handle})` : `Cue · ${cleanAgent}`)
             : (handle ? `Cue · ${handle}` : prev.name)
+          const rosterSelection = rosterSelections.get(prev.id)
+          const ownsSelection = rosterSelection && isCurrentSession(rosterSelection.bot, rosterSelection.selection)
+          const selectedAgentId = ownsSelection && prev.activeAccountId === accountId ? agent.id : prev.selectedAgentId
+          const activeSessionId = ownsSelection && prev.activeAccountId === accountId
+            ? agent.sessionId ?? prev.activeSessionId : prev.activeSessionId
+          if (prev.selectedAgentId !== selectedAgentId || prev.activeSessionId !== activeSessionId) {
+            markSessionSelection(prev.id)
+            transcriptTransitions.delete(prev.id)
+            nextState = { ...nextState, ...clearedSession(nextState, prev) }
+            const changedSession = prev.activeSessionId && prev.activeSessionId !== activeSessionId
+            nextMessages[prev.id] = changedSession ? [] : (nextMessages[prev.id] ?? []).filter(
+              (m) => m.accountId === accountId && (!m.agentId || m.agentId === selectedAgentId)
+            )
+          }
           nextBots[existingIdx] = {
             ...prev,
             name: needsRename ? uniqueBotName(others, preferredName) : prev.name,
-            selectedAgentId: agent.id,
-            activeSessionId: agent.sessionId ?? prev.activeSessionId,
+            selectedAgentId,
+            activeSessionId,
             description: agent.description ?? prev.description
           }
         } else {
@@ -3041,6 +3298,21 @@ export const useBotStore = create<BotHubState>()(
         return {
           groups,
           bots: nextBots,
+          typing: nextState.typing,
+          activity: nextState.activity,
+          replyingTo: nextState.replyingTo,
+          chatActionErrors: nextState.chatActionErrors,
+          accounts: {
+            ...nextState.accounts,
+            [accountId]: {
+              ...currentAccount,
+              id: accountId,
+              platformId: 'cue',
+              displayName: currentAccount?.label || authSt?.displayName || handle || currentAccount?.displayName || 'Cue',
+              handle: handle || currentAccount?.handle || '',
+              status: signedIn ? 'online' : (currentAccount?.status ?? 'offline')
+            }
+          },
           messages: nextMessages,
           selectedBotId: nextSelectedId,
           webSessionOpen: switchedSelection ? Boolean(nextSelectedId && rememberedMap[nextSelectedId]) : s.webSessionOpen,
@@ -3165,31 +3437,41 @@ export const useBotStore = create<BotHubState>()(
       }
     },
 
-    clearAllCredentials: async () => {
+    clearAllCredentials: () => {
+      if (credentialCleanup) return credentialCleanup
       const bridge = electronBridge()
       const allAccounts = Object.values(get().accounts)
-      for (const acc of allAccounts) {
-        await get().signOutAccount(acc.id).catch(() => undefined)
-      }
-      await bridge?.dot?.clearAuth?.('*').catch(() => undefined)
-      await bridge?.grok?.clearAuth?.('*').catch(() => undefined)
-      await bridge?.cue?.clearAuth?.('*').catch(() => undefined)
-      await bridge?.hermes?.clearAuth?.('*').catch(() => undefined)
-      await bridge?.muse?.clearProxyPool?.().catch(() => undefined)
-      await bridge?.vault?.clearAll?.().catch(() => undefined)
-      try {
-        if (typeof window !== 'undefined') {
-          window.localStorage.removeItem('bothub.dot.memorySnapshot')
+      workspaceGeneration = Symbol()
+      credentialCleanup = Promise.resolve().then(async () => {
+        await Promise.all(allAccounts.map((acc) => get().signOutAccount(acc.id)))
+        await Promise.allSettled(cueCredentialImports.values())
+        await bridge?.dot?.clearAuth?.('*').catch(() => undefined)
+        await bridge?.grok?.clearAuth?.('*').catch(() => undefined)
+        await bridge?.cue?.clearAuth?.('*').catch(() => undefined)
+        await bridge?.hermes?.clearAuth?.('*').catch(() => undefined)
+        await bridge?.muse?.clearProxyPool?.().catch(() => undefined)
+        await bridge?.vault?.clearAll?.().catch(() => undefined)
+        try {
+          if (typeof window !== 'undefined') window.localStorage.removeItem('bothub.dot.memorySnapshot')
+        } catch {
+          /* ignore */
         }
-      } catch {
-        /* ignore */
-      }
+      }).finally(() => {
+        credentialCleanup = undefined
+        flushWorkspacePersistence()
+      })
+      return credentialCleanup
     },
 
     resetWorkspace: async () => {
       await get().clearAllCredentials()
       const fresh = createSeed()
       sessionSelections.clear()
+      pendingHarkSelections.clear()
+      transcriptTransitions.clear()
+      accountGenerations.clear()
+      cueRosterGenerations.clear()
+      workspaceGeneration = Symbol()
       set({
         groups: fresh.groups,
         bots: fresh.bots,
@@ -3198,10 +3480,17 @@ export const useBotStore = create<BotHubState>()(
         typing: {},
         activity: {},
         hermesSessionErrors: {},
+        chatActionErrors: {},
+        replyingTo: {},
+        dismissedGrokAgents: {},
+        webSessionByBot: {},
+        webSessionOpen: false,
+        webSessionTargetUrl: null,
         selectedBotId: null,
         collapsedGroups: {},
         trimmedBots: {}
       })
+      flushWorkspacePersistence()
     }
   }
   },
@@ -3216,20 +3505,10 @@ export const useBotStore = create<BotHubState>()(
         webSessionOpen: restored.selectedBotId ? restored.webSessionByBot[restored.selectedBotId] === true : false
       }
     },
-    partialize: (state) => ({
-      groups: state.groups,
-      bots: state.bots,
-      accounts: state.accounts,
-      messages: toPersistedMessages(state.messages),
-      selectedBotId: state.selectedBotId,
-      collapsedGroups: state.collapsedGroups,
-      dismissedGrokAgents: state.dismissedGrokAgents,
-      trimmedBots: state.trimmedBots,
-      webSessionByBot: state.webSessionByBot,
-      infoPanelOpen: state.infoPanelOpen,
-      sidebarCollapsed: state.sidebarCollapsed,
-      sidebarWidth: state.sidebarWidth
-    })
+    partialize: partializeWorkspace,
+    onRehydrateStorage: () => (state) => {
+      if (state) lastWorkspace = partializeWorkspace(state)
+    }
   }
 )
 )

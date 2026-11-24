@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { Check, ChevronUp, Download, ExternalLink, ListChecks, Loader2, Maximize2, Minimize2, Minus, X } from 'lucide-react'
+import { harkRpc } from '@adapters/hark/harkRequests'
 import type { HarkBrowserPreview } from '@shared/harkBrowserPreview'
+import { createId } from '@shared/id'
 import { getBridge } from '@/lib/bridge'
 import { cn } from '@/lib/cn'
 import { useBotStore } from '@/store/botStore'
@@ -42,6 +44,7 @@ export function HarkBrowserCard({ accountId, sessionId, attention = false }: { a
   const [viewing, setViewing] = useState<Shot | null>(null)
   const streamRevision = useRef(0)
   const imageRef = useRef('')
+  const snapshotRequest = useRef<AbortController | null>(null)
   const hark = getBridge()?.hark
   const openWeb = useBotStore((s) => s.openWebSessionAt)
 
@@ -49,6 +52,8 @@ export function HarkBrowserCard({ accountId, sessionId, attention = false }: { a
     if (event.type !== 'projectHistory' || event.accountId !== accountId || event.conversationId !== sessionId) return
     if (event.browserPreview !== undefined) {
       streamRevision.current++
+      snapshotRequest.current?.abort()
+      setError('')
       setPanel(event.browserPreview)
     }
     const text = event.live?.busy ? event.live.text.trim() : ''
@@ -57,12 +62,16 @@ export function HarkBrowserCard({ accountId, sessionId, attention = false }: { a
 
   useEffect(() => {
     if (!hark) return
-    let current = true
+    const request = new AbortController()
+    snapshotRequest.current = request
     const before = streamRevision.current
-    void hark.rpc({ accountId, op: 'browserPreview', conversationId: sessionId }).then((res) => {
-      if (current && before === streamRevision.current && res.ok) setPanel(res.data as HarkBrowserPreview | null)
-    })
-    return () => { current = false }
+    void harkRpc(hark, { accountId, op: 'browserPreview', conversationId: sessionId, requestId: createId('hark_preview') }, request.signal).then((res) => {
+      if (!request.signal.aborted && before === streamRevision.current && res.ok) setPanel(res.data as HarkBrowserPreview | null)
+    }).catch(() => undefined)
+    return () => {
+      request.abort()
+      if (snapshotRequest.current === request) snapshotRequest.current = null
+    }
   }, [hark, accountId, sessionId, revision])
 
   const waiting = attention || /^waiting/i.test(panel?.status ?? '')

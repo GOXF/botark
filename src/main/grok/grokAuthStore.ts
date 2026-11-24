@@ -1,21 +1,22 @@
+import type { SandTokens } from './grokSandAuth'
+
 export interface GrokMainAuth {
-  accountId: string
-  accessToken: string
-  accountSlot?: string
-  teamId?: string
+  tokens: SandTokens
   machineId?: string
 }
 
+// The credential store lock in grokSandAuth owns both memory and disk updates.
 const auths = new Map<string, GrokMainAuth>()
 
 export function getGrokMainAuth(accountId: string): GrokMainAuth | undefined {
   return auths.get(accountId)
 }
 
-export function setGrokMainAuth(auth: GrokMainAuth): void {
-  auths.set(auth.accountId, auth)
+export function setGrokMainAuth(accountId: string, auth: GrokMainAuth): void {
+  auths.set(accountId, auth)
 }
 
 export function clearGrokMainAuth(accountId: string): void {
-  auths.delete(accountId)
+  if (accountId === '*') auths.clear()
+  else auths.delete(accountId)
 }

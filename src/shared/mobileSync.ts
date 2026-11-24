@@ -74,6 +74,12 @@ export interface MobileWorkspaceSnapshot {
   approvals: Record<string, HermesApprovalView[]>
 }
 
+// Optional metadata used only on the existing desktop snapshot IPC channel.
+export interface MobileWorkspaceSnapshotUpdate extends MobileWorkspaceSnapshot {
+  snapshotRequestId?: string
+  publishSnapshot?: boolean
+}
+
 export interface DirectHermesCredential {
   accountId: string
   botId?: string
@@ -104,6 +110,7 @@ export interface MobileSyncStateView {
   pairExpiresAtMs: number | null
   includeDirectCredentials: boolean
   devices: PairedMobileDeviceView[]
+  snapshotRequestId?: string
   error?: string
 }
 

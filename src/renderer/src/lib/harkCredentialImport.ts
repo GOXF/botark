@@ -10,12 +10,8 @@ type HarkImportBridge = Pick<BotHubBridge['hark'], 'importCredentials'>
  * The single paste-credentials import path for Hark, shared by
  * Settings → 账号管理 and the 新建 Bot dialog.
  *
- * Writes the cookies into the account's `persist:bothub-account-*` partition
- * and verifies them via `/api/auth/get-session`. On success the main process
- * closes any open login window itself and broadcasts `login signedIn`.
- *
- * Deliberately never calls `cancelLogin`: that clears the partition's storage
- * if session probing fails transiently, and is unnecessary once imported.
+ * The main process stages and verifies cookies in the account partition,
+ * restores prior cookies if verification fails, and settles login on success.
  */
 export async function importHarkCredentialsForAccount(
   bridge: HarkImportBridge | undefined,

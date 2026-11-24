@@ -15,21 +15,29 @@
  * - `ping` / `computer_actions` / `access_denied`
  */
 
+import { setTimeout as delay } from 'node:timers/promises'
 import type { GrokMainEvent, MuseMediaPartView, MuseToolCallView } from '@shared/ipc'
+import type { GrokWatchTarget } from '../../adapters/grokbot/grokRequests'
 import type { GrokConnectClient } from './connectClient'
 import {
-  parseGrokTranscriptEntry,
+  asObj, str,
   type GrokPendingApprovalItem,
   type ParsedGrokTranscriptEntry
 } from './grokTranscriptDecoder'
+import {
+  compareGrokEntries, GrokEntryRevisions, grokRows, grokSeq, grokSessionKey,
+  hydrateGrokEntry, matchesGrokScope, readGrokTranscriptGap, transcriptEntries
+} from './grokTranscriptWatch'
 
 interface AgentCursorState {
   agentId: string
   generation: number
   afterUpdatedSeq: string
   sessionId: string
-  /** Set when `cursor_too_old` fires so missed assistant messages in the gap are emitted during backfill. */
+  seeded: boolean
+  revisions: GrokEntryRevisions
   backfillMinSeq?: string
+  lastBackfilled?: string
 }
 
 interface PresignedCacheEntry {
@@ -42,9 +50,11 @@ export interface GrokAccountWatchHandle {
   accountId: string
   stop: () => void
   rebindNetwork: () => void
+  watchesSession: (agentId: string, sessionId: string) => boolean
   updateTargets: (
     agentIds: string[],
-    conversationMap?: Record<string, string | string[]>
+    conversationMap?: Record<string, string | string[]>,
+    targets?: GrokWatchTarget[]
   ) => void
   listApprovals: (agentId?: string) => GrokPendingApprovalItem[]
   removeApproval: (idOrPrefix: string) => void
@@ -52,34 +62,13 @@ export interface GrokAccountWatchHandle {
     client: GrokConnectClient,
     agentId: string,
     sessionId: string,
-    media: MuseMediaPartView[] | undefined
+    media: MuseMediaPartView[] | undefined,
+    signal?: AbortSignal
   ) => Promise<MuseMediaPartView[] | undefined>
 }
 
-function asObj(v: unknown): Record<string, unknown> | null {
-  return v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : null
-}
-
-function str(v: unknown): string {
-  return typeof v === 'string' ? v : v == null ? '' : String(v)
-}
-
 function maxSeqStr(a: string, b: string): string {
-  try {
-    const ba = BigInt(a || '0')
-    const bb = BigInt(b || '0')
-    return ba >= bb ? ba.toString() : bb.toString()
-  } catch {
-    return b || a || '0'
-  }
-}
-
-function seqGreaterThan(a: string, b: string): boolean {
-  try {
-    return BigInt(a || '0') > BigInt(b || '0')
-  } catch {
-    return a !== b && Boolean(a)
-  }
+  return grokSeq(a) >= grokSeq(b) ? a : b
 }
 
 const ACTIVITY_LABELS: Record<string, { text: string; emoji: string }> = {
@@ -118,10 +107,12 @@ class AccountWatchController implements GrokAccountWatchHandle {
   private readonly createClient: () => Promise<GrokConnectClient>
   private readonly emit: (event: GrokMainEvent) => void
   private readonly cursors = new Map<string, AgentCursorState>()
-  private readonly conversationsByAgent = new Map<string, string[]>()
+  private readonly conversations = new Map<string, { agentId: string; sessionId: string }>()
+  private readonly conversationsByScope = new Map<string, Set<string>>()
+  private readonly boundAgents = new Set<string>()
   private readonly approvals = new Map<string, GrokPendingApprovalItem>()
   private readonly presignedReads = new Map<string, PresignedCacheEntry>()
-  private readonly recentToolsByAgent = new Map<string, Map<string, MuseToolCallView>>()
+  private readonly recentTools = new Map<string, Map<string, MuseToolCallView>>()
 
   private stopped = false
   private currentAbort: AbortController | null = null
@@ -145,8 +136,8 @@ class AccountWatchController implements GrokAccountWatchHandle {
     resolvedMedia: MuseMediaPartView[] | undefined,
     toolsArr: MuseToolCallView[] | undefined
   ): void {
-    const convIds = this.conversationsByAgent.get(agentId)
-    const targets = convIds && convIds.length > 0 ? convIds : [undefined]
+    const bound = this.conversationsByScope.get(grokSessionKey(agentId, sessionId))
+    const targets = bound ?? (this.boundAgents.has(agentId) ? [] : [undefined])
     for (const conversationId of targets) {
       this.emit({
         type: 'stream',
@@ -165,44 +156,6 @@ class AccountWatchController implements GrokAccountWatchHandle {
     }
   }
 
-  private async hydrateOmittedEntry(
-    client: GrokConnectClient,
-    agentId: string,
-    sessionId: string,
-    stub: ParsedGrokTranscriptEntry
-  ): Promise<ParsedGrokTranscriptEntry> {
-    try {
-      let beforeSeq: string | undefined
-      try {
-        const s = BigInt(stub.seq || '0')
-        if (s > 0n) beforeSeq = (s + 1n).toString()
-      } catch {
-        beforeSeq = undefined
-      }
-      const page = (await client.listTranscriptEntries({
-        agentId,
-        sessionId: sessionId || undefined,
-        beforeSeq,
-        limit: 5
-      })) as Record<string, unknown>
-      const entries = Array.isArray(page['entries'])
-        ? (page['entries'] as Array<Record<string, unknown>>)
-        : []
-      const match = entries.find((raw) => {
-        const eid = str(raw['entry_id'] ?? raw['entryId'])
-        const seq = str(raw['seq'])
-        return (eid && eid === stub.entryId) || (seq && seq === stub.seq)
-      })
-      if (match && !(match['body_omitted'] ?? match['bodyOmitted'])) {
-        const hydrated = parseGrokTranscriptEntry(match, agentId, sessionId)
-        if (hydrated) return hydrated
-      }
-    } catch {
-      /* fallback to stub if hydration RPC fails */
-    }
-    return stub
-  }
-
   rebindNetwork(): void {
     this.presignedReads.clear()
     if (!this.stopped) {
@@ -210,36 +163,69 @@ class AccountWatchController implements GrokAccountWatchHandle {
     }
   }
 
+  watchesSession(agentId: string, sessionId: string): boolean {
+    return this.cursors.has(grokSessionKey(agentId, sessionId))
+  }
+
   updateTargets(
     agentIds: string[],
-    conversationMap?: Record<string, string | string[]>
+    conversationMap?: Record<string, string | string[]>,
+    targets: GrokWatchTarget[] = []
   ): void {
+    const size = this.cursors.size
     if (conversationMap) {
-      this.conversationsByAgent.clear()
+      const previous = new Map(this.conversations)
+      this.conversations.clear()
       for (const [agentId, conv] of Object.entries(conversationMap)) {
         if (!agentId) continue
-        const list = (Array.isArray(conv) ? conv : [conv]).filter(Boolean)
-        if (list.length > 0) {
-          this.conversationsByAgent.set(agentId, [...new Set(list)])
+        for (const conversationId of Array.isArray(conv) ? conv : [conv]) {
+          if (!conversationId) continue
+          const old = previous.get(conversationId)
+          const sessionId = old?.agentId === agentId ? old.sessionId : ''
+          this.cursor(agentId, sessionId)
+          this.conversations.set(conversationId, { agentId, sessionId })
         }
       }
     }
-    let addedNew = false
-    for (const id of agentIds) {
-      if (!id) continue
-      if (!this.cursors.has(id)) {
-        this.cursors.set(id, {
-          agentId: id,
-          generation: 0,
-          afterUpdatedSeq: '0',
-          sessionId: ''
-        })
-        addedNew = true
+    for (const id of agentIds) if (id) this.cursor(id, '')
+    for (const target of targets) {
+      const { agentId, sessionId, conversationId } = target
+      if (!agentId || typeof sessionId !== 'string') continue
+      this.cursor(agentId, sessionId)
+      if (conversationId) this.conversations.set(conversationId, target)
+    }
+    if (conversationMap || targets.some((target) => target.conversationId)) {
+      this.conversationsByScope.clear()
+      this.boundAgents.clear()
+      for (const [conversationId, target] of this.conversations) {
+        const key = grokSessionKey(target.agentId, target.sessionId)
+        let ids = this.conversationsByScope.get(key)
+        if (!ids) this.conversationsByScope.set(key, (ids = new Set()))
+        ids.add(conversationId)
+        this.boundAgents.add(target.agentId)
       }
     }
-    if (!this.stopped && (!this.loopPromise || addedNew)) {
+    if (!this.stopped && (!this.loopPromise || this.cursors.size !== size)) {
       this.triggerReconnect()
     }
+  }
+
+  private cursor(agentId: string, sessionId: string): AgentCursorState {
+    const key = grokSessionKey(agentId, sessionId)
+    let cursor = this.cursors.get(key)
+    if (!cursor) {
+      cursor = { agentId, sessionId, generation: 0, afterUpdatedSeq: '0', seeded: false, revisions: new GrokEntryRevisions() }
+      this.cursors.set(key, cursor)
+    }
+    return cursor
+  }
+
+  restartIdentity(): AccountWatchController {
+    this.stop()
+    const next = new AccountWatchController({ accountId: this.accountId, createClient: this.createClient, emit: this.emit })
+    next.broadcastApprovals()
+    next.triggerReconnect()
+    return next
   }
 
   listApprovals(agentId?: string): GrokPendingApprovalItem[] {
@@ -278,14 +264,17 @@ class AccountWatchController implements GrokAccountWatchHandle {
     client: GrokConnectClient,
     agentId: string,
     sessionId: string,
-    media: MuseMediaPartView[] | undefined
+    media: MuseMediaPartView[] | undefined,
+    signal?: AbortSignal
   ): Promise<MuseMediaPartView[] | undefined> {
-    if (!media || media.length === 0) return media
+    if (this.stopped || !media?.length) return media
+    signal?.throwIfAborted()
     const now = Date.now()
+    const keyFor = (path: string) => JSON.stringify([agentId, sessionId, path])
     const toResolve: string[] = []
     for (const part of media) {
       if (!part.path || /^https?:\/\/|^data:/i.test(part.path)) continue
-      const cached = this.presignedReads.get(`${agentId}:${part.path}`)
+      const cached = this.presignedReads.get(keyFor(part.path))
       if (!cached || cached.expiresAtMs - now < 30_000) {
         toResolve.push(part.path)
       }
@@ -297,7 +286,9 @@ class AccountWatchController implements GrokAccountWatchHandle {
           agentId,
           sessionId: sessionId || undefined,
           paths: [...new Set(toResolve)]
-        })
+        }, signal)
+        if (this.stopped) return media
+        signal?.throwIfAborted()
         const reads = Array.isArray(res['reads']) ? (res['reads'] as unknown[]) : []
         for (const r of reads) {
           const ro = asObj(r)
@@ -307,7 +298,7 @@ class AccountWatchController implements GrokAccountWatchHandle {
           const exp = Number(ro['expiresAtMs'] ?? ro['expires_at_ms'] ?? now + 15 * 60_000)
           const ct = str(ro['contentType'] ?? ro['content_type']) || undefined
           if (p && url) {
-            this.presignedReads.set(`${agentId}:${p}`, {
+            this.presignedReads.set(keyFor(p), {
               url,
               expiresAtMs: exp > 0 ? exp : now + 15 * 60_000,
               contentType: ct
@@ -315,14 +306,14 @@ class AccountWatchController implements GrokAccountWatchHandle {
           }
         }
       } catch {
-        /* keep raw paths if presign fails */
+        signal?.throwIfAborted()
       }
     }
 
     return media.map((part) => {
       if (!part.path || /^https?:\/\/|^data:/i.test(part.path)) return part
-      const cached = this.presignedReads.get(`${agentId}:${part.path}`)
-      if (!cached) return part
+      const cached = this.presignedReads.get(keyFor(part.path))
+      if (!cached || cached.expiresAtMs <= now) return part
       const mime = part.mimeType || cached.contentType
       return {
         ...part,
@@ -353,86 +344,50 @@ class AccountWatchController implements GrokAccountWatchHandle {
     }
   }
 
-  private async seedInitialWatermarks(client: GrokConnectClient): Promise<void> {
-    const unseeded = [...this.cursors.values()].filter((c) => c.afterUpdatedSeq === '0')
-    if (unseeded.length === 0) return
-    await Promise.all(
-      unseeded.slice(0, 8).map(async (cursor) => {
+  private async seedWatermarks(client: GrokConnectClient, signal: AbortSignal): Promise<void> {
+    const unseeded = [...this.cursors.values()].filter((cursor) => !cursor.seeded || cursor.backfillMinSeq !== undefined)
+    for (let offset = 0; offset < unseeded.length; offset += 8) {
+      const results = await Promise.allSettled(unseeded.slice(offset, offset + 8).map(async (cursor) => {
         try {
-          const page = (await client.listTranscriptEntries({
-            agentId: cursor.agentId,
-            sessionId: cursor.sessionId,
-            limit: cursor.backfillMinSeq !== undefined ? 40 : 20
-          })) as Record<string, unknown>
-          const gen = Number(page['generation'] ?? 0)
-          if (Number.isFinite(gen) && gen >= 0) cursor.generation = gen
-          const entries = Array.isArray(page['entries'])
-            ? (page['entries'] as Array<Record<string, unknown>>)
-            : []
-          // Sort chronologically so backfilled gap messages arrive in natural order
-          const ordered = [...entries].sort((a, b) => {
-            try {
-              const sa = BigInt(str(a['seq'] || '0'))
-              const sb = BigInt(str(b['seq'] || '0'))
-              return sa < sb ? -1 : sa > sb ? 1 : 0
-            } catch {
-              return 0
-            }
-          })
-          const minSeq = cursor.backfillMinSeq
-          cursor.backfillMinSeq = undefined
-          for (const raw of ordered) {
-            let parsed = parseGrokTranscriptEntry(raw, cursor.agentId, cursor.sessionId)
-            if (!parsed) continue
-            if (parsed.bodyOmitted) {
-              parsed = await this.hydrateOmittedEntry(
-                client,
-                cursor.agentId,
-                cursor.sessionId,
-                parsed
-              )
-            }
-            const prevMax = cursor.afterUpdatedSeq
-            cursor.afterUpdatedSeq = maxSeqStr(prevMax, parsed.updatedSeq)
-            if (parsed.settledApprovalKey) {
-              this.removeApproval(parsed.settledApprovalKey)
-            } else if (parsed.approval) {
-              this.approvals.set(parsed.approval.id, parsed.approval)
-            }
-            if (
-              minSeq !== undefined &&
-              parsed.role === 'assistant' &&
-              seqGreaterThan(parsed.updatedSeq, minSeq)
-            ) {
-              const resolvedMedia = await this.resolveMediaUrls(
-                client,
-                cursor.agentId,
-                cursor.sessionId,
-                parsed.media
-              )
-              const hasPayload =
-                Boolean(parsed.text) ||
-                Boolean(parsed.widgets?.length) ||
-                Boolean(parsed.richWidgets?.length) ||
-                Boolean(resolvedMedia?.length)
-              if (hasPayload) {
-                this.emitAssistantEntry(
-                  cursor.agentId,
-                  cursor.sessionId,
-                  parsed,
-                  resolvedMedia,
-                  undefined
-                )
-              }
-            }
+          const backfilling = cursor.backfillMinSeq !== undefined
+          const floor = grokSeq(cursor.backfillMinSeq)
+          const data = backfilling
+            ? await readGrokTranscriptGap(client, cursor, { floor, signal })
+            : await this.readInitialPage(client, cursor, signal)
+          const generation = data.generation ?? cursor.generation
+          const generationChanged = generation !== cursor.generation
+          if (generationChanged) {
+            this.resetCursor(cursor, generation)
+            if (backfilling) cursor.backfillMinSeq = '0'
           }
-        } catch {
-          /* ignore per-agent seed failure */
+          for (const entry of data.entries) {
+            const publish = backfilling && (generationChanged || grokSeq(entry.updatedSeq) > floor)
+            await this.applyEntry(client, cursor, entry, signal, publish)
+          }
+          cursor.afterUpdatedSeq = maxSeqStr(cursor.afterUpdatedSeq, data.watermark)
+          cursor.backfillMinSeq = undefined
+          cursor.seeded = true
+        } catch (error) {
+          signal.throwIfAborted()
+          if (cursor.backfillMinSeq !== undefined) throw error
+          // If initial seeding fails, a subscription from zero still receives replay.
         }
-      })
-    )
-    if (this.approvals.size > 0) {
-      this.broadcastApprovals()
+      }))
+      signal.throwIfAborted()
+      const failure = results.find((result) => result.status === 'rejected')
+      if (failure) throw failure.reason
+    }
+  }
+
+  private async readInitialPage(client: GrokConnectClient, cursor: AgentCursorState, signal: AbortSignal) {
+    const { agentId, sessionId } = cursor
+    const page = asObj(await client.listTranscriptEntries({ agentId, sessionId, limit: 20 }, signal)) ?? {}
+    signal.throwIfAborted()
+    const generation = Number(page['generation'])
+    return {
+      entries: transcriptEntries(page, agentId, sessionId).sort(compareGrokEntries),
+      generation: Number.isSafeInteger(generation) && generation >= 0 ? generation : undefined,
+      watermark: str(page['currentUpdatedSeq'] ?? page['current_updated_seq'] ?? page['updatedSeq'] ?? page['updated_seq'])
     }
   }
 
@@ -443,174 +398,123 @@ class AccountWatchController implements GrokAccountWatchHandle {
       const ac = new AbortController()
       this.currentAbort = ac
       let lifetimeTimer: ReturnType<typeof setTimeout> | undefined
-
+      const started = Date.now()
       try {
         const client = await this.createClient()
-        await this.seedInitialWatermarks(client)
-
+        ac.signal.throwIfAborted()
+        await this.seedWatermarks(client, ac.signal)
+        ac.signal.throwIfAborted()
         const cursors = [...this.cursors.values()].map((c) => ({
-          agent_id: c.agentId,
-          generation: c.generation,
-          after_updated_seq: c.afterUpdatedSeq || '0',
-          session_id: c.sessionId || ''
+          agent_id: c.agentId, generation: c.generation, after_updated_seq: c.afterUpdatedSeq, session_id: c.sessionId
         }))
-
-        for await (const frame of client.watchTranscripts(
-          {
-            cursors,
-            includeUnlistedAgents: true,
-            inlineBodyMaxBytes: 262_144
-          },
-          ac.signal
-        )) {
-          consecutiveFailures = 0
-
-          // 1. Lifetime header frame (`absolute_lifetime_ms` / `absoluteLifetimeMs`)
-          const lifetimeMs = Number(
-            frame['absolute_lifetime_ms'] ?? frame['absoluteLifetimeMs'] ?? 0
-          )
+        for await (const frame of client.watchTranscripts({ cursors }, ac.signal)) {
+          if (ac.signal.aborted) break
+          const lifetimeMs = Number(frame['absolute_lifetime_ms'] ?? frame['absoluteLifetimeMs'] ?? 0)
           if (lifetimeMs > 5_000 && !lifetimeTimer) {
-            lifetimeTimer = setTimeout(
-              () => {
-                this.restartRequested = true
-                ac.abort()
-              },
-              Math.max(5_000, lifetimeMs - 3_000)
-            )
+            lifetimeTimer = setTimeout(() => this.triggerReconnect(), Math.max(5_000, lifetimeMs - 3_000))
           }
-
-          await this.handleFrame(client, frame)
+          await this.handleFrame(client, frame, ac.signal)
         }
       } catch {
-        if (this.stopped) break
-        if (!this.restartRequested) {
-          consecutiveFailures++
-          const backoffMs = Math.min(20_000, Math.round(1_200 * Math.pow(1.7, consecutiveFailures - 1)))
-          await new Promise((r) => setTimeout(r, backoffMs))
-        }
+        // Failed and unexpectedly closed streams use the same backoff.
       } finally {
-        if (lifetimeTimer) clearTimeout(lifetimeTimer)
-        if (this.currentAbort === ac) this.currentAbort = null
+        clearTimeout(lifetimeTimer)
       }
+      if (!this.stopped && !this.restartRequested) {
+        if (Date.now() - started > 30_000) consecutiveFailures = 0
+        const backoffMs = Math.min(20_000, Math.round(1_200 * Math.pow(1.7, consecutiveFailures++)))
+        await delay(backoffMs, undefined, { signal: ac.signal }).catch(() => undefined)
+      } else {
+        consecutiveFailures = 0
+      }
+      if (this.currentAbort === ac) this.currentAbort = null
     }
   }
 
-  private async handleFrame(
-    client: GrokConnectClient,
-    frame: Record<string, unknown>
+  private resetCursor(cursor: AgentCursorState, generation: number): void {
+    cursor.generation = generation
+    cursor.afterUpdatedSeq = '0'
+    cursor.backfillMinSeq = undefined
+    cursor.lastBackfilled = undefined
+    cursor.revisions = new GrokEntryRevisions()
+    this.recentTools.delete(grokSessionKey(cursor.agentId, cursor.sessionId))
+    for (const [id, approval] of this.approvals) {
+      if (approval.agentId === cursor.agentId && (approval.sessionId ?? '') === cursor.sessionId) this.approvals.delete(id)
+    }
+  }
+
+  private async applyEntry(
+    client: GrokConnectClient, cursor: AgentCursorState, raw: ParsedGrokTranscriptEntry,
+    signal: AbortSignal, publish: boolean
   ): Promise<void> {
-    // 2. `rows` (`GrokBotTranscriptRows`)
-    const rows = asObj(frame['rows'] ?? frame['Rows'])
+    const { agentId, sessionId } = cursor
+    const parsed = await hydrateGrokEntry(client, agentId, sessionId, raw, signal)
+    signal.throwIfAborted()
+    const revision = cursor.revisions.check(parsed)
+    if (!revision) return
+    // Do not claim the revision or advance the cursor until media resolution is complete.
+    const resolvedMedia = publish && parsed.role === 'assistant'
+      ? await this.resolveMediaUrls(client, agentId, sessionId, parsed.media, signal)
+      : undefined
+    signal.throwIfAborted()
+    cursor.revisions.remember(parsed.entryId, revision)
+    cursor.afterUpdatedSeq = maxSeqStr(cursor.afterUpdatedSeq, parsed.updatedSeq)
+    if (parsed.settledApprovalKey) this.removeApproval(parsed.settledApprovalKey)
+    if (parsed.approval) {
+      this.approvals.set(parsed.approval.id, parsed.approval)
+      this.broadcastApprovals(agentId)
+    }
+    if (!publish) return
+    const key = grokSessionKey(agentId, sessionId)
+    if (parsed.role === 'user') {
+      this.recentTools.delete(key)
+      return
+    }
+    let tools = this.recentTools.get(key)
+    if (parsed.role === 'tool' && parsed.toolCall) {
+      if (!tools) this.recentTools.set(key, (tools = new Map()))
+      tools.set(parsed.toolCall.id, parsed.toolCall)
+      if (tools.size > 12) tools.delete(tools.keys().next().value!)
+    }
+    if (parsed.role !== 'assistant') return
+    if (parsed.text || parsed.widgets?.length || parsed.richWidgets?.length || resolvedMedia?.length) {
+      this.emitAssistantEntry(agentId, sessionId, parsed, resolvedMedia, tools?.size ? [...tools.values()] : undefined)
+    }
+    if (!parsed.isStreaming) this.recentTools.delete(key)
+  }
+
+  private async handleFrame(client: GrokConnectClient, frame: Record<string, unknown>, signal: AbortSignal): Promise<void> {
+    const rows = grokRows(frame)
     if (rows) {
       const agentId = str(rows['agentId'] ?? rows['agent_id'])
       const sessionId = str(rows['sessionId'] ?? rows['session_id'])
-      const isReplay = rows['replay'] === true
-      const generation = Number(rows['generation'] ?? 0)
-      if (agentId) {
-        const cur = this.cursors.get(agentId) ?? {
-          agentId,
-          generation,
-          afterUpdatedSeq: '0',
-          sessionId
-        }
-        cur.generation = generation
-        this.cursors.set(agentId, cur)
+      if (!agentId) return
+      const cursor = this.cursor(agentId, sessionId)
+      const generation = Number(rows['generation'] ?? cursor.generation)
+      if (Number.isSafeInteger(generation) && generation >= 0) {
+        if (generation < cursor.generation) return
+        if (generation > cursor.generation) this.resetCursor(cursor, generation)
       }
-
-      const deletes = Array.isArray(rows['deletes'])
-        ? (rows['deletes'] as Array<Record<string, unknown>>)
-        : []
-      if (deletes.length > 0) {
-        const deletedMessageIds: string[] = []
-        for (const d of deletes) {
-          const delObj = asObj(d)
-          if (!delObj) continue
-          const updSeq = str(delObj['updatedSeq'] ?? delObj['updated_seq'] ?? delObj['seq'] ?? '0')
-          const cur = this.cursors.get(agentId)
-          if (cur) {
-            cur.afterUpdatedSeq = maxSeqStr(cur.afterUpdatedSeq, updSeq)
-          }
-          const entryId = str(delObj['entryId'] ?? delObj['entry_id'] ?? delObj['seq'])
-          if (entryId) {
-            deletedMessageIds.push(`grok_${entryId}`)
-            this.removeApproval(entryId)
-          }
-        }
-        if (deletedMessageIds.length > 0) {
-          this.emit({
-            type: 'message_deleted',
-            accountId: this.accountId,
-            agentId,
-            sessionId: sessionId || undefined,
-            messageIds: deletedMessageIds
-          })
-        }
+      cursor.seeded = true
+      const entries = transcriptEntries(rows, agentId, sessionId)
+      for (const entry of entries.sort(compareGrokEntries)) {
+        await this.applyEntry(client, cursor, entry, signal, true)
       }
-
-      const entries = Array.isArray(rows['entries'])
-        ? (rows['entries'] as Array<Record<string, unknown>>)
-        : []
-
-      let toolMap = this.recentToolsByAgent.get(agentId)
-      if (!toolMap) {
-        toolMap = new Map()
-        this.recentToolsByAgent.set(agentId, toolMap)
+      const deletes = Array.isArray(rows['deletes']) ? rows['deletes'] : []
+      const deletedMessageIds: string[] = []
+      for (const value of deletes) {
+        const row = asObj(value)
+        if (!row || !matchesGrokScope(row, agentId, sessionId, true)) continue
+        const updatedSeq = str(row['updatedSeq'] ?? row['updated_seq'] ?? row['seq'])
+        const id = str(row['entryId'] ?? row['entry_id'] ?? row['seq'])
+        cursor.afterUpdatedSeq = maxSeqStr(cursor.afterUpdatedSeq, updatedSeq)
+        if (!id || !cursor.revisions.remove(id, updatedSeq)) continue
+        deletedMessageIds.push(`grok_${id}`)
+        this.removeApproval(id)
       }
-
-      for (const raw of entries) {
-        let parsed = parseGrokTranscriptEntry(raw, agentId, sessionId)
-        if (!parsed) continue
-
-        if (parsed.bodyOmitted) {
-          parsed = await this.hydrateOmittedEntry(client, agentId, sessionId, parsed)
-        }
-
-        const cur = this.cursors.get(agentId)
-        if (cur) {
-          cur.afterUpdatedSeq = maxSeqStr(cur.afterUpdatedSeq, parsed.updatedSeq)
-        }
-
-        if (parsed.settledApprovalKey) {
-          this.removeApproval(parsed.settledApprovalKey)
-        }
-        if (parsed.approval) {
-          this.approvals.set(parsed.approval.id, parsed.approval)
-          this.broadcastApprovals(agentId)
-        }
-
-        if (parsed.role === 'tool' && parsed.toolCall) {
-          toolMap.set(parsed.toolCall.id, parsed.toolCall)
-          if (toolMap.size > 12) {
-            const oldest = toolMap.keys().next().value
-            if (oldest) toolMap.delete(oldest)
-          }
-          continue
-        }
-
-        // Skip replaying already-hydrated messages unless streaming
-        if (isReplay && !parsed.isStreaming) continue
-
-        if (parsed.role === 'assistant') {
-          const resolvedMedia = await this.resolveMediaUrls(
-            client,
-            agentId,
-            sessionId,
-            parsed.media
-          )
-          const hasPayload =
-            Boolean(parsed.text) ||
-            Boolean(parsed.widgets?.length) ||
-            Boolean(parsed.richWidgets?.length) ||
-            Boolean(resolvedMedia?.length)
-          if (!hasPayload) continue
-
-          const toolsArr = toolMap.size > 0 ? [...toolMap.values()] : undefined
-          this.emitAssistantEntry(agentId, sessionId, parsed, resolvedMedia, toolsArr)
-          if (!parsed.isStreaming) {
-            toolMap.clear()
-          }
-        }
-      }
+      if (deletedMessageIds.length && this.isRouted(agentId, sessionId)) this.emit({
+        type: 'message_deleted', accountId: this.accountId, agentId, sessionId: sessionId || undefined, messageIds: deletedMessageIds
+      })
       return
     }
 
@@ -618,7 +522,9 @@ class AccountWatchController implements GrokAccountWatchHandle {
     const agentState = asObj(frame['agent_state'] ?? frame['agentState'])
     if (agentState) {
       const agentId = str(agentState['agentId'] ?? agentState['agent_id'])
+      if (!agentId) return
       const sessionId = str(agentState['sessionId'] ?? agentState['session_id']) || undefined
+      if (sessionId !== undefined && !this.isRouted(agentId, sessionId)) return
       const isRunning = Boolean(agentState['isRunning'] ?? agentState['is_running'])
       const isComposing = Boolean(
         agentState['isComposingMessage'] ?? agentState['is_composing_message']
@@ -648,7 +554,9 @@ class AccountWatchController implements GrokAccountWatchHandle {
     const turnFailed = asObj(frame['turn_failed'] ?? frame['turnFailed'])
     if (turnFailed) {
       const agentId = str(turnFailed['agentId'] ?? turnFailed['agent_id'])
+      if (!agentId) return
       const sessionId = str(turnFailed['sessionId'] ?? turnFailed['session_id']) || undefined
+      if (!this.isRouted(agentId, sessionId ?? '')) return
       const turnId = str(turnFailed['turnId'] ?? turnFailed['turn_id']) || undefined
       const code = str(turnFailed['code'] ?? 'FAILED')
       const summary = str(turnFailed['summary'] ?? 'Grok Bot 执行该轮对话失败')
@@ -670,14 +578,7 @@ class AccountWatchController implements GrokAccountWatchHandle {
       const kind = str(rosterChanged['kind'] ?? 'UPDATED')
       const agentId = str(rosterChanged['agentId'] ?? rosterChanged['agent_id'])
       const agent = asObj(rosterChanged['agent']) ?? undefined
-      if (agentId && !this.cursors.has(agentId) && !kind.includes('DELETED')) {
-        this.cursors.set(agentId, {
-          agentId,
-          generation: 0,
-          afterUpdatedSeq: '0',
-          sessionId: ''
-        })
-      }
+      if (agentId && !kind.includes('DELETED')) this.cursor(agentId, '')
       this.emit({
         type: 'roster_changed',
         accountId: this.accountId,
@@ -718,12 +619,10 @@ class AccountWatchController implements GrokAccountWatchHandle {
     const cleared = asObj(frame['cleared'])
     if (cleared) {
       const agentId = str(cleared['agentId'] ?? cleared['agent_id'])
+      const sessionId = str(cleared['sessionId'] ?? cleared['session_id'])
       const newGen = Number(cleared['newGeneration'] ?? cleared['new_generation'] ?? 0)
-      const cur = this.cursors.get(agentId)
-      if (cur) {
-        cur.generation = newGen
-        cur.afterUpdatedSeq = '0'
-      }
+      const cur = this.cursors.get(grokSessionKey(agentId, sessionId))
+      if (cur && newGen > cur.generation && Number.isSafeInteger(newGen)) this.resetCursor(cur, newGen)
       return
     }
 
@@ -731,13 +630,24 @@ class AccountWatchController implements GrokAccountWatchHandle {
     const tooOld = asObj(frame['cursor_too_old'] ?? frame['cursorTooOld'])
     if (tooOld) {
       const agentId = str(tooOld['agentId'] ?? tooOld['agent_id'])
-      const cur = this.cursors.get(agentId)
+      const sessionId = str(tooOld['sessionId'] ?? tooOld['session_id'])
+      const cur = this.cursors.get(grokSessionKey(agentId, sessionId))
       if (cur) {
-        cur.backfillMinSeq = cur.afterUpdatedSeq || '0'
+        const floor = cur.afterUpdatedSeq
+        if (cur.lastBackfilled === floor) {
+          cur.backfillMinSeq = floor
+          throw new Error('Grok transcript cursor is still expired after backfill')
+        }
+        cur.lastBackfilled = floor
+        cur.backfillMinSeq = floor
         cur.afterUpdatedSeq = '0'
         this.triggerReconnect()
       }
     }
+  }
+
+  private isRouted(agentId: string, sessionId: string): boolean {
+    return !this.boundAgents.has(agentId) || this.conversationsByScope.has(grokSessionKey(agentId, sessionId))
   }
 }
 
@@ -745,6 +655,7 @@ export function ensureGrokAccountWatch(opts: {
   accountId: string
   agentIds?: string[]
   conversationMap?: Record<string, string | string[]>
+  targets?: GrokWatchTarget[]
   createClient: () => Promise<GrokConnectClient>
   emit: (event: GrokMainEvent) => void
 }): GrokAccountWatchHandle {
@@ -757,12 +668,17 @@ export function ensureGrokAccountWatch(opts: {
     })
     watches.set(opts.accountId, ctrl)
   }
-  ctrl.updateTargets(opts.agentIds ?? [], opts.conversationMap)
+  ctrl.updateTargets(opts.agentIds ?? [], opts.conversationMap, opts.targets)
   return ctrl
 }
 
 export function getGrokAccountWatch(accountId: string): GrokAccountWatchHandle | undefined {
   return watches.get(accountId)
+}
+
+export function restartGrokAccountWatch(accountId: string): void {
+  const watch = watches.get(accountId)
+  if (watch) watches.set(accountId, watch.restartIdentity())
 }
 
 export function rebindGrokAccountWatch(accountId: string): void {

@@ -1,9 +1,11 @@
-import { parseComputerContext } from '@/components/muse/computerContext'
-import { memo, useEffect, useState } from 'react'
+import { computerPreviewRef, hasComputerContext, loadComputerPreview, matchesComputerPreview, readComputerContext, type ComputerContextSnap } from '@/components/muse/computerContext'
+import { MusePreviewImage } from '@/components/muse/MuseBrowserCard'
+import { memo, useEffect, useMemo, useState } from 'react'
 import { AlertCircle, Check, Clock3, Copy, CornerDownRight, Download, ExternalLink, FileText, Film, FolderOpen, Globe, Image as ImageIcon, KeyRound, Loader2, Maximize2, Monitor, Music, RotateCw, Wrench, X, ZoomIn } from 'lucide-react'
 import { cn } from '@/lib/cn'
 import { formatBytes, formatClock } from '@/lib/format'
 import { useBotStore } from '@/store/botStore'
+import { SEND_STILL_PENDING_TEXT } from '@/store/delivery'
 import type { ChatMediaPart, ChatMessage, ChatOptionWidget, ChatRichWidget, ChatToolCall } from '@/types'
 import { getBridge } from '@/lib/bridge'
 import { downloadPercent, formatDownloadSize, type GoxfDownloadEvent } from '@shared/goxfDownload'
@@ -18,6 +20,8 @@ import { NativeDocumentDialog, type NativeDocumentTarget } from './NativeDocumen
 import { triggerShareConversation } from './ShareConversationDialog'
 import { t } from '@/lib/i18n'
 import { Menu, MenuContent, MenuItem, MenuLabel, MenuSeparator, MenuTrigger } from '@/components/ui/Menu'
+
+type SessionCardWidget = Extract<ChatRichWidget, { kind: 'session_card' }> & { previewSrc?: string }
 
 interface MessageBubbleProps {
   message: ChatMessage
@@ -76,7 +80,7 @@ function DeliveryState({ message, onRetry }: Pick<MessageBubbleProps, 'message' 
         <span className="inline-flex items-center gap-1.5 text-status-attention-ink">
           <AlertCircle className="size-3" aria-hidden />
           {message.error ?? t('Delivered, but no reply')}
-          {onRetry && (
+          {onRetry && message.error !== SEND_STILL_PENDING_TEXT && (
             <button
               type="button"
               onClick={() => onRetry(message.id)}
@@ -529,59 +533,49 @@ function WorkspaceAV({
   accountId?: string
   kind: 'audio' | 'video'
 }) {
-  const initialDirectSrc =
-    /^data:(?:audio|video)\//i.test(part.path) || (isHttp(part.path) && !needsAuthProxyHttpUrl(part.path))
-      ? part.path
-      : null
-  const [src, setSrc] = useState<string | null>(initialDirectSrc)
-  const [failed, setFailed] = useState(false)
-  const [triedProxy, setTriedProxy] = useState(false)
+  const { path, name, mimeType, imageId, kind: mediaKind } = part
+  const directSrc = /^data:(?:audio|video)\//i.test(path) || (isHttp(path) && !needsAuthProxyHttpUrl(path)) ? path : null
   const [retryNonce, setRetryNonce] = useState(0)
+  const source = useMemo(() => ({
+    accountId, part: { path, name, mimeType, imageId, kind: mediaKind }, kind, retryNonce
+  }), [accountId, path, name, mimeType, imageId, mediaKind, kind, retryNonce])
+  const [proxySrc, setProxySrc] = useState<{ source: typeof source; url: string }>()
+  const [failedSource, setFailedSource] = useState<typeof source>()
+  const [proxySource, setProxySource] = useState<typeof source>()
+  const useProxy = !directSrc || proxySource === source
+  const failed = failedSource === source || (useProxy && !accountId)
+  const src = failed ? null : useProxy
+    ? (proxySrc?.source === source ? proxySrc.url : null)
+    : directSrc
 
   useEffect(() => {
-    const nextDirect =
-      /^data:(?:audio|video)\//i.test(part.path) || (isHttp(part.path) && !needsAuthProxyHttpUrl(part.path))
-        ? part.path
-        : null
-    setSrc(nextDirect)
-    setFailed(false)
-    setTriedProxy(false)
-  }, [part.path])
-
-  useEffect(() => {
-    if (src || failed || !accountId) return
+    const { accountId: owner, part: media, kind: mediaType } = source
+    if (!useProxy || !owner) return
     let cancelled = false
     let objectUrl: string | null = null
     void (async () => {
       try {
-        const fetched = await fetchPlatformMediaBytes(accountId, part)
+        const fetched = await fetchPlatformMediaBytes(owner, media)
         if (cancelled) return
         if (!fetched?.dataBase64) {
-          setFailed(true)
+          setFailedSource(source)
           return
         }
-        const mt = (fetched.mimeType || part.mimeType || '').toLowerCase()
-        const fallbackMime = kind === 'audio' ? 'audio/mpeg' : 'video/mp4'
-        const effectiveMime =
-          kind === 'audio'
-            ? mt.startsWith('audio/')
-              ? mt
-              : fallbackMime
-            : mt.startsWith('video/')
-              ? mt
-              : fallbackMime
+        const mt = (fetched.mimeType || media.mimeType || '').toLowerCase()
+        const fallbackMime = mediaType === 'audio' ? 'audio/mpeg' : 'video/mp4'
+        const effectiveMime = mt.startsWith(`${mediaType}/`) ? mt : fallbackMime
         const blob = new Blob([base64ToBytes(fetched.dataBase64)], { type: effectiveMime })
         objectUrl = URL.createObjectURL(blob)
-        setSrc(objectUrl)
+        setProxySrc({ source, url: objectUrl })
       } catch {
-        if (!cancelled) setFailed(true)
+        if (!cancelled) setFailedSource(source)
       }
     })()
     return () => {
       cancelled = true
       if (objectUrl) URL.revokeObjectURL(objectUrl)
     }
-  }, [accountId, part, src, failed, kind, retryNonce])
+  }, [source, useProxy])
 
   const filename =
     part.name ||
@@ -589,12 +583,10 @@ function WorkspaceAV({
     (kind === 'audio' ? 'audio.mp3' : 'video.mp4')
 
   const handleMediaError = () => {
-    if (src && isHttp(src) && !triedProxy && accountId) {
-      setTriedProxy(true)
-      setSrc(null)
+    if (src && isHttp(src) && !useProxy && accountId) {
+      setProxySource(source)
     } else {
-      setSrc(null)
-      setFailed(true)
+      setFailedSource(source)
     }
   }
 
@@ -648,11 +640,7 @@ function WorkspaceAV({
       {failed && accountId && (
         <button
           type="button"
-          onClick={() => {
-            setFailed(false)
-            setTriedProxy(false)
-            setRetryNonce((n) => n + 1)
-          }}
+          onClick={() => setRetryNonce((n) => n + 1)}
           className="shrink-0 rounded-full bg-hover px-2 py-0.5 text-[11px] font-medium text-accent-600 hover:bg-active"
         >
           重试
@@ -860,11 +848,13 @@ function RichWidgets({
   widgets,
   botId,
   accountId,
+  messageId,
   onOpenDoc
 }: {
   widgets: ChatRichWidget[]
   botId: string
   accountId: string
+  messageId: string
   onOpenDoc: (target: NativeDocumentTarget) => void
 }) {
   const sendMessage = useBotStore((s) => s.sendMessage)
@@ -1349,9 +1339,11 @@ function RichWidgets({
         if (w.kind === 'session_card') {
           return (
             <SessionInteractiveCard
-              key={w.widgetId}
+              key={JSON.stringify([accountId, messageId, w.widgetId])}
               widget={w}
               accountId={accountId}
+              botId={botId}
+              messageId={messageId}
             />
           )
         }
@@ -1363,59 +1355,85 @@ function RichWidgets({
 
 function SessionInteractiveCard({
   widget,
-  accountId
+  accountId,
+  botId,
+  messageId
 }: {
-  widget: Extract<ChatRichWidget, { kind: 'session_card' }>
+  widget: SessionCardWidget
   accountId: string
+  botId: string
+  messageId: string
 }) {
   const openWebSessionAt = useBotStore((s) => s.openWebSessionAt)
-  const [previewSrc, setPreviewSrc] = useState<string | null>(null)
+  const isVault = widget.cardType === 'vault'
+  const sessionId = useBotStore((s) => s.bots.find((item) => item.id === botId)?.activeSessionId)
+  const activeAccount = useBotStore((s) => s.bots.find((item) => item.id === botId)?.activeAccountId === accountId)
+  const recent = useBotStore((s) => {
+    if (isVault || !activeAccount || widget.previewSrc || (widget.taskId && widget.previewSha256)) return false
+    return s.messages[botId]?.findLast((message) => message.accountId === accountId &&
+      (message.role === 'user' || message.richWidgets?.some((card) => card.kind === 'session_card' && card.cardType !== 'vault'))
+    )?.id === messageId
+  })
+  const lookupWhileTyping = useBotStore((s) => recent && s.typing[botId] === true)
+  const { taskId, previewSha256, previewSrc } = widget
+  const scope = JSON.stringify([accountId, sessionId])
+  const previewScope = JSON.stringify([scope, taskId])
+  const [preview, setPreview] = useState<{ scope: string; src?: string; context?: ComputerContextSnap }>()
+  const [refresh, setRefresh] = useState<{ scope: string; revision: number }>()
+  const revision = refresh?.scope === scope ? refresh.revision : 0
 
-  const [refresh, setRefresh] = useState(0)
   const [loading, setLoading] = useState(false)
-  const [previewError, setPreviewError] = useState('')
+  const [previewFailed, setPreviewFailed] = useState(false)
   useEffect(() => {
-    let current = true
     const muse = getBridge()?.muse
-    setPreviewSrc(null)
-    setPreviewError('')
     setLoading(false)
-    if (widget.cardType === 'vault' || !muse || (!widget.taskId && !widget.previewSha256)) return
+    setPreviewFailed(false)
+    const ownPreview = Boolean(previewSrc || (taskId && previewSha256))
+    if (isVault || !muse || (!recent && !revision && !ownPreview)) return
+    let current = true
     setLoading(true)
     void (async () => {
-      let taskId = widget.taskId
-      let sha = widget.previewSha256
-      if (!taskId || !sha || refresh > 0) {
-        const snapshot = parseComputerContext(await muse.rpc({ accountId, method: 'computer.context', params: {} }))
-        // Match the card to the task before accepting a newer account-level preview.
-        if (taskId ? snapshot.taskId === taskId : sha === snapshot.sha256) {
-          taskId = snapshot.taskId
-          sha = snapshot.sha256 ?? sha
+      const ref = { taskId, sha256: previewSha256, inlineSrc: previewSrc }
+      let context: ComputerContextSnap | undefined
+      if (recent || revision) {
+        try {
+          const snapshot = await readComputerContext(muse.rpc, accountId, activeAccount ? sessionId : undefined)
+          if (matchesComputerPreview(snapshot, ref) && hasComputerContext(snapshot)) {
+            context = snapshot
+          }
+        } catch (error) {
+          if (!ownPreview) throw error
         }
       }
-      if (!current || !taskId || !sha) return
-      const res = await muse.rpc({ accountId, method: 'computer.preview', params: { task_id: taskId, sha256: sha } })
-      const data = res as { dataBase64?: string; contentType?: string } | null
-      if (current && data?.dataBase64) setPreviewSrc(`data:${data.contentType || 'image/png'};base64,${data.dataBase64}`)
-    })().catch((err) => {
-      if (current && refresh > 0) setPreviewError(err instanceof Error ? err.message : String(err))
+      if (!current) return
+      if (context) setPreview((previous) => ({ scope: previewScope,
+        src: previous?.scope === previewScope ? previous.src : undefined, context }))
+      const src = await loadComputerPreview(muse, accountId, computerPreviewRef(context, ref))
+      if (current) setPreview((previous) => {
+        if (!src && !context && !ownPreview) return previous
+        return { scope: previewScope, src, context }
+      })
+    })().catch(() => {
+      if (current) setPreviewFailed(true)
     }).finally(() => { if (current) setLoading(false) })
     return () => { current = false }
-  }, [accountId, widget.cardType, widget.previewSha256, widget.taskId, refresh])
+  }, [accountId, sessionId, activeAccount, previewScope, isVault, taskId, previewSha256, previewSrc, recent, lookupWhileTyping, revision])
 
-  const isVault = widget.cardType === 'vault'
-  const isSaved = widget.status === '已登录'
-
-  const openInApp = () => {
-    openWebSessionAt(widget.url || null)
-  }
+  const shownPreview = preview?.scope === previewScope ? preview : undefined
+  const image = shownPreview?.src ?? (previewSrc?.startsWith('data:image/') ? previewSrc : undefined)
+  const url = shownPreview?.context?.url ?? widget.url
+  const interactionUrl = shownPreview?.context?.interactionUrl ?? url
+  const status = shownPreview?.context?.status ?? widget.status
+  const title = shownPreview?.context?.title ?? widget.title
+  const isSaved = status === '已登录'
+  const openInApp = () => openWebSessionAt(interactionUrl ?? null)
 
   const openPopup = () => {
-    const targetUrl = widget.url || 'https://muse.ai'
+    const targetUrl = interactionUrl || 'https://muse.ai'
     void getBridge()?.webViews?.openInPartition?.({
       accountId,
       url: targetUrl,
-      title: widget.title
+      title
     })
   }
 
@@ -1442,13 +1460,13 @@ function SessionInteractiveCard({
             )}
           </span>
           <div className="min-w-0">
-            <p className="truncate text-[13.5px] font-semibold text-ink">{widget.title}</p>
-            <p className="truncate text-[11.5px] text-ink-muted">
-              {widget.subtitle || widget.status || (isVault ? '安全存储' : '正在工作')}
-            </p>
+            <p className="truncate text-[13.5px] font-semibold text-ink">{title}</p>
+            {(widget.subtitle || url || isVault) && <p className="truncate text-[11.5px] text-ink-muted" title={url}>
+              {widget.subtitle || url || status || '安全存储'}
+            </p>}
           </div>
         </div>
-        {widget.status && (
+        {status && (
           <span
             className={cn(
               'shrink-0 rounded-full px-2 py-0.5 text-[10.5px] font-medium',
@@ -1457,26 +1475,22 @@ function SessionInteractiveCard({
                 : 'bg-hover text-ink-secondary'
             )}
           >
-            {widget.status}
+            {status}
           </span>
         )}
       </div>
 
-      {previewSrc && (
-        <button
-          type="button"
-          onClick={openInApp}
-          className="mt-2.5 block w-full overflow-hidden rounded-xl border border-line bg-black/5"
-        >
-          <img src={previewSrc} alt={widget.title} className="max-h-44 w-full object-contain" />
-        </button>
+      {!isVault && (
+        image ? <MusePreviewImage key={`${previewScope}:${revision}`} src={image} alt={title} className="mt-2.5" /> : (
+          <p role="status" className="mt-2 text-[12px] text-ink-muted">
+            {loading ? '正在加载截图…' : previewFailed ? '截图暂不可用' : '暂无截图'}
+          </p>
+        )
       )}
-
-      {previewError && <p role="status" className="mt-2 text-[12px] text-status-error">{previewError}</p>}
       <div className="mt-3 flex items-center gap-2">
-        {!isVault && (widget.taskId || widget.previewSha256) && (
+        {!isVault && (
           <button type="button" aria-label="刷新截图" title="刷新截图" disabled={loading}
-            onClick={() => setRefresh((n) => n + 1)}
+            onClick={() => setRefresh({ scope, revision: revision + 1 })}
             className="press-icon grid size-8 shrink-0 place-items-center rounded-full border border-line text-ink-secondary">
             <RotateCw className={loading ? 'size-3.5 animate-spin' : 'size-3.5'} />
           </button>
@@ -1486,7 +1500,7 @@ function SessionInteractiveCard({
           onClick={openInApp}
           className="press flex h-8 flex-1 items-center justify-center gap-1.5 rounded-full bg-main px-3 text-[12.5px] font-medium text-ink ring-1 ring-line-strong hover:bg-hover"
         >
-          {widget.actionLabel || (isVault ? '在应用内填写安全卡片' : '打开浏览器')}
+          {widget.actionLabel || (isVault ? '在应用内填写安全卡片' : '在隔离视图中操作')}
         </button>
         <button
           type="button"
@@ -2281,6 +2295,7 @@ export const MessageBubble = memo(function MessageBubble({
             widgets={rich}
             botId={message.botId}
             accountId={message.accountId}
+            messageId={message.id}
             onOpenDoc={openDocument}
           />
         </div>

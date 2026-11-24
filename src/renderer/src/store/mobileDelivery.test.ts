@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { HermesAdapter } from '@adapters/hermes/HermesAdapter'
 import { adapterRegistry } from '@adapters/registry'
+import type { MobileSendCommand, MobileSendResult } from '@shared/mobileSync'
+import { startMobileSyncBridge } from '@/services/mobileSyncBridge'
 import type { Bot, BotAccount } from '@/types'
 import { useBotStore } from './botStore'
 
@@ -19,7 +21,10 @@ describe('mobile delivery', () => {
     useBotStore.setState({ bots: [bot], accounts: { [account.id]: account }, messages: {}, replyingTo: {} })
   })
 
-  afterEach(() => vi.restoreAllMocks())
+  afterEach(() => {
+    vi.restoreAllMocks()
+    vi.unstubAllGlobals()
+  })
 
   it('queues once using the client ID and lets the adapter determine delivery', async () => {
     const adapter = new HermesAdapter()
@@ -80,5 +85,37 @@ describe('mobile delivery', () => {
         dataBase64: 'iVBORw0KGgo='
       }
     ])
+  })
+
+  it('reconciles a retried IPC send by message ID and rejects changed attachment content', async () => {
+    const adapter = new HermesAdapter()
+    vi.spyOn(adapterRegistry, 'list').mockReturnValue([adapter])
+    vi.spyOn(adapterRegistry, 'has').mockReturnValue(true)
+    vi.spyOn(adapterRegistry, 'get').mockReturnValue(adapter)
+    const send = vi.spyOn(adapter, 'sendMessage').mockResolvedValue({ messageId: 'platform-id', acceptedAt: 10 })
+    let queue!: (command: MobileSendCommand) => MobileSendResult
+    const noop = () => undefined
+    vi.stubGlobal('window', { electron: { mobileSync: {
+      getState: async () => ({ running: false, devices: [] }),
+      onStateChanged: () => noop,
+      onCommand: () => noop,
+      onSendCommand: (handler: typeof queue) => { queue = handler; return noop },
+      pushSnapshot: vi.fn(),
+      pushEvent: vi.fn()
+    } } })
+    const stop = startMobileSyncBridge()
+    try {
+      const payload = (data: string) => ({
+        ...command,
+        attachments: [{ name: 'example.txt', mimeType: 'text/plain', dataUrl: `data:text/plain;base64,${data}` }]
+      })
+      expect(queue(payload('YQ=='))).toEqual({ ok: true, messageId: command.clientMessageId })
+      await vi.waitFor(() => expect(store().messages[bot.id]?.[0]?.delivery).toBe('sent'))
+      expect(queue(payload('YQ=='))).toEqual({ ok: true, messageId: command.clientMessageId })
+      expect(queue(payload('Yg=='))).toMatchObject({ status: 409 })
+      expect(send).toHaveBeenCalledOnce()
+    } finally {
+      stop()
+    }
   })
 })

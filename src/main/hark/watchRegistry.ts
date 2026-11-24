@@ -23,6 +23,11 @@ export class HarkWatchRegistry {
     if (map.size === 0) this.byAccount.delete(accountId)
   }
 
+  claim(accountId: string, token: string, replyId: string): void {
+    const watch = this.byAccount.get(accountId)?.get(token)
+    if (watch) watch.target = replyId
+  }
+
   cancelConversation(accountId: string, conversationId: string): void {
     for (const [token, watch] of this.byAccount.get(accountId) ?? []) {
       if (watch.conversationId === conversationId) {
@@ -32,7 +37,7 @@ export class HarkWatchRegistry {
     }
   }
 
-  /** Stop every watch of the account (stop-tool, sign-out), or '*' for all accounts. */
+  /** Stop every watch of the account, or '*' for all accounts. */
   cancelAll(accountId: string): void {
     if (accountId === '*') {
       const entries = [...this.byAccount.values()]

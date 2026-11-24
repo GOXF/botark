@@ -1,6 +1,11 @@
 import { BrowserWindow, Notification, session as electronSession, shell, type WebContents } from 'electron'
+import { randomUUID } from 'node:crypto'
+import { setTimeout as delay } from 'node:timers/promises'
 import type { MuseMainEvent, MuseSessionStatus, WebViewBounds } from '@shared/ipc'
-import { extractRawApprovalItems, mapMuseApproval } from '@shared/museApprovals'
+import {
+  MuseApprovalSnapshots, extractRawApprovalItems, mapMuseApproval,
+  type MuseApprovalStreamMetadata
+} from '@shared/museApprovals'
 import { getAppWindowIcon } from '../appIcon'
 import {
   attachGoogleOAuthWebContentsGuard,
@@ -18,6 +23,10 @@ import {
   MuseNativeRegistry,
   museTransportMode,
   streamChat,
+  createMuseTurnDeadline,
+  isMuseStop,
+  museEventSessionId,
+  MUSE_STREAM_STOPPED,
   MUSE_STREAM_SUPERSEDED,
   selectOptionWidget,
   parseAgentStatus,
@@ -28,15 +37,22 @@ import {
   transcriptText,
   unwrapMuseResult,
   type MuseChatEvent,
+  type MuseNativeClient,
   type MuseOptionWidget
 } from '../muse-native'
 import {
   fetchFsRawPreview,
+  downloadFsRawFile,
+  fetchHttpWorkspaceFile,
+  MUSE_WORKSPACE_DOWNLOAD,
+  type MuseWorkspaceFile,
   uploadWorkspaceFile,
   buildWorkspaceUploadPath
 } from '../muse-native/fs'
-import { inferMediaMime } from '../mediaMime'
-import { applyProxyToPartition, createProxyAgent, releaseProxyPoolAccount } from './accountProxy'
+import { applyProxyToPartition, releaseProxyPoolAccount } from './accountProxy'
+import { abortable } from '../muse-native/lifecycle'
+import type { SubscriptionHandle } from '../muse-native/gateway'
+import { historyAssistantsAfterTurn } from '../muse-native/chat'
 import {
   cleanMuseChromeUserAgent,
   hasNonEmptyHatchSession,
@@ -79,6 +95,40 @@ import { applyMuseKeepAlive, MUSE_HEALTH_SCRIPT, museWakeScript } from './museKe
 const MUSE_ORIGIN = 'https://muse.ai'
 const QUOTA_POLL_MS = 60_000
 
+function sameHatchCookie(left: Electron.Cookie, right: Electron.Cookie): boolean {
+  return left.value === right.value && left.domain === right.domain && left.path === right.path && left.secure === right.secure
+}
+
+function sameHatchCookies(left: Electron.Cookie[], right: Electron.Cookie[]): boolean {
+  return left.length === right.length && left.every((cookie) => right.some((other) => sameHatchCookie(cookie, other)))
+}
+
+interface AccountGeneration {
+  controller: AbortController
+  initializing?: Promise<AccountSession>
+  refreshing?: Promise<MuseSessionStatus | undefined>
+  openingLogin?: Promise<MuseSessionStatus>
+  rebinding?: Promise<void>
+  latestTurn?: ChatTurn
+}
+
+interface ChatTurn {
+  id?: string
+  conversationId?: string
+  sessionId?: string
+  controller: AbortController
+  generation: AccountGeneration
+  room: boolean
+}
+
+interface InspectorWatch {
+  cancel?: (reason?: string) => void
+  disposed?: boolean
+}
+
+type MuseClientEvent = MuseMainEvent & MuseApprovalStreamMetadata & { sendId?: string; sessionId?: string }
+type InspectorSubscription = 'tasks.subscribe' | 'fs.subscribe' | 'artifacts.subscribe'
+
 interface AccountSession {
   accountId: string
   botId: string
@@ -94,13 +144,17 @@ interface AccountSession {
   /** Usage / quota snapshot (HTTPS Server Action). */
   quota?: MuseQuotaSnapshot
   quotaTimer?: ReturnType<typeof setInterval>
-  /** Cancel handle for tasks.subscribe. */
-  tasksSubCancel?: (reason?: string) => void
-  /** Cancel handles for fs.subscribe / artifacts.subscribe. */
-  filesSubCancel?: (reason?: string) => void
-  artifactsSubCancel?: (reason?: string) => void
+  quotaRead?: Promise<MuseQuotaSnapshot>
+  subscriptions: Map<InspectorSubscription, InspectorWatch>
+  approvalSnapshots: MuseApprovalSnapshots
+  approvalVersion: number
+  approvalRead?: Promise<{ pending: Record<string, unknown>[] } & MuseApprovalStreamMetadata>
+  hookInstall?: Promise<void>
+  chatWatch?: { client: MuseNativeClient; dispose: () => void }
+  watchTexts: Map<string, string>
   /** Currently selected/active chat session_id for spontaneous watch filtering. */
   activeSessionId?: string
+  roomSessions: Set<string>
   schedules?: MuseSchedule[]
   invite?: MuseInviteSnapshot
   chatSessions?: MuseChatSessionView[]
@@ -115,7 +169,10 @@ interface AccountSession {
  */
 export class MuseSessionManager {
   private readonly sessions = new Map<string, AccountSession>()
-  private readonly listeners = new Set<(event: MuseMainEvent) => void>()
+  private readonly generations = new Map<string, AccountGeneration>()
+  private disposed = false
+  private nextApprovalVersion = 0
+  private readonly listeners = new Set<(event: MuseClientEvent) => void>()
   /** Running batch auto-logins keyed by accountId. */
   private readonly autoLogins = new Map<string, AbortController>()
   /** Interactive login windows keyed by accountId (same persist partition). */
@@ -124,24 +181,20 @@ export class MuseSessionManager {
   private readonly native = new MuseNativeRegistry(partitionForAccount, (accountId, phase, error) =>
     this.onNativePhase(accountId, phase, error)
   )
-  /** Accounts with a lifetime chat.subscribe activity/widget watcher. */
-  private readonly chatWatchBound = new Set<string>()
   /** Accounts currently inside an active streamChat turn (watch listener defers to streamChat). */
-  private readonly activeStreams = new Map<string, AbortController>()
-  /** Spontaneous delta.text_append accumulator keyed by `${accountId}:${messageId}`. */
-  private readonly watchTexts = new Map<string, string>()
+  private readonly activeStreams = new Map<string, ChatTurn>()
 
   constructor(
     private readonly window: BrowserWindow,
     private readonly views: WebContentsViewManager
   ) {}
 
-  onEvent(listener: (event: MuseMainEvent) => void): () => void {
+  onEvent(listener: (event: MuseClientEvent) => void): () => void {
     this.listeners.add(listener)
     return () => this.listeners.delete(listener)
   }
 
-  private emit(event: MuseMainEvent): void {
+  private emit(event: MuseClientEvent): void {
     for (const listener of this.listeners) {
       try {
         listener(event)
@@ -155,6 +208,16 @@ export class MuseSessionManager {
     const session = this.sessions.get(accountId)
     if (!session) return
     this.emit({ type: 'status', status: session.status })
+  }
+
+  private generationFor(accountId: string): AccountGeneration {
+    if (this.disposed) throw new MuseGatewayError('Muse session manager disposed', 'closed')
+    let generation = this.generations.get(accountId)
+    if (!generation) {
+      generation = { controller: new AbortController() }
+      this.generations.set(accountId, generation)
+    }
+    return generation
   }
 
   private materializeDomView(session: AccountSession, pinned = false): void {
@@ -174,65 +237,71 @@ export class MuseSessionManager {
   }
 
   async ensure(botId: string, accountId: string, opts?: { show?: boolean; bounds?: WebViewBounds }): Promise<MuseSessionStatus> {
+    const { signal } = this.generationFor(accountId).controller
     const activeLogin = this.loginWindows.get(accountId)
-    if (!opts?.show && activeLogin && !activeLogin.isDestroyed() && !(await this.hasSessionCookie(accountId))) {
-      return (
-        this.sessions.get(accountId)?.status ?? {
-          accountId,
-          signedIn: false,
-          ready: false,
-          hook: 'none',
-          url: activeLogin.webContents.getURL() || MUSE_ORIGIN,
-          pendingApprovals: 0,
-          phase: 'signed-out'
-        }
-      )
-    }
-
-    let session = this.sessions.get(accountId)
-    if (!session) {
-      await applyProxyToPartition(accountId)
-      const ses = electronSession.fromPartition(partitionForAccount(accountId))
-      installGoogleOAuthHeaderGuard(ses)
-      session = {
-        accountId,
-        botId,
-        viewId: webViewId(botId, accountId),
-        status: {
-          accountId,
-          signedIn: false,
-          ready: false,
-          hook: 'none',
-          url: MUSE_ORIGIN,
-          pendingApprovals: 0,
-          phase: 'connecting'
+    if (!opts?.show && activeLogin && !activeLogin.isDestroyed() && !(await this.hasSessionCookie(accountId, signal))) {
+      if (this.loginWindows.get(accountId) === activeLogin && !activeLogin.isDestroyed()) {
+        return this.sessions.get(accountId)?.status ?? {
+          accountId, signedIn: false, ready: false, hook: 'none',
+          url: activeLogin.webContents.getURL() || MUSE_ORIGIN, pendingApprovals: 0, phase: 'signed-out'
         }
       }
-      this.sessions.set(accountId, session)
-      this.startPolling(accountId)
-    } else {
-      session.botId = botId
     }
-
-    // Memory optimization (#35): Only spawn a Chromium WebContentsView when the
-    // user opens the embedded web view (`opts.show`) or when non-native hook mode is explicitly forced.
-    const needsDomView = Boolean(opts?.show) || museTransportMode() !== 'native'
-    if (needsDomView) {
-      this.materializeDomView(session, museTransportMode() !== 'native')
-    }
-
-    if (opts?.show && opts.bounds) {
-      this.views.attach(session.viewId, opts.bounds)
-    }
-
+    const session = await this.prepareSession(botId, accountId, signal, opts)
     await this.refreshSession(accountId)
+    signal.throwIfAborted()
     return session.status
+  }
+
+  private async prepareSession(
+    botId: string,
+    accountId: string,
+    signal: AbortSignal,
+    opts?: { show?: boolean; bounds?: WebViewBounds }
+  ): Promise<AccountSession> {
+    signal.throwIfAborted()
+    const generation = this.generationFor(accountId)
+    const lifetime = generation.controller.signal
+    if (generation.rebinding) await abortable(signal, () => generation.rebinding!)
+    let session = this.sessions.get(accountId)
+    if (!session) {
+      generation.initializing ??= abortable(lifetime, async () => {
+        await applyProxyToPartition(accountId)
+        lifetime.throwIfAborted()
+        installGoogleOAuthHeaderGuard(electronSession.fromPartition(partitionForAccount(accountId)))
+        const next: AccountSession = {
+          accountId, botId, viewId: webViewId(botId, accountId),
+          status: {
+            accountId, signedIn: false, ready: false, hook: 'none', url: MUSE_ORIGIN,
+            pendingApprovals: 0, phase: 'connecting'
+          },
+          subscriptions: new Map(),
+          approvalSnapshots: new MuseApprovalSnapshots(),
+          approvalVersion: 0,
+          roomSessions: new Set(),
+          watchTexts: new Map()
+        }
+        this.sessions.set(accountId, next)
+        this.startPolling(accountId)
+        return next
+      }).finally(() => { generation.initializing = undefined })
+      session = await abortable(signal, () => generation.initializing!)
+    }
+    signal.throwIfAborted()
+    lifetime.throwIfAborted()
+    if (botId !== 'muse') session.botId = botId
+
+    const hookMode = museTransportMode() !== 'native'
+    if (opts?.show || hookMode) this.materializeDomView(session, hookMode)
+    if (opts?.show && opts.bounds) this.views.attach(session.viewId, opts.bounds)
+    return session
   }
 
   private configureView(viewId: string, accountId: string): void {
     const view = this.views.getView(viewId)
     if (!view) return
 
+    const isCurrentView = () => this.views.getView(viewId) === view && this.sessions.get(accountId)?.viewId === viewId
     const partition = partitionForAccount(accountId)
     installGoogleOAuthHeaderGuard(electronSession.fromPartition(partition))
 
@@ -274,13 +343,12 @@ export class MuseSessionManager {
     })
 
     view.webContents.on('did-finish-load', () => {
-      void this.installHook(accountId)
-      void this.refreshSession(accountId)
+      if (isCurrentView()) void this.refreshSession(accountId).catch(() => undefined)
     })
 
     view.webContents.on('did-navigate', (_e, url) => {
       const session = this.sessions.get(accountId)
-      if (session) {
+      if (session && isCurrentView()) {
         session.status.url = url
         this.emitStatus(accountId)
       }
@@ -290,19 +358,32 @@ export class MuseSessionManager {
   private async installHook(accountId: string): Promise<void> {
     const session = this.sessions.get(accountId)
     const view = session && this.views.getView(session.viewId)
-    if (!view || view.webContents.isDestroyed()) return
+    const signal = this.generations.get(accountId)?.controller.signal
+    if (!session || !view || !signal || signal.aborted || view.webContents.isDestroyed()) return
+    if (session.hookInstall) return session.hookInstall
+    const install = this.installHookInView(session, view, signal).finally(() => {
+      if (session.hookInstall === install) session.hookInstall = undefined
+    })
+    session.hookInstall = install
+    return install
+  }
+
+  private async installHookInView(session: AccountSession, view: Electron.WebContentsView, signal: AbortSignal): Promise<void> {
+    const { accountId } = session
     try {
       const result = (await view.webContents.executeJavaScript(MUSE_HOOK_SCRIPT, true)) as {
         ready?: boolean
         hook?: MuseSessionStatus['hook']
       }
-      session!.status.ready = Boolean(result?.ready)
-      session!.status.hook = result?.hook ?? 'none'
+      if (signal.aborted || this.views.getView(session.viewId) !== view) return
+      session.status.ready = this.nativeReady(accountId) || Boolean(result?.ready)
+      session.status.hook = result?.hook ?? 'none'
       this.emitStatus(accountId)
     } catch (error) {
+      if (signal.aborted || this.views.getView(session.viewId) !== view) return
       console.error('[muse] hook install failed', error)
-      session!.status.ready = false
-      session!.status.hook = 'none'
+      session.status.ready = this.nativeReady(accountId)
+      session.status.hook = 'none'
       this.emitStatus(accountId)
     }
   }
@@ -312,93 +393,83 @@ export class MuseSessionManager {
     if (!session || session.pollTimer) return
     // Lightweight cookie + Noise gateway heartbeat (12s) keeps sessions alive without hidden BrowserWindows.
     session.pollTimer = setInterval(() => {
-      void this.refreshSession(accountId)
+      void this.refreshSession(accountId).catch(() => undefined)
     }, 12_000)
   }
 
   async refreshSession(accountId: string): Promise<MuseSessionStatus | undefined> {
     const session = this.sessions.get(accountId)
-    if (!session) return undefined
-    const view = this.views.getView(session.viewId)
+    const generation = this.generations.get(accountId)
+    if (!session || !generation) return undefined
+    const { signal } = generation.controller
+    generation.refreshing ??= abortable(signal, async () => {
+      if (generation.rebinding) await generation.rebinding
+      signal.throwIfAborted()
+      return this.refreshSessionState(session, signal)
+    }).finally(() => {
+      generation.refreshing = undefined
+    })
+    return generation.refreshing
+  }
 
-    const partition = partitionForAccount(accountId)
-    const ses = electronSession.fromPartition(partition)
-    const cookies = await ses.cookies.get({ name: 'hatch_sess' })
-    const signedIn = hasNonEmptyHatchSession(cookies)
-
-    if (signedIn !== session.status.signedIn) {
+  private async refreshSessionState(session: AccountSession, signal: AbortSignal): Promise<MuseSessionStatus> {
+    const { accountId } = session
+    const signedIn = await this.hasSessionCookie(accountId, signal)
+    const signInChanged = signedIn !== session.status.signedIn
+    if (signInChanged) {
       session.status.signedIn = signedIn
-      this.emit({
-        type: 'login',
-        accountId,
-        signedIn,
-        handle: undefined
-      })
-      if (signedIn) {
-        void this.refreshQuota(accountId)
-        this.ensureQuotaPolling(accountId)
-      } else if (session.quotaTimer) {
-        clearInterval(session.quotaTimer)
-        session.quotaTimer = undefined
-      }
-    } else if (signedIn && !session.quotaTimer) {
-      void this.refreshQuota(accountId)
+      this.emit({ type: 'login', accountId, signedIn })
+    }
+    if (signedIn && !session.quotaTimer) {
+      void this.refreshQuota(accountId).catch(() => undefined)
       this.ensureQuotaPolling(accountId)
     }
-
-    if (view && !view.webContents.isDestroyed()) {
-      session.status.url = view.webContents.getURL()
+    if (!signedIn) {
+      clearInterval(session.quotaTimer)
+      session.quotaTimer = undefined
+      if (signInChanged) {
+        session.approvalRead = undefined
+        session.approvalVersion = ++this.nextApprovalVersion
+        session.status.pendingApprovals = 0
+        session.approvalSnapshots.apply([])
+      }
+      this.disposeNative(session)
     }
 
-    // Pure Node.js Native Noise Gateway heartbeat (zero WebContentsView required).
+    const view = this.views.getView(session.viewId)
+    if (view && !view.webContents.isDestroyed()) session.status.url = view.webContents.getURL()
     if (signedIn && museTransportMode() === 'native' && !this.nativeReady(accountId)) {
       try {
         await this.native.get(accountId).gateway.connect()
       } catch (error) {
-        const cvm = error instanceof MuseGatewayError && error.code === 'cvm_required'
-        if (cvm) {
+        signal.throwIfAborted()
+        if (error instanceof MuseGatewayError && error.code === 'cvm_required') {
           session.status.phaseDetail = 'Muse needs Owner verification (CVM) — finish it in the web session'
           this.materializeDomView(session, true)
         }
       }
+      signal.throwIfAborted()
     }
 
     if (signedIn) {
-      try {
-        if (view && !view.webContents.isDestroyed()) {
-          await this.installHook(accountId)
-        }
-        if (this.nativeReady(accountId)) {
-          session.status.ready = true
-          session.status.phase = 'ready'
-          session.status.phaseDetail = undefined
-          this.ensureChatWatch(accountId)
-          // Unpin any background DOM view once native Noise transport is healthy so idle hibernation can reclaim RAM.
-          if (view) this.views.setPinned(session.viewId, false)
-          const pending = unwrapMuseResult(
-            await this.native.get(accountId).gateway.request('egress.approvals', {})
-          )
-          const list = normalizeApprovals(pending)
-          session.status.pendingApprovals = list.length
-          this.emit({ type: 'approvals', accountId, pending: list })
-        } else if (view && !view.webContents.isDestroyed() && session.status.hook === 'sendRequest') {
-          const pending = await this.rpcRaw(accountId, 'egress.approvals', {})
-          const list = normalizeApprovals(pending)
-          session.status.pendingApprovals = list.length
-          this.emit({ type: 'approvals', accountId, pending: list })
-        }
-      } catch {
-        // Gateway may still be handshaking.
+      if (view && !view.webContents.isDestroyed()) await this.installHook(accountId)
+      signal.throwIfAborted()
+      if (this.nativeReady(accountId)) {
+        session.status.ready = true
+        session.status.phase = 'ready'
+        session.status.phaseDetail = undefined
+        this.ensureChatWatch(accountId)
+        if (view) this.views.setPinned(session.viewId, false)
       }
+      void this.refreshApprovals(accountId)
     } else {
       session.status.ready = false
       session.status.phase = 'signed-out'
       session.status.phaseDetail = 'Sign in to muse.ai in the web session'
     }
 
-    if (view && !view.webContents.isDestroyed()) {
-      await this.watchdog(accountId)
-    }
+    if (view && !view.webContents.isDestroyed()) await this.watchdog(accountId, signal)
+    signal.throwIfAborted()
     this.emitStatus(accountId)
     return session.status
   }
@@ -409,7 +480,7 @@ export class MuseSessionManager {
    *  2. POST /api/hatch/vm/wake {vm_id, retry_count} with backoff,
    *  3. full reload with growing backoff if still not hydrated.
    */
-  private async watchdog(accountId: string): Promise<void> {
+  private async watchdog(accountId: string, signal: AbortSignal): Promise<void> {
     const session = this.sessions.get(accountId)
     const view = session && this.views.getView(session.viewId)
     if (!session || !view || view.webContents.isDestroyed()) return
@@ -440,7 +511,9 @@ export class MuseSessionManager {
     } catch {
       /* page mid-navigation */
     }
+    signal.throwIfAborted()
     if (health.visibility === 'hidden') await applyMuseKeepAlive(view.webContents)
+    signal.throwIfAborted()
     if (health.loginUi) {
       st.phase = 'signed-out'
       st.phaseDetail = 'muse.ai shows the login page'
@@ -460,6 +533,7 @@ export class MuseSessionManager {
       } catch {
         /* ignore */
       }
+      signal.throwIfAborted()
       session.wakeRetry = retry + 1
       session.nextWakeAt = now + Math.min(5_000 * 2 ** retry, 60_000)
       st.phase = 'waking-vm'
@@ -473,7 +547,8 @@ export class MuseSessionManager {
       st.phase = 'reloading'
       st.phaseDetail = 'Reloading muse.ai to rehydrate…'
       await applyMuseKeepAlive(view.webContents)
-      view.webContents.reloadIgnoringCache()
+      signal.throwIfAborted()
+      if (!view.webContents.isDestroyed()) view.webContents.reloadIgnoringCache()
     }
   }
 
@@ -489,8 +564,10 @@ export class MuseSessionManager {
       session.status.phase = 'ready'
       session.status.phaseDetail = undefined
       this.ensureChatWatch(accountId)
-    } else if (error && /cvm|owner/i.test(error)) {
-      session.status.phaseDetail = 'Muse needs Owner verification (CVM) — finish it in the web session'
+    } else if (phase === 'reconnecting' || phase === 'error') {
+      session.status.ready = session.status.hook === 'sendRequest'
+      if (!session.status.ready) session.status.phase = 'connecting'
+      if (error && /cvm|owner/i.test(error)) session.status.phaseDetail = 'Muse needs Owner verification (CVM) — finish it in the web session'
     }
     this.emitStatus(accountId)
   }
@@ -514,57 +591,89 @@ export class MuseSessionManager {
     }
   }
 
-  /** Pull Sentinel approvals and emit (official: query on needs_approval / 5s stale). */
+  /** Pull Sentinel approvals and share one versioned snapshot with the renderer. */
   async refreshApprovals(accountId: string): Promise<void> {
     const session = this.sessions.get(accountId)
-    if (!session) return
+    if (!session || (!this.nativeReady(accountId) && session.status.hook !== 'sendRequest')) return
+    const prevCount = session.status.pendingApprovals
     try {
-      let pending: ReturnType<typeof normalizeApprovals> = []
-      if (this.nativeReady(accountId)) {
-        pending = normalizeApprovals(
-          unwrapMuseResult(await this.native.get(accountId).gateway.request('egress.approvals', {}))
-        )
-      } else if (session.status.hook === 'sendRequest') {
-        pending = normalizeApprovals(await this.rpcRaw(accountId, 'egress.approvals', {}))
-      } else {
-        return
-      }
-      const prevCount = session.status.pendingApprovals
-      session.status.pendingApprovals = pending.length
-      this.emit({ type: 'approvals', accountId, pending })
-      this.emitStatus(accountId)
-      if (pending.length > 0 && pending.length >= prevCount) {
-        const first = pending[0] as { host?: string; title?: string; detail?: string }
-        const label = first?.host || first?.title || '权限请求'
-        this.maybeNotify('Muse 需要确认', String(first?.detail || label))
+      const { pending, approvalVersion } = await this.loadApprovals(session)
+      if (pending.length > prevCount && this.sessions.get(accountId) === session && session.approvalVersion === approvalVersion) {
+        const first = pending[0]
+        this.maybeNotify('Muse 需要确认', String(first?.['detail'] || first?.['host'] || first?.['title'] || '权限请求'))
       }
     } catch (error) {
       console.warn('[muse] refreshApprovals', error instanceof Error ? error.message : error)
     }
   }
 
+  private publishApprovals(session: AccountSession, raw: unknown) {
+    const { accountId } = session
+    const pending = normalizeApprovals(session.approvalSnapshots.apply(raw))
+    const snapshot = {
+      pending, approvalVersion: session.approvalVersion, terminalApprovalIds: session.approvalSnapshots.terminalIds
+    }
+    session.status.pendingApprovals = pending.length
+    this.emit({ type: 'approvals', accountId, ...snapshot })
+    this.emitStatus(accountId)
+    return snapshot
+  }
+
+  private loadApprovals(session: AccountSession): Promise<{ pending: Record<string, unknown>[] } & MuseApprovalStreamMetadata> {
+    if (session.approvalRead) return session.approvalRead
+    const { accountId } = session
+    const { signal } = this.generationFor(accountId).controller
+    const version = ++this.nextApprovalVersion
+    session.approvalVersion = version
+    const request = abortable(signal, async () => {
+      const client = this.native.peek(accountId)
+      const raw = client?.gateway.isReady()
+        ? await client.gateway.request('egress.approvals', {}, undefined, signal)
+        : await this.rpcRaw(accountId, 'egress.approvals', {}, signal)
+      signal.throwIfAborted()
+      if (version !== session.approvalVersion) throw new Error('Muse approval snapshot superseded')
+      if (!raw || typeof raw !== 'object') throw new Error('Invalid Muse approval snapshot')
+      validateApprovalResponse(raw)
+      return this.publishApprovals(session, raw)
+    }).finally(() => {
+      if (session.approvalRead === request) session.approvalRead = undefined
+    })
+    session.approvalRead = request
+    return request
+  }
+
   /** Keep chat.subscribe open for agent.status + spontaneous onboarding bubbles. */
   private ensureChatWatch(accountId: string): void {
-    if (this.chatWatchBound.has(accountId)) return
     const session = this.sessions.get(accountId)
-    if (!session) return
-    const client = this.native.get(accountId)
-    this.chatWatchBound.add(accountId)
-    void client.chat.ensure().then(() => {
-      client.chat.on('event', (e: MuseChatEvent) => this.onChatWatchEvent(accountId, e))
-      if (!session.identitySynced) {
-        session.identitySynced = true
-        void this.syncIdentity(accountId).catch(() => undefined)
-      }
-    }).catch(() => {
-      this.chatWatchBound.delete(accountId)
-    })
+    const client = this.native.peek(accountId)
+    const signal = this.generations.get(accountId)?.controller.signal
+    if (!session || !client || !signal || signal.aborted || session.chatWatch?.client === client) return
+    const listener = (event: MuseChatEvent) => {
+      if (!signal.aborted && this.native.peek(accountId) === client) this.onChatWatchEvent(accountId, event)
+    }
+    const onResumed = () => {
+      if (signal.aborted || session.identitySynced) return
+      session.identitySynced = true
+      void this.syncIdentity(accountId).catch(() => {
+        if (!signal.aborted) session.identitySynced = false
+      })
+    }
+    session.chatWatch = { client, dispose: () => {
+      client.chat.off('event', listener)
+      client.chat.off('resumed', onResumed)
+    } }
+    client.chat.on('event', listener)
+    client.chat.on('resumed', onResumed)
+    void client.chat.ensure().then(onResumed, () => undefined)
   }
 
   async syncIdentity(accountId: string): Promise<MuseIdentityView> {
+    const { signal } = this.generationFor(accountId).controller
     await this.ensure('muse', accountId)
-    const client = this.native.get(accountId)
-    const identity = await fetchMuseIdentitySnapshot(client.gateway, this.partitionFetch(accountId))
+    signal.throwIfAborted()
+    const client = this.native.peek(accountId)
+    if (!client) throw new Error('Muse native client is unavailable')
+    const identity = await abortable(signal, () => fetchMuseIdentitySnapshot(client.gateway, this.partitionFetch(accountId, signal)))
     const session = this.sessions.get(accountId)
     if (session) {
       session.identity = identity
@@ -585,6 +694,7 @@ export class MuseSessionManager {
       this.emit({
         type: 'activity',
         accountId,
+        sessionId: museEventSessionId(p) || undefined,
         activityCode: act.code,
         activityText: act.text ?? undefined,
         activityEmoji: act.emoji ?? undefined,
@@ -607,11 +717,9 @@ export class MuseSessionManager {
     // only emit when we have a botId conversation and the event carries a message id.
     if (this.activeStreams.has(accountId)) return
     const conversationId = session.botId
-    if (!conversationId) return
-    const eventSessionId = typeof p['session_id'] === 'string' ? (p['session_id'] as string) : ''
-    if (session.activeSessionId && eventSessionId && eventSessionId !== session.activeSessionId) {
-      return
-    }
+    if (!conversationId || conversationId === 'muse' || conversationId.startsWith('room-turn-')) return
+    const eventSessionId = museEventSessionId(p)
+    if (!session.activeSessionId || eventSessionId !== session.activeSessionId || session.roomSessions.has(eventSessionId)) return
     const id = typeof p['message_id'] === 'string' ? (p['message_id'] as string) : ''
     if (!id) return
     const watched =
@@ -627,7 +735,6 @@ export class MuseSessionManager {
     const widgets = parseOptionWidgets(p)
     const richWidgets = parseRichWidgets(p)
     const media = parseMediaParts(p)
-    const watchKey = `${accountId}:${id}`
     const display =
       transcriptText(p) ||
       (typeof p['display_text'] === 'string' && p['display_text']) ||
@@ -635,11 +742,12 @@ export class MuseSessionManager {
       ''
     if (e.name === 'delta.tool_done' || e.name === 'tool_call.completed') {
       if (!media.length && !widgets.length && !richWidgets.length) return
-      const body = this.watchTexts.get(watchKey) || ''
+      const body = session.watchTexts.get(id) || ''
       this.emit({
         type: 'stream',
         accountId,
         conversationId,
+        sessionId: eventSessionId,
         messageId: `muse_native_${id}`,
         text: body,
         done: false,
@@ -651,11 +759,12 @@ export class MuseSessionManager {
     }
     if (e.name === 'delta.message_start' || e.name === 'delta.placeholder') {
       const placeholder = e.name === 'delta.placeholder' ? String(p['text'] ?? p['placeholder'] ?? '') : ''
-      this.watchTexts.set(watchKey, placeholder)
+      session.watchTexts.set(id, placeholder)
       this.emit({
         type: 'stream',
         accountId,
         conversationId,
+        sessionId: eventSessionId,
         messageId: `muse_native_${id}`,
         text: placeholder,
         done: false,
@@ -668,12 +777,13 @@ export class MuseSessionManager {
     if (e.name === 'delta.text_append') {
       const chunk = typeof p['text'] === 'string' ? (p['text'] as string) : ''
       if (!chunk) return
-      const next = (this.watchTexts.get(watchKey) ?? '') + chunk
-      this.watchTexts.set(watchKey, next)
+      const next = (session.watchTexts.get(id) ?? '') + chunk
+      session.watchTexts.set(id, next)
       this.emit({
         type: 'stream',
         accountId,
         conversationId,
+        sessionId: eventSessionId,
         messageId: `muse_native_${id}`,
         text: next,
         done: false,
@@ -684,14 +794,15 @@ export class MuseSessionManager {
       return
     }
     if (e.name === 'delta.presentation' || e.name === 'message.assistant' || e.name === 'delta.message_done') {
-      const body = display || this.watchTexts.get(watchKey) || ''
+      const body = display || session.watchTexts.get(id) || ''
       const isDone = e.name === 'message.assistant' || e.name === 'delta.message_done'
-      if (isDone) this.watchTexts.delete(watchKey)
+      if (isDone) session.watchTexts.delete(id)
       if (!body && !widgets.length && !richWidgets.length && !media.length) return
       this.emit({
         type: 'stream',
         accountId,
         conversationId,
+        sessionId: eventSessionId,
         messageId: `muse_native_${id}`,
         text: body,
         done: isDone,
@@ -710,9 +821,10 @@ export class MuseSessionManager {
     return museTransportMode() === 'native' && Boolean(this.native.peek(accountId)?.gateway.isReady())
   }
 
-  private async hasSessionCookie(accountId: string): Promise<boolean> {
+  private async hasSessionCookie(accountId: string, signal?: AbortSignal): Promise<boolean> {
     const ses = electronSession.fromPartition(partitionForAccount(accountId))
-    return hasNonEmptyHatchSession(await ses.cookies.get({ name: 'hatch_sess' }))
+    const read = () => ses.cookies.get({ name: 'hatch_sess' })
+    return hasNonEmptyHatchSession(await (signal ? abortable(signal, read) : read()))
   }
 
   /**
@@ -720,9 +832,8 @@ export class MuseSessionManager {
    * Returns `'rejected'` ONLY on an explicit 401/403; transient network/5xx errors
    * return `'inconclusive'` so login isn't blocked by a momentary upstream hiccup.
    */
-  private async verifyAuthCheck(accountId: string, cleanUa: string): Promise<'ok' | 'rejected' | 'inconclusive'> {
+  private async verifyAuthCheck(ses: Electron.Session, cleanUa: string, signal: AbortSignal): Promise<'ok' | 'rejected' | 'inconclusive'> {
     try {
-      const ses = electronSession.fromPartition(partitionForAccount(accountId))
       const res = await ses.fetch(`${MUSE_ORIGIN}/api/auth/check`, {
         method: 'POST',
         headers: {
@@ -732,7 +843,8 @@ export class MuseSessionManager {
           Referer: `${MUSE_ORIGIN}/`,
           'User-Agent': cleanUa
         },
-        body: '{}'
+        body: '{}',
+        signal
       })
       if (res.status === 401 || res.status === 403) return 'rejected'
       if (res.ok) {
@@ -751,110 +863,107 @@ export class MuseSessionManager {
   }
 
   /** Native path; returns undefined when the caller should fall back to the hook. */
-  private async rpcNative(
-    accountId: string,
-    method: string,
-    params: unknown,
-    conversationId?: string
-  ): Promise<{ value: unknown } | undefined> {
+  private async rpcNative(accountId: string, method: string, params: unknown): Promise<{ value: unknown } | undefined> {
     if (museTransportMode() !== 'native') return undefined
-    if (!(await this.hasSessionCookie(accountId))) return undefined
+    const generation = this.generationFor(accountId)
+    const { signal } = generation.controller
+    if (generation.rebinding) await abortable(signal, () => generation.rebinding!)
+    if (!(await this.hasSessionCookie(accountId, signal))) return undefined
+    signal.throwIfAborted()
     const client = this.native.get(accountId)
     try {
-      await client.gateway.connect()
+      await abortable(signal, () => client.gateway.connect())
     } catch (error) {
-      const cvm = error instanceof MuseGatewayError && error.code === 'cvm_required'
-      console.warn('[muse] native connect failed; using hook', cvm ? 'cvm_required' : (error as Error).message)
+      signal.throwIfAborted()
       const session = this.sessions.get(accountId)
-      if (cvm && session) {
+      if (session && error instanceof MuseGatewayError && error.code === 'cvm_required') {
         session.status.phaseDetail = 'Muse needs Owner verification (CVM) — finish it in the web session'
         this.emitStatus(accountId)
       }
       return undefined
     }
-    if (method === 'chat.stream') {
-      return { value: await this.nativeChatStream(accountId, params, conversationId) }
-    }
     const p = params && typeof params === 'object' ? (params as Record<string, unknown>) : {}
-    return { value: unwrapMuseResult(await client.gateway.request(method, p)) }
+    return { value: unwrapMuseResult(await client.gateway.request(method, p, undefined, signal)) }
   }
 
-  private async nativeChatStream(accountId: string, params: unknown, conversationId?: string): Promise<unknown> {
-    this.ensureChatWatch(accountId)
-    const client = this.native.get(accountId)
-    const text = extractChatText(params)
-    const p = params && typeof params === 'object' ? (params as Record<string, unknown>) : {}
-    const sessionId = typeof p['session_id'] === 'string' ? (p['session_id'] as string) : undefined
-    const accountSession = this.sessions.get(accountId)
-    const isRoomTurn = Boolean(conversationId?.startsWith('room-turn-'))
-    if (accountSession && sessionId && !isRoomTurn) accountSession.activeSessionId = sessionId
-    const messageOrigin =
-      p['message_origin'] && typeof p['message_origin'] === 'object'
-        ? (p['message_origin'] as Record<string, unknown>)
-        : undefined
-    const ids = new Map<string, string>()
-    let last = ''
-    let lastId = ''
-    // A follow-up only stops listening to the previous turn locally; it must
-    // not cancel that turn on the server (the user did not press Stop).
-    this.activeStreams.get(accountId)?.abort(MUSE_STREAM_SUPERSEDED)
-    const ctrl = new AbortController()
-    this.activeStreams.set(accountId, ctrl)
+  private async runTurn(
+    accountId: string,
+    conversationId: string | undefined,
+    sessionId: string | undefined,
+    id: string | undefined,
+    run: (turn: ChatTurn, signal: AbortSignal) => Promise<unknown>
+  ): Promise<unknown> {
+    const generation = this.generationFor(accountId)
+    this.activeStreams.get(accountId)?.controller.abort(MUSE_STREAM_SUPERSEDED)
+    const room = Boolean(conversationId?.startsWith('room-turn-'))
+    const turn: ChatTurn = { id, conversationId, sessionId, controller: new AbortController(), generation, room }
+    this.activeStreams.set(accountId, turn)
+    generation.latestTurn = turn
+    const deadline = createMuseTurnDeadline({ signal: AbortSignal.any([turn.controller.signal, generation.controller.signal]) })
     try {
-      const result = await streamChat(
-        client.gateway,
-        client.chat,
-        {
-          text,
-          nodeId: client.nodeId,
-          sessionId,
-          messageOrigin,
-          items: extractChatItems(params),
-          onAck: () => this.emit({ type: 'sent', accountId, conversationId })
-        },
-        (u) => {
-          let id = ids.get(u.messageId)
-          if (!id) {
-            id = `muse_native_${u.messageId}`
-            ids.set(u.messageId, id)
-          }
-          last = u.text
-          lastId = id
-          if (conversationId) {
-            this.emit({
-              type: 'stream',
-              accountId,
-              conversationId,
-              messageId: id,
-              text: u.text,
-              done: u.done,
-              widgets: this.mapStreamWidgets(u.widgets),
-              richWidgets: u.richWidgets,
-              tools: u.tools,
-              media: u.media
-            })
-            if (u.done && u.text.trim()) {
-              this.maybeNotify('Muse', u.text.trim().slice(0, 120))
-            }
-          }
-        },
-        { timeoutMs: 600_000, settleMs: 1500, signal: ctrl.signal }
-      )
-      const resolvedSessionId =
-        result.sessionId ?? (typeof result.ack['session_id'] === 'string' ? (result.ack['session_id'] as string) : undefined)
-      if (accountSession && resolvedSessionId && !isRoomTurn) accountSession.activeSessionId = resolvedSessionId
-      const reply = result.text || last
-      return {
-        ...result.ack,
-        session_id: resolvedSessionId,
-        text: reply,
-        display_text: reply,
-        reply,
-        assistant_message_id: lastId || undefined
-      }
+      return await abortable(deadline.signal, () => run(turn, deadline.signal))
+    } catch (error) {
+      if (isMuseStop(deadline.signal)) throw new DOMException('Muse turn stopped', 'AbortError')
+      if (deadline.signal.reason === MUSE_STREAM_SUPERSEDED) throw new Error('Muse turn superseded')
+      throw error
     } finally {
-      if (this.activeStreams.get(accountId) === ctrl) this.activeStreams.delete(accountId)
+      deadline.dispose()
+      if (this.activeStreams.get(accountId) === turn) this.activeStreams.delete(accountId)
     }
+  }
+
+  private acceptTurn(accountId: string, turn: ChatTurn, sessionId?: string): void {
+    if (sessionId) this.bindTurnSession(accountId, turn, sessionId)
+    if (this.activeStreams.get(accountId) !== turn) return
+    this.emit({ type: 'sent', accountId, conversationId: turn.conversationId, sendId: turn.id, sessionId: turn.sessionId })
+  }
+
+  private bindTurnSession(accountId: string, turn: ChatTurn, sessionId: string): void {
+    if (this.activeStreams.get(accountId) !== turn) return
+    turn.sessionId = sessionId
+    const session = this.sessions.get(accountId)
+    if (!session) return
+    if (turn.room) session.roomSessions.add(sessionId)
+    else this.selectDirectSession(session, sessionId)
+  }
+
+  private selectDirectSession(session: AccountSession, id: string): void {
+    if (session.activeSessionId !== id) session.watchTexts.clear()
+    session.roomSessions.delete(id)
+    session.activeSessionId = id
+  }
+
+  private async nativeChatStream(
+    client: MuseNativeClient,
+    turn: ChatTurn,
+    signal: AbortSignal,
+    params: Record<string, unknown>
+  ): Promise<unknown> {
+    const { accountId } = client
+    const { conversationId, sessionId } = turn
+    let lastId: string | undefined
+    const result = await streamChat(client.gateway, client.chat, {
+      text: extractChatText(params),
+      nodeId: client.nodeId,
+      sessionId,
+      messageOrigin: params['message_origin'] && typeof params['message_origin'] === 'object'
+        ? (params['message_origin'] as Record<string, unknown>) : undefined,
+      items: extractChatItems(params),
+      onAck: (resolved) => this.acceptTurn(accountId, turn, resolved),
+      onSessionId: (resolved) => this.bindTurnSession(accountId, turn, resolved),
+      canCancel: () => turn.generation.latestTurn === turn && !turn.generation.controller.signal.aborted
+    }, (update) => {
+      const messageId = `muse_native_${update.messageId}`
+      lastId = messageId
+      if (!conversationId) return
+      this.emit({
+        type: 'stream', accountId, conversationId, sendId: turn.id, sessionId: turn.sessionId, messageId,
+        text: update.text, done: update.done, widgets: this.mapStreamWidgets(update.widgets),
+        richWidgets: update.richWidgets, tools: update.tools, media: update.media
+      })
+      if (update.done && update.text.trim()) this.maybeNotify('Muse', update.text.trim().slice(0, 120))
+    }, { deadline: signal, settleMs: 1500 })
+    return { ...result.ack, session_id: result.sessionId, text: result.text, assistant_message_id: lastId }
   }
 
   async selectOption(
@@ -868,104 +977,58 @@ export class MuseSessionManager {
       sessionId?: string
     }
   ): Promise<unknown> {
-    this.ensureChatWatch(accountId)
-    const client = this.native.get(accountId)
-    const hostId = args.hostMessageId.replace(/^muse_native_/, '')
-    const ids = new Map<string, string>()
-    let last = ''
-    let lastId = ''
-    const result = await selectOptionWidget(
-      client.gateway,
-      client.chat,
-      {
-        nodeId: client.nodeId,
-        sessionId: args.sessionId,
-        hostMessageId: hostId,
-        widget: args.widget,
-        selectedText: args.selectedText,
-        optionIndex: args.optionIndex
-      },
-      (u) => {
-        let id = ids.get(u.messageId)
-        if (!id) {
-          id = `muse_native_${u.messageId}`
-          ids.set(u.messageId, id)
-        }
-        last = u.text
-        lastId = id
+    const sessionId = args.sessionId ?? this.sessions.get(accountId)?.activeSessionId
+    return this.runTurn(accountId, args.conversationId, sessionId, undefined, async (turn, signal) => {
+      await this.prepareSession(args.conversationId, accountId, signal)
+      if (!(await this.hasSessionCookie(accountId, signal))) throw new Error('Muse account is not signed in')
+      signal.throwIfAborted()
+      const client = this.native.get(accountId)
+      let lastId: string | undefined
+      const result = await selectOptionWidget(client.gateway, client.chat, {
+        nodeId: client.nodeId, sessionId, hostMessageId: args.hostMessageId.replace(/^muse_native_/, ''),
+        widget: args.widget, selectedText: args.selectedText, optionIndex: args.optionIndex,
+        onAck: (resolved) => this.acceptTurn(accountId, turn, resolved),
+        onSessionId: (resolved) => this.bindTurnSession(accountId, turn, resolved),
+        canCancel: () => turn.generation.latestTurn === turn && !turn.generation.controller.signal.aborted
+      }, (u) => {
+        lastId = `muse_native_${u.messageId}`
         this.emit({
-          type: 'stream',
-          accountId,
-          conversationId: args.conversationId,
-          messageId: id,
-          text: u.text,
-          done: u.done,
-          widgets: this.mapStreamWidgets(u.widgets),
-          richWidgets: u.richWidgets,
-          tools: u.tools,
-          media: u.media
+          type: 'stream', accountId, conversationId: args.conversationId, sessionId: turn.sessionId, messageId: lastId,
+          text: u.text, done: u.done, widgets: this.mapStreamWidgets(u.widgets), richWidgets: u.richWidgets,
+          tools: u.tools, media: u.media
         })
-      },
-      { timeoutMs: 600_000, settleMs: 1500 }
-    )
-    const reply = result.text || last
-    return { ...result.ack, text: reply, display_text: reply, reply, assistant_message_id: lastId || undefined }
+      }, { deadline: signal, settleMs: 1500 })
+      return { ...result.ack, text: result.text, assistant_message_id: lastId }
+    })
   }
 
+  async previewWorkspaceFile(accountId: string, path: string): Promise<MuseWorkspaceFile> {
+    return this.readWorkspaceFile(accountId, path, false)
+  }
 
-  /** Preview a workspace file via fs.raw (binary) or authenticated Muse HTTP URL. Caps ~8MiB for UI. */
-  async previewWorkspaceFile(
-    accountId: string,
-    path: string
-  ): Promise<{ path: string; mimeType: string; dataBase64: string; byteLength: number }> {
+  private async readWorkspaceFile(accountId: string, path: string, download: boolean): Promise<MuseWorkspaceFile> {
+    const generation = this.generationFor(accountId)
+    const { signal } = generation.controller
+    if (generation.rebinding) await abortable(signal, () => generation.rebinding!)
     const trimmed = path.trim()
-    const isHttpUrl = /^https?:\/\//i.test(trimmed)
-    const isFsRawHttpUrl = /^https?:\/\/[^/]+\/fs\/raw\//i.test(trimmed)
-
-    const fetchViaSession = async (url: string) => {
-      const ses = electronSession.fromPartition(partitionForAccount(accountId))
-      const res = await ses.fetch(url, { method: 'GET' })
-      if (!res.ok) throw new Error(`HTTP ${res.status} fetching Muse media`)
-      const buf = new Uint8Array(await res.arrayBuffer())
-      const maxBytes = /\.(mp4|m4v|webm|mov|mkv|avi|mp3|wav|m4a|ogg|flac)(?:[?#].*)?$/i.test(url)
-        ? 32 * 1024 * 1024
-        : 8 * 1024 * 1024
-      const clipped = buf.byteLength > maxBytes ? buf.subarray(0, maxBytes) : buf
-      const mimeType = inferMediaMime({
-        headerMime: res.headers.get('content-type') ?? undefined,
-        nameOrPath: url,
-        bytes: clipped
-      })
-      return {
-        path: url,
-        mimeType,
-        dataBase64: Buffer.from(clipped).toString('base64'),
-        byteLength: clipped.byteLength
-      }
-    }
-
-    if (isHttpUrl && !isFsRawHttpUrl) {
-      return fetchViaSession(trimmed)
-    }
-
-    if (!this.native.peek(accountId) && !(await this.hasSessionCookie(accountId))) {
-      if (isHttpUrl) return fetchViaSession(trimmed)
+    const isHttp = /^https?:\/\//i.test(trimmed)
+    const isFsRaw = /^https?:\/\/[^/]+\/fs\/raw\//i.test(trimmed)
+    const fetchViaSession = () => fetchHttpWorkspaceFile(this.partitionFetch(accountId, signal), trimmed, download)
+    if (isHttp && !isFsRaw) return abortable(signal, fetchViaSession)
+    if (!(await this.hasSessionCookie(accountId, signal))) {
+      if (isHttp) return abortable(signal, fetchViaSession)
       throw new Error('Muse account is not signed in')
     }
-
-    await this.ensure('muse', accountId)
+    await this.prepareSession('muse', accountId, signal)
     const client = this.native.get(accountId)
-    if (!client) {
-      if (isHttpUrl) return fetchViaSession(trimmed)
-      throw new Error('Muse native client not ready')
-    }
     try {
-      return await fetchFsRawPreview(client.gateway, trimmed)
-    } catch (err) {
-      if (isHttpUrl) {
-        return fetchViaSession(trimmed)
-      }
-      throw err
+      return await abortable(signal, () => download
+        ? downloadFsRawFile(client.gateway, trimmed)
+        : fetchFsRawPreview(client.gateway, trimmed))
+    } catch (error) {
+      signal.throwIfAborted()
+      if (isHttp) return abortable(signal, fetchViaSession)
+      throw error
     }
   }
 
@@ -977,198 +1040,233 @@ export class MuseSessionManager {
     accountId: string,
     args: { filename: string; mimeType: string; dataBase64: string }
   ): Promise<{ path: string; filename: string; mimeType: string }> {
-    await this.ensure('muse', accountId)
+    const { signal } = this.generationFor(accountId).controller
+    await this.prepareSession('muse', accountId, signal)
+    if (!(await this.hasSessionCookie(accountId, signal))) throw new Error('Muse account is not signed in')
+    signal.throwIfAborted()
     const client = this.native.get(accountId)
-    if (!client) throw new Error('Muse native client not ready')
     const bytes = Buffer.from(args.dataBase64, 'base64')
     const path = buildWorkspaceUploadPath(args.filename || 'file')
     const uploaded = await uploadWorkspaceFile(client.gateway, path, new Uint8Array(bytes), {
-      stageBeforePublish: true
+      stageBeforePublish: true, signal
     })
     return { path: uploaded, filename: args.filename || 'file', mimeType: args.mimeType || 'application/octet-stream' }
   }
 
-  /** Re-apply stored proxy to live Noise client (session.setProxy already applied in save). */
-  async applyAccountProxy(accountId: string): Promise<void> {
-    const client = this.native.peek(accountId)
-    if (!client) return
-    const agent = await createProxyAgent(accountId)
-    client.gateway.reconnectWithProxyAgent(agent)
+  /** Invalidate work using the old proxy and hold new connections until the new rules apply. */
+  pauseAccountProxy(accountId: string): () => void {
+    if (this.disposed) return () => undefined
+    const previous = this.generations.get(accountId)?.rebinding
+    this.invalidateGeneration(accountId, 'Muse account proxy updated')
+    const generation = this.generationFor(accountId)
+    let release!: () => void
+    const own = new Promise<void>((resolve) => { release = resolve })
+    const pending = previous ? Promise.allSettled([previous, own]).then(() => undefined) : own
+    generation.rebinding = pending
+    const session = this.sessions.get(accountId)
+    if (session) {
+      this.disposeNative(session)
+      clearInterval(session.quotaTimer)
+      session.quotaTimer = undefined
+      session.hookInstall = undefined
+      session.approvalRead = undefined
+      session.quotaRead = undefined
+      session.status.ready = false
+      session.status.phase = 'connecting'
+      session.status.phaseDetail = undefined
+      this.emitStatus(accountId)
+    } else {
+      this.native.dispose(accountId)
+    }
+    return () => {
+      release()
+      void pending.then(() => {
+        if (generation.rebinding === pending) generation.rebinding = undefined
+        if (!generation.controller.signal.aborted) void this.refreshSession(accountId).catch(() => undefined)
+      })
+    }
   }
-
 
   async rpc(
     accountId: string,
     method: string,
     params?: unknown,
-    conversationId?: string
+    conversationId?: string,
+    sendId?: string
   ): Promise<unknown> {
-    await this.ensure('muse', accountId)
-    const viaNative = await this.rpcNative(accountId, method, params, conversationId)
-    if (viaNative) return viaNative.value
-    if (method === 'chat.stream') {
-      // Legacy hook shape (page client fills the real device context).
-      const legacy = { node_id: accountId, capabilities: {}, ...((params as Record<string, unknown>) ?? {}) }
-      return this.chatStreamAndCollect(accountId, legacy, conversationId)
+    if (method === MUSE_WORKSPACE_DOWNLOAD) {
+      const path = (params as { path?: unknown } | null)?.path
+      if (typeof path !== 'string') throw new TypeError('Invalid workspace download path')
+      return this.readWorkspaceFile(accountId, path, true)
     }
-    return this.rpcRaw(accountId, method, params)
+    if (method === 'chat.stream') {
+      const body = params && typeof params === 'object' ? params as Record<string, unknown> : {}
+      const sessionId = typeof body['session_id'] === 'string' ? body['session_id'] : undefined
+      return this.runTurn(accountId, conversationId, sessionId, sendId, async (turn, signal) => {
+        const directBot = !turn.room && conversationId ? conversationId : 'muse'
+        const session = await this.prepareSession(directBot, accountId, signal)
+        signal.throwIfAborted()
+        if (turn.room && sessionId) session.roomSessions.add(sessionId)
+        if (museTransportMode() === 'native' && await this.hasSessionCookie(accountId, signal)) {
+          const client = this.native.get(accountId)
+          let nativeReady = false
+          try {
+            await abortable(signal, () => client.gateway.connect())
+            nativeReady = true
+          } catch (error) {
+            signal.throwIfAborted()
+            console.warn('[muse] native connect failed; using hook', error instanceof Error ? error.message : error)
+          }
+          if (nativeReady) return this.nativeChatStream(client, turn, signal, body)
+        }
+        const legacy = { node_id: accountId, capabilities: {}, ...body }
+        return this.chatStreamAndCollect(accountId, legacy, turn, signal)
+      })
+    }
+    if (method === 'chat.stop_turn') {
+      if (!sendId) throw new TypeError('Invalid Muse send ID')
+      await this.cancelChat(accountId, undefined, sendId)
+      return { ok: true }
+    }
+    const { signal } = this.generationFor(accountId).controller
+    await this.ensure('muse', accountId)
+    signal.throwIfAborted()
+    const session = this.sessions.get(accountId)
+    if (method === 'egress.approvals' && session && (!params || Object.keys(params).length === 0)) return this.loadApprovals(session)
+    const viaNative = await this.rpcNative(accountId, method, params)
+    signal.throwIfAborted()
+    const result = viaNative ? viaNative.value : await abortable(signal, () => this.rpcRaw(accountId, method, params, signal))
+    if (method === 'egress.approval.decide' && session && params && typeof params === 'object') {
+      validateApprovalResponse(result)
+      const id = (params as Record<string, unknown>)['approval_id']
+      if (typeof id === 'string') {
+        session.approvalVersion = ++this.nextApprovalVersion
+        session.approvalRead = undefined
+        session.approvalSnapshots.resolve(id)
+        this.publishApprovals(session, session.approvalSnapshots.pending)
+      }
+    }
+    return result
   }
 
-  /**
-   * chat.stream is streamMode=subscription: the RPC ack is only
-   * {message_id,session_id}. Poll chat.history for the assistant reply until
-   * display_text_ready (or the text stops growing).
-   */
   private async chatStreamAndCollect(
     accountId: string,
-    params: unknown,
-    conversationId?: string
+    params: Record<string, unknown>,
+    turn: ChatTurn,
+    signal: AbortSignal
   ): Promise<unknown> {
-    const ack = (await this.rpcRaw(accountId, 'chat.stream', params)) as Record<string, unknown>
-
-    // DOM fallback path already scraped page text.
-    if (ack && ack['ok'] === true && ack['mode'] === 'dom') {
-      const reply = typeof ack['reply'] === 'string' ? (ack['reply'] as string) : ''
-      if (conversationId) {
-        this.emit({
-          type: 'stream',
-          accountId,
-          conversationId,
-          messageId: `muse_dom_${Date.now().toString(36)}`,
-          text: reply,
-          done: true
+    const { conversationId } = turn
+    const startedAt = Date.now()
+    let dispatched = false
+    const cancelUpstream = (sessionId: string) => {
+      if (turn.generation.latestTurn !== turn || turn.generation.controller.signal.aborted) return
+      void this.rpcRaw(accountId, 'chat.cancel', { session_id: sessionId }, turn.generation.controller.signal).catch(() => undefined)
+    }
+    const onAbort = () => {
+      if (isMuseStop(signal) && dispatched && turn.sessionId) cancelUpstream(turn.sessionId)
+    }
+    signal.addEventListener('abort', onAbort, { once: true })
+    try {
+      const ack = await abortable(signal, async () => {
+        const raw = await this.rpcRaw(accountId, 'chat.stream', params, signal, () => { dispatched = true }, turn.room)
+        const value = unwrapMuseResult(raw) as Record<string, unknown> | null
+        if (isMuseStop(signal) && !turn.sessionId && typeof value?.['session_id'] === 'string') cancelUpstream(value['session_id'])
+        return value
+      })
+      const streamMessageId = `muse_stream_${randomUUID()}`
+      const emitReply = (text: string, done: boolean) => {
+        if (!signal.aborted && conversationId) this.emit({
+          type: 'stream', accountId, conversationId, sendId: turn.id, sessionId: turn.sessionId,
+          messageId: streamMessageId, text, done
         })
       }
-      return { ...ack, text: reply, display_text: reply, reply }
+      if (ack?.['ok'] === true && ack['mode'] === 'dom') {
+        const reply = typeof ack['reply'] === 'string' ? ack['reply'] : ''
+        this.acceptTurn(accountId, turn)
+        emitReply(reply, true)
+        return { ...ack, text: reply, assistant_message_id: streamMessageId }
+      }
+      const sessionId = typeof ack?.['session_id'] === 'string' ? ack['session_id'] : turn.sessionId
+      const messageId = typeof ack?.['message_id'] === 'string' ? ack['message_id'] : undefined
+      if (sessionId && turn.sessionId && sessionId !== turn.sessionId) throw new Error('Muse acknowledged a different chat session')
+      if (messageId) this.acceptTurn(accountId, turn, sessionId)
+      if (!sessionId || !messageId) return ack
+      emitReply('', false)
+      const reply = await this.waitForAssistantReply(accountId, sessionId, messageId, startedAt, signal, (text) => emitReply(text, false))
+      emitReply(reply, true)
+      return { ...ack, session_id: sessionId, text: reply, assistant_message_id: streamMessageId }
+    } finally {
+      signal.removeEventListener('abort', onAbort)
     }
-
-    const sessionId = typeof ack?.['session_id'] === 'string' ? (ack['session_id'] as string) : ''
-    const messageId = typeof ack?.['message_id'] === 'string' ? (ack['message_id'] as string) : ''
-    if (!sessionId || !messageId) {
-      return ack
-    }
-
-    // Keep a stable BotHub-side id for progressive UI updates (do not switch to
-    // muse message ids mid-stream — that would create duplicate bubbles).
-    const streamMessageId = `muse_stream_${Date.now().toString(36)}`
-    if (conversationId) {
-      this.emit({
-        type: 'stream',
-        accountId,
-        conversationId,
-        messageId: streamMessageId,
-        text: '',
-        done: false
-      })
-    }
-
-    const reply = await this.waitForAssistantReply(accountId, sessionId, messageId, 180_000, (info) => {
-      if (!conversationId || !info.text) return
-      this.emit({
-        type: 'stream',
-        accountId,
-        conversationId,
-        messageId: streamMessageId,
-        text: info.text,
-        done: false
-      })
-    })
-
-    if (conversationId) {
-      this.emit({
-        type: 'stream',
-        accountId,
-        conversationId,
-        messageId: streamMessageId,
-        text: reply,
-        done: true
-      })
-    }
-
-    if (!reply) return ack
-    return { ...ack, text: reply, display_text: reply, reply, assistant_message_id: streamMessageId }
   }
 
   private async waitForAssistantReply(
     accountId: string,
     sessionId: string,
     userMessageId: string,
-    timeoutMs = 180_000,
-    onProgress?: (info: { messageId: string; text: string }) => void
+    startedAt: number,
+    signal: AbortSignal,
+    onProgress: (text: string) => void
   ): Promise<string> {
-    const started = Date.now()
-    let userAt = 0
+    const deadline = startedAt + 180_000
     let best = ''
-    let bestId = ''
-    let stableMs = 0
-    let lastChangeAt = Date.now()
-    const pollMs = 600
-
-    while (Date.now() - started < timeoutMs) {
-      let hist: unknown
+    let lastChangeAt = startedAt
+    while (Date.now() < deadline) {
       try {
-        hist = await this.rpcRaw(accountId, 'chat.history', { session_id: sessionId, limit: 40 })
-      } catch {
-        await sleep(pollMs)
-        continue
-      }
-      const events = extractChatEvents(hist)
-      if (!userAt) {
-        const userEvt = events.find((e) => e.messageId === userMessageId)
-        if (userEvt) userAt = userEvt.occurredAt
-      }
-      const assistants = events.filter(
-        (e) =>
-          e.eventName === 'message.assistant' &&
-          e.text.trim() &&
-          (userAt ? e.occurredAt >= userAt : e.messageId !== userMessageId)
-      )
-      // Newest assistant after the user turn.
-      assistants.sort((a, b) => b.occurredAt - a.occurredAt)
-      const top = assistants[0]
-      if (top) {
-        if (top.text !== best) {
+        const history = await abortable(signal, () => this.rpcRaw(accountId, 'chat.history', { session_id: sessionId, limit: 40 }, signal))
+        const rows = historyAssistantsAfterTurn(history, { ackUserMessageId: userMessageId, turnStartedAtMs: startedAt })
+        const top = rows.at(-1)
+        if (top?.text && top.text !== best) {
           best = top.text
-          bestId = top.messageId
           lastChangeAt = Date.now()
-          stableMs = 0
-          onProgress?.({ messageId: bestId, text: best })
-        } else {
-          stableMs = Date.now() - lastChangeAt
+          onProgress(best)
         }
-        // display_text_ready flips true on the FIRST paintable chunk — it does
-        // NOT mean streaming finished. Wait for payload.status === completed.
-        if (top.completed) return best
-        // Safety net: text unchanged for a long time after we have content and
-        // updatedAt also stopped moving (history often jumps once at the end).
-        if (best.length > 0 && stableMs >= 45_000) return best
+        if (top?.completed && best) return best
+      } catch {
+        signal.throwIfAborted()
       }
-      await sleep(pollMs)
+      if (best && Date.now() - lastChangeAt >= 45_000) return best
+      await delay(600, undefined, { signal })
     }
     return best
   }
 
-  private async rpcRaw(accountId: string, method: string, params?: unknown): Promise<unknown> {
+  private async rpcRaw(
+    accountId: string, method: string, params?: unknown, signal?: AbortSignal, onDispatch?: () => void, room = false
+  ): Promise<unknown> {
+    signal?.throwIfAborted()
     const session = this.sessions.get(accountId)
     if (!session) throw new Error(`No muse session for ${accountId}`)
-    if (!this.views.getView(session.viewId)) {
-      this.materializeDomView(session, true)
-    }
+    const lifetime = this.generations.get(accountId)?.controller.signal
+    if (!this.views.getView(session.viewId)) this.materializeDomView(session, true)
     const view = this.views.getView(session.viewId)
     if (!view) throw new Error(`No muse web view for ${accountId}`)
-
     await this.installHook(accountId)
+    signal?.throwIfAborted()
+    lifetime?.throwIfAborted()
+    if (this.views.getView(session.viewId) !== view || view.webContents.isDestroyed()) throw new Error('Muse web view changed')
 
-    if (session.status.hook !== 'sendRequest') {
-      if (method === 'chat.stream') {
-        const text = extractChatText(params)
-        return view.webContents.executeJavaScript(museDomSendScript(text), true)
+    const sendDom = () => {
+      signal?.throwIfAborted()
+      if (params && typeof params === 'object' && typeof (params as Record<string, unknown>)['session_id'] === 'string') {
+        throw new Error('Muse DOM fallback cannot send to an explicit session')
       }
+      if (room) throw new Error('Muse DOM fallback cannot open an isolated room session')
+      onDispatch?.()
+      return view.webContents.executeJavaScript(museDomSendScript(extractChatText(params)), true)
+    }
+    if (session.status.hook !== 'sendRequest') {
+      if (method === 'chat.stream') return sendDom()
       throw new Error(`Muse sendRequest unavailable (hook=${session.status.hook}); method ${method} needs gateway`)
     }
 
-    const paramsJson = JSON.stringify(params ?? {})
-    return view.webContents.executeJavaScript(museRpcScript(method, paramsJson), true)
+    try {
+      onDispatch?.()
+      return await view.webContents.executeJavaScript(museRpcScript(method, JSON.stringify(params ?? {})), true)
+    } catch (error) {
+      if (method === 'chat.stream' && error instanceof Error && /sendRequest not found; use DOM fallback/.test(error.message)) return sendDom()
+      throw error
+    }
   }
 
   async sendChat(accountId: string, conversationId: string, text: string): Promise<{ messageId: string }> {
@@ -1213,40 +1311,62 @@ export class MuseSessionManager {
     }
   }
 
-  destroyAccount(accountId: string): void {
-    this.native.dispose(accountId)
-    const session = this.sessions.get(accountId)
-    if (!session) return
-    if (session.pollTimer) clearInterval(session.pollTimer)
-    if (session.quotaTimer) clearInterval(session.quotaTimer)
-    try {
-      session.tasksSubCancel?.('dispose')
-      session.filesSubCancel?.('dispose')
-      session.artifactsSubCancel?.('dispose')
-    } catch {
-      /* ignore */
+  private invalidateGeneration(accountId: string, reason: string): void {
+    const generation = this.generations.get(accountId)
+    this.generations.delete(accountId)
+    this.activeStreams.delete(accountId)
+    generation?.controller.abort(new MuseGatewayError(reason, 'closed'))
+  }
+
+  private disposeNative(session: AccountSession): void {
+    session.chatWatch?.dispose()
+    session.chatWatch = undefined
+    session.watchTexts.clear()
+    for (const subscription of session.subscriptions.values()) {
+      subscription.disposed = true
+      subscription.cancel?.('disposed')
     }
-    this.views.destroy(session.viewId)
+    session.subscriptions.clear()
+    this.native.dispose(session.accountId)
+  }
+
+  private teardownSession(accountId: string): void {
+    const session = this.sessions.get(accountId)
     this.sessions.delete(accountId)
+    if (session) {
+      clearInterval(session.pollTimer)
+      clearInterval(session.quotaTimer)
+      this.disposeNative(session)
+      this.views.destroy(session.viewId)
+    } else {
+      this.native.dispose(accountId)
+    }
+  }
+
+  destroyAccount(accountId: string): void {
+    this.autoLogins.get(accountId)?.abort()
+    this.autoLogins.delete(accountId)
+    const win = this.loginWindows.get(accountId)
+    this.loginWindows.delete(accountId)
+    if (win && !win.isDestroyed()) win.destroy()
+    this.invalidateGeneration(accountId, 'Muse account disposed')
+    this.teardownSession(accountId)
   }
 
   destroyAll(): void {
-    for (const ac of this.autoLogins.values()) ac.abort()
-    this.autoLogins.clear()
-    for (const ac of this.activeStreams.values()) ac.abort()
-    this.activeStreams.clear()
-    for (const win of this.loginWindows.values()) {
-      if (!win.isDestroyed()) win.destroy()
-    }
-    this.loginWindows.clear()
-    for (const accountId of [...this.sessions.keys()]) {
-      this.destroyAccount(accountId)
-    }
+    this.disposed = true
+    const ids = new Set([...this.generations.keys(), ...this.sessions.keys(), ...this.autoLogins.keys(), ...this.loginWindows.keys()])
+    for (const accountId of ids) this.destroyAccount(accountId)
+    this.listeners.clear()
   }
 
-  private partitionFetch(accountId: string) {
+  private partitionFetch(accountId: string, signal?: AbortSignal) {
     const ses = electronSession.fromPartition(partitionForAccount(accountId))
-    return (url: string, init?: RequestInit) => ses.fetch(url, init)
+    return async (url: string, init?: RequestInit) => {
+      const requestSignal = signal && init?.signal ? AbortSignal.any([signal, init.signal]) : signal ?? init?.signal
+      requestSignal?.throwIfAborted()
+      return ses.fetch(url, { ...init, signal: requestSignal })
+    }
   }
 
   getQuota(accountId: string): MuseQuotaSnapshot | null {
@@ -1255,52 +1375,47 @@ export class MuseSessionManager {
 
   async refreshQuota(accountId: string): Promise<MuseQuotaSnapshot> {
     const session = this.sessions.get(accountId)
+    if (session?.quotaRead) return session.quotaRead
+    const { signal } = this.generationFor(accountId).controller
+    const request = abortable(signal, () => this.loadQuota(accountId, session, signal)).finally(() => {
+      if (session?.quotaRead === request) session.quotaRead = undefined
+    })
+    if (session) session.quotaRead = request
+    return request
+  }
+
+  private async loadQuota(accountId: string, session: AccountSession | undefined, signal: AbortSignal): Promise<MuseQuotaSnapshot> {
     const prev = session?.quota
+    const publish = (snapshot: MuseQuotaSnapshot) => {
+      signal.throwIfAborted()
+      if (session) session.quota = snapshot
+      this.emit({ type: 'quota', accountId, snapshot })
+      return snapshot
+    }
     try {
-      if (!(await this.hasSessionCookie(accountId))) {
-        const snap: MuseQuotaSnapshot = {
-          fetchedAt: Date.now(),
-          stale: Boolean(prev),
-          success: false,
-          subscription: prev?.subscription ?? null,
-          error: 'Sign in to muse.ai first',
-          errorCode: 'signed_out'
-        }
+      if (!(await this.hasSessionCookie(accountId, signal))) {
         logLine(`muse-quota ${accountId} no hatch_sess cookie`)
-        if (session) session.quota = snap
-        this.emit({ type: 'quota', accountId, snapshot: snap })
-        return snap
+        return publish({
+          fetchedAt: Date.now(), stale: Boolean(prev), success: false,
+          subscription: prev?.subscription ?? null, error: 'Sign in to muse.ai first', errorCode: 'signed_out'
+        })
       }
-      const native = await fetchSubscription(this.partitionFetch(accountId), { includeAgreement: false })
-      const invite = await fetchInviteSummary(this.partitionFetch(accountId))
-      const snap: MuseQuotaSnapshot = {
-        fetchedAt: native.fetchedAt,
-        stale: false,
-        success: native.success,
-        subscription: native.subscription,
-        inviteUsesRemaining: invite?.usesRemaining ?? null
-      }
-      if (session) {
-        session.quota = snap
-        this.ensureQuotaPolling(accountId)
-      }
-      this.emit({ type: 'quota', accountId, snapshot: snap })
-      return snap
+      const fetch = this.partitionFetch(accountId, signal)
+      const native = await fetchSubscription(fetch, { includeAgreement: false, accountId, signal })
+      const invite = await fetchInviteSummary(fetch)
+      return publish({
+        fetchedAt: native.fetchedAt, stale: false, success: native.success,
+        subscription: native.subscription, inviteUsesRemaining: invite?.usesRemaining ?? null
+      })
     } catch (error) {
+      signal.throwIfAborted()
       const msg = error instanceof Error ? error.message : String(error)
       const errorCode = error instanceof MuseQuotaError ? (error.code ?? 'http') : 'http'
       logLine(`muse-quota ${accountId} ${errorCode}: ${msg.slice(0, 300)}`)
-      const snap: MuseQuotaSnapshot = {
-        fetchedAt: Date.now(),
-        stale: true,
-        success: false,
-        subscription: prev?.subscription ?? null,
-        error: msg.slice(0, 200),
-        errorCode
-      }
-      if (session) session.quota = snap
-      this.emit({ type: 'quota', accountId, snapshot: snap })
-      return snap
+      return publish({
+        fetchedAt: Date.now(), stale: true, success: false, subscription: prev?.subscription ?? null,
+        error: msg.slice(0, 200), errorCode
+      })
     }
   }
 
@@ -1308,18 +1423,20 @@ export class MuseSessionManager {
     const session = this.sessions.get(accountId)
     if (!session || session.quotaTimer) return
     session.quotaTimer = setInterval(() => {
-      void this.refreshQuota(accountId)
+      void this.refreshQuota(accountId).catch(() => undefined)
     }, QUOTA_POLL_MS)
   }
 
   async listSchedules(accountId: string): Promise<MuseSchedule[]> {
+    const { signal } = this.generationFor(accountId).controller
     const native = await this.rpcNative(accountId, 'tasks.list', {})
     const raw = native ? native.value : await this.rpc(accountId, 'tasks.list', {})
+    signal.throwIfAborted()
     const list = schedulesFromListResult(raw).map(toSharedSchedule)
     const session = this.sessions.get(accountId)
     if (session) session.schedules = list
     this.emit({ type: 'schedules', accountId, schedules: list })
-    void this.ensureTasksSubscribe(accountId)
+    this.ensureSubscription(accountId, 'tasks.subscribe', () => this.listSchedules(accountId))
     return list
   }
 
@@ -1335,7 +1452,7 @@ export class MuseSessionManager {
     const params = { job_id: jobId }
     const native = await this.rpcNative(accountId, 'tasks.run', params)
     const raw = native ? native.value : await this.rpc(accountId, 'tasks.run', params)
-    void this.listSchedules(accountId)
+    void this.listSchedules(accountId).catch(() => undefined)
     return raw
   }
 
@@ -1343,35 +1460,28 @@ export class MuseSessionManager {
     const params = { job_id: jobId }
     const native = await this.rpcNative(accountId, 'tasks.delete', params)
     const raw = native ? native.value : await this.rpc(accountId, 'tasks.delete', params)
-    void this.listSchedules(accountId)
+    void this.listSchedules(accountId).catch(() => undefined)
     return raw
   }
 
-  private async ensureTasksSubscribe(accountId: string): Promise<void> {
+  private ensureSubscription(accountId: string, method: InspectorSubscription, onEvent: () => Promise<unknown>): void {
     if (!this.nativeReady(accountId)) return
     const session = this.sessions.get(accountId)
-    if (!session || session.tasksSubCancel) return
-    try {
-      const client = this.native.get(accountId)
-      const handle = await client.gateway.subscribe('tasks.subscribe', {}, () => {
-        void this.listSchedules(accountId)
-      })
-      session.tasksSubCancel = handle.cancel
-      void handle.ack.catch(() => undefined)
-      void handle.done.then(
-        () => {
-          if (session.tasksSubCancel === handle.cancel) session.tasksSubCancel = undefined
-        },
-        () => {
-          if (session.tasksSubCancel === handle.cancel) session.tasksSubCancel = undefined
-        }
-      )
-    } catch (error) {
-      console.warn('[muse] tasks.subscribe failed', error instanceof Error ? error.message : error)
-    }
+    const client = this.native.peek(accountId)
+    const signal = this.generations.get(accountId)?.controller.signal
+    if (!session || !client || !signal || session.subscriptions.has(method)) return
+    const subscription: InspectorWatch = {}
+    session.subscriptions.set(method, subscription)
+    void client.gateway.subscribe(method, {}, () => {
+      if (!subscription.disposed && !signal.aborted && this.native.peek(accountId) === client) void onEvent().catch(() => undefined)
+    }, signal).then(async (handle: SubscriptionHandle) => {
+      if (subscription.disposed || signal.aborted || this.native.peek(accountId) !== client) handle.cancel('disposed')
+      else subscription.cancel = handle.cancel
+      await handle.done
+    }).catch(() => undefined).finally(() => {
+      if (session.subscriptions.get(method) === subscription) session.subscriptions.delete(method)
+    })
   }
-
-
 
   getInvite(accountId: string): MuseInviteSnapshot | null {
     return this.sessions.get(accountId)?.invite ?? null
@@ -1379,8 +1489,9 @@ export class MuseSessionManager {
 
   async refreshInvite(accountId: string): Promise<MuseInviteSnapshot> {
     const session = this.sessions.get(accountId)
+    const { signal } = this.generationFor(accountId).controller
     try {
-      if (!(await this.hasSessionCookie(accountId))) {
+      if (!(await this.hasSessionCookie(accountId, signal))) {
         const snap: MuseInviteSnapshot = {
           fetchedAt: Date.now(),
           inviteState: 'SIGNED_OUT',
@@ -1403,12 +1514,13 @@ export class MuseSessionManager {
         this.emit({ type: 'invite', accountId, snapshot: snap })
         return snap
       }
-      const native = await fetchInvite(this.partitionFetch(accountId))
+      const native = await abortable(signal, () => fetchInvite(this.partitionFetch(accountId, signal)))
       const snap = toSharedInvite(native)
       if (session) session.invite = snap
       this.emit({ type: 'invite', accountId, snapshot: snap })
       return snap
     } catch (error) {
+      signal.throwIfAborted()
       const msg = error instanceof Error ? error.message : String(error)
       const prev = session?.invite
       const snap: MuseInviteSnapshot = {
@@ -1439,16 +1551,19 @@ export class MuseSessionManager {
     accountId: string,
     code: string
   ): Promise<{ ok: boolean; message: string; openSettings?: boolean }> {
-    if (!(await this.hasSessionCookie(accountId))) {
+    const { signal } = this.generationFor(accountId).controller
+    if (!(await this.hasSessionCookie(accountId, signal))) {
       return { ok: false, message: 'Sign in to muse.ai first' }
     }
-    const result = await redeemInviteCode(this.partitionFetch(accountId), code)
-    if (result.ok) void this.refreshInvite(accountId)
+    const result = await abortable(signal, () => redeemInviteCode(this.partitionFetch(accountId, signal), code))
+    if (result.ok) void this.refreshInvite(accountId).catch(() => undefined)
     return result
   }
 
   async listSessions(accountId: string): Promise<MuseChatSessionView[]> {
+    const { signal } = this.generationFor(accountId).controller
     const raw = await this.rpc(accountId, 'sessions.list', {})
+    signal.throwIfAborted()
     const list = sessionsFromListResult(raw)
     const session = this.sessions.get(accountId)
     if (session) session.chatSessions = list
@@ -1472,63 +1587,65 @@ export class MuseSessionManager {
       throw new TypeError('Unknown session mutation')
     }
     const raw = await this.rpc(accountId, method, params)
-    void this.listSessions(accountId)
+    void this.listSessions(accountId).catch(() => undefined)
     return raw
   }
 
-  async cancelChat(accountId: string, sessionId?: string): Promise<{ ok: true }> {
-    this.activeStreams.get(accountId)?.abort()
-    this.activeStreams.delete(accountId)
-    try {
-      const params: Record<string, unknown> = {}
-      if (sessionId) params['session_id'] = sessionId
-      const native = await this.rpcNative(accountId, 'chat.cancel', params)
-      if (!native) await this.rpc(accountId, 'chat.cancel', params)
-    } catch {
-      /* best effort */
+  async cancelChat(accountId: string, sessionId?: string, sendId?: string): Promise<{ ok: true }> {
+    const turn = this.activeStreams.get(accountId)
+    if (turn && (sendId ? turn.id === sendId :
+      !turn.room && (!sessionId || turn.sessionId === sessionId))) {
+      turn.controller.abort(MUSE_STREAM_STOPPED)
     }
     return { ok: true }
   }
 
   async startSession(accountId: string): Promise<{ sessionId: string | null }> {
+    const { signal } = this.generationFor(accountId).controller
     const raw = await this.rpc(accountId, 'session.start', { method: '/api/session/start' })
+    signal.throwIfAborted()
     const sessionId = extractStartedSessionId(raw)
-    const session = this.sessions.get(accountId)
-    if (session && sessionId) session.activeSessionId = sessionId
-    void this.listSessions(accountId)
+    // Both room and direct callers allocate here. Selection happens on history load or send ACK.
+    void this.listSessions(accountId).catch(() => undefined)
     return { sessionId }
   }
 
   async loadSessionHistory(accountId: string, sessionId: string): Promise<MuseHistoryMessageView[]> {
+    const { signal } = this.generationFor(accountId).controller
     const session = this.sessions.get(accountId)
-    if (session && sessionId) session.activeSessionId = sessionId
-    const params = { session_id: sessionId, limit: 100 }
-    const raw = await this.rpc(accountId, 'chat.history', params)
-    const rows = parseHistoryTranscript(raw)
-    try {
-      void this.rpcNative(accountId, 'chat.mark_seen', { thread_id: sessionId, session_id: sessionId }).catch(() => undefined)
-    } catch {
-      /* ignore */
+    if (session && sessionId) this.selectDirectSession(session, sessionId)
+    const raw = await this.rpc(accountId, 'chat.history', { session_id: sessionId, limit: 100 })
+    signal.throwIfAborted()
+    if (!session && sessionId) {
+      const current = this.sessions.get(accountId)
+      if (current && !current.activeSessionId) this.selectDirectSession(current, sessionId)
     }
-    return rows
+    void this.rpcNative(accountId, 'chat.mark_seen', { thread_id: sessionId, session_id: sessionId }).catch(() => undefined)
+    return parseHistoryTranscript(raw)
   }
 
   async listFiles(accountId: string): Promise<MuseFileEntryView[]> {
+    const { signal } = this.generationFor(accountId).controller
     const out: MuseFileEntryView[] = []
+    signal.throwIfAborted()
     try {
       const native = await this.rpcNative(accountId, 'artifacts.list', {})
       const raw = native ? native.value : await this.rpc(accountId, 'artifacts.list', {})
       out.push(...artifactsFromListResult(raw))
     } catch (error) {
+      signal.throwIfAborted()
       console.warn('[muse] artifacts.list', error instanceof Error ? error.message : error)
     }
+    signal.throwIfAborted()
     try {
       const native = await this.rpcNative(accountId, 'fs.library', {})
       const raw = native ? native.value : await this.rpc(accountId, 'fs.library', {})
       out.push(...libraryFromResult(raw))
     } catch (error) {
+      signal.throwIfAborted()
       console.warn('[muse] fs.library', error instanceof Error ? error.message : error)
     }
+    signal.throwIfAborted()
     if (out.length === 0) {
       try {
         const native = await this.rpcNative(accountId, 'fs.list', { path: 'workspace' })
@@ -1538,6 +1655,7 @@ export class MuseSessionManager {
         /* best effort fallback */
       }
     }
+    signal.throwIfAborted()
     // Dedupe by id
     const seen = new Set<string>()
     const unique = out.filter((f) => {
@@ -1548,53 +1666,9 @@ export class MuseSessionManager {
     const session = this.sessions.get(accountId)
     if (session) session.files = unique
     this.emit({ type: 'files', accountId, files: unique })
-    void this.ensureFilesSubscribe(accountId)
+    this.ensureSubscription(accountId, 'fs.subscribe', () => this.listFiles(accountId))
+    this.ensureSubscription(accountId, 'artifacts.subscribe', () => this.listFiles(accountId))
     return unique
-  }
-
-  private async ensureFilesSubscribe(accountId: string): Promise<void> {
-    if (!this.nativeReady(accountId)) return
-    const session = this.sessions.get(accountId)
-    if (!session) return
-    const client = this.native.get(accountId)
-    if (!session.filesSubCancel) {
-      try {
-        const h = await client.gateway.subscribe('fs.subscribe', {}, () => {
-          void this.listFiles(accountId)
-        })
-        session.filesSubCancel = h.cancel
-        void h.ack.catch(() => undefined)
-        void h.done.then(
-          () => {
-            if (session.filesSubCancel === h.cancel) session.filesSubCancel = undefined
-          },
-          () => {
-            if (session.filesSubCancel === h.cancel) session.filesSubCancel = undefined
-          }
-        )
-      } catch {
-        /* ignore */
-      }
-    }
-    if (!session.artifactsSubCancel) {
-      try {
-        const h = await client.gateway.subscribe('artifacts.subscribe', {}, () => {
-          void this.listFiles(accountId)
-        })
-        session.artifactsSubCancel = h.cancel
-        void h.ack.catch(() => undefined)
-        void h.done.then(
-          () => {
-            if (session.artifactsSubCancel === h.cancel) session.artifactsSubCancel = undefined
-          },
-          () => {
-            if (session.artifactsSubCancel === h.cancel) session.artifactsSubCancel = undefined
-          }
-        )
-      } catch {
-        /* ignore */
-      }
-    }
   }
 
   async listConnectors(accountId: string): Promise<MuseConnectorView[]> {
@@ -1628,7 +1702,7 @@ export class MuseSessionManager {
       }
       const native = await this.rpcNative(accountId, 'connectors.connect', { id: connectorId })
       if (!native) await this.rpc(accountId, 'connectors.connect', { id: connectorId })
-      void this.listConnectors(accountId)
+      void this.listConnectors(accountId).catch(() => undefined)
       return { ok: true, message: 'Connected' }
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error)
@@ -1643,7 +1717,7 @@ export class MuseSessionManager {
     try {
       const native = await this.rpcNative(accountId, 'connectors.disconnect', { id: connectorId })
       if (!native) await this.rpc(accountId, 'connectors.disconnect', { id: connectorId })
-      void this.listConnectors(accountId)
+      void this.listConnectors(accountId).catch(() => undefined)
       return { ok: true }
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error)
@@ -1662,7 +1736,25 @@ export class MuseSessionManager {
    * reset the user's active OTP/SSO flow.
    */
   async openLogin(botId: string, accountId: string, opts?: { hidden?: boolean }): Promise<MuseSessionStatus> {
-    await applyProxyToPartition(accountId)
+    const generation = this.generationFor(accountId)
+    if (generation.openingLogin) {
+      const status = await generation.openingLogin
+      if (!opts?.hidden) this.showLogin(accountId)
+      return status
+    }
+    const opening = this.openLoginWindow(botId, accountId, generation, opts).finally(() => {
+      if (generation.openingLogin === opening) generation.openingLogin = undefined
+    })
+    generation.openingLogin = opening
+    return opening
+  }
+
+  private async openLoginWindow(
+    botId: string, accountId: string, generation: AccountGeneration, opts?: { hidden?: boolean }
+  ): Promise<MuseSessionStatus> {
+    let { signal } = generation.controller
+    if (generation.rebinding) await abortable(signal, () => generation.rebinding!)
+    await abortable(signal, () => applyProxyToPartition(accountId))
 
     const partition = partitionForAccount(accountId)
     const ses = electronSession.fromPartition(partition)
@@ -1682,13 +1774,8 @@ export class MuseSessionManager {
     // If a non-empty hatch_sess cookie already exists, verify it isn't revoked
     // before skipping the login window. Clear explicitly rejected (401/403)
     // cookies so re-login always starts cleanly.
-    if (await this.hasSessionCookie(accountId)) {
-      const verdict = await this.verifyAuthCheck(accountId, cleanUa)
-      if (verdict !== 'rejected') {
-        return await this.ensure(botId, accountId)
-      }
-      await this.clearHatchCookies(ses)
-    }
+    if (await this.checkLoginCookie(ses, cleanUa, signal, true)) return this.ensure(botId, accountId)
+    signal.throwIfAborted()
 
     const existing = this.loginWindows.get(accountId)
     if (existing && !existing.isDestroyed()) {
@@ -1701,9 +1788,10 @@ export class MuseSessionManager {
 
     // Tear down any logged-out background WebContentsView + watchdog on this
     // partition so nothing competes with the visible login flow.
-    if (this.sessions.has(accountId)) {
-      this.destroyAccount(accountId)
-    }
+    this.invalidateGeneration(accountId, 'Muse interactive login started')
+    this.teardownSession(accountId)
+    const loginGeneration = this.generationFor(accountId)
+    signal = loginGeneration.controller.signal
 
     const windowIcon = getAppWindowIcon()
     const win = new BrowserWindow({
@@ -1855,6 +1943,7 @@ export class MuseSessionManager {
     let checking = false
 
     const finalizeSignedIn = async (): Promise<void> => {
+      if (signal.aborted) return
       this.emit({ type: 'login', accountId, signedIn: true })
       if (this.loginWindows.get(accountId) === win) {
         this.loginWindows.delete(accountId)
@@ -1872,27 +1961,25 @@ export class MuseSessionManager {
       }
       // Keep the optimistic signed-in flag if muse briefly churns cookies mid-load.
       const still = this.sessions.get(accountId)
-      if (still) {
+      if (!signal.aborted && still) {
         still.status.signedIn = true
         this.emitStatus(accountId)
       }
     }
 
     const finishIfSignedIn = async (): Promise<void> => {
-      if (settling || checking || win.isDestroyed()) return
+      if (signal.aborted || settling || checking || win.isDestroyed()) return
       checking = true
       try {
-        const cookies = await ses.cookies.get({ name: 'hatch_sess' })
-        if (!hasNonEmptyHatchSession(cookies)) return
-        if (anyOnCheckpoint()) return
-        const verdict = await this.verifyAuthCheck(accountId, cleanUa)
-        if (verdict === 'rejected') return
-        if (settling || win.isDestroyed()) return
+        if (anyOnCheckpoint() || !(await this.checkLoginCookie(ses, cleanUa, signal))) return
+        if (signal.aborted || settling || win.isDestroyed() || anyOnCheckpoint()) return
 
         // hatch_sess is present and accepted — emit signed-in and close the login
         // window BEFORE starting the embedded WebContentsView.
         settling = true
         await finalizeSignedIn()
+      } catch (error) {
+        if (!signal.aborted) console.warn('[muse] login verification failed', error instanceof Error ? error.name : 'error')
       } finally {
         checking = false
       }
@@ -1954,17 +2041,15 @@ export class MuseSessionManager {
           this.emit({ type: 'login', accountId, signedIn: true })
           return
         }
-        if (await this.hasSessionCookie(accountId)) {
-          const verdict = await this.verifyAuthCheck(accountId, cleanUa)
-          if (verdict !== 'rejected') {
-            settling = true
-            await finalizeSignedIn()
-            return
-          }
+        if (await this.checkLoginCookie(ses, cleanUa, signal) && !this.loginWindows.has(accountId)) {
+          settling = true
+          await finalizeSignedIn()
+          return
         }
+        if (signal.aborted || this.loginWindows.has(accountId)) return
         // Window went away without a valid session — offer reopen in add-bot UI.
         this.emit({ type: 'login', accountId, signedIn: false, windowClosed: true })
-      })()
+      })().catch(() => undefined)
     })
 
     try {
@@ -1976,27 +2061,54 @@ export class MuseSessionManager {
         console.error('[muse] openLogin load failed', error)
       }
     }
+    signal.throwIfAborted()
     return this.sessions.get(accountId)?.status ?? pendingStatus
   }
 
-  private async clearHatchCookies(ses: Electron.Session): Promise<void> {
+  private async checkLoginCookie(ses: Electron.Session, userAgent: string, signal: AbortSignal, clearRejected = false): Promise<boolean> {
+    // Observe replacements before reading either the cookie or the auth verdict.
+    let cookieGeneration = 0
+    let clearing = false
+    const onCookie = (_event: unknown, cookie: { name: string }, cause: string, removed: boolean) => {
+      if (cookie.name !== 'hatch_sess') return
+      if (!removed || (cause !== 'explicit' || !clearing)) cookieGeneration++
+    }
+    ses.cookies.on('changed', onCookie)
     try {
-      const cookies = await ses.cookies.get({ name: 'hatch_sess' })
-      for (const c of cookies) {
-        const host = (c.domain || 'muse.ai').replace(/^\./, '')
-        const protocol = c.secure ? 'https' : 'http'
-        const path = c.path || '/'
-        await ses.cookies.remove(`${protocol}://${host}${path}`, c.name)
+      while (true) {
+        const version = cookieGeneration
+        const cookies = await abortable(signal, () => ses.cookies.get({ name: 'hatch_sess' }))
+        if (version !== cookieGeneration) continue
+        if (!hasNonEmptyHatchSession(cookies)) return false
+        const verdict = await abortable(signal, () => this.verifyAuthCheck(ses, userAgent, signal))
+        if (version !== cookieGeneration) continue
+        const current = await abortable(signal, () => ses.cookies.get({ name: 'hatch_sess' }))
+        if (version !== cookieGeneration || !sameHatchCookies(cookies, current)) continue
+        if (verdict !== 'rejected') return true
+        if (!clearRejected) return false
+        clearing = true
+        const cleared = await this.clearHatchCookies(ses, current, signal, () => version === cookieGeneration)
+        clearing = false
+        if (cleared) return false
       }
-    } catch {
-      /* ignore */
+    } finally {
+      ses.cookies.off('changed', onCookie)
     }
   }
 
-  /**
-   * Abandon an unfinished login: close its window (if open), tear down the
-   * view and wipe the partition so no orphaned session stays on disk.
-   */
+  private async clearHatchCookies(
+    ses: Electron.Session, checked: Electron.Cookie[], signal: AbortSignal, unchanged: () => boolean
+  ): Promise<boolean> {
+    for (const cookie of checked) {
+      signal.throwIfAborted()
+      if (!unchanged()) return false
+      const host = (cookie.domain || 'muse.ai').replace(/^\./, '')
+      await ses.cookies.remove(`${cookie.secure ? 'https' : 'http'}://${host}${cookie.path || '/'}`, cookie.name).catch(() => undefined)
+    }
+    const current = await abortable(signal, () => ses.cookies.get({ name: 'hatch_sess' }))
+    return unchanged() && current.every((cookie) => checked.some((old) => sameHatchCookie(cookie, old)))
+  }
+
   /** Batch import: email one-time-code login driven inside a hidden login window. */
   async autoLogin(req: MuseAutoLoginRequest): Promise<MuseAutoLoginResult> {
     this.autoLogins.get(req.accountId)?.abort()
@@ -2004,6 +2116,7 @@ export class MuseSessionManager {
     this.autoLogins.set(req.accountId, ctrl)
     try {
       const status = await this.openLogin(req.botId, req.accountId, { hidden: true })
+      ctrl.signal.throwIfAborted()
       if (status.signedIn) return { ok: true }
       const win = this.loginWindows.get(req.accountId)
       if (!win || win.isDestroyed()) {
@@ -2017,6 +2130,7 @@ export class MuseSessionManager {
       if (!result.ok) console.warn('[muse] auto login did not finish:', result.reason)
       return result
     } catch (error) {
+      if (ctrl.signal.aborted) return { ok: false, reason: 'cancelled' }
       console.warn('[muse] auto login failed:', error instanceof Error ? error.name : 'error')
       return { ok: false, reason: 'error' }
     } finally {
@@ -2034,26 +2148,43 @@ export class MuseSessionManager {
 
   /** A login window or batch auto-login is still running for this account. */
   isLoginInFlight(accountId: string): boolean {
-    return this.autoLogins.has(accountId) || this.loginWindows.has(accountId)
+    return this.autoLogins.has(accountId) || this.loginWindows.has(accountId) || Boolean(this.generations.get(accountId)?.openingLogin)
   }
 
   async cancelLogin(accountId: string): Promise<void> {
-    // Hand the pool proxy back so failed/retried batch rows don't drain the pool.
-    void releaseProxyPoolAccount(accountId).catch(() => undefined)
-    this.autoLogins.get(accountId)?.abort()
-    this.autoLogins.delete(accountId)
-    const win = this.loginWindows.get(accountId)
-    this.loginWindows.delete(accountId)
-    if (win && !win.isDestroyed()) win.destroy()
+    const previous = this.generations.get(accountId)?.rebinding
     this.destroyAccount(accountId)
-    await this.views.clearPartition(accountId)
+    const release = releaseProxyPoolAccount(accountId).catch((error) => console.warn('[muse] proxy pool release failed', error))
+    const clear = this.views.clearPartition(accountId)
+    await this.blockPartitionDuring(accountId, Promise.all([previous?.catch(() => undefined), release, clear]).then(() => undefined))
   }
 
   /** Tear down the view and wipe the persist partition (full sign-out). */
   async signOut(accountId: string): Promise<void> {
+    const previous = this.generations.get(accountId)?.rebinding
     this.destroyAccount(accountId)
-    await this.views.clearPartition(accountId)
+    const clear = this.views.clearPartition(accountId)
+    const work = this.blockPartitionDuring(accountId, Promise.all([previous?.catch(() => undefined), clear]).then(() => undefined))
     this.emit({ type: 'login', accountId, signedIn: false })
+    await work
+  }
+
+  private async blockPartitionDuring(accountId: string, work: Promise<void>): Promise<void> {
+    if (this.disposed) return work
+    const generation = this.generationFor(accountId)
+    generation.rebinding = work
+    try {
+      await work
+    } finally {
+      if (generation.rebinding === work) generation.rebinding = undefined
+    }
+  }
+}
+
+function validateApprovalResponse(raw: unknown): void {
+  unwrapMuseResult(raw)
+  if (raw && typeof raw === 'object' && (raw as { success?: unknown }).success === false) {
+    throw new Error('Muse rejected the approval request')
   }
 }
 
@@ -2105,43 +2236,6 @@ function extractReplyText(result: unknown): string {
   }
 }
 
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms))
-}
-
-interface ChatEventLite {
-  messageId: string
-  eventName: string
-  text: string
-  occurredAt: number
-  /** True once muse marks the assistant turn finished (payload.status). */
-  completed: boolean
-  updatedAt: number
-}
-
-function extractChatEvents(raw: unknown): ChatEventLite[] {
-  if (!raw || typeof raw !== 'object') return []
-  const obj = raw as Record<string, unknown>
-  const list =
-    (obj['chat_events'] as unknown[]) ||
-    (obj['events'] as unknown[]) ||
-    (Array.isArray(raw) ? (raw as unknown[]) : [])
-  if (!Array.isArray(list)) return []
-  return list.map((item) => {
-    const e = (item ?? {}) as Record<string, unknown>
-    const payload = (e['payload'] as Record<string, unknown> | undefined) ?? undefined
-    const status = String(payload?.['status'] ?? e['status'] ?? '').toLowerCase()
-    return {
-      messageId: String(e['message_id'] ?? e['id'] ?? ''),
-      eventName: String(e['event_name'] ?? e['type'] ?? ''),
-      text: String(e['display_text'] ?? e['text'] ?? e['content'] ?? ''),
-      occurredAt: Number(e['occurred_at_ms'] ?? e['created_at_ms'] ?? 0) || 0,
-      completed: status === 'completed' || status === 'done' || status === 'finished',
-      updatedAt: Number(e['display_text_updated_at_ms'] ?? e['updated_at_ms'] ?? 0) || 0
-    }
-  })
-}
 
 export function normalizeApprovals(raw: unknown): Array<Record<string, unknown>> {
   return extractRawApprovalItems(raw)

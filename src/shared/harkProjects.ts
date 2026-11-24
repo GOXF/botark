@@ -11,15 +11,17 @@ export interface HarkProject {
   main: boolean
 }
 
+export function harkProjectId(value: unknown): string | undefined {
+  return typeof value === 'string' ? value.trim() || undefined : undefined
+}
+
 export function harkProjects(payload: unknown): HarkProject[] {
   const rows = Array.isArray(payload) ? payload : (payload as { conversations?: unknown } | null)?.conversations
   if (!Array.isArray(rows)) throw new Error('Hark returned an invalid conversation list')
-  return rows.flatMap((row) => typeof row?.id === 'string' ? [{
-    id: row.id,
-    title: row.title ?? '主会话',
-    main: row.title == null,
-    archived: row.archivedAt != null
-  }] : [])
+  return rows.flatMap((row) => {
+    const id = harkProjectId(row?.id)
+    return id ? [{ id, title: row.title ?? '主会话', main: row.title == null, archived: row.archivedAt != null }] : []
+  })
 }
 
 /**

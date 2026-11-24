@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { requestedTool } from './toolRequests'
+import { isToolRequest, requestedTool } from './toolRequests'
 
 describe('requestedTool', () => {
   it('returns undefined when text does not start with [TOOL]', () => {
@@ -55,9 +55,18 @@ describe('requestedTool', () => {
     })
   })
 
-  it('throws on malformed or truncated JSON', () => {
-    expect(() => requestedTool('[TOOL] {"name":"read"')).toThrow()
-    expect(() => requestedTool('[TOOL] hello world')).toThrow()
+  it('classifies malformed leading tool requests and reports invalid JSON without exposing arguments', () => {
+    expect(isToolRequest('  [tool]\n{"name":"read"')).toBe(true)
+    expect(isToolRequest('[FINAL]\nExample: [TOOL] {}')).toBe(false)
+    expect(() => requestedTool('  [tool] {"name":"read", "args":{"secret":"@Peer"}')).toThrow(
+      /^无效的工具请求：JSON 格式有误$/
+    )
+    expect(() => requestedTool('[TOOL] hello world')).toThrow('JSON 格式有误')
+  })
+
+  it('treats control labels and mentions inside tool arguments as data', () => {
+    const text = '[TOOL] {"name":"read","args":{"path":".","query":"[FINAL] @Peer"}}'
+    expect(requestedTool(text)).toEqual({ name: 'read', args: { path: '.', query: '[FINAL] @Peer' } })
   })
 
   it('throws "无效的工具请求" on invalid tool payload structures', () => {

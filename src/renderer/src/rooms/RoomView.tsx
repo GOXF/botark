@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
 import { getPlatform } from '@adapters/platforms'
 import {
   ArrowRight,
@@ -9,11 +9,14 @@ import {
   Copy,
   MoreHorizontal,
   Pencil,
+  Pin,
+  PinOff,
   Plus,
   Square,
   Trash2,
   X
 } from 'lucide-react'
+import { useShallow } from 'zustand/react/shallow'
 import { MarkdownText } from '@/components/chat/MarkdownText'
 import { PaneHeader } from '@/components/layout/PaneHeader'
 import {
@@ -31,6 +34,7 @@ import {
 import { BotAvatar } from '@/components/ui/Avatar'
 import { Button } from '@/components/ui/Button'
 import { NumberStepper } from '@/components/ui/Controls'
+import { Dialog } from '@/components/ui/Dialog'
 import { TextInput } from '@/components/ui/Field'
 import { GrokBotMark } from '@/components/ui/GrokBotMark'
 import { IconButton } from '@/components/ui/IconButton'
@@ -46,11 +50,13 @@ import {
 import { PlatformGlyph } from '@/components/ui/PlatformGlyph'
 import { SegmentedControl } from '@/components/ui/SegmentedControl'
 import { cn } from '@/lib/cn'
+import { useT } from '@/lib/i18n'
 import { shortcutLabel } from '@/lib/shortcuts'
 import { useBotStore } from '@/store/botStore'
 import {
   isHumanRoomMessage,
-  mentions,
+  mentionStartPattern,
+  normalizeMentionName,
   roomRecipient,
   splitMentionSegments,
   stripFinalPrefix,
@@ -66,8 +72,10 @@ import {
   addRoom,
   deleteRoom,
   renameRoom,
+  roomSlackDestination,
   stopRoom,
   submitBrief,
+  togglePinRoom,
   useRooms
 } from './roomStore'
 import { WorkspaceTools } from './WorkspaceTools'
@@ -147,60 +155,26 @@ function RoomDndNotice() {
   )
 }
 
-function CompactRoomButton({
-  room,
-  active,
-  speaking,
-  onOpen
-}: {
-  room: CollabRoom
-  active: boolean
-  speaking: string | undefined
-  onOpen: () => void
-}) {
-  const drop = useRoomDropTarget(room.id)
-  return (
-    <button
-      type="button"
-      title={`${room.title}（可拖入 Bot）`}
-      aria-current={active}
-      onClick={onOpen}
-      {...drop.props}
-      className={cn(
-        'press-icon relative grid size-11 place-items-center rounded-2xl transition-colors',
-        active ? 'bg-active ring-1 ring-line-strong' : 'hover:bg-hover',
-        drop.over && 'bg-accent-50 ring-2 ring-accent-500'
-      )}
-    >
-      <RoomAvatarCluster
-        members={room.members.slice(0, 2)}
-        speakingName={speaking}
-        size="xs"
-        ringClassName="ring-canvas"
-      />
-      {speaking && (
-        <span
-          aria-hidden
-          className="absolute top-1 right-1 size-2 rounded-full bg-accent-600 ring-2 ring-canvas animate-pulse"
-        />
-      )}
-    </button>
-  )
+function openSidebarRoom(id: string) {
+  const { settingsOpen, setSettingsOpen, selectBot } = useBotStore.getState()
+  if (settingsOpen) setSettingsOpen(false)
+  selectBot(id)
 }
 
-function RoomSidebarItem({
+const RoomSidebarItem = memo(function RoomSidebarItem({
   room,
-  selected,
-  speaker,
-  onSelect
+  compact = false
 }: {
   room: CollabRoom
-  selected: boolean
-  speaker: string | undefined
-  onSelect: () => void
+  compact?: boolean
 }) {
+  const t = useT()
+  const selected = useBotStore((s) => s.selectedBotId === room.id && !s.settingsOpen)
+  const speaker = useRooms((s) => s.speakers[room.id])
   const [renaming, setRenaming] = useState(false)
   const [menuOpen, setMenuOpen] = useState(false)
+  const rowRef = useRef<HTMLButtonElement>(null)
+  const renameInputRef = useRef<HTMLInputElement>(null)
   const drop = useRoomDropTarget(room.id)
   const lastMsg = room.messages.at(-1)
   const subtitle = speaker
@@ -214,17 +188,23 @@ function RoomSidebarItem({
   return (
     <div
       className={cn(
-        'group/room relative rounded-xl transition-shadow',
+        'group/room relative shrink-0 transition-shadow',
+        compact ? 'rounded-2xl' : 'rounded-xl',
         drop.over && 'bg-accent-50/70 ring-2 ring-accent-500'
       )}
       {...drop.props}
+      onContextMenu={(event) => {
+        if (renaming) return
+        event.preventDefault()
+        setMenuOpen(true)
+      }}
     >
-      {drop.over && (
+      {drop.over && !compact && (
         <span className="pointer-events-none absolute top-1/2 right-9 z-10 -translate-y-1/2 rounded-md bg-accent-600 px-1.5 py-0.5 text-[10.5px] font-medium text-white">
           松开加入
         </span>
       )}
-      {renaming ? (
+      {renaming && !compact ? (
         <div className="flex h-11 items-center px-2">
           <InlineEdit
             value={room.title}
@@ -237,51 +217,73 @@ function RoomSidebarItem({
         </div>
       ) : (
         <button
+          ref={rowRef}
           type="button"
           data-bot-row
           aria-current={selected}
-          onClick={onSelect}
-          title={room.title}
+          aria-label={compact ? room.title : undefined}
+          onClick={() => openSidebarRoom(room.id)}
+          title={compact ? `${room.title}（可拖入 Bot）` : room.title}
           className={cn(
-            'no-drag press flex w-full items-center gap-2.5 rounded-xl px-2 py-1.5 text-left transition-colors outline-none',
-            selected ? 'bg-active text-ink' : 'hover:bg-hover text-ink'
+            'no-drag text-ink transition-colors focus-visible:outline-offset-[-2px]',
+            compact
+              ? 'press-icon relative grid size-11 place-items-center rounded-2xl'
+              : 'press flex w-full items-center gap-2.5 rounded-xl px-2 py-1.5 text-left',
+            selected ? 'bg-active' : 'hover:bg-hover',
+            selected && compact && 'ring-1 ring-line-strong'
           )}
         >
           <RoomAvatarCluster
-            members={room.members}
+            members={compact ? room.members.slice(0, 2) : room.members}
             speakingName={speaker}
             size="xs"
             ringClassName="ring-canvas"
           />
-          <div className="min-w-0 flex-1 pr-4">
-            <span className="flex items-center gap-1.5 text-[13px] leading-[18px] font-medium tracking-tight text-ink">
-              <span className="truncate">{room.title}</span>
-              {room.handoffUnread && (
-                <span className="shrink-0 rounded-full bg-accent-50 px-1.5 text-[10.5px] leading-4 font-medium text-accent-600">新需求</span>
+          {compact ? (
+            <>
+              {room.pinned && <Pin aria-hidden className="absolute top-0.5 left-0.5 size-3 text-ink-muted" />}
+              {speaker && (
+                <span
+                  aria-hidden
+                  className="absolute top-1 right-1 size-2 animate-pulse rounded-full bg-accent-600 ring-2 ring-canvas"
+                />
               )}
+            </>
+          ) : (
+            <span className="min-w-0 flex-1 pr-4">
+              <span className="flex items-center gap-1">
+                {room.pinned && <Pin aria-hidden className="size-3 shrink-0 text-ink-muted" />}
+                <span className="truncate text-[13px] leading-[18px] font-medium tracking-tight">
+                  {room.title}
+                </span>
+                {room.handoffUnread && (
+                  <span className="shrink-0 rounded-full bg-accent-50 px-1.5 text-[10.5px] leading-4 font-medium text-accent-600">新需求</span>
+                )}
+              </span>
+              <span
+                className={cn(
+                  'block truncate text-[11.5px] leading-4',
+                  speaker
+                    ? 'shimmer-text font-medium'
+                    : room.finalId
+                      ? 'text-status-online-ink'
+                      : 'text-ink-muted'
+                )}
+              >
+                {subtitle}
+              </span>
             </span>
-            <p
-              className={cn(
-                'truncate text-[11.5px] leading-4',
-                speaker
-                  ? 'shimmer-text font-medium'
-                  : room.finalId
-                    ? 'text-status-online-ink'
-                    : 'text-ink-muted'
-              )}
-            >
-              {subtitle}
-            </p>
-          </div>
+          )}
         </button>
       )}
 
       {!renaming && (
         <Menu open={menuOpen} onOpenChange={setMenuOpen}>
           <MenuTrigger
-            aria-label={`${room.title} 菜单`}
+            aria-label={t('Actions for {name}', { name: room.title })}
             className={cn(
-              'press-icon absolute top-1/2 right-1.5 grid size-6 -translate-y-1/2 place-items-center rounded-full text-ink-muted',
+              'press-icon absolute grid place-items-center rounded-full text-ink-muted',
+              compact ? 'right-0 bottom-0 size-5 bg-canvas' : 'top-1/2 right-1.5 size-6 -translate-y-1/2',
               'opacity-0 group-hover/room:opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100',
               'hover:bg-active hover:text-ink data-[state=open]:bg-active'
             )}
@@ -289,8 +291,12 @@ function RoomSidebarItem({
             <MoreHorizontal className="size-3.5" />
           </MenuTrigger>
           <MenuContent align="start" side="bottom" className="min-w-40">
+            <MenuItem onSelect={() => togglePinRoom(room.id)}>
+              {room.pinned ? <PinOff aria-hidden /> : <Pin aria-hidden />}
+              {t(room.pinned ? 'Unpin' : 'Pin')}
+            </MenuItem>
             <MenuItem onSelect={() => setRenaming(true)}>
-              <Pencil aria-hidden /> 重命名
+              <Pencil aria-hidden /> {t('Rename')}
             </MenuItem>
             <MenuItem
               disabled={room.messages.length === 0}
@@ -300,59 +306,106 @@ function RoomSidebarItem({
             </MenuItem>
             <MenuSeparator />
             <MenuItem danger onSelect={() => deleteRoom(room.id)}>
-              <Trash2 aria-hidden /> 删除
+              <Trash2 aria-hidden /> {t('Delete')}
             </MenuItem>
           </MenuContent>
         </Menu>
       )}
+
+      {compact && (
+        <Dialog
+          open={renaming}
+          onOpenChange={setRenaming}
+          title={t('Rename')}
+          className="max-w-[360px]"
+          onOpenAutoFocus={(event) => {
+            event.preventDefault()
+            renameInputRef.current?.focus()
+            renameInputRef.current?.select()
+          }}
+          onCloseAutoFocus={(event) => {
+            event.preventDefault()
+            rowRef.current?.focus()
+          }}
+        >
+          <form
+            className="flex flex-col gap-3"
+            onSubmit={(event) => {
+              event.preventDefault()
+              const title = new FormData(event.currentTarget).get('title')
+              if (typeof title !== 'string' || !title.trim()) return
+              renameRoom(room.id, title)
+              setRenaming(false)
+            }}
+          >
+            <TextInput
+              ref={renameInputRef}
+              name="title"
+              aria-label="群聊名称"
+              defaultValue={room.title}
+              maxLength={50}
+              required
+            />
+            <Button type="submit" size="sm" variant="primary" className="self-end">
+              {t('Save')}
+            </Button>
+          </form>
+        </Dialog>
+      )}
     </div>
+  )
+})
+
+export function PinnedRoomsList({ compact = false }: { compact?: boolean }) {
+  const t = useT()
+  const rooms = useRooms(useShallow((s) => s.rooms.filter((room) => room.pinned === true)))
+  if (rooms.length === 0) return null
+
+  return (
+    <section
+      aria-label={`${t('Pinned')} · ${t('Collaboration rooms')}`}
+      className={cn(
+        'no-drag mb-1.5 flex max-h-[min(12rem,40%)] w-full shrink-0 flex-col overflow-y-auto rounded-xl bg-ink/[0.035] p-1',
+        compact ? 'items-center gap-1' : 'gap-0.5'
+      )}
+    >
+      {rooms.map((room) => <RoomSidebarItem key={room.id} room={room} compact={compact} />)}
+    </section>
   )
 }
 
 export function RoomList({ compact = false }: { compact?: boolean }) {
-  const rooms = useRooms((s) => s.rooms)
-  const speakers = useRooms((s) => s.speakers)
-  const select = useBotStore((s) => s.selectBot)
-  const selected = useBotStore((s) => s.selectedBotId)
-  const setSettingsOpen = useBotStore((s) => s.setSettingsOpen)
-  const settingsOpen = useBotStore((s) => s.settingsOpen)
+  const rooms = useRooms(useShallow((s) => s.rooms.filter((room) => room.pinned !== true)))
+  const creating = useBotStore((s) => s.selectedBotId === NEW_ROOM_ID && !s.settingsOpen)
   const [collapsed, setCollapsed] = useState(false)
-
-  const openRoom = (id: string) => {
-    if (settingsOpen) setSettingsOpen(false)
-    select(id)
-  }
+  const items = rooms.map((room) => <RoomSidebarItem key={room.id} room={room} compact={compact} />)
 
   if (compact) {
     return (
       <section
         aria-label="群聊"
-        className="no-drag mt-1 flex w-full shrink-0 flex-col items-center gap-1.5 border-t border-ink/[0.06] pt-2"
+        className="no-drag mt-1 flex max-h-[45%] w-full shrink-0 flex-col items-center gap-1.5 border-t border-ink/[0.06] pt-2"
       >
         <button
           type="button"
           title="新建群聊"
           aria-label="新建群聊"
-          aria-current={selected === NEW_ROOM_ID && !settingsOpen}
-          onClick={() => openRoom(NEW_ROOM_ID)}
+          aria-current={creating}
+          onClick={() => openSidebarRoom(NEW_ROOM_ID)}
           className={cn(
-            'press-icon grid size-10 place-items-center rounded-2xl transition-colors',
-            selected === NEW_ROOM_ID && !settingsOpen
+            'press-icon grid size-10 shrink-0 place-items-center rounded-2xl transition-colors',
+            creating
               ? 'bg-active text-accent-600'
               : 'text-ink-secondary hover:bg-hover hover:text-ink'
           )}
         >
-          <ArkRelayOrbSvg active={selected === NEW_ROOM_ID && !settingsOpen} className="size-4.5" />
+          <ArkRelayOrbSvg active={creating} className="size-4.5" />
         </button>
-        {rooms.map((r) => (
-          <CompactRoomButton
-            key={r.id}
-            room={r}
-            active={r.id === selected && !settingsOpen}
-            speaking={speakers[r.id]}
-            onOpen={() => openRoom(r.id)}
-          />
-        ))}
+        {rooms.length > 0 && (
+          <div className="flex min-h-0 w-full flex-col items-center gap-1.5 overflow-y-auto py-0.5">
+            {items}
+          </div>
+        )}
         <RoomDndNotice />
       </section>
     )
@@ -384,10 +437,10 @@ export function RoomList({ compact = false }: { compact?: boolean }) {
           type="button"
           title="新建群聊"
           aria-label="新建群聊"
-          onClick={() => openRoom(NEW_ROOM_ID)}
+          onClick={() => openSidebarRoom(NEW_ROOM_ID)}
           className={cn(
             'press-icon grid size-6 shrink-0 place-items-center rounded-full transition-colors',
-            selected === NEW_ROOM_ID && !settingsOpen
+            creating
               ? 'bg-ink text-canvas'
               : 'text-ink-muted hover:bg-hover hover:text-ink'
           )}
@@ -396,17 +449,9 @@ export function RoomList({ compact = false }: { compact?: boolean }) {
         </button>
       </div>
 
-      {!collapsed && (
+      {!collapsed && rooms.length > 0 && (
         <div className="mt-0.5 flex max-h-48 flex-col gap-0.5 overflow-y-auto">
-          {rooms.map((r) => (
-            <RoomSidebarItem
-              key={r.id}
-              room={r}
-              selected={r.id === selected && !settingsOpen}
-              speaker={speakers[r.id]}
-              onSelect={() => openRoom(r.id)}
-            />
-          ))}
+          {items}
         </div>
       )}
       <RoomDndNotice />
@@ -790,19 +835,48 @@ function regenerate(room: CollabRoom, final: RoomMessage) {
   void submitBrief(room.id, ask.text, { author: ask.author, references: ask.references ?? [], handoff: ask.handoff })
 }
 
-function RoomMessageRow({
-  room,
-  message,
-  onMentionReply
-}: {
-  room: CollabRoom
+/** Actions under a final: re-run it or hand it to another group. Reads the room itself so rows stay memoized. */
+function FinalActions({ roomId, message, copied, onCopy }: {
+  roomId: string
   message: RoomMessage
-  onMentionReply: (memberName: string) => void
+  copied: boolean
+  onCopy: () => void
 }) {
-  const bots = useBotStore((s) => s.bots)
-  const speaking = useRooms((s) => Boolean(s.speakers[room.id]))
-  const [copied, setCopied] = useState(false)
+  const room = useRooms((s) => s.rooms.find((r) => r.id === roomId))
+  const speaking = useRooms((s) => Boolean(s.speakers[roomId]))
   const [handingOff, setHandingOff] = useState(false)
+  if (!room) return null
+  return (
+    <div className="relative mt-1.5 flex items-center gap-1.5">
+      <Button size="sm" onClick={onCopy}>{copied ? '已复制' : '复制'}</Button>
+      <Button size="sm" disabled={speaking} onClick={() => regenerate(room, message)}>重新生成</Button>
+      <Button size="sm" variant="primary" aria-expanded={handingOff} onClick={() => setHandingOff((v) => !v)}>
+        <ArrowRight aria-hidden /> 交给其他群组
+      </Button>
+      {handingOff && <HandoffPicker room={room} message={message} onClose={() => setHandingOff(false)} />}
+    </div>
+  )
+}
+
+const RoomMessageRow = memo(function RoomMessageRow({
+  roomId,
+  members,
+  message,
+  finalDeliverable,
+  onMentionReply,
+  onExport
+}: {
+  roomId: string
+  members: RoomMember[]
+  message: RoomMessage
+  finalDeliverable: boolean
+  onMentionReply: (memberName: string) => void
+  onExport: (messageId: string) => void
+}) {
+  const member = members.find((m) => message.authorBotId ? m.botId === message.authorBotId : m.name === message.author)
+  const authorBotId = message.authorBotId ?? member?.botId
+  const bot = useBotStore((s) => authorBotId ? s.bots.find((b) => b.id === authorBotId) : undefined)
+  const [copied, setCopied] = useState(false)
 
   if (message.notice) {
     return <p className="mx-auto text-xs text-ink-muted">{message.text}</p>
@@ -823,7 +897,7 @@ function RoomMessageRow({
           </span>
         )}
         <div className="max-w-[76%] rounded-[20px] bg-bubble-user px-4 py-2.5 text-[14px] leading-[22px] whitespace-pre-wrap break-words text-main">
-          <HighlightMentions text={message.text} members={room.members} invert />
+          <HighlightMentions text={message.text} members={members} invert />
         </div>
         {message.references && message.references.length > 0 && (
           <div className="max-w-[76%]">
@@ -834,11 +908,11 @@ function RoomMessageRow({
     )
   }
 
-  const member = room.members.find((m) => message.authorBotId ? m.botId === message.authorBotId : m.name === message.author)
-  const bot = member ? bots.find((b) => b.id === member.botId) : undefined
-  const finalDeliverable = message.id === room.finalId || message.final === true
   const cleanText = finalDeliverable ? stripFinalPrefix(message.text) : message.text
-  const handoffs = mentions(cleanText, room.members).filter((t) => t.name !== message.author)
+  const handoffs = message.handoffBotIds?.flatMap((id) => {
+    const target = members.find((m) => m.botId === id)
+    return target ? [target.name] : []
+  })
 
   const copyBody = () => {
     void navigator.clipboard.writeText(cleanText)
@@ -871,7 +945,7 @@ function RoomMessageRow({
               </button>
               <button
                 type="button"
-                onClick={() => exportRoomMarkdownFile(room, message.id)}
+                onClick={() => onExport(message.id)}
                 title="导出 Markdown"
                 className="press-icon grid size-7 place-items-center rounded-full text-ink-secondary hover:bg-hover hover:text-ink"
               >
@@ -883,14 +957,7 @@ function RoomMessageRow({
             <MarkdownText text={cleanText} />
           </div>
         </div>
-        <div className="relative mt-1.5 flex items-center gap-1.5">
-          <Button size="sm" onClick={copyBody}>{copied ? '已复制' : '复制'}</Button>
-          <Button size="sm" disabled={speaking} onClick={() => regenerate(room, message)}>重新生成</Button>
-          <Button size="sm" variant="primary" aria-expanded={handingOff} onClick={() => setHandingOff((v) => !v)}>
-            <ArrowRight aria-hidden /> 交给其他群组
-          </Button>
-          {handingOff && <HandoffPicker room={room} message={message} onClose={() => setHandingOff(false)} />}
-        </div>
+        <FinalActions roomId={roomId} message={message} copied={copied} onCopy={copyBody} />
       </article>
     )
   }
@@ -911,27 +978,31 @@ function RoomMessageRow({
       <div className="min-w-0 flex-1">
         <div className="mb-1 flex items-center gap-2 text-[12.5px]">
           <span className="font-semibold tracking-tight text-ink">{message.author}</span>
-          {handoffs.length > 0 && (
+          {Boolean(handoffs?.length) && (
             <span className="inline-flex items-center gap-1 text-[11.5px] text-ink-muted">
               <ArkHandoffCurveSvg className="size-3 text-accent-600" />
-              {handoffs.map((h) => h.name).join(' · ')}
+              {handoffs?.join(' · ')}
             </span>
           )}
         </div>
 
-        <div className="rounded-2xl bg-bubble px-4 py-3 text-[14px] leading-[22px] text-ink">
-          <MarkdownText text={cleanText} />
-        </div>
+        {cleanText && (
+          <div className="rounded-2xl bg-bubble px-4 py-3 text-[14px] leading-[22px] text-ink">
+            <MarkdownText text={cleanText} />
+          </div>
+        )}
 
         <div className="mt-1 flex items-center gap-2 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
-          <button
-            type="button"
-            onClick={copyBody}
-            className="press inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11.5px] text-ink-muted hover:bg-hover hover:text-ink"
-          >
-            {copied ? <Check className="size-3 text-status-online" /> : <Copy className="size-3" />}
-            {copied ? '已复制' : '复制'}
-          </button>
+          {cleanText && (
+            <button
+              type="button"
+              onClick={copyBody}
+              className="press inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11.5px] text-ink-muted hover:bg-hover hover:text-ink"
+            >
+              {copied ? <Check className="size-3 text-status-online" /> : <Copy className="size-3" />}
+              {copied ? '已复制' : '复制'}
+            </button>
+          )}
           <button
             type="button"
             onClick={() => onMentionReply(member?.name ?? message.author)}
@@ -944,15 +1015,42 @@ function RoomMessageRow({
       </div>
     </article>
   )
-}
+})
+
+const RoomTranscript = memo(function RoomTranscript({
+  roomId, members, messages, finalId, onMentionReply, onExport
+}: {
+  roomId: string
+  members: RoomMember[]
+  messages: RoomMessage[]
+  finalId?: string
+  onMentionReply: (name: string) => void
+  onExport: (messageId: string) => void
+}) {
+  return messages.map((message) => (
+    // data-room-message: a handed-over requirement scrolls to its message.
+    <div key={message.id} data-room-message={message.id}>
+      <RoomMessageRow
+        roomId={roomId}
+        members={members}
+        message={message}
+        finalDeliverable={message.final === true || message.id === finalId}
+        onMentionReply={onMentionReply}
+        onExport={onExport}
+      />
+    </div>
+  ))
+})
 
 /* -------------------------------------------------------------------------- */
 /* Active Collaboration Room View                                             */
 /* -------------------------------------------------------------------------- */
 
 const MAX_COMPOSER_HEIGHT = 200
+const trailingMention = new RegExp(`${mentionStartPattern}([^@＠\\r\\n]*)$`, 'u')
 
 export function RoomView({ id }: { id: string }) {
+  const t = useT()
   const room = useRooms((s) => s.rooms.find((r) => r.id === id))
   const speaker = useRooms((s) => s.speakers[id])
   const progress = useRooms((s) => s.turnProgress[id])
@@ -971,20 +1069,25 @@ export function RoomView({ id }: { id: string }) {
   const transcriptRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
 
-  const resize = () => {
+  const resize = useCallback(() => {
     const el = textareaRef.current
     if (!el) return
     el.style.height = 'auto'
     el.style.height = `${Math.min(el.scrollHeight, MAX_COMPOSER_HEIGHT)}px`
     setMultiline(el.scrollHeight > 40)
-  }
+  }, [])
+
+  useLayoutEffect(() => {
+    resize()
+  }, [id, text, resize])
 
   useEffect(() => {
-    transcriptRef.current?.scrollTo({
-      top: transcriptRef.current.scrollHeight,
-      behavior: 'smooth'
+    const frame = requestAnimationFrame(() => {
+      const transcript = transcriptRef.current
+      if (transcript) transcript.scrollTop = transcript.scrollHeight
     })
-  }, [room?.messages.length, speaker])
+    return () => cancelAnimationFrame(frame)
+  }, [id, room?.messages.length, speaker])
 
   useEffect(() => {
     const onAppend = (event: Event) => {
@@ -998,6 +1101,24 @@ export function RoomView({ id }: { id: string }) {
     }
     window.addEventListener('botark:room-append-draft', onAppend)
     return () => window.removeEventListener('botark:room-append-draft', onAppend)
+  }, [id, resize])
+
+  const insertMention = useCallback((memberName: string) => {
+    setText((previous) => {
+      const start = trailingMention.exec(previous)?.index
+      return start !== undefined
+        ? `${previous.slice(0, start)}@${memberName} `
+        : `${previous}${previous && !/\s$/.test(previous) ? ' ' : ''}@${memberName} `
+    })
+    setMentionCursor(0)
+    requestAnimationFrame(() => {
+      textareaRef.current?.focus()
+    })
+  }, [])
+
+  const exportMessage = useCallback((messageId: string) => {
+    const current = useRooms.getState().rooms.find((r) => r.id === id)
+    if (current) exportRoomMarkdownFile(current, messageId)
   }, [id])
 
   useEffect(() => {
@@ -1014,35 +1135,23 @@ export function RoomView({ id }: { id: string }) {
 
   if (!room) return <CreateRoom />
 
-  const mentionMatch = /(?:^|.*[^A-Za-z0-9_.+-])(@([^\n]*))$/u.exec(text)
-  const atIdx = mentionMatch
-    ? mentionMatch.index + mentionMatch[0].length - mentionMatch[1]!.length
-    : -1
-  const rawQuery = mentionMatch?.[2] ?? ''
+  const mentionMatch = trailingMention.exec(text)
+  const rawQuery = mentionMatch?.[1] ?? ''
+  const query = normalizeMentionName(rawQuery)
   const closeAfterExact =
     Boolean(mentionMatch) &&
     /\s$/.test(rawQuery) &&
-    room.members.some((m) => m.name.toLowerCase() === rawQuery.trimEnd().toLowerCase()) &&
-    !room.members.some((m) => m.name.toLowerCase().startsWith(rawQuery.toLowerCase()))
+    room.members.some((m) => normalizeMentionName(m.name) === query) &&
+    !room.members.some((m) => {
+      const name = normalizeMentionName(m.name)
+      return name.startsWith(`${query} `) || name.startsWith(`${query}·`)
+    })
   const mentionCandidates =
     mentionMatch && !closeAfterExact
       ? room.members.filter((m) =>
-          m.name.toLowerCase().includes(rawQuery.trim().toLowerCase())
+          normalizeMentionName(m.name).includes(query)
         )
       : []
-
-  const insertMention = (memberName: string) => {
-    const next =
-      mentionMatch && atIdx >= 0
-        ? `${text.slice(0, atIdx)}@${memberName} `
-        : `${text}${text && !text.endsWith(' ') ? ' ' : ''}@${memberName} `
-    setText(next)
-    setMentionCursor(0)
-    requestAnimationFrame(() => {
-      resize()
-      textareaRef.current?.focus()
-    })
-  }
 
   const canSend = Boolean(text.trim() || references.length)
   const submit = () => {
@@ -1051,7 +1160,6 @@ export function RoomView({ id }: { id: string }) {
     setText('')
     setReferences([])
     setMentionCursor(0)
-    requestAnimationFrame(resize)
   }
 
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -1085,7 +1193,8 @@ export function RoomView({ id }: { id: string }) {
     ? bots.find((b) => b.id === speakingMember.botId)
     : undefined
   const hermesAccount = room.members.find((m) => m.platform === 'hermes')?.accountId
-  const slackLabel = (room.slackChannel ?? audience?.replace(/^Slack\s+/, ''))?.trim()
+  const slackDestination = roomSlackDestination(room)
+  const slackLabel = (slackDestination?.channel ?? room.slackChannel ?? audience?.replace(/^Slack\s+/, ''))?.trim()
 
   return (
     <div className="flex h-full min-h-0 flex-1 flex-col overflow-hidden">
@@ -1153,6 +1262,13 @@ export function RoomView({ id }: { id: string }) {
               <ArkExportDocSvg />
             </IconButton>
           )}
+          <IconButton
+            label={t(room.pinned ? 'Unpin from sidebar' : 'Pin to sidebar')}
+            active={room.pinned === true}
+            onClick={() => togglePinRoom(room.id)}
+          >
+            {room.pinned ? <PinOff aria-hidden /> : <Pin aria-hidden />}
+          </IconButton>
           <IconButton label="新建群聊" onClick={() => selectBot(NEW_ROOM_ID)}>
             <ArkComposeNewSvg />
           </IconButton>
@@ -1172,7 +1288,7 @@ export function RoomView({ id }: { id: string }) {
           <p role="alert" className="text-[12.5px] text-status-error">
             {error}
           </p>
-          {room.mode === 'manual' &&
+          {!room.coordinatorId && room.mode === 'manual' &&
             room.members.map((m) => (
               <button
                 key={m.botId}
@@ -1205,7 +1321,6 @@ export function RoomView({ id }: { id: string }) {
                   const lead = room.members[0]?.name
                   setText(lead ? `@${lead} ${sc.prompt}` : sc.prompt)
                   requestAnimationFrame(() => {
-                    resize()
                     textareaRef.current?.focus()
                   })
                 }}
@@ -1219,15 +1334,14 @@ export function RoomView({ id }: { id: string }) {
       ) : (
         <div ref={transcriptRef} className="min-h-0 flex-1 overflow-y-auto px-6 py-5">
           <div className="flex flex-col gap-5">
-            {room.messages.map((m) => (
-              <div key={m.id} data-room-message={m.id}>
-                <RoomMessageRow
-                  room={room}
-                  message={m}
-                  onMentionReply={(name) => insertMention(name)}
-                />
-              </div>
-            ))}
+            <RoomTranscript
+              roomId={room.id}
+              members={room.members}
+              messages={room.messages}
+              finalId={room.finalId}
+              onMentionReply={insertMention}
+              onExport={exportMessage}
+            />
 
             {speaker && (
               <div className="mx-auto flex w-full max-w-[780px] items-center gap-3 animate-veil-in">
@@ -1329,7 +1443,7 @@ export function RoomView({ id }: { id: string }) {
 
               <WorkspaceTools
                 scope={id}
-                recipient={roomRecipient(room, audience)}
+                recipient={roomRecipient(room, slackDestination ? `Slack ${slackDestination.channel}` : audience)}
                 hermesAccount={hermesAccount}
                 variant="popover"
                 append={(reference) => {
@@ -1348,11 +1462,10 @@ export function RoomView({ id }: { id: string }) {
                 onChange={(e) => {
                   setText(e.target.value)
                   setMentionCursor(0)
-                  resize()
                 }}
                 onKeyDown={onKeyDown}
                 placeholder={
-                  room.mode === 'manual'
+                  !room.coordinatorId && room.mode === 'manual'
                     ? '当前为手动 @ 模式，输入 @ 成员名点名回复…'
                     : '发消息，或输入 @ 点名接力…'
                 }

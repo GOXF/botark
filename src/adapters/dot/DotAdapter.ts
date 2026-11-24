@@ -1,6 +1,7 @@
 import { statusAfterSendFailure } from '../sendFailure'
 import { createId } from '@shared/id'
-import type { DotMainEvent, DotRpcRequest, DotRpcResponse } from '@shared/ipc'
+import type { DotRpcResponse } from '@shared/ipc'
+import type { DotTurnEvent, DotTurnRequest } from '@shared/dotTarget'
 import { getBotHubBridge } from '../meta-muse/electronBridge'
 import {
   AdapterError,
@@ -15,7 +16,7 @@ import {
   type Unsubscribe
 } from '../types'
 
-async function invokeDotRpc(request: DotRpcRequest): Promise<unknown> {
+async function invokeDotRpc(request: DotTurnRequest): Promise<unknown> {
   const bridge = getBotHubBridge()?.dot
   if (!bridge?.rpc) {
     throw new AdapterError('not-connected', 'Dot IPC unavailable (Electron main required)')
@@ -43,13 +44,14 @@ export class DotAdapter implements PlatformAdapter {
   private readonly accounts = new Map<string, PlatformAccount>()
   private readonly statuses = new Map<string, ConnectionStatus>()
   private readonly listeners = new Set<AdapterListener>()
-  private readonly activeDotIds = new Map<string, string>()
-  private readonly activeRoomIds = new Map<string, string>()
-  private readonly activeThreadIds = new Set<string>()
-  /** onAccepted of the send in flight: the first stream event proves the platform took it. */
-  private readonly pendingAccept = new Map<string, () => void>()
-  /** Last time the stream delivered visible content per account (widgets only arrive here). */
-  private readonly streamContentAt = new Map<string, number>()
+  private readonly disconnected = new Set<string>()
+  private readonly connectionChecks = new Map<string, symbol>()
+  private readonly pendingTurns = new Map<string, {
+    id: string
+    accept?: () => void
+    hasReply: boolean
+    emittedReplies: Set<string>
+  }>()
   private bridgeUnsub: Unsubscribe | null = null
 
   constructor() {
@@ -62,19 +64,23 @@ export class DotAdapter implements PlatformAdapter {
     this.bridgeUnsub = b.dot.onEvent((event) => this.handleMainEvent(event))
   }
 
-  private handleMainEvent(event: DotMainEvent): void {
-    // Only an explicit "posted" counts: other stream events (clock triggers,
-    // late replies) can arrive before the post and would fake "delivered".
+  private handleMainEvent(event: DotTurnEvent): void {
+    const pending = this.pendingTurns.get(event.accountId)
+    if (event.type !== 'login' && (
+      this.disconnected.has(event.accountId) || (event.turnId && event.turnId !== pending?.id)
+    )) return
     if (event.type === 'sent') {
-      if (this.getStatus(event.accountId) === 'offline') {
-        this.setStatus(event.accountId, 'busy')
+      if (pending) {
+        const accept = pending.accept
+        pending.accept = undefined
+        accept?.()
       }
-      this.pendingAccept.get(event.accountId)?.()
       return
     }
     if (event.type === 'activity') {
       this.emit({
         type: 'activity',
+        sessionId: event.roomId,
         accountId: event.accountId,
         activity: {
           code: event.activityCode,
@@ -88,6 +94,7 @@ export class DotAdapter implements PlatformAdapter {
       if (!event.busy) {
         this.emit({
           type: 'typing',
+          sessionId: event.roomId,
           conversationId: event.accountId,
           accountId: event.accountId,
           isTyping: false
@@ -107,14 +114,16 @@ export class DotAdapter implements PlatformAdapter {
         }
         this.emit({
           type: 'typing',
+            sessionId: event.roomId,
           conversationId: convId,
           accountId: event.accountId,
           isTyping: true
         })
         if (event.text || event.tools?.length || event.richWidgets?.length || event.media?.length) {
-          this.streamContentAt.set(event.accountId, Date.now())
+          if (pending && pending.id === event.turnId) pending.hasReply = true
           this.emit({
             type: 'message_delta',
+            sessionId: event.roomId,
             messageId: event.messageId,
             conversationId: convId,
             accountId: event.accountId,
@@ -129,12 +138,14 @@ export class DotAdapter implements PlatformAdapter {
         if (!keepBusy) {
           this.emit({
             type: 'typing',
+            sessionId: event.roomId,
             conversationId: convId,
             accountId: event.accountId,
             isTyping: false
           })
           this.emit({
             type: 'activity',
+            sessionId: event.roomId,
             accountId: event.accountId,
             activity: {
               code: 'idle',
@@ -155,10 +166,14 @@ export class DotAdapter implements PlatformAdapter {
           event.richWidgets?.length ||
           event.media?.length
         ) {
-          this.streamContentAt.set(event.accountId, Date.now())
+          if (pending && pending.id === event.turnId) {
+            pending.hasReply = true
+            pending.emittedReplies.add(event.messageId)
+          }
           this.emit({
             type: 'message',
             message: {
+              sessionId: event.roomId,
               id: event.messageId,
               conversationId: convId,
               accountId: event.accountId,
@@ -176,6 +191,7 @@ export class DotAdapter implements PlatformAdapter {
 
     if (event.type === 'login') {
       if (event.signedIn) {
+        this.disconnected.delete(event.accountId)
         this.emit({
           type: 'login',
           accountId: event.accountId,
@@ -189,6 +205,9 @@ export class DotAdapter implements PlatformAdapter {
         })
         this.setStatus(event.accountId, 'online')
       } else {
+        this.disconnected.add(event.accountId)
+        this.connectionChecks.delete(event.accountId)
+        this.pendingTurns.delete(event.accountId)
         this.emit({
           type: 'login',
           accountId: event.accountId,
@@ -239,40 +258,42 @@ export class DotAdapter implements PlatformAdapter {
       this.setStatus(accountId, 'offline', '需要 Electron')
       return 'offline'
     }
+    const check = Symbol()
+    this.connectionChecks.set(accountId, check)
+    const ownsCheck = () => this.connectionChecks.get(accountId) === check
+    this.disconnected.delete(accountId)
     try {
       const status = await bridge.authStatus(accountId)
+      if (!ownsCheck()) return this.getStatus(accountId)
       if (!status.signedIn) {
         this.setStatus(accountId, 'offline', '未导入 Codex/Dot 凭据或未登录')
         return 'offline'
       }
-      this.upsert(accountId, {
-        displayName: status.displayName,
-        handle: status.handle
-      })
-      const listed = (await invokeDotRpc({
-        accountId,
-        op: 'listDots',
-        ensureDefault: true
-      })) as {
-        activeDot?: { id: string; messagingRoomId: string }
-      }
-      if (listed?.activeDot?.id) {
-        this.activeDotIds.set(accountId, listed.activeDot.id)
-      }
-      if (listed?.activeDot?.messagingRoomId) {
-        this.activeRoomIds.set(accountId, listed.activeDot.messagingRoomId)
+      this.upsert(accountId, { displayName: status.displayName, handle: status.handle })
+      if (status.mode !== 'native') {
+        await invokeDotRpc({ accountId, op: 'listDots', ensureDefault: true })
+        if (!ownsCheck()) return this.getStatus(accountId)
       }
       this.setStatus(accountId, 'online')
       return 'online'
     } catch (error) {
+      if (!ownsCheck()) return this.getStatus(accountId)
       const detail = error instanceof Error ? error.message : String(error)
       this.setStatus(accountId, 'error', detail)
       return 'error'
+    } finally {
+      if (ownsCheck()) this.connectionChecks.delete(accountId)
     }
   }
 
   async disconnect(accountId: string): Promise<void> {
+    this.disconnected.add(accountId)
+    this.connectionChecks.delete(accountId)
+    this.pendingTurns.delete(accountId)
     this.setStatus(accountId, 'offline')
+    if (getBotHubBridge()?.dot) {
+      await invokeDotRpc({ accountId, op: 'cancelTurn', disconnect: true })
+    }
   }
 
   async openLogin(accountId: string, _botId?: string): Promise<ConnectionStatus> {
@@ -303,41 +324,31 @@ export class DotAdapter implements PlatformAdapter {
     await bridge?.cancelLogin?.(accountId)
     this.accounts.delete(accountId)
     this.statuses.delete(accountId)
-    this.activeDotIds.delete(accountId)
-    this.activeRoomIds.delete(accountId)
-  }
-
-  /** Returns a disposer; call it when the send settles. */
-  private trackAccept(message: OutgoingMessage): () => void {
-    const cb = message.onAccepted
-    if (!cb) return () => undefined
-    const accept = () => {
-      dispose()
-      cb()
-    }
-    const dispose = () => {
-      if (this.pendingAccept.get(message.accountId) === accept) this.pendingAccept.delete(message.accountId)
-    }
-    this.pendingAccept.set(message.accountId, accept)
-    return dispose
+    this.disconnected.add(accountId)
+    this.connectionChecks.delete(accountId)
+    this.pendingTurns.delete(accountId)
   }
 
   async sendMessage(message: OutgoingMessage): Promise<SendReceipt> {
     this.bindBridgeEvents()
-    if (message.signal?.aborted) {
-      throw new AdapterError('network', 'Aborted')
-    }
-    const sendStartedAt = Date.now()
+    if (message.signal?.aborted) throw new AdapterError('network', 'Aborted')
+    if (this.disconnected.has(message.accountId)) throw new AdapterError('not-connected', 'Dot is disconnected')
+
+    const turn = { id: createId('dot_turn'), accept: message.onAccepted, hasReply: false, emittedReplies: new Set<string>() }
+    this.pendingTurns.set(message.accountId, turn)
     this.setStatus(message.accountId, 'busy')
-    const disposeAccept = this.trackAccept(message)
     try {
-      return await this.sendTracked(message, sendStartedAt)
+      return await this.sendTracked(message, turn)
     } finally {
-      disposeAccept()
+      if (this.pendingTurns.get(message.accountId) === turn) this.pendingTurns.delete(message.accountId)
     }
   }
 
-  private async sendTracked(message: OutgoingMessage, sendStartedAt: number): Promise<SendReceipt> {
+  private async sendTracked(
+    message: OutgoingMessage,
+    turn: { id: string; hasReply: boolean; emittedReplies: Set<string> }
+  ): Promise<SendReceipt> {
+    const ownsTurn = () => this.pendingTurns.get(message.accountId) === turn
     this.emit({
       type: 'typing',
       conversationId: message.conversationId,
@@ -349,10 +360,8 @@ export class DotAdapter implements PlatformAdapter {
       accountId: message.accountId,
       op: 'sendMessage',
       botId: message.conversationId,
-      // The main process resolves the active profile's room; the cached ids
-      // and the chat sessionId go stale after a profile switch.
-      dotId: this.activeDotIds.get(message.accountId),
-      roomId: message.sessionId || this.activeRoomIds.get(message.accountId),
+      turnId: turn.id,
+      roomId: message.sessionId,
       text: message.text,
       attachments: message.attachments
         ?.filter((a) => Boolean(a.dataBase64))
@@ -366,19 +375,17 @@ export class DotAdapter implements PlatformAdapter {
     const raceSignal = <T>(p: Promise<T>): Promise<T> => {
       const signal = message.signal
       if (!signal) return p
-      if (signal.aborted) {
-        return Promise.reject(new AdapterError('network', 'Aborted'))
-      }
       return new Promise<T>((resolve, reject) => {
         const onAbort = () => {
           void invokeDotRpc({
             accountId: message.accountId,
             op: 'cancelTurn',
-            dotId: this.activeDotIds.get(message.accountId)
+            turnId: turn.id
           }).catch(() => undefined)
           reject(new AdapterError('network', 'Aborted'))
         }
         signal.addEventListener('abort', onAbort, { once: true })
+        if (signal.aborted) onAbort()
         p.then(
           (val) => {
             signal.removeEventListener('abort', onAbort)
@@ -412,12 +419,7 @@ export class DotAdapter implements PlatformAdapter {
         } | null
       }
 
-      if (res?.roomId) {
-        this.activeRoomIds.set(message.accountId, res.roomId)
-      }
-      if (res?.mode === 'native' && res?.threadId) {
-        this.activeThreadIds.add(res.threadId)
-      }
+      if (!ownsTurn() || message.signal?.aborted) throw new AdapterError('network', 'Aborted')
 
       this.emit({
         type: 'typing',
@@ -444,10 +446,12 @@ export class DotAdapter implements PlatformAdapter {
           const rMedia = r.media
           if (rText || rMedia?.length) {
             const rId = r.id.startsWith('dot_') ? r.id : `dot_${r.id}`
+            if (turn.emittedReplies.has(rId)) continue
             this.emit({
               type: 'message',
               message: {
                 id: rId,
+                sessionId: res.roomId,
                 conversationId: message.conversationId,
                 accountId: message.accountId,
                 text: rText,
@@ -461,12 +465,13 @@ export class DotAdapter implements PlatformAdapter {
         const replyText = (res?.reply?.text ?? res?.reply?.content ?? '').trim()
         const replyTools = res?.reply?.tools
         const replyMedia = res?.reply?.media
-        if (replyText || replyTools?.length || replyMedia?.length) {
+        if ((replyText || replyTools?.length || replyMedia?.length) && !turn.emittedReplies.has(res?.reply?.id ?? '')) {
           const incoming: IncomingMessage & {
             tools?: import('../types').MuseToolCall[]
             media?: import('@shared/ipc').MuseMediaPartView[]
           } = {
             id: res?.reply?.id || createId('msg'),
+            sessionId: res?.roomId,
             conversationId: message.conversationId,
             accountId: message.accountId,
             text: replyText,
@@ -480,7 +485,7 @@ export class DotAdapter implements PlatformAdapter {
 
       this.setStatus(message.accountId, 'online')
       const gotReply =
-        (this.streamContentAt.get(message.accountId) ?? 0) >= sendStartedAt ||
+        turn.hasReply ||
         (Array.isArray(res?.replies) &&
           res.replies.some((r) => (r.text ?? r.content ?? '').trim() || r.media?.length)) ||
         Boolean((res?.reply?.text ?? res?.reply?.content ?? '').trim() || res?.reply?.tools?.length || res?.reply?.media?.length)
@@ -494,6 +499,7 @@ export class DotAdapter implements PlatformAdapter {
         ...(gotReply ? {} : { noReply: true })
       }
     } catch (error) {
+      if (!ownsTurn()) throw error
       this.emit({
         type: 'typing',
         conversationId: message.conversationId,

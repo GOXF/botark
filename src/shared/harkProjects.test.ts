@@ -36,6 +36,11 @@ it('sends autoTitle and timezone when creating a project', () => {
   })
 })
 
+it('omits blank and non-string project IDs', () => {
+  expect(harkProjects({ conversations: [{ id: '   ' }, { id: 1 }, { id: 'project' }] }))
+    .toEqual([{ id: 'project', title: '主会话', main: true, archived: false }])
+})
+
 it('keeps a just-created project visible until Hark lists it', () => {
   const rows = [
     { id: 'main', title: '主会话', main: true, archived: false },

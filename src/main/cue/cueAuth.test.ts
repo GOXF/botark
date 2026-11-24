@@ -1,6 +1,20 @@
-import { describe, expect, it } from 'vitest'
-import { parseAnyCueCredentialInput } from './cueAuth'
-import { mapCueMembershipQuota } from './cueClient'
+import { mkdtemp, rm } from 'node:fs/promises'
+import { join } from 'node:path'
+import { tmpdir } from 'node:os'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { clearCueAccountAuth, loadCueTokens, parseAnyCueCredentialInput, persistCueTokens } from './cueAuth'
+import { callCueApi, mapCueMembershipQuota } from './cueClient'
+
+const fixture = vi.hoisted(() => ({ path: '' }))
+vi.mock('electron', () => ({
+  app: { getPath: () => fixture.path },
+  safeStorage: {
+    isEncryptionAvailable: () => true,
+    encryptString: (value: string) => Buffer.from(value),
+    decryptString: (value: Buffer) => value.toString()
+  }
+}))
+vi.mock('./cueDeviceId', () => ({ getOrCreateCueDeviceId: () => 'device' }))
 
 describe('Cue multi-account credential parser & quota mapper', () => {
   it('parses all 5 supported Cue credential formats cleanly', () => {
@@ -43,5 +57,67 @@ describe('Cue multi-account credential parser & quota mapper', () => {
     expect(mapped.weeklyRemainingCredits).toBe(0)
     expect(mapped.remainingPercent).toBe(0)
     expect(mapped.purchasedRemainingCredits).toBe(500)
+  })
+})
+
+describe('Cue credential revision', () => {
+  beforeEach(async () => { fixture.path = await mkdtemp(join(tmpdir(), 'cue-auth-test-')) })
+  afterEach(async () => {
+    await clearCueAccountAuth('*')
+    await rm(fixture.path, { recursive: true, force: true })
+  })
+
+  it.each(['replace', 'clear'])('does not commit a refresh after %s', async (action) => {
+    const accountId = 'fixture'
+    await persistCueTokens(accountId, { authKind: 'oauth', accessToken: 'old', refreshToken: 'refresh' })
+    let refresh!: (res: Response) => void
+    const fetchImpl = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response(null, { status: 401 }))
+      .mockImplementationOnce(() => new Promise((resolve) => { refresh = resolve }))
+    const request = callCueApi(accountId, '/first', { fetchImpl })
+    await vi.waitFor(() => expect(fetchImpl).toHaveBeenCalledTimes(2))
+    if (action === 'replace') await persistCueTokens(accountId, { authKind: 'session', accessToken: 'replacement' })
+    else await clearCueAccountAuth(accountId)
+    refresh(Response.json({ access_token: 'stale-refresh' }))
+    expect((await request).status).toBe(401)
+    expect((await loadCueTokens(accountId))?.accessToken).toBe(action === 'replace' ? 'replacement' : undefined)
+    expect(fetchImpl).toHaveBeenCalledTimes(2)
+  })
+
+  it('shares a refresh and retries only with credentials from the original identity', async () => {
+    await persistCueTokens('fixture', { authKind: 'oauth', accessToken: 'old', refreshToken: 'refresh' })
+    const fetchImpl = vi.fn<typeof fetch>(async (url, init) => {
+      if (String(url).endsWith('/oauth/token')) return Response.json({ access_token: 'new' })
+      const token = new Headers(init?.headers).get('Authorization')
+      return new Response(null, { status: token === 'Bearer new' ? 200 : 401 })
+    })
+    const results = await Promise.all([
+      callCueApi('fixture', '/first', { fetchImpl }),
+      callCueApi('fixture', '/second', { fetchImpl })
+    ])
+    expect(results.every((result) => result.ok)).toBe(true)
+    expect(fetchImpl.mock.calls.filter(([url]) => String(url).endsWith('/oauth/token'))).toHaveLength(1)
+  })
+
+  it('does not retry a 401 using a replacement account without a refresh token', async () => {
+    await persistCueTokens('fixture', { authKind: 'session', accessToken: 'old' })
+    const fetchImpl = vi.fn<typeof fetch>(async () => {
+      await persistCueTokens('fixture', { authKind: 'session', accessToken: 'other-user' })
+      return new Response(null, { status: 401 })
+    })
+    expect((await callCueApi('fixture', '/first', { fetchImpl })).status).toBe(401)
+    expect(fetchImpl).toHaveBeenCalledOnce()
+  })
+
+  it('picks Cue cookies ahead of Manus mirrors and ignores lookalike domains', () => {
+    const imported = parseAnyCueCredentialInput(JSON.stringify([
+      { domain: '.cue.im.example', name: 'cue_session_id', value: 'unrelated' },
+      { domain: '.manus.im', name: 'session_id', value: 'mirror' },
+      { domain: '.cue.im', name: 'cue_session_id', value: 'primary', path: '/' },
+      { domain: '.cue.im', name: 'cue_session_id', value: 'subpath', path: '/login' }
+    ]))
+    expect(imported.accessToken).toBe('primary')
+    expect(imported.cookieHeader?.split('; ')[0]).toBe('cue_session_id=primary')
+    expect(imported.cookieHeader).not.toMatch(/unrelated|mirror/)
   })
 })

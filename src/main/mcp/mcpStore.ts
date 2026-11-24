@@ -361,6 +361,17 @@ export async function removePersistedServer(args: {
   })
 }
 
+export async function removePersistedScope(scopeId: string): Promise<number> {
+  return withStoreLock(() => {
+    const raw = readRawRegistry()
+    if (Object.hasOwn(raw.scopes, scopeId)) {
+      delete raw.scopes[scopeId]
+      writeRawRegistry(raw)
+    }
+    return countPersisted(raw)
+  })
+}
+
 export async function saveScopeDirectory(args: {
   scopeId: string
   directory?: string

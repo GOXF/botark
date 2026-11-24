@@ -176,14 +176,18 @@ export const MUSE_HOOK_SCRIPT = String.raw`
   // Always rediscover: gateway may come up after first paint, and an early
   // "dom" result must not permanently block sendRequest.
   discover();
-  let n = 0;
-  const timer = setInterval(() => {
-    n += 1;
-    if (state.hook === 'sendRequest') clearInterval(timer);
-    else if (n % 2 === 0) discover();
-    // Keep trying for a long cold-start (VM wake / gateway bootstrap).
-    if (n > 600) clearInterval(timer);
-  }, 1000);
+  if (state.discoveryTimer == null && state.hook !== 'sendRequest') {
+    let n = 0;
+    state.discoveryTimer = setInterval(() => {
+      n += 1;
+      if (state.hook !== 'sendRequest') discover();
+      // Keep trying for a long cold-start (VM wake / gateway bootstrap).
+      if (state.hook === 'sendRequest' || n >= 300) {
+        clearInterval(state.discoveryTimer);
+        state.discoveryTimer = null;
+      }
+    }, 2000);
+  }
 
   return window.__bothubMuse.getStatus();
 })()

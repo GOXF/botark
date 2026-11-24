@@ -1,6 +1,7 @@
 import { statusAfterSendFailure } from '../sendFailure'
 import { createId } from '@shared/id'
-import type { GrokRpcRequest, GrokRpcResponse } from '@shared/ipc'
+import { decodeTranscriptBody, parseGrokTranscriptEntry } from '../../main/grok/grokTranscriptDecoder'
+import { grokRpc, type GrokRequest } from './grokRequests'
 import { GrokConnectError } from './connectClient'
 import { grokApprovalRpcRequest, type GrokApprovalKind } from './approvals'
 import { clearGrokAuth, getGrokAuth, setGrokAuth } from './tokenStore'
@@ -69,78 +70,37 @@ export function extractAgents(payload: unknown): GrokAgentSummary[] {
   return (list as Record<string, unknown>[]).map(mapAgent).filter((a) => a.id)
 }
 
-function decodeEntryBody(raw: Record<string, unknown>): Record<string, unknown> {
-  const body = raw['body']
-  if (typeof body === 'string' && body.length > 0) {
-    try {
-      const json = atob(body)
-      const parsed = JSON.parse(json) as Record<string, unknown>
-      return { ...raw, ...parsed }
-    } catch {
-      return raw
-    }
-  }
-  return raw
+type GrokReplyRow = Pick<IncomingMessage, 'id' | 'text' | 'widgets' | 'richWidgets' | 'media' | 'tools'> & {
+  role: string
+  clientNonce?: string
+  requestId?: string
+  isStreaming?: boolean
 }
 
-function entryText(e: Record<string, unknown>): string {
-  const rawMsg = e['message']
-  const msg = rawMsg && typeof rawMsg === 'object' ? (rawMsg as Record<string, unknown>) : undefined
-  const widget = msg?.['widget'] as Record<string, unknown> | undefined
-  const text =
-    (typeof e['text'] === 'string' && e['text']) ||
-    (typeof e['content'] === 'string' && e['content']) ||
-    (typeof rawMsg === 'string' && rawMsg) ||
-    (typeof msg?.['text'] === 'string' && (msg['text'] as string)) ||
-    (typeof msg?.['content'] === 'string' && (msg['content'] as string)) ||
-    (typeof widget?.['prompt'] === 'string' && (widget['prompt'] as string)) ||
-    (typeof widget?.['title'] === 'string' && (widget['title'] as string)) ||
-    ''
-  return typeof text === 'string' ? text.trim() : ''
+function findTranscriptReply(payload: unknown, afterMessageId?: string): GrokReplyRow | undefined {
+  if (!payload || typeof payload !== 'object') return undefined
+  const page = payload as Record<string, unknown>
+  const rows: GrokReplyRow[] = Array.isArray(page['hydrated'])
+    ? page['hydrated'].filter((row): row is GrokReplyRow => Boolean(row && typeof row.id === 'string' && typeof row.text === 'string'))
+    : (Array.isArray(page['entries']) ? page['entries'] : Array.isArray(page['items']) ? page['items'] : [])
+      .flatMap((row) => {
+        const item = parseGrokTranscriptEntry(row, '')
+        return item ? [{
+          id: item.entryId, text: item.text, role: item.role, clientNonce: item.clientNonce, requestId: item.requestId,
+          isStreaming: item.isStreaming, widgets: item.widgets, richWidgets: item.richWidgets, media: item.media
+        }] : []
+      })
+  const anchor = afterMessageId ? rows.findIndex((row) => row.role === 'user' &&
+    (row.id === afterMessageId || row.clientNonce === afterMessageId)) : -1
+  if (afterMessageId && anchor === -1) return undefined
+  const requestId = rows[anchor]?.requestId
+  return rows.slice(anchor + 1).findLast((row) => (row.role === 'assistant' || row.role === 'bot') && !row.isStreaming &&
+    (!requestId || !row.requestId || row.requestId === requestId) &&
+    Boolean(row.text.trim() || row.widgets?.length || row.richWidgets?.length || row.media?.length))
 }
 
-/**
- * Newest assistant text in a transcript page. With `afterMessageId`, only
- * entries newer than that user message count, and the message itself must
- * be on the page; otherwise the previous turn's answer was returned as the
- * reply to the new message.
- */
 export function extractReplyText(entries: unknown, afterMessageId?: string): string {
-  if (!entries || typeof entries !== 'object') return ''
-  const root = entries as Record<string, unknown>
-  const list = (
-    Array.isArray(root['entries'])
-      ? root['entries']
-      : Array.isArray(root['items'])
-        ? root['items']
-        : []
-  ) as Record<string, unknown>[]
-  let candidate = ''
-  for (let i = list.length - 1; i >= 0; i--) {
-    const e = decodeEntryBody(list[i]!)
-    const id = String(e['id'] ?? e['message_id'] ?? e['messageId'] ?? e['clientNonce'] ?? '')
-    if (
-      afterMessageId &&
-      (id === afterMessageId || String(e['clientNonce'] ?? '') === afterMessageId)
-    ) {
-      return candidate
-    }
-    if (candidate) continue
-    const role = String(e['role'] ?? '')
-    const kind = String(e['kind'] ?? e['entryKind'] ?? e['type'] ?? '')
-    if (/^user$/i.test(role) || /^user-attachment$/i.test(kind) || /^event$/i.test(kind)) continue
-    const text = entryText(e)
-    if (!text) continue
-    if (
-      /assistant|bot|message/i.test(role) ||
-      /assistant|message|send-message|bot/i.test(kind) ||
-      role === ''
-    ) {
-      if (!afterMessageId) return text
-      candidate = text
-    }
-  }
-  return ''
+  return findTranscriptReply(entries, afterMessageId)?.text.trim() ?? ''
 }
 
 function maxUpdatedSeq(entries: unknown): string {
@@ -148,7 +108,9 @@ function maxUpdatedSeq(entries: unknown): string {
   const root = entries as Record<string, unknown>
   const list = (Array.isArray(root['entries']) ? root['entries'] : []) as Record<string, unknown>[]
   let max = 0n
-  for (const e of list) {
+  for (const raw of list) {
+    if (!raw || typeof raw !== 'object') continue
+    const e = decodeTranscriptBody(raw)
     for (const key of ['updatedSeq', 'updated_seq', 'seq', 'currentUpdatedSeq'] as const) {
       const v = e[key]
       if (v == null) continue
@@ -160,7 +122,7 @@ function maxUpdatedSeq(entries: unknown): string {
       }
     }
   }
-  const top = root['updatedSeq'] ?? root['updated_seq']
+  const top = root['currentUpdatedSeq'] ?? root['current_updated_seq'] ?? root['updatedSeq'] ?? root['updated_seq']
   if (top != null) {
     try {
       const n = BigInt(String(top))
@@ -189,12 +151,12 @@ function mapRawApprovalToMuseApproval(raw: Record<string, unknown>): MuseApprova
   }
 }
 
-async function invokeGrokRpc(request: GrokRpcRequest): Promise<unknown> {
+async function invokeGrokRpc(request: GrokRequest, signal?: AbortSignal): Promise<unknown> {
   const bridge = typeof window !== 'undefined' ? window.electron?.grok : undefined
   if (!bridge?.rpc) {
     throw new AdapterError('not-connected', 'Grok IPC unavailable (Electron main required)')
   }
-  const res = (await bridge.rpc(request)) as GrokRpcResponse
+  const res = await grokRpc(bridge, request, signal)
   if (!res.ok) {
     throw new GrokConnectError(res.status, res.body ?? res.message, res.code)
   }
@@ -213,6 +175,7 @@ export class GrokBotAdapter implements PlatformAdapter {
   private readonly statuses = new Map<string, ConnectionStatus>()
   private readonly listeners = new Set<AdapterListener>()
   private readonly agentsByAccount = new Map<string, GrokAgentSummary[]>()
+  private readonly rosterRequests = new Map<string, Promise<GrokAgentSummary[]>>()
   private readonly pendingApprovals = new Map<string, MuseApproval[]>()
   private readonly agentForConversation = new Map<string, Map<string, string>>()
   private mainEventWired = false
@@ -256,6 +219,10 @@ export class GrokBotAdapter implements PlatformAdapter {
             displayName: ev.accountSlot
           })
         } else {
+          clearGrokAuth(ev.accountId)
+          this.rosterRequests.delete(ev.accountId)
+          this.agentsByAccount.delete(ev.accountId)
+          this.pendingApprovals.delete(ev.accountId)
           this.setStatus(
             ev.accountId,
             'offline',
@@ -328,6 +295,13 @@ export class GrokBotAdapter implements PlatformAdapter {
 
   setAuth(session: GrokAuthSession): void {
     this.ensureMainEventWired()
+    const previous = getGrokAuth(session.accountId)
+    if (previous && (previous.accountSlot !== session.accountSlot || previous.teamId !== session.teamId)) {
+      this.rosterRequests.delete(session.accountId)
+      this.agentsByAccount.delete(session.accountId)
+      this.agentForConversation.delete(session.accountId)
+      this.pendingApprovals.delete(session.accountId)
+    }
     setGrokAuth({ ...session, signedIn: true })
     if (!this.accounts.has(session.accountId)) {
       this.accounts.set(session.accountId, {
@@ -342,6 +316,9 @@ export class GrokBotAdapter implements PlatformAdapter {
 
   clearAuth(accountId: string): void {
     clearGrokAuth(accountId)
+    this.rosterRequests.delete(accountId)
+    this.agentsByAccount.delete(accountId)
+    this.agentForConversation.delete(accountId)
     this.pendingApprovals.delete(accountId)
     this.setStatus(accountId, 'offline', 'Signed out')
   }
@@ -480,17 +457,25 @@ export class GrokBotAdapter implements PlatformAdapter {
     }
   }
 
-  async refreshAgents(accountId: string): Promise<GrokAgentSummary[]> {
+  refreshAgents(accountId: string): Promise<GrokAgentSummary[]> {
     this.requireAuth(accountId)
-    const payload = await invokeGrokRpc({
+    const pending = this.rosterRequests.get(accountId)
+    if (pending) return pending
+    const request = invokeGrokRpc({
       accountId,
       op: 'listAgents',
       includeTeamAgents: true,
       timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone
+    }).then((payload) => {
+      const agents = extractAgents(payload)
+      if (this.rosterRequests.get(accountId) !== request) return []
+      this.agentsByAccount.set(accountId, agents)
+      return agents
+    }).finally(() => {
+      if (this.rosterRequests.get(accountId) === request) this.rosterRequests.delete(accountId)
     })
-    const agents = extractAgents(payload)
-    this.agentsByAccount.set(accountId, agents)
-    return agents
+    this.rosterRequests.set(accountId, request)
+    return request
   }
 
   listCachedAgents(accountId: string): GrokAgentSummary[] {
@@ -507,9 +492,7 @@ export class GrokBotAdapter implements PlatformAdapter {
 
   async sendMessage(message: OutgoingMessage): Promise<SendReceipt> {
     this.ensureMainEventWired()
-    if (message.signal?.aborted) {
-      throw new AdapterError('network', 'Aborted')
-    }
+    message.signal?.throwIfAborted()
 
     if (!getGrokAuth(message.accountId)?.signedIn) {
       try {
@@ -556,263 +539,102 @@ export class GrokBotAdapter implements PlatformAdapter {
       isTyping: true
     })
 
+    const requestId = createId('grok_send')
+    const controller = new AbortController()
+    const signal = message.signal ? AbortSignal.any([message.signal, controller.signal]) : controller.signal
+    const call = (request: GrokRequest) => invokeGrokRpc({ ...request, requestId }, signal)
+    const sentAtMs = Date.now()
     try {
       let afterSeq = '0'
       try {
-        const hist = await raceWithAbort(
-          invokeGrokRpc({
-            accountId: message.accountId,
-            timeZone,
-            op: 'listTranscriptEntries',
-            agentId,
-            sessionId,
-            limit: 5
-          }),
-          message.signal
-        )
-        afterSeq = maxUpdatedSeq(hist)
-      } catch (err) {
-        if (message.signal?.aborted) throw err
-        /* start from 0 */
-      }
-
-      const uploadableAttachments = (message.attachments ?? [])
-        .filter((a): a is typeof a & { dataBase64: string } => Boolean(a.dataBase64))
-        .map((a) => ({
-          name: a.name,
-          mimeType: a.mimeType,
-          dataBase64: a.dataBase64,
-          size: a.size
+        afterSeq = maxUpdatedSeq(await call({
+          accountId: message.accountId, timeZone, op: 'listTranscriptEntries', agentId,
+          sessionId, limit: 5, watermarkOnly: true
         }))
+      } catch { signal.throwIfAborted() }
 
-      await raceWithAbort(
-        invokeGrokRpc({
-          accountId: message.accountId,
-          timeZone,
-          op: 'sendUserMessage',
-          agentId,
-          messageId,
-          text: message.text,
-          sessionId,
-          machineId: auth.machineId,
-          replyToId: message.replyToId,
-          replyQuote: message.replyQuote,
-          ...(uploadableAttachments.length ? { attachments: uploadableAttachments } : {})
-        }),
-        message.signal
-      )
-      message.onAccepted?.()
-
-      let reply = ''
-      let replyMessageId = ''
-      let replyWidgets: IncomingMessage['widgets']
-      let replyTools: IncomingMessage['tools']
-      let replyMedia: IncomingMessage['media']
-      let turnFailed = false
-      let multiBubbles: Array<{
-        messageId: string
-        text: string
-        widgets?: IncomingMessage['widgets']
-        tools?: IncomingMessage['tools']
-        media?: IncomingMessage['media']
-      }> = []
-
-      try {
-        const watched = await raceWithAbort(
-          invokeGrokRpc({
-            accountId: message.accountId,
-            timeZone,
-            op: 'watchUntilReply',
-            agentId,
-            conversationId: message.conversationId,
-            sessionId,
-            afterUpdatedSeq: afterSeq,
-            afterMessageId: messageId,
-            timeoutMs: 600_000
-          }),
-          message.signal
-        )
-        if (watched && typeof watched === 'object') {
-          const w = watched as Record<string, unknown>
-          const tf = w['turnFailed'] as { code?: string; summary?: string } | undefined
-          if (tf && !w['text'] && !Array.isArray(w['messages'])) {
-            turnFailed = true
-            throw new AdapterError('network', tf.summary || `Turn failed (${tf.code})`)
-          }
-          if (Array.isArray(w['messages']) && w['messages'].length > 0) {
-            multiBubbles = w['messages'] as typeof multiBubbles
-          }
-          if (typeof w['text'] === 'string') reply = w['text']
-          else reply = extractReplyText(watched, messageId)
-          if (typeof w['messageId'] === 'string') replyMessageId = w['messageId']
-          if (Array.isArray(w['widgets'])) replyWidgets = w['widgets'] as IncomingMessage['widgets']
-          if (Array.isArray(w['tools'])) replyTools = w['tools'] as IncomingMessage['tools']
-          if (Array.isArray(w['media'])) replyMedia = w['media'] as IncomingMessage['media']
-        }
-      } catch (err) {
-        if (message.signal?.aborted) throw err
-        if (err instanceof AdapterError) throw err
-      }
-
-      if (
-        !multiBubbles.length &&
-        !reply &&
-        !replyWidgets?.length &&
-        !replyMedia?.length &&
-        !turnFailed &&
-        !message.signal?.aborted
-      ) {
-        // Fallback: poll listTranscriptEntries when watchUntilReply resolves empty or fails.
-        for (let i = 0; i < 15; i++) {
-          if (message.signal?.aborted) throw new AdapterError('network', 'Aborted')
-          if (i > 0) await sleep(1000, message.signal)
-          try {
-            const hist = (await raceWithAbort(
-              invokeGrokRpc({
-                accountId: message.accountId,
-                timeZone,
-                op: 'listTranscriptEntries',
-                agentId,
-                sessionId,
-                limit: 40
-              }),
-              message.signal
-            )) as Record<string, unknown> | undefined
-            reply = extractReplyText(hist, messageId)
-            if (!reply && hist && Array.isArray(hist['entries'])) {
-              const entriesList = hist['entries'] as Array<Record<string, unknown>>
-              let baseSeq = 0n
-              try {
-                baseSeq = BigInt(afterSeq || '0')
-              } catch {
-                baseSeq = 0n
-              }
-              for (let j = entriesList.length - 1; j >= 0; j--) {
-                const e = decodeEntryBody(entriesList[j]!)
-                const senderObj =
-                  e['sender'] && typeof e['sender'] === 'object'
-                    ? (e['sender'] as Record<string, unknown>)
-                    : undefined
-                const role = String(e['role'] ?? senderObj?.['type'] ?? '')
-                if (/^user$/i.test(role)) continue
-                const rawSeq = e['updatedSeq'] ?? e['updated_seq'] ?? e['seq']
-                let isNewer = false
-                if (rawSeq != null) {
-                  try {
-                    isNewer = BigInt(String(rawSeq)) > baseSeq
-                  } catch {
-                    isNewer = false
-                  }
-                }
-                if (isNewer) {
-                  const candidateText = entryText(e)
-                  if (candidateText) {
-                    reply = candidateText
-                    if (typeof e['entryId'] === 'string') replyMessageId = e['entryId']
-                    else if (typeof e['id'] === 'string') replyMessageId = e['id']
-                    break
-                  }
-                }
-              }
-            }
-            if (!reply && hist && Array.isArray(hist['hydrated'])) {
-              const hydrated = hist['hydrated'] as Array<Record<string, unknown>>
-              const anchorIdx = hydrated.findIndex((item) => item['id'] === messageId)
-              if (anchorIdx >= 0) {
-                for (let j = hydrated.length - 1; j > anchorIdx; j--) {
-                  const item = hydrated[j]!
-                  if (item['role'] === 'bot') {
-                    const t = typeof item['text'] === 'string' ? item['text'].trim() : ''
-                    if (t || Array.isArray(item['widgets']) || Array.isArray(item['media'])) {
-                      reply = t
-                      if (typeof item['id'] === 'string') replyMessageId = item['id']
-                      if (Array.isArray(item['widgets'])) {
-                        replyWidgets = item['widgets'] as IncomingMessage['widgets']
-                      }
-                      if (Array.isArray(item['tools'])) {
-                        replyTools = item['tools'] as IncomingMessage['tools']
-                      }
-                      if (Array.isArray(item['media'])) {
-                        replyMedia = item['media'] as IncomingMessage['media']
-                      }
-                      break
-                    }
-                  }
-                }
-              }
-            }
-            if (reply || replyWidgets?.length || replyMedia?.length) break
-          } catch (pollErr) {
-            if (message.signal?.aborted) throw pollErr
-            /* keep polling */
-          }
-        }
-      }
-
-      this.emit({
-        type: 'typing',
-        conversationId: message.conversationId,
-        accountId: message.accountId,
-        isTyping: false
+      const attachments = message.attachments?.flatMap((a) => a.dataBase64 ? [{
+        name: a.name, mimeType: a.mimeType, dataBase64: a.dataBase64, size: a.size
+      }] : [])
+      await call({
+        accountId: message.accountId, timeZone, op: 'sendUserMessage', agentId, messageId,
+        text: message.text, sessionId, machineId: auth.machineId, sentAtMs,
+        replyToId: message.replyToId, replyQuote: message.replyQuote, attachments
       })
+      const acceptedAt = Date.now()
+      message.onAccepted?.()
+      if (sessionId && !message.conversationId.startsWith('room-turn-')) {
+        void invokeGrokRpc({ op: 'ensureWatch', accountId: message.accountId, timeZone,
+          targets: [{ agentId, sessionId, conversationId: message.conversationId }]
+        }).catch(() => undefined)
+      }
 
-      if (multiBubbles.length > 0) {
-        for (const b of multiBubbles) {
-          this.emit({
-            type: 'message',
-            message: {
-              id: b.messageId || createId('msg'),
-              conversationId: message.conversationId,
-              accountId: message.accountId,
-              text: b.text,
-              createdAt: Date.now(),
-              ...(b.widgets ? { widgets: b.widgets } : {}),
-              ...(b.tools ? { tools: b.tools } : {}),
-              ...(b.media ? { media: b.media } : {})
-            }
-          })
+      type Bubble = Pick<GrokReplyRow, 'text' | 'widgets' | 'richWidgets' | 'tools' | 'media'> & { messageId?: string }
+      let bubbles: Bubble[] = []
+      let replyAnchor = messageId
+      const watched = await call({
+        accountId: message.accountId, timeZone, op: 'watchUntilReply', agentId, sessionId,
+        conversationId: message.conversationId, afterUpdatedSeq: afterSeq, afterMessageId: messageId,
+        timeoutMs: 600_000
+      }).catch((error) => {
+        signal.throwIfAborted()
+        if (error instanceof GrokConnectError && (error.code === 'aborted' || error.status === 401 || error.status === 403)) throw error
+        return undefined
+      }) as (Bubble & { messages?: Bubble[]; echoEntryId?: string; turnFailed?: { code?: string; summary?: string } }) | undefined
+      if (watched?.turnFailed) {
+        throw new AdapterError('no-reply', watched.turnFailed.summary || `Turn failed (${watched.turnFailed.code})`)
+      }
+      if (watched?.echoEntryId) replyAnchor = watched.echoEntryId
+      if (Array.isArray(watched?.messages) && watched.messages.length) bubbles = watched.messages
+      else if (watched && (watched.text || watched.widgets?.length || watched.richWidgets?.length || watched.media?.length)) {
+        bubbles = [watched]
+      }
+
+      for (let attempt = 0; bubbles.length === 0 && attempt < 15; attempt++) {
+        if (attempt > 0) await sleep(1000, signal)
+        try {
+          const history = await call({ accountId: message.accountId, timeZone, op: 'listTranscriptEntries', agentId, sessionId, limit: 40 })
+          const reply = findTranscriptReply(history, replyAnchor) ??
+            (replyAnchor === messageId ? undefined : findTranscriptReply(history, messageId))
+          if (reply) bubbles = [{
+            messageId: reply.id, text: reply.text, widgets: reply.widgets,
+            richWidgets: reply.richWidgets, media: reply.media, tools: reply.tools
+          }]
+        } catch (error) {
+          signal.throwIfAborted()
+          if (error instanceof GrokConnectError && (error.code === 'aborted' || error.status === 401 || error.status === 403)) throw error
         }
-      } else if (reply || replyWidgets?.length || replyMedia?.length) {
+      }
+
+      signal.throwIfAborted()
+      for (const { messageId: replyId, ...bubble } of bubbles) {
         this.emit({
           type: 'message',
           message: {
-            id: replyMessageId || createId('msg'),
-            conversationId: message.conversationId,
-            accountId: message.accountId,
-            text: reply,
-            createdAt: Date.now(),
-            ...(replyWidgets ? { widgets: replyWidgets } : {}),
-            ...(replyTools ? { tools: replyTools } : {}),
-            ...(replyMedia ? { media: replyMedia } : {})
+            ...bubble,
+            id: replyId ? (replyId.startsWith('grok_') ? replyId : `grok_${replyId}`) : createId('msg'),
+            conversationId: message.conversationId, accountId: message.accountId,
+            sessionId: sessionId || undefined, createdAt: Date.now()
           }
         })
       }
-
       this.setStatus(message.accountId, 'online')
-      const gotReply = Boolean(
-        multiBubbles.length > 0 || reply || replyWidgets?.length || replyMedia?.length
-      )
-      return { messageId, acceptedAt: Date.now(), ...(gotReply ? {} : { noReply: true }) }
+      return { messageId, acceptedAt, ...(bubbles.length ? {} : { noReply: true }) }
     } catch (error) {
-      this.emit({
-        type: 'typing',
-        conversationId: message.conversationId,
-        accountId: message.accountId,
-        isTyping: false
-      })
       if (message.signal?.aborted) {
-        this.setStatus(message.accountId, 'online')
-        throw error instanceof AdapterError ? error : new AdapterError('network', 'Aborted')
+        if (getGrokAuth(message.accountId)?.signedIn) this.setStatus(message.accountId, 'online')
+        throw error
       }
-      const detail =
-        error instanceof GrokConnectError
-          ? error.message
-          : error instanceof Error
-            ? error.message
-            : String(error)
+      if (error instanceof GrokConnectError && error.code === 'aborted') throw error
+      const detail = error instanceof Error ? error.message : String(error)
       const next = statusAfterSendFailure(error)
       this.setStatus(message.accountId, next, next === 'error' ? detail : undefined)
       throw error instanceof AdapterError ? error : new AdapterError('network', detail)
+    } finally {
+      controller.abort()
+      this.emit({
+        type: 'typing', conversationId: message.conversationId, accountId: message.accountId, isTyping: false
+      })
     }
   }
 

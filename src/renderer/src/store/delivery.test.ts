@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { BotAccount, ChatMessage } from '@/types'
 import {
   clearNoReplyFlag,
+  createDeliveryAttempts,
   createInFlightSet,
   hasLostAttachments,
   deliveryAfterError,
@@ -9,6 +10,7 @@ import {
   createSafeStorage,
   deferWrites,
   INTERRUPTED_SEND_TEXT,
+  SEND_STILL_PENDING_TEXT,
   sanitizePersisted,
   SendTimeoutError,
   toPersistedMessages,
@@ -71,6 +73,13 @@ describe('sanitizePersisted', () => {
     const state = { messages: { b: [msg({ delivery: 'sent' })] }, accounts: {} }
     expect(sanitizePersisted(state)).toBe(state)
   })
+
+  it('restores a timed-out send as ambiguous after its transport is gone', () => {
+    const out = sanitizePersisted({
+      messages: { b: [msg({ delivery: 'no-reply', error: SEND_STILL_PENDING_TEXT })] }
+    })
+    expect(out.messages.b[0]).toMatchObject({ delivery: 'no-reply', error: INTERRUPTED_SEND_TEXT })
+  })
 })
 
 describe('toPersistedMessages', () => {
@@ -87,6 +96,41 @@ describe('toPersistedMessages', () => {
 })
 
 describe('createSafeStorage', () => {
+  it('coalesces both serialization and writes, flushes on demand, and drops removed pending values', () => {
+    vi.useFakeTimers()
+    try {
+      const setItem = vi.fn()
+      const removeItem = vi.fn()
+      const storage = createSafeStorage(
+        () => ({ getItem: () => null, setItem, removeItem }),
+        undefined,
+        { debounceMs: 350 }
+      )
+      const stale = vi.fn(() => 'first')
+      const latest = vi.fn(() => 'latest')
+      storage.setItem('workspace', stale)
+      vi.advanceTimersByTime(300)
+      storage.setItem('workspace', latest)
+      vi.advanceTimersByTime(349)
+      expect(setItem).not.toHaveBeenCalled()
+      expect(stale).not.toHaveBeenCalled()
+      expect(latest).not.toHaveBeenCalled()
+      vi.advanceTimersByTime(1)
+      expect(setItem).toHaveBeenCalledExactlyOnceWith('workspace', 'latest')
+      expect(latest).toHaveBeenCalledOnce()
+      storage.setItem('workspace', 'critical')
+      storage.flush()
+      expect(setItem).toHaveBeenLastCalledWith('workspace', 'critical')
+      storage.setItem('workspace', 'removed')
+      storage.removeItem('workspace')
+      vi.runOnlyPendingTimers()
+      expect(setItem).toHaveBeenCalledTimes(2)
+      expect(removeItem).toHaveBeenCalledExactlyOnceWith('workspace')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('keeps existing state changes usable when the localStorage getter throws', () => {
     const onError = vi.fn()
     const blocked = new Error('Storage access denied')
@@ -179,6 +223,55 @@ describe('createSafeStorage', () => {
     expect(persisted.state.bots[0]!.id).toBe('bot_1')
     expect(persisted.state.messages['bot_1']!.length).toBe(30)
   })
+
+  it('compacts one oversized reply and retains its identity along with the rest of the workspace', () => {
+    let saved = ''
+    const onError = vi.fn()
+    const storage = createSafeStorage(() => ({
+      getItem: () => saved,
+      removeItem: () => undefined,
+      setItem: (_name, value) => {
+        if (value.length * 2 > 12_000) throw new DOMException('Storage is full', 'QuotaExceededError')
+        saved = value
+      }
+    }), onError)
+    const reply = msg({ id: 'giant', role: 'bot', text: '海\n'.repeat(80_000), createdAt: 19 })
+    const state = {
+      bots: [{ id: 'b', name: 'Saved bot' }],
+      accounts: { a: { label: 'Saved account' } },
+      messages: { b: [reply], other: [msg({ text: 'ordinary' })] }
+    }
+
+    storage.setItem('workspace', JSON.stringify({ state, version: 0 }))
+
+    const restored: typeof state = JSON.parse(saved).state
+    expect(restored.accounts).toEqual(state.accounts)
+    expect(restored.bots).toEqual(state.bots)
+    expect(restored.messages.b[0]).toMatchObject({ id: reply.id, role: 'bot', createdAt: 19 })
+    expect(restored.messages.b[0]?.text).toMatch(/^\[Message body omitted/)
+    expect(restored.messages.other).toEqual(state.messages.other)
+    expect(reply.text).toHaveLength(160_000)
+    expect(onError).not.toHaveBeenCalled()
+  })
+
+  it('budgets the whole workspace across bot histories', () => {
+    let saved = ''
+    const storage = createSafeStorage(() => ({
+      getItem: () => saved,
+      removeItem: () => undefined,
+      setItem: (_name, value) => {
+        if (value.length * 2 > 50_000) throw new DOMException('Storage is full', 'QuotaExceededError')
+        saved = value
+      }
+    }))
+    const messages = Object.fromEntries(Array.from({ length: 12 }, (_, i) => [
+      `bot-${i}`,
+      [msg({ id: `m-${i}`, text: 'a'.repeat(9000) })]
+    ]))
+    storage.setItem('workspace', JSON.stringify({ state: { messages } }))
+    expect(saved.length * 2).toBeLessThanOrEqual(50_000)
+    expect(Object.keys(JSON.parse(saved).state.messages)).toHaveLength(12)
+  })
 })
 
 describe('clearNoReplyFlag', () => {
@@ -214,6 +307,18 @@ describe('accepted delivery', () => {
     expect(set.enter('m1')).toBe(false)
     set.leave('m1')
     expect(set.enter('m1')).toBe(true)
+  })
+
+  it('ignores completion from an earlier transport attempt', () => {
+    const attempts = createDeliveryAttempts()
+    const first = attempts.begin('m')!
+    expect(attempts.begin('m')).toBeUndefined()
+    attempts.finish('m', first)
+    const second = attempts.begin('m')!
+    expect(attempts.isCurrent('m', first)).toBe(false)
+    attempts.finish('m', first)
+    expect(attempts.isCurrent('m', second)).toBe(true)
+    expect(attempts.begin('m')).toBeUndefined()
   })
 
   it('turns an accepted message into no-reply after a restart', () => {

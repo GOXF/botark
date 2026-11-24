@@ -6,13 +6,13 @@ import { BrowserWindow, ipcMain, session as electronSession } from 'electron'
 import {
   ANTIGRAVITY_CHANNELS,
   type AntigravityAuthStatus,
-  type AntigravityMainEvent,
   type AntigravityOpenLoginRequest,
   type AntigravityRpcRequest,
   type AntigravityRpcResponse,
   type AntigravitySendRequest
 } from '@shared/ipc'
 import { partitionForAccount } from '../webContentsViewManager'
+import type { AntigravityTurnEvent } from './antigravityProtocol'
 import {
   AntigravityRpcError,
   cancelAntigravityRun,
@@ -39,7 +39,7 @@ import {
 
 let registered = false
 
-function broadcast(event: AntigravityMainEvent): void {
+function broadcast(event: AntigravityTurnEvent): void {
   for (const win of BrowserWindow.getAllWindows()) {
     if (!win.isDestroyed()) {
       win.webContents.send(ANTIGRAVITY_CHANNELS.event, event)
@@ -212,10 +212,10 @@ export function registerAntigravityIpc(): void {
           return { ok: true, status: 200, data: { ok: true } }
         case 'setPrefs': {
           const next = setAntigravityAccountPrefs(req.accountId, {
-            modelEnum: req.modelEnum,
-            modelDisplayName: req.modelDisplayName,
-            capsuleId: req.capsuleId,
-            agentPath: req.agentPath
+            ...(req.modelEnum !== undefined ? { modelEnum: req.modelEnum } : {}),
+            ...(req.modelDisplayName !== undefined ? { modelDisplayName: req.modelDisplayName } : {}),
+            ...(req.capsuleId !== undefined ? { capsuleId: req.capsuleId || undefined } : {}),
+            ...(req.agentPath !== undefined ? { agentPath: req.agentPath || undefined } : {})
           })
           return { ok: true, status: 200, data: next }
         }

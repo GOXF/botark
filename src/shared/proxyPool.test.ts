@@ -54,6 +54,11 @@ describe('planPoolAssignment', () => {
     expect(owners(next)).toEqual([['g', 'h'], ['m']])
   })
 
+  it('keeps the first saved binding when an account sits on two proxies', () => {
+    const { pool: next } = planPoolAssignment(pool('a', ['a', 'b']), ['a', 'b'])
+    expect(owners(next)).toEqual([['a'], ['b']])
+  })
+
   it('does not mutate the input', () => {
     const input = pool('x')
     planPoolAssignment(input, ['y'])

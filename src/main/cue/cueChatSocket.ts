@@ -5,7 +5,7 @@
 import { randomBytes } from 'node:crypto'
 import WebSocket from 'ws'
 import { createProxyAgent } from '../muse/accountProxy'
-import { CUE_CONNECT_BASE, CUE_ORIGIN, loadCueTokens } from './cueAuth'
+import { CUE_CONNECT_BASE, CUE_ORIGIN, getCueCredentialRevision, loadCueTokens } from './cueAuth'
 import { getOrCreateCueDeviceId } from './cueDeviceId'
 import { emitCueWatchEvent } from './cueWatchManager'
 
@@ -16,6 +16,7 @@ export interface CueNativeReplyResult {
     id: string
     text: string
   }
+  replies?: Array<{ id: string; text: string }>
 }
 
 export type ParsedSocketIoPacket =
@@ -28,16 +29,27 @@ export type ParsedSocketIoPacket =
   | { kind: 'event'; eventName: string; payload: unknown }
   | { kind: 'other'; raw: string }
 
-interface ManagedCueSocket {
+interface ConnectedCueSocket {
   ws: WebSocket
-  token: string
-  wsUrl: string
-  ready: Promise<void>
+  close: (error: Error) => void
   joinedSessions: Set<string>
   listeners: Set<(packet: ParsedSocketIoPacket) => void>
+  closeListeners: Set<(error: Error) => void>
+  completedMessages: Set<string>
 }
 
-const sockets = new Map<string, ManagedCueSocket>()
+interface SocketAttempt {
+  token: string
+  wsUrl: string
+  ready: Promise<ConnectedCueSocket>
+  close: (error: Error) => void
+}
+
+const sockets = new Map<string, SocketAttempt>()
+const sessionSends = new Map<string, Promise<unknown>>()
+const socketRevisions = new Map<string, symbol>()
+let defaultSocketRevision = Symbol()
+const socketRevision = (accountId: string) => socketRevisions.get(accountId) ?? defaultSocketRevision
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === 'object' && !Array.isArray(value)
@@ -145,31 +157,21 @@ export function parseSocketIoPacket(raw: string): ParsedSocketIoPacket {
 
 export function stopCueChatSocket(accountId: string): void {
   if (accountId === '*') {
-    for (const [id, entry] of sockets) {
-      sockets.delete(id)
-      try {
-        entry.ws.close()
-      } catch {
-        /* ignore */
-      }
-    }
+    socketRevisions.clear()
+    defaultSocketRevision = Symbol()
+    for (const entry of sockets.values()) entry.close(new Error('Cue 实时连接已关闭'))
     return
   }
-  const entry = sockets.get(accountId)
-  if (!entry) return
-  sockets.delete(accountId)
-  try {
-    entry.ws.close()
-  } catch {
-    /* ignore */
-  }
+  socketRevisions.set(accountId, Symbol())
+  sockets.get(accountId)?.close(new Error('Cue 实时连接已关闭'))
 }
 
 async function ensureConnectedSocket(
   accountId: string,
-  opts?: { wsBaseUrl?: string; timeoutMs?: number }
-): Promise<ManagedCueSocket> {
+  opts: { wsBaseUrl?: string; timeoutMs: number; isCurrent: () => boolean }
+): Promise<ConnectedCueSocket> {
   const auth = await loadCueTokens(accountId)
+  if (!opts.isCurrent()) throw new Error('Cue 账号或连接已更改')
   const token = auth?.accessToken?.trim()
   if (!token) {
     throw new Error('未登录 Cue，请先完成登录后再发送消息')
@@ -177,131 +179,109 @@ async function ensureConnectedSocket(
 
   const deviceId = auth?.deviceId || getOrCreateCueDeviceId(accountId)
   const wsUrl = buildCueSocketUrl({
-    baseUrl: opts?.wsBaseUrl || auth?.baseUrl,
+    baseUrl: opts.wsBaseUrl || auth?.baseUrl,
     deviceId
   })
 
   const existing = sockets.get(accountId)
-  if (
-    existing &&
-    existing.token === token &&
-    existing.wsUrl === wsUrl &&
-    (existing.ws.readyState === WebSocket.OPEN || existing.ws.readyState === WebSocket.CONNECTING)
-  ) {
-    await existing.ready
-    if (existing.ws.readyState === WebSocket.OPEN) {
-      return existing
-    }
-  } else if (existing) {
-    stopCueChatSocket(accountId)
-  }
+  if (existing?.token === token && existing.wsUrl === wsUrl) return existing.ready
+  existing?.close(new Error('Cue 实时连接已更改'))
 
-  const agent = await createProxyAgent(accountId)
-  const listeners = new Set<(packet: ParsedSocketIoPacket) => void>()
-  const joinedSessions = new Set<string>()
-  let connectSettled = false
-  let resolveReady!: () => void
-  let rejectReady!: (err: Error) => void
-
-  const ready = new Promise<void>((resolve, reject) => {
+  let resolveReady!: (socket: ConnectedCueSocket) => void
+  let rejectReady!: (error: Error) => void
+  const ready = new Promise<ConnectedCueSocket>((resolve, reject) => {
     resolveReady = resolve
     rejectReady = reject
   })
-
-  const ws = new WebSocket(wsUrl, {
-    headers: {
-      Origin: CUE_ORIGIN,
-      Authorization: `Bearer ${token}`,
-      Cookie: `cue_session_id=${token}; session_id=${token}`,
-      'x-product-name': 'manus-agents',
-      'x-client-type': 'desktop',
-      'x-client-version': '1.0.6',
-      'x-client-id': deviceId
-    },
-    ...(agent ? { agent } : {})
-  })
-
-  const managed: ManagedCueSocket = {
-    ws,
-    token,
-    wsUrl,
-    ready,
-    joinedSessions,
-    listeners
+  let connected: ConnectedCueSocket | undefined
+  let closed = false
+  let pingDeadline: ReturnType<typeof setTimeout> | undefined
+  let heartbeatMs = 45_000
+  const connectTimer = setTimeout(
+    () => attempt.close(new Error('Cue 实时 WebSocket 连接超时')), Math.min(15_000, opts.timeoutMs)
+  )
+  const attempt: SocketAttempt = {
+    token, wsUrl, ready,
+    close(error) {
+      if (closed) return
+      closed = true
+      if (sockets.get(accountId) === attempt) sockets.delete(accountId)
+      clearTimeout(connectTimer)
+      clearTimeout(pingDeadline)
+      rejectReady(error)
+      for (const listener of connected?.closeListeners ?? []) listener(error)
+      connected?.ws.terminate()
+    }
   }
-  sockets.set(accountId, managed)
-
-  const connectTimer = setTimeout(() => {
-    if (connectSettled) return
-    connectSettled = true
-    stopCueChatSocket(accountId)
-    rejectReady(new Error('Cue 实时 WebSocket 连接超时'))
-  }, Math.min(15_000, opts?.timeoutMs ?? 15_000))
-
-  const finishConnect = (err?: Error) => {
-    if (connectSettled) return
-    connectSettled = true
-    clearTimeout(connectTimer)
-    if (err) rejectReady(err)
-    else resolveReady()
+  sockets.set(accountId, attempt)
+  const armHeartbeat = () => {
+    clearTimeout(pingDeadline)
+    pingDeadline = setTimeout(() => attempt.close(new Error('Cue 实时连接心跳超时')), heartbeatMs)
   }
 
-  ws.on('message', (data) => {
-    const raw = typeof data === 'string' ? data : Buffer.from(data as Buffer).toString('utf8')
-    const packet = parseSocketIoPacket(raw)
-    if (packet.kind === 'ping') {
-      try {
-        if (ws.readyState === WebSocket.OPEN) ws.send('3')
-      } catch {
-        /* ignore */
-      }
+  void (async () => {
+    const agent = await createProxyAgent(accountId)
+    if (closed || sockets.get(accountId) !== attempt) return
+    if (!opts.isCurrent()) {
+      attempt.close(new Error('Cue 账号或连接已更改'))
       return
     }
-    if (packet.kind === 'open') {
+    const ws = new WebSocket(wsUrl, {
+      headers: {
+        Origin: CUE_ORIGIN,
+        Authorization: `Bearer ${token}`,
+        Cookie: `cue_session_id=${token}; session_id=${token}`,
+        'x-product-name': 'manus-agents',
+        'x-client-type': 'desktop',
+        'x-client-version': '1.0.6',
+        'x-client-id': deviceId
+      },
+      ...(agent ? { agent } : {})
+    })
+    const managed: ConnectedCueSocket = {
+      ws, close: attempt.close, joinedSessions: new Set(), listeners: new Set(), closeListeners: new Set(),
+      completedMessages: new Set()
+    }
+    connected = managed
+    ws.on('error', (error) => attempt.close(error))
+    ws.on('close', () => attempt.close(new Error('Cue 实时连接已关闭')))
+    ws.on('message', (data) => {
+      if (closed) return
+      const packet = parseSocketIoPacket(data.toString())
       try {
-        if (ws.readyState === WebSocket.OPEN) {
-          ws.send(`40${JSON.stringify({ token })}`)
+        if (packet.kind === 'ping') {
+          armHeartbeat()
+          ws.send('3')
+          return
         }
-      } catch (err) {
-        finishConnect(err instanceof Error ? err : new Error(String(err)))
+        if (packet.kind === 'open') {
+          const params = asRecord(packet.payload)
+          const interval = params?.['pingInterval']
+          const timeout = params?.['pingTimeout']
+          if (typeof interval === 'number' && typeof timeout === 'number' && interval > 0 && timeout > 0) {
+            heartbeatMs = Math.min(2_147_483_647, interval + timeout)
+          }
+          armHeartbeat()
+          ws.send(`40${JSON.stringify({ token })}`)
+          return
+        }
+        if (packet.kind === 'connect') {
+          clearTimeout(connectTimer)
+          resolveReady(managed)
+          return
+        }
+        if (packet.kind === 'connect_error' || packet.kind === 'disconnect') {
+          const detail = packet.kind === 'connect_error' ? asRecord(packet.payload) : null
+          attempt.close(new Error(nonEmptyString(detail?.['message']) || 'Cue 实时连接已断开'))
+          return
+        }
+        for (const listener of managed.listeners) listener(packet)
+      } catch (error) {
+        attempt.close(error instanceof Error ? error : new Error(String(error)))
       }
-      return
-    }
-    if (packet.kind === 'connect') {
-      finishConnect()
-      return
-    }
-    if (packet.kind === 'connect_error' || packet.kind === 'disconnect') {
-      const rec = packet.kind === 'connect_error' ? asRecord(packet.payload) : null
-      const msg = nonEmptyString(rec?.['message']) || 'Cue 实时连接鉴权失败'
-      finishConnect(new Error(msg))
-      if (sockets.get(accountId) === managed) {
-        stopCueChatSocket(accountId)
-      }
-      return
-    }
-    for (const listener of listeners) {
-      try {
-        listener(packet)
-      } catch {
-        /* isolate per-turn listener errors */
-      }
-    }
-  })
-
-  ws.on('error', (err) => {
-    finishConnect(err instanceof Error ? err : new Error(String(err)))
-  })
-
-  ws.on('close', () => {
-    if (sockets.get(accountId) === managed) {
-      sockets.delete(accountId)
-    }
-    finishConnect(new Error('Cue 实时连接已关闭'))
-  })
-
-  await ready
-  return managed
+    })
+  })().catch((error: unknown) => attempt.close(error instanceof Error ? error : new Error(String(error))))
+  return ready
 }
 
 function readAssistantEventText(ev: Record<string, unknown>): string {
@@ -323,30 +303,51 @@ function readAssistantEventText(ev: Record<string, unknown>): string {
   return ''
 }
 
-export async function sendCueNativeMessage(opts: {
+interface CueNativeSendOptions {
   accountId: string
   sessionId: string
   agentId?: string
   conversationId?: string
+  requestId?: string
   text: string
   wsBaseUrl?: string
   timeoutMs?: number
   settleIdleMs?: number
-}): Promise<CueNativeReplyResult> {
-  const { accountId, sessionId, agentId, conversationId, text } = opts
+}
+
+export async function sendCueNativeMessage(opts: CueNativeSendOptions): Promise<CueNativeReplyResult> {
+  const { accountId, sessionId } = opts
+  const key = JSON.stringify([accountId, sessionId])
+  const revision = socketRevision(accountId)
+  const credentials = getCueCredentialRevision(accountId)
+  const isCurrent = () => socketRevision(accountId) === revision && getCueCredentialRevision(accountId) === credentials
+  const turn = (sessionSends.get(key) ?? Promise.resolve()).catch(() => undefined)
+    .then(() => sendCueTurn(opts, isCurrent))
+  sessionSends.set(key, turn)
+  try {
+    return await turn
+  } finally {
+    if (sessionSends.get(key) === turn) sessionSends.delete(key)
+  }
+}
+
+async function sendCueTurn(opts: CueNativeSendOptions, isCurrent: () => boolean): Promise<CueNativeReplyResult> {
+  const { accountId, sessionId, agentId, conversationId, requestId, text } = opts
+  if (!isCurrent()) throw new Error('Cue 账号或连接已更改')
   const timeoutMs = opts.timeoutMs ?? 120_000
   const settleIdleMs = opts.settleIdleMs ?? 4_000
   const managed = await ensureConnectedSocket(accountId, {
     wsBaseUrl: opts.wsBaseUrl,
-    timeoutMs: Math.min(15_000, timeoutMs)
+    timeoutMs: Math.min(15_000, timeoutMs),
+    isCurrent
   })
+  if (!isCurrent() || managed.ws.readyState !== WebSocket.OPEN) throw new Error('Cue 实时连接已关闭')
 
   const msgId = createCueEventId()
   const sentAtMs = Date.now()
-  const deltaBuffers = new Map<string, string>()
+  const messages = new Map<string, { text: string; final: boolean }>()
   let latestReplyId: string | undefined
-  let latestReplyText = ''
-  let turnAccepted = false
+  let seenUserEcho = false
   let seenRunning = false
   let settled = false
   let turnTimer: ReturnType<typeof setTimeout> | undefined
@@ -364,26 +365,28 @@ export async function sendCueNativeMessage(opts: {
       if (turnTimer) clearTimeout(turnTimer)
       clearIdle()
       managed.listeners.delete(onPacket)
-      managed.ws.off('close', onSocketClosed)
+      managed.closeListeners.delete(onSocketClosed)
+      for (const id of messages.keys()) managed.completedMessages.add(id)
+      while (managed.completedMessages.size > 1_000) {
+        managed.completedMessages.delete(managed.completedMessages.values().next().value!)
+      }
     }
+
+    const activity = (busy: boolean, activityCode: string, activityText?: string) =>
+      emitCueWatchEvent({ type: 'activity', accountId, sessionId, agentId, requestId, busy, activityCode, activityText })
 
     const settleOk = () => {
       if (settled) return
       settled = true
       cleanup()
-      emitCueWatchEvent({
-        type: 'activity',
-        accountId,
-        sessionId,
-        agentId,
-        busy: false,
-        activityCode: 'idle'
-      })
-      const replyId = latestReplyId || msgId
+      activity(false, 'idle')
+      const replies = Array.from(messages, ([id, entry]) => ({ id, text: entry.text }))
+      const reply = replies.at(-1)
       resolve({
         sessionId,
-        messageId: replyId,
-        ...(latestReplyText ? { reply: { id: replyId, text: latestReplyText } } : {})
+        messageId: reply?.id ?? msgId,
+        ...(reply?.text ? { reply } : {}),
+        ...(replies.length > 1 || (reply && !reply.text) ? { replies } : {})
       })
     }
 
@@ -391,39 +394,41 @@ export async function sendCueNativeMessage(opts: {
       if (settled) return
       settled = true
       cleanup()
-      emitCueWatchEvent({
-        type: 'activity',
-        accountId,
-        sessionId,
-        agentId,
-        busy: false,
-        activityCode: 'idle'
-      })
+      activity(false, 'idle')
       reject(err)
     }
 
     const armIdleSettle = () => {
       clearIdle()
-      if (seenRunning || !latestReplyText) return
+      if (seenRunning || messages.size === 0) return
       idleTimer = setTimeout(() => {
         settleOk()
+        if (!managed.listeners.size) managed.close(new Error('Cue 实时回复已结算'))
       }, settleIdleMs)
     }
 
-    const onSocketClosed = () => {
-      if (latestReplyText) {
-        settleOk()
-      } else {
-        settleErr(new Error('Cue 实时连接在等待回复时断开'))
-      }
+    const onSocketClosed = (error: Error) => settleErr(error)
+
+    const progress = (id: string, text: string, final: boolean) => {
+      latestReplyId = id
+      messages.set(id, { text, final })
+      emitCueWatchEvent({ type: 'stream', accountId, sessionId, conversationId, requestId, messageId: id, text, done: false })
+      armIdleSettle()
     }
 
     const onPacket = (packet: ParsedSocketIoPacket) => {
       if (settled || packet.kind !== 'event' || packet.eventName !== 'message') return
       const payload = asRecord(packet.payload)
       if (!payload) return
-      const payloadSessionId = nonEmptyString(payload['sessionId'])
-      if (payloadSessionId && payloadSessionId !== sessionId) return
+      const ev = asRecord(payload['event'])
+      const payloadSessionId = nonEmptyString(payload['sessionId'] ?? payload['session_id'] ?? ev?.['sessionId'] ?? ev?.['session_id'])
+      const matchingEcho = ev?.['type'] === 'chat' && ev['sender'] === 'user' && ev['id'] === msgId
+      if (matchingEcho && (!payloadSessionId || payloadSessionId === sessionId)) {
+        if (!seenUserEcho && requestId) emitCueWatchEvent({ type: 'accepted', accountId, sessionId, requestId })
+        seenUserEcho = true
+        return
+      }
+      if (payloadSessionId !== sessionId) return
 
       const payloadType = nonEmptyString(payload['type'])
       if (payloadType === 'agent_error' || payloadType === 'error') {
@@ -433,18 +438,13 @@ export async function sendCueNativeMessage(opts: {
       }
       if (payloadType !== 'event') return
 
-      const ev = asRecord(payload['event'])
       if (!ev) return
       const evType = nonEmptyString(ev['type'])
 
-      if (evType === 'chat' && nonEmptyString(ev['sender']) === 'user' && nonEmptyString(ev['id']) === msgId) {
-        turnAccepted = true
-        return
-      }
-
       if (evType === 'chatDelta' && nonEmptyString(ev['sender']) === 'assistant') {
-        turnAccepted = true
         const targetId = nonEmptyString(ev['targetEventId']) || latestReplyId || createCueEventId()
+        const previous = messages.get(targetId)
+        if (previous?.final || managed.completedMessages.has(targetId)) return
         const deltaObj = asRecord(ev['delta'])
         const chunk =
           typeof deltaObj?.['content'] === 'string'
@@ -453,67 +453,28 @@ export async function sendCueNativeMessage(opts: {
               ? ev['content']
               : ''
         if (!chunk) return
-        const accumulated = (deltaBuffers.get(targetId) ?? '') + chunk
-        deltaBuffers.set(targetId, accumulated)
-        latestReplyId = targetId
-        latestReplyText = accumulated
-        emitCueWatchEvent({
-          type: 'stream',
-          accountId,
-          sessionId,
-          conversationId,
-          messageId: targetId,
-          text: accumulated,
-          done: false
-        })
-        armIdleSettle()
+        progress(targetId, (previous?.text ?? '') + chunk, false)
         return
       }
 
       if (evType === 'chat' && nonEmptyString(ev['sender']) === 'assistant') {
         const evTs = toOptionalEpochMs(ev['timestamp'] ?? ev['createdAt'] ?? ev['created_at'])
-        if (!turnAccepted && !seenRunning && evTs !== null && evTs < sentAtMs - 5_000) {
-          return
-        }
+        if (evTs !== null && evTs < sentAtMs - 5_000) return
         const id = nonEmptyString(ev['id']) || latestReplyId || createCueEventId()
+        if (managed.completedMessages.has(id)) return
         const fullText = readAssistantEventText(ev)
-        if (fullText) {
-          latestReplyId = id
-          if (fullText.length >= latestReplyText.length) {
-            latestReplyText = fullText
-            deltaBuffers.set(id, fullText)
-          }
-          emitCueWatchEvent({
-            type: 'stream',
-            accountId,
-            sessionId,
-            conversationId,
-            messageId: id,
-            text: latestReplyText,
-            done: false
-          })
-          armIdleSettle()
-        }
+        if (fullText || messages.has(id)) progress(id, fullText, true)
         return
       }
 
       if (evType === 'liveStatus' || evType === 'toolUsed') {
-        turnAccepted = true
         clearIdle()
         const activityText =
           nonEmptyString(ev['title']) ||
           nonEmptyString(ev['toolName']) ||
           nonEmptyString(ev['status']) ||
           '正在执行…'
-        emitCueWatchEvent({
-          type: 'activity',
-          accountId,
-          sessionId,
-          agentId,
-          busy: true,
-          activityCode: evType,
-          activityText
-        })
+        activity(true, evType, activityText)
         return
       }
 
@@ -521,17 +482,8 @@ export async function sendCueNativeMessage(opts: {
         const agentStatus = nonEmptyString(ev['agentStatus'] ?? ev['status'])?.toLowerCase()
         if (agentStatus === 'running') {
           seenRunning = true
-          turnAccepted = true
           clearIdle()
-          emitCueWatchEvent({
-            type: 'activity',
-            accountId,
-            sessionId,
-            agentId,
-            busy: true,
-            activityCode: 'running',
-            activityText: 'Cue 正在思考并执行…'
-          })
+          activity(true, 'running', 'Cue 正在思考并执行…')
           return
         }
         if (
@@ -540,7 +492,7 @@ export async function sendCueNativeMessage(opts: {
           agentStatus === 'idle' ||
           agentStatus === 'completed'
         ) {
-          if (!seenRunning && !latestReplyText) {
+          if (!seenRunning && messages.size === 0) {
             return
           }
           seenRunning = false
@@ -556,11 +508,12 @@ export async function sendCueNativeMessage(opts: {
     }
 
     managed.listeners.add(onPacket)
-    managed.ws.once('close', onSocketClosed)
+    managed.closeListeners.add(onSocketClosed)
 
     turnTimer = setTimeout(() => {
-      if (latestReplyText) settleOk()
+      if (messages.size) settleOk()
       else settleErr(new Error('等待 Cue 回复超时'))
+      if (!managed.listeners.size) managed.close(new Error('等待 Cue 回复超时'))
     }, timeoutMs)
 
     try {

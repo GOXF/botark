@@ -1,50 +1,20 @@
-import { belongsToSelectedSession } from './sessionEvents'
+import { getEventBot } from './sessionEvents'
 import { adapterRegistry } from "@adapters/registry"
 import type { AdapterEvent, PlatformId } from "@adapters/types"
 import { useBotStore } from "@/store/botStore"
-import { ReplyWatchdog } from "@/store/replyWatchdog"
+import { replyWatchdog as watchdog } from "@/store/replyWatchdog"
 import { noteHarkRun, startHarkWork } from "./harkWork"
-
-const STALLED_TEXT = "很久没有收到回复，已停止等待；可以刷新会话或再发一次"
-const watchdog = new ReplyWatchdog()
-
-/** Typing is keyed by bot id; events may carry a bot id or an account id. */
-function botIdFor(idOrAccount: string): string {
-  const { bots } = useBotStore.getState()
-  return bots.some((b) => b.id === idOrAccount)
-    ? idOrAccount
-    : bots.find((b) => b.accountIds.includes(idOrAccount))?.id ?? idOrAccount
-}
-
-function touchAccount(accountId: string): void {
-  for (const b of useBotStore.getState().bots) if (b.accountIds.includes(accountId)) watchdog.touch(b.id)
-}
 
 /** Clear stale "thinking" and flag the unanswered message. */
 function checkStalledReplies(): void {
   const store = useBotStore.getState()
-  const typingIds = Object.keys(store.typing).filter((id) => store.typing[id])
-  const stalled = watchdog.stalled(typingIds, (botId) => {
+  const waitingIds = store.bots.filter((bot) => store.typing[bot.id] || store.activity[bot.activeAccountId]?.busy)
+    .map((bot) => bot.id)
+  const stalled = watchdog.stalled(waitingIds, (botId) => {
     const bot = store.bots.find((b) => b.id === botId)
     return Boolean(bot && store.activity[bot.activeAccountId]?.busy)
   })
-  for (const botId of stalled) {
-    watchdog.forget(botId)
-    store.setTyping(botId, false)
-    const list = store.messages[botId] ?? []
-    const lastUser = [...list].reverse().find((m) => m.role === "user")
-    const lastIsUser = list[list.length - 1]?.role === "user"
-    if (lastUser && lastIsUser && lastUser.delivery === "sent") {
-      useBotStore.setState((s) => ({
-        messages: {
-          ...s.messages,
-          [botId]: (s.messages[botId] ?? []).map((m) =>
-            m.id === lastUser.id ? { ...m, delivery: "no-reply" as const, error: STALLED_TEXT } : m
-          )
-        }
-      }))
-    }
-  }
+  for (const botId of stalled) store.finishReply(botId, true)
 }
 
 function electronBridge(): Window["electron"] | undefined {
@@ -55,7 +25,7 @@ function handleEvent(platformId: PlatformId, event: AdapterEvent): void {
   const store = useBotStore.getState()
   const accountId = event.type === "message" ? event.message.accountId : event.accountId
   const account = store.accounts[accountId]
-  if (account && account.platformId !== platformId) return
+  if (!account || account.platformId !== platformId) return
   // Any Hark project counts as working, not only the one on screen.
   if (
     platformId === "hark" &&
@@ -63,24 +33,34 @@ function handleEvent(platformId: PlatformId, event: AdapterEvent): void {
       (event.type === "typing" && event.isTyping) ||
       event.type === "message_delta")
   ) noteHarkRun(event.accountId, event.sessionId)
-  if (!belongsToSelectedSession(event, store.bots)) return
-  if (event.type === "message") watchdog.touch(botIdFor(event.message.conversationId))
-  else if (event.type === "typing" || event.type === "message_delta") watchdog.touch(botIdFor(event.conversationId))
-  else if (event.type === "activity") touchAccount(event.accountId)
   switch (event.type) {
-    case "message":
-      // Typing state is driven solely by the adapter's typing events, so a
-      // reply does not hide the indicator while another one is pending.
-      store.receiveMessage(event.message)
+    case "message": {
+      const message = event.message
+      const bot = getEventBot(store.bots, accountId, message.conversationId, message.sessionId)
+      if (!bot) return
+      watchdog.touch(bot.id)
+      store.receiveMessage({ ...message, conversationId: bot.id })
       break
-    case "typing":
-      store.setTyping(event.conversationId, event.isTyping)
+    }
+    case "typing": {
+      const bot = getEventBot(store.bots, accountId, event.conversationId, event.sessionId)
+      if (!bot) return
+      if (event.isTyping) {
+        watchdog.touch(bot.id)
+        if (!store.typing[bot.id]) store.setTyping(bot.id, true)
+      } else {
+        store.finishReply(bot.id)
+      }
       break
+    }
     case "status":
       store.setAccountStatus(event.accountId, event.status, event.detail)
       break
-    case "message_delta":
-      store.setTyping(event.conversationId, true)
+    case "message_delta": {
+      const bot = getEventBot(store.bots, accountId, event.conversationId, event.sessionId)
+      if (!bot) return
+      watchdog.touch(bot.id)
+      if (!store.typing[bot.id]) store.setTyping(bot.id, true)
       if (
         event.text ||
         event.widgets?.length ||
@@ -90,7 +70,7 @@ function handleEvent(platformId: PlatformId, event: AdapterEvent): void {
       ) {
         store.applyMessageDelta(
           event.messageId,
-          event.conversationId,
+          bot.id,
           event.accountId,
           event.text || "",
           event.widgets,
@@ -100,13 +80,18 @@ function handleEvent(platformId: PlatformId, event: AdapterEvent): void {
         )
       }
       break
+    }
     case "approvals":
       if (event.pending.length > 0) store.setAccountStatus(event.accountId, "attention")
       break
     case "login":
       store.setAccountStatus(event.accountId, event.signedIn ? "online" : "offline")
       break
-    case "activity":
+    case "activity": {
+      const targets = store.bots.filter((bot) => bot.activeAccountId === accountId &&
+        (!event.sessionId || !bot.activeSessionId || bot.activeSessionId === event.sessionId))
+      if (!targets.length) return
+      for (const bot of targets) watchdog.touch(bot.id)
       store.setActivity(event.accountId, {
         code: event.activity.code,
         text: event.activity.text,
@@ -116,6 +101,7 @@ function handleEvent(platformId: PlatformId, event: AdapterEvent): void {
         ctaLabel: event.activity.ctaLabel
       })
       break
+    }
   }
 }
 
@@ -161,23 +147,17 @@ export function startAdapterBridge(): () => void {
           }
           return
         }
-        const matchGrokBots = (accountId: string, agentId: string) => {
-          const exact = store.bots.filter(
-            (b) =>
-              b.platformId === "grok" &&
-              b.accountIds.includes(accountId) &&
-              b.selectedAgentId === agentId
-          )
+        const matchGrokBots = (accountId: string, agentId: string, sessionId?: string) => {
+          const eligible = store.bots.filter((b) =>
+            b.platformId === "grok" && b.activeAccountId === accountId &&
+            (!sessionId || !b.activeSessionId || b.activeSessionId === sessionId))
+          const exact = eligible.filter((b) => b.selectedAgentId === agentId)
           if (exact.length > 0) return exact
-          return store.bots.filter(
-            (b) =>
-              b.platformId === "grok" &&
-              b.accountIds.includes(accountId) &&
-              !b.selectedAgentId
-          )
+          return eligible.filter((b) => !b.selectedAgentId)
         }
         if (event.type === "activity") {
-          touchAccount(event.accountId)
+          const targets = matchGrokBots(event.accountId, event.agentId, event.sessionId)
+          if (!targets.length) return
           store.setActivity(
             event.accountId,
             event.busy
@@ -190,15 +170,19 @@ export function startAdapterBridge(): () => void {
                 }
               : null
           )
-          for (const targetBot of matchGrokBots(event.accountId, event.agentId)) {
-            store.setTyping(targetBot.id, event.busy)
+          for (const targetBot of targets) {
+            if (event.busy) {
+              watchdog.touch(targetBot.id)
+              if (!store.typing[targetBot.id]) store.setTyping(targetBot.id, true)
+            } else {
+              store.finishReply(targetBot.id)
+            }
           }
           return
         }
         if (event.type === "turn_failed") {
-          store.setActivity(event.accountId, null)
-          for (const targetBot of matchGrokBots(event.accountId, event.agentId)) {
-            store.setTyping(targetBot.id, false)
+          for (const targetBot of matchGrokBots(event.accountId, event.agentId, event.sessionId)) {
+            store.finishReply(targetBot.id)
             store.receiveMessage({
               id: `grok_err_${event.turnId || Date.now()}`,
               conversationId: targetBot.id,
@@ -210,7 +194,7 @@ export function startAdapterBridge(): () => void {
           return
         }
         if (event.type === "message_deleted") {
-          for (const targetBot of matchGrokBots(event.accountId, event.agentId)) {
+          for (const targetBot of matchGrokBots(event.accountId, event.agentId, event.sessionId)) {
             store.deleteMessages(targetBot.id, event.messageIds)
           }
           return
@@ -221,9 +205,12 @@ export function startAdapterBridge(): () => void {
             ? store.bots.filter(
                 (b) =>
                   b.id === event.conversationId &&
+                  b.platformId === "grok" &&
+                  b.activeAccountId === event.accountId &&
+                  (!event.sessionId || !b.activeSessionId || b.activeSessionId === event.sessionId) &&
                   (!b.selectedAgentId || b.selectedAgentId === event.agentId)
               )
-            : matchGrokBots(event.accountId, event.agentId)
+            : matchGrokBots(event.accountId, event.agentId, event.sessionId)
           if (targets.length === 0) return
           const hasPayload = Boolean(
             event.text ||
@@ -234,9 +221,9 @@ export function startAdapterBridge(): () => void {
           )
           for (const matchingBot of targets) {
             const convId = matchingBot.id
-            watchdog.touch(botIdFor(convId))
             if (!event.done) {
-              store.setTyping(convId, true)
+              watchdog.touch(convId)
+              if (!store.typing[convId]) store.setTyping(convId, true)
               if (hasPayload) {
                 store.applyMessageDelta(
                   event.messageId,
@@ -250,7 +237,7 @@ export function startAdapterBridge(): () => void {
                 )
               }
             } else {
-              store.setTyping(convId, false)
+              store.finishReply(convId)
               if (hasPayload) {
                 store.receiveMessage({
                   id: event.messageId,
@@ -310,14 +297,14 @@ export function startAdapterBridge(): () => void {
         if (event.type === "auth") {
           if (event.signedIn) {
             store.setAccountStatus(event.accountId, "online")
-            void store.syncCueAccountBots(event.accountId)
+              void store.syncCueAccountBots(event.accountId).catch(() => undefined)
           } else if (!event.windowClosed) {
             store.setAccountStatus(event.accountId, "offline", "未登录 Cue")
           }
           return
         }
         if (event.type === "roster_changed") {
-          void store.syncCueAccountBots(event.accountId)
+          void store.syncCueAccountBots(event.accountId).catch(() => undefined)
         }
       })
     )

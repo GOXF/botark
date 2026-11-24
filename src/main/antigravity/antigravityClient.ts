@@ -9,7 +9,8 @@
  */
 
 import { session as electronSession } from 'electron'
-import type { AntigravityMainEvent } from '@shared/ipc'
+import { randomUUID } from 'node:crypto'
+import { setTimeout as sleep } from 'node:timers/promises'
 import { applyProxyToPartition } from '../muse/accountProxy'
 import { partitionForAccount } from '../webContentsViewManager'
 import {
@@ -29,6 +30,7 @@ import {
   cleanAntigravityChromeUserAgent,
   extractTranscriptFromSteps,
   extractTurnProgress,
+  findAntigravityTurn,
   JspbStreamBodyParser,
   mergeTrajectorySteps,
   parseAgents,
@@ -46,6 +48,7 @@ import {
   type AntigravityModelInfo,
   type AntigravityParsedStep,
   type AntigravityTranscriptMessage,
+  type AntigravityTurnEvent,
   type AntigravityUserProfile,
   type AntigravityWorkspaceInfo
 } from './antigravityProtocol'
@@ -60,10 +63,12 @@ export interface AntigravityAccountPrefs {
 interface ActiveRun {
   controller: AbortController
   cascadeId?: string
+  cancel: () => void
 }
 
 const accountPrefs = new Map<string, AntigravityAccountPrefs>()
 const activeRuns = new Map<string, ActiveRun>()
+const pendingCancellations = new Map<string, Promise<unknown>>()
 
 export function getAntigravityAccountPrefs(accountId: string): AntigravityAccountPrefs {
   return accountPrefs.get(accountId) ?? {}
@@ -89,10 +94,16 @@ export function cancelAntigravityRun(accountId: string): void {
   activeRuns.delete(accountId)
   run.controller.abort()
   if (run.cascadeId) {
-    void callAntigravityRpc(accountId, 'CancelCascade', buildCancelCascadeReq(run.cascadeId)).catch(
-      () => undefined
-    )
+    const signal = AbortSignal.timeout(ANTIGRAVITY_RPC_TIMEOUT_MS)
+    const cancellation = withAntigravityDeadline(
+      callAntigravityRpc(accountId, 'CancelCascade', buildCancelCascadeReq(run.cascadeId), signal), signal
+    ).catch(() => undefined)
+    pendingCancellations.set(accountId, cancellation)
+    void cancellation.then(() => {
+      if (pendingCancellations.get(accountId) === cancellation) pendingCancellations.delete(accountId)
+    })
   }
+  run.cancel()
 }
 
 export function cancelAllAntigravityRuns(target: string): void {
@@ -183,7 +194,11 @@ export async function callAntigravityRpc(
   bodyArray: unknown[] = [],
   signal?: AbortSignal
 ): Promise<unknown> {
-  const prepared = await buildRequestHeaders(accountId)
+  signal?.throwIfAborted()
+  const setupDeadline = AbortSignal.timeout(ANTIGRAVITY_RPC_TIMEOUT_MS)
+  const prepared = await withAntigravityDeadline(buildRequestHeaders(accountId),
+    signal ? AbortSignal.any([signal, setupDeadline]) : setupDeadline)
+  signal?.throwIfAborted()
   if (!prepared) {
     throw new AntigravityRpcError(401, 'Not signed in to Google Antigravity (missing SAPISID cookies)', 16)
   }
@@ -193,7 +208,7 @@ export async function callAntigravityRpc(
 
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     if (attempt > 0) {
-      await sleep(400 * attempt, signal)
+      await sleep(400 * attempt, undefined, { signal })
     }
     const deadline = AbortSignal.timeout(ANTIGRAVITY_RPC_TIMEOUT_MS)
     const effectiveSignal = signal ? AbortSignal.any([signal, deadline]) : deadline
@@ -204,7 +219,13 @@ export async function callAntigravityRpc(
         body: JSON.stringify(bodyArray),
         signal: effectiveSignal
       })
+      const status = Number(res.headers.get('grpc-status') || 0)
+      if (status) {
+        void res.body?.cancel().catch(() => undefined)
+        throw new AntigravityStreamStatusError(status, res.headers.get('grpc-message') || '')
+      }
       const text = await res.text()
+      effectiveSignal.throwIfAborted()
       if (!res.ok) {
         const err = parseRpcErrorPayload(res.status, text)
         if ((res.status === 429 || res.status === 502 || res.status === 503 || res.status === 504) && attempt + 1 < maxAttempts) {
@@ -242,8 +263,6 @@ export type AntigravitySessionProbe =
 
 export async function probeAntigravitySession(accountId: string): Promise<AntigravitySessionProbe> {
   try {
-    const prepared = await buildRequestHeaders(accountId)
-    if (!prepared) return { signedIn: false, reason: 'no-cookies' }
     const raw = await callAntigravityRpc(accountId, 'GetUserProfile', [])
     const profile = parseUserProfile(raw)
     if (!profile) {
@@ -251,6 +270,9 @@ export async function probeAntigravitySession(accountId: string): Promise<Antigr
     }
     return { signedIn: true, profile }
   } catch (error) {
+    if (error instanceof AntigravityRpcError && error.grpcCode === 16 && error.message.includes('missing SAPISID cookies')) {
+      return { signedIn: false, reason: 'no-cookies' }
+    }
     if (error instanceof AntigravityRpcError && (error.status === 401 || error.status === 403 || error.grpcCode === 16)) {
       return { signedIn: false, reason: 'unauthorized', message: error.message }
     }
@@ -326,19 +348,27 @@ export async function deleteAntigravityConversation(
   await callAntigravityRpc(accountId, 'DeleteConversation', buildDeleteConversationReq(conversationId))
 }
 
-function sleep(ms: number, signal?: AbortSignal): Promise<void> {
-  return new Promise((resolve) => {
-    if (signal?.aborted) return resolve()
-    const timer = setTimeout(() => {
-      signal?.removeEventListener('abort', onAbort)
-      resolve()
-    }, ms)
-    const onAbort = () => {
-      clearTimeout(timer)
-      resolve()
-    }
-    signal?.addEventListener('abort', onAbort, { once: true })
+const STREAM_IDLE_TIMEOUT_MS = 15_000
+const TURN_TIMEOUT_MS = 180_000
+
+class AntigravityStreamStatusError extends AntigravityRpcError {
+  constructor(code: number, message: string) {
+    super(code === 16 ? 401 : code === 7 ? 403 : 502, message || `Antigravity gRPC error ${code}`, code)
+  }
+}
+
+async function withAntigravityDeadline<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {
+  let abort!: () => void
+  const deadline = new Promise<never>((_, reject) => {
+    abort = () => reject(signal.reason)
+    signal.addEventListener('abort', abort, { once: true })
+    if (signal.aborted) abort()
   })
+  try {
+    return await Promise.race([operation, deadline])
+  } finally {
+    signal.removeEventListener('abort', abort)
+  }
 }
 
 export interface SendAntigravityMessageParams {
@@ -347,111 +377,83 @@ export interface SendAntigravityMessageParams {
   sessionId?: string
   text: string
   clientMessageId?: string
-  onEvent: (event: AntigravityMainEvent) => void
+  onEvent: (event: AntigravityTurnEvent) => void
 }
 
 export async function sendAndStreamAntigravityMessage(
   params: SendAntigravityMessageParams
 ): Promise<{ cascadeId: string; messageId: string }> {
-  const { accountId, conversationId, text, clientMessageId, onEvent } = params
+  const { accountId, conversationId, text } = params
+  const messageId = params.clientMessageId || randomUUID()
   cancelAntigravityRun(accountId)
 
   const controller = new AbortController()
-  const run: ActiveRun = { controller }
+  const run: ActiveRun = {
+    controller,
+    cancel: () => params.onEvent({
+      type: 'stream', accountId, conversationId, sessionId: run.cascadeId, messageId,
+      text: '', done: true, error: { status: 499, message: 'Antigravity turn cancelled' }
+    })
+  }
   activeRuns.set(accountId, run)
+  const ownsRun = () => activeRuns.get(accountId) === run && !controller.signal.aborted
+  const onEvent: SendAntigravityMessageParams['onEvent'] = (event) => {
+    if (ownsRun()) params.onEvent(event)
+  }
 
   const prefs = getAntigravityAccountPrefs(accountId)
-  const stepsMap = new Map<number, AntigravityParsedStep>()
-  let afterStepIndex = -1
   let cascadeId = params.sessionId?.trim() || ''
 
   try {
+    const cancellation = pendingCancellations.get(accountId)
+    if (cancellation) await withAntigravityDeadline(cancellation, controller.signal)
+    controller.signal.throwIfAborted()
+    // Cancel can arrive while a continuation is still waiting for its acknowledgment.
+    if (cascadeId) run.cascadeId = cascadeId
     onEvent({
       type: 'activity',
       accountId,
+      messageId,
       activityCode: 'thinking',
       activityText: cascadeId ? 'Sending to Antigravity…' : 'Starting Antigravity cloud agent…',
       busy: true
     })
 
-    if (cascadeId) {
-      // Snapshot current steps so we only stream steps produced by THIS new turn.
-      try {
-        const pre = parseGetConversationResponse(
-          await callAntigravityRpc(accountId, 'GetConversation', buildGetConversationReq(cascadeId, 2), controller.signal)
-        )
-        if (pre) {
-          mergeTrajectorySteps(stepsMap, pre)
-          for (const idx of stepsMap.keys()) {
-            if (idx > afterStepIndex) afterStepIndex = idx
-          }
-        }
-      } catch {
-        /* proceed even if pre-snapshot fails */
-      }
-
-      const sendRaw = await callAntigravityRpc(
-        accountId,
-        'SendUserCascadeMessage',
-        buildSendUserCascadeMessageReq({
-          cascadeId,
-          text,
-          modelEnum: prefs.modelEnum,
-          continueExecution: true,
-          clientMessageId
-        }),
-        controller.signal
-      )
-      const returnedId = parseStartCascadeResponse(sendRaw).cascadeId
-      if (returnedId) cascadeId = returnedId
-    } else {
-      const startRaw = await callAntigravityRpc(
-        accountId,
-        'StartCascade',
-        buildStartCascadeReq({
-          text,
-          modelEnum: prefs.modelEnum,
-          capsuleId: prefs.capsuleId,
-          agentPath: prefs.agentPath,
-          clientMessageId
-        }),
-        controller.signal
-      )
-      cascadeId = parseStartCascadeResponse(startRaw).cascadeId
-      if (!cascadeId) {
-        throw new AntigravityRpcError(502, 'Antigravity StartCascade returned an empty cascadeId')
-      }
-      // The initial user prompt is step 0.
-      afterStepIndex = 0
-    }
+    const method = cascadeId ? 'SendUserCascadeMessage' : 'StartCascade'
+    const payload = cascadeId
+      ? buildSendUserCascadeMessageReq({
+          cascadeId, text, modelEnum: prefs.modelEnum, continueExecution: true, clientMessageId: messageId
+        })
+      : buildStartCascadeReq({
+          text, modelEnum: prefs.modelEnum, capsuleId: prefs.capsuleId, agentPath: prefs.agentPath,
+          clientMessageId: messageId
+        })
+    const response = await callAntigravityRpc(accountId, method, payload, controller.signal)
+    controller.signal.throwIfAborted()
+    cascadeId = parseStartCascadeResponse(response).cascadeId || cascadeId
+    if (!cascadeId) throw new AntigravityRpcError(502, 'Antigravity StartCascade returned an empty cascadeId')
 
     run.cascadeId = cascadeId
-    const replyMessageId = `agy_${cascadeId}_${Date.now()}`
-
-    // Launch background live stream + fallback poller so the RPC caller gets immediate ack.
     void streamCascadeUntilDone({
-      accountId,
-      conversationId,
-      cascadeId,
-      replyMessageId,
-      afterStepIndex,
-      stepsMap,
-      signal: controller.signal,
-      onEvent
+      accountId, conversationId, cascadeId, messageId, signal: controller.signal, onEvent
+    }).catch((error: unknown) => {
+      if (!ownsRun()) return
+      const status = error instanceof AntigravityRpcError ? error.status
+        : (error instanceof Error && error.name === 'TimeoutError' ? 504 : 502)
+      const message = status === 504 ? 'Antigravity timed out while waiting for its response'
+        : error instanceof Error ? error.message : String(error)
+      onEvent({
+        type: 'stream', accountId, conversationId, sessionId: cascadeId, messageId,
+        text: '', done: true, error: { status, message }
+      })
     }).finally(() => {
       if (activeRuns.get(accountId) === run) activeRuns.delete(accountId)
     })
 
-    return { cascadeId, messageId: replyMessageId }
+    return { cascadeId, messageId }
   } catch (error) {
+    onEvent({ type: 'activity', accountId, messageId, activityCode: 'idle', activityText: null, busy: false })
     if (activeRuns.get(accountId) === run) activeRuns.delete(accountId)
-    onEvent({
-      type: 'activity',
-      accountId,
-      activityCode: 'idle',
-      activityText: null,
-      busy: false
-    })
     throw error
   }
 }
@@ -460,205 +462,176 @@ async function streamCascadeUntilDone(opts: {
   accountId: string
   conversationId: string
   cascadeId: string
-  replyMessageId: string
-  afterStepIndex: number
-  stepsMap: Map<number, AntigravityParsedStep>
+  messageId: string
   signal: AbortSignal
-  onEvent: (event: AntigravityMainEvent) => void
+  onEvent: (event: AntigravityTurnEvent) => void
 }): Promise<void> {
-  const { accountId, conversationId, cascadeId, replyMessageId, stepsMap, signal, onEvent } = opts
-  let afterStepIndex = opts.afterStepIndex
-  let resumeToken: string | undefined
+  const { accountId, conversationId, cascadeId, messageId, signal, onEvent } = opts
+  const steps = new Map<number, AntigravityParsedStep>()
+  const streamEvent = { type: 'stream' as const, accountId, conversationId, sessionId: cascadeId, messageId }
+  let progress: ReturnType<typeof extractTurnProgress> | undefined
   let lastSentText = ''
   let lastToolSig = ''
   let lastActivity = ''
-  let sawRunning = false
   let finished = false
-  let needsApproval = false
+  let waiting = false
+  let idleWithoutTurn = 0
+  let deadline = AbortSignal.timeout(TURN_TIMEOUT_MS)
+  let resumeToken: string | undefined
 
-  const emitProgress = (done: boolean) => {
-    // Advance afterStepIndex if the new user input step appeared at index > initial afterStepIndex
-    for (const s of stepsMap.values()) {
-      if (s.userText && s.index > afterStepIndex && !sawRunning && s.index <= afterStepIndex + 2) {
-        afterStepIndex = s.index
-      }
+  const emitActivity = (code: string, activityText: string, busy = true) => {
+    const signature = `${code}:${activityText}`
+    if (signature === lastActivity) return
+    lastActivity = signature
+    onEvent({ type: 'activity', accountId, messageId, activityCode: code, activityText, busy })
+  }
+  const publishProgress = () => {
+    if (!progress) return
+    const signature = JSON.stringify(progress.tools)
+    if (progress.text === lastSentText && signature === lastToolSig) return
+    lastSentText = progress.text
+    lastToolSig = signature
+    onEvent({ ...streamEvent, text: progress.text, tools: progress.tools, done: false })
+  }
+
+  const applyUpdate = (update: ReturnType<typeof parseStreamUpdateResponse>) => {
+    if (!update || (update.conversationId && update.conversationId !== cascadeId)) return
+    resumeToken = update.resumeToken ?? resumeToken
+    mergeTrajectorySteps(steps, update)
+    const turn = findAntigravityTurn(steps, messageId)
+    if (!turn) {
+      if (update.fullyIdle || update.runStatus === CASCADE_RUN_STATUS.IDLE) idleWithoutTurn++
+      else idleWithoutTurn = 0
+      return
     }
-    const progress = extractTurnProgress(stepsMap, afterStepIndex)
-    const toolSig = JSON.stringify(progress.tools)
-
-    if (!done) {
-      const nextActivity = progress.activityText || (progress.text ? 'Responding…' : 'Thinking…')
-      if (nextActivity !== lastActivity) {
-        lastActivity = nextActivity
+    idleWithoutTurn = 0
+    const { userStepIndex, nextUserStepIndex } = turn
+    if (update.steps.length || !progress) {
+      progress = extractTurnProgress(steps, userStepIndex, nextUserStepIndex)
+    }
+    const hasApproval = update.waitingStepIndices.some((index) => index > userStepIndex && index < nextUserStepIndex)
+    if (hasApproval) {
+      const enteringApproval = !waiting
+      finished = false
+      waiting = true
+      if (enteringApproval) {
+        emitActivity('needs_approval', 'Waiting for confirmation in Antigravity Web', false)
         onEvent({
-          type: 'activity',
-          accountId,
-          activityCode: progress.tools.some((t) => t.status === 'running') ? 'tool' : 'thinking',
-          activityText: nextActivity,
-          busy: true
+          ...streamEvent, text: progress.text, tools: progress.tools, done: false, waitingForApproval: true
         })
-      }
-      if (progress.text !== lastSentText || toolSig !== lastToolSig) {
-        lastSentText = progress.text
-        lastToolSig = toolSig
-        onEvent({
-          type: 'stream',
-          accountId,
-          conversationId,
-          sessionId: cascadeId,
-          messageId: replyMessageId,
-          text: progress.text,
-          tools: progress.tools.length > 0 ? progress.tools : undefined,
-          done: false
-        })
+      } else {
+        publishProgress()
       }
       return
     }
-
-    if (!needsApproval) {
-      onEvent({
-        type: 'activity',
-        accountId,
-        activityCode: 'idle',
-        activityText: null,
-        busy: false
-      })
+    if (waiting) {
+      waiting = false
+      deadline = AbortSignal.timeout(TURN_TIMEOUT_MS)
     }
-    onEvent({
-      type: 'stream',
-      accountId,
-      conversationId,
-      sessionId: cascadeId,
-      messageId: replyMessageId,
-      text: progress.text || lastSentText,
-      tools: progress.tools.length > 0 ? progress.tools : undefined,
-      done: true
-    })
+    finished = update.fullyIdle || update.runStatus === CASCADE_RUN_STATUS.IDLE || nextUserStepIndex < Infinity
+    if (!finished) {
+      emitActivity(
+        progress.tools.some((tool) => tool.status === 'running') ? 'tool' : 'thinking',
+        progress.activityText || (progress.text ? 'Responding…' : 'Thinking…')
+      )
+      publishProgress()
+    }
   }
 
-  const applyUpdate = (update: ReturnType<typeof parseStreamUpdateResponse>): boolean => {
-    if (!update) return false
-    if (update.resumeToken) resumeToken = update.resumeToken
-    mergeTrajectorySteps(stepsMap, update)
-
-    const isActive =
-      update.runStatus === CASCADE_RUN_STATUS.RUNNING ||
-      update.runStatus === CASCADE_RUN_STATUS.BUSY ||
-      update.runStatus === CASCADE_RUN_STATUS.CANCELING
-    if (isActive) sawRunning = true
-
-    emitProgress(false)
-
-    const progress = extractTurnProgress(stepsMap, afterStepIndex)
-    const isIdle = update.fullyIdle || update.runStatus === CASCADE_RUN_STATUS.IDLE
-    const hasWaiting = update.waitingStepIndices.length > 0
-    if (hasWaiting) {
-      needsApproval = true
-      onEvent({
-        type: 'activity',
-        accountId,
-        activityCode: 'needs_approval',
-        activityText: 'Waiting for confirmation in Antigravity Web',
-        busy: false
-      })
-      return true
-    }
-    if (isIdle && (sawRunning || progress.text.length > 0 || progress.hasError)) {
-      return true
-    }
-    return false
-  }
-
-  // Phase 1: Real-time server-streaming via StreamAgentStateUpdates
-  try {
-    const prepared = await buildRequestHeaders(accountId)
-    if (prepared && !signal.aborted) {
+  // A reconnectable stream attempt and its idle deadline include the response headers.
+  const readStream = async (overall: AbortSignal) => {
+    const transport = new AbortController()
+    const streamSignal = AbortSignal.any([overall, transport.signal])
+    const withIdleDeadline = <T>(operation: Promise<T>) =>
+      withAntigravityDeadline(operation, AbortSignal.any([streamSignal, AbortSignal.timeout(STREAM_IDLE_TIMEOUT_MS)]))
+    let reader: ReadableStreamDefaultReader<Uint8Array> | undefined
+    let body: ReadableStream<Uint8Array> | null = null
+    try {
+      const prepared = await withIdleDeadline(buildRequestHeaders(accountId))
+      if (!prepared) throw new AntigravityRpcError(401, 'Not signed in to Antigravity')
+      streamSignal.throwIfAborted()
       const url = `${ANTIGRAVITY_API_ORIGIN}${ANTIGRAVITY_RPC_PREFIX}/StreamAgentStateUpdates`
-      const res = await prepared.ses.fetch(url, {
+      const response = await withIdleDeadline(prepared.ses.fetch(url, {
         method: 'POST',
         headers: prepared.headers,
         body: JSON.stringify(buildStreamAgentStateUpdatesReq(cascadeId, resumeToken, 2)),
-        signal
-      })
-      if (res.ok && res.body) {
-        const reader = res.body.getReader()
-        const decoder = new TextDecoder()
-        const parser = new JspbStreamBodyParser()
-        while (!signal.aborted && !finished) {
-          const { value, done } = await reader.read()
-          if (done) break
-          if (!value) continue
-          const textChunk = decoder.decode(value, { stream: true })
-          for (const ev of parser.push(textChunk)) {
-            if (ev.kind === 'message') {
-              const parsed = parseStreamUpdateResponse(ev.payload)
-              if (applyUpdate(parsed)) {
-                finished = true
-                void reader.cancel().catch(() => undefined)
-                break
-              }
-            } else if (ev.kind === 'status' && ev.code !== 0) {
-              break
-            }
+        signal: streamSignal
+      }))
+      body = response.body
+      if (!response.ok) throw parseRpcErrorPayload(response.status, await withIdleDeadline(response.text()))
+      const headerStatus = Number(response.headers.get('grpc-status') || 0)
+      if (headerStatus) throw new AntigravityStreamStatusError(headerStatus, response.headers.get('grpc-message') || '')
+      if (!body) throw new AntigravityRpcError(502, 'Antigravity stream has no response body')
+      reader = body.getReader()
+      const decoder = new TextDecoder()
+      const parser = new JspbStreamBodyParser()
+      const handleChunk = (chunk: string) => {
+        for (const event of parser.push(chunk)) {
+          if (event.kind === 'status') {
+            if (event.code !== 0) throw new AntigravityStreamStatusError(event.code, event.message)
+          } else {
+            applyUpdate(parseStreamUpdateResponse(event.payload))
           }
         }
       }
-    }
-  } catch {
-    /* fall back cleanly to GetConversation polling */
-  }
-
-  // Phase 2: Fallback poll via GetConversation if stream ended before IDLE
-  const deadline = Date.now() + 180_000
-  let idlePollsWithoutContent = 0
-  while (!signal.aborted && !finished && Date.now() < deadline) {
-    await sleep(1_200, signal)
-    if (signal.aborted) break
-    try {
-      const raw = await callAntigravityRpc(
-        accountId,
-        'GetConversation',
-        buildGetConversationReq(cascadeId, 2),
-        signal
-      )
-      const update = parseGetConversationResponse(raw)
-      if (applyUpdate(update)) {
-        finished = true
-        break
-      }
-      if (update && (update.fullyIdle || update.runStatus === CASCADE_RUN_STATUS.IDLE)) {
-        idlePollsWithoutContent++
-        if (idlePollsWithoutContent >= 4) {
-          finished = true
-          break
+      for (;;) {
+        const { value, done } = await withIdleDeadline(reader.read())
+        if (done) {
+          handleChunk(decoder.decode())
+          parser.finish()
+          return
         }
-      } else {
-        idlePollsWithoutContent = 0
+        if (value) handleChunk(decoder.decode(value, { stream: true }))
       }
-    } catch {
-      idlePollsWithoutContent++
-      if (idlePollsWithoutContent >= 5) break
+    } finally {
+      transport.abort()
+      if (reader) {
+        try {
+          void reader.cancel().catch(() => undefined)
+        } finally {
+          reader.releaseLock()
+        }
+      } else if (body && !body.locked) {
+        void body.cancel().catch(() => undefined)
+      }
     }
   }
 
-  if (!signal.aborted) {
-    emitProgress(true)
-  } else {
-    onEvent({
-      type: 'activity',
-      accountId,
-      activityCode: 'idle',
-      activityText: null,
-      busy: false
-    })
-    onEvent({
-      type: 'stream',
-      accountId,
-      conversationId,
-      sessionId: cascadeId,
-      messageId: replyMessageId,
-      text: '',
-      done: true
-    })
+  try {
+    await readStream(AbortSignal.any([signal, deadline]))
+  } catch (error) {
+    if (error instanceof AntigravityStreamStatusError ||
+        (error instanceof AntigravityRpcError && (error.grpcCode || error.status === 401 || error.status === 403))) {
+      throw error
+    }
+    // Verify completion with GetConversation if the streaming transport ended early.
+    finished = false
   }
+
+  let pollFailures = 0
+  while (!finished) {
+    signal.throwIfAborted()
+    const pollSignal = waiting
+      ? AbortSignal.any([signal, AbortSignal.timeout(35_000)])
+      : AbortSignal.any([signal, deadline])
+    pollSignal.throwIfAborted()
+    await sleep(waiting ? 5_000 : 1_200, undefined, { signal: pollSignal })
+    try {
+      const snapshot = await withAntigravityDeadline(
+        callAntigravityRpc(accountId, 'GetConversation', buildGetConversationReq(cascadeId, 2), pollSignal),
+        pollSignal
+      )
+      applyUpdate(parseGetConversationResponse(snapshot))
+      pollFailures = 0
+    } catch (error) {
+      if (signal.aborted || (error instanceof AntigravityRpcError &&
+          (error.grpcCode || error.status === 401 || error.status === 403))) throw error
+      if (!waiting && (++pollFailures >= 5 || deadline.aborted)) throw deadline.reason ?? error
+    }
+    if (idleWithoutTurn >= 4) {
+      throw new AntigravityRpcError(502, 'Antigravity did not return the submitted user step')
+    }
+  }
+  signal.throwIfAborted()
+  onEvent({ ...streamEvent, text: progress?.text ?? '', tools: progress?.tools, done: true })
 }

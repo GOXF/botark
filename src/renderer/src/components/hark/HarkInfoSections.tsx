@@ -1,5 +1,6 @@
 import { HarkProjects } from './HarkProjects'
-import { useCallback, useEffect, useState } from 'react'
+import { HarkScreenshot } from './HarkScreenshot'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Download, FileText, Globe, KeyRound, Monitor, ShieldAlert, Terminal } from 'lucide-react'
 import { EmptyLine, Section } from '@/components/info/Section'
 import { Button } from '@/components/ui/Button'
@@ -8,6 +9,9 @@ import { SegmentedControl } from '@/components/ui/SegmentedControl'
 import { TextInput } from '@/components/ui/Field'
 import { RefreshButton } from '@/components/muse/RefreshButton'
 import { getBridge } from '@/lib/bridge'
+import { harkRpc } from '@adapters/hark/harkRequests'
+import { createId } from '@shared/id'
+import { currentHarkBrowser, harkScreenshotReference } from '@shared/harkBrowserPreview'
 import { cleanSidebarError } from '@/lib/sidebarCompat'
 import { useBotStore } from '@/store/botStore'
 import { t } from '@/lib/i18n'
@@ -34,6 +38,44 @@ async function callHark(
   })
   if (!res.ok) throw new Error(res.message || `HTTP ${res.status}`)
   return res.data
+}
+
+function useHarkConnected(accountId: string): boolean {
+  return useBotStore((s) => {
+    const status = s.accounts[accountId]?.status
+    return status === 'online' || status === 'busy'
+  })
+}
+
+function useHarkInspectorLifetime() {
+  const lifetime = useRef<AbortController | null>(null)
+  useEffect(() => {
+    const controller = new AbortController()
+    lifetime.current = controller
+    return () => controller.abort()
+  }, [])
+  return lifetime
+}
+
+function useHarkSnapshot(accountId: string, sessionId: string | undefined) {
+  const lifetime = useHarkInspectorLifetime()
+  const request = useRef<AbortController | null>(null)
+  useEffect(() => () => request.current?.abort(), [])
+
+  const snapshot = useCallback(async (signal: AbortSignal) => {
+    const hark = getBridge()?.hark
+    if (!hark?.rpc) return null
+    request.current?.abort()
+    const controller = new AbortController()
+    request.current = controller
+    const requestId = createId('hark_snapshot')
+    const result = await harkRpc(hark, sessionId
+      ? { accountId, op: 'conversationSnapshot', conversationId: sessionId, requestId }
+      : { accountId, op: 'mainConversation', requestId }, AbortSignal.any([controller.signal, signal]))
+    if (!result.ok) throw new Error(result.message)
+    return result.data
+  }, [accountId, sessionId])
+  return { lifetime, snapshot }
 }
 
 function asObj(v: unknown): Record<string, unknown> | null {
@@ -136,7 +178,7 @@ function QuotaMeter(props: {
  * 1. Hark Billing & Token Meters (`/billing/summary`, `/profile`)
  */
 export function HarkBillingSection({ accountId }: { accountId: string }) {
-  const status = useBotStore((s) => s.accounts[accountId]?.status)
+  const connected = useHarkConnected(accountId)
   const [summary, setSummary] = useState<Record<string, unknown> | null>(null)
   const [profile, setProfile] = useState<Record<string, unknown> | null>(null)
   const [loading, setLoading] = useState(false)
@@ -172,9 +214,8 @@ export function HarkBillingSection({ accountId }: { accountId: string }) {
     }
   }, [accountId])
 
-  const live = status === 'online' || status === 'busy'
   useEffect(() => {
-    if (!live) return
+    if (!connected) return
     void refresh()
     const timer = setInterval(() => void refresh(), QUOTA_REFRESH_MS)
     // Countdown text only; cheap, no network.
@@ -183,7 +224,7 @@ export function HarkBillingSection({ accountId }: { accountId: string }) {
       clearInterval(timer)
       clearInterval(tick)
     }
-  }, [refresh, live])
+  }, [refresh, connected])
 
   const plan = asObj(summary?.['plan'])
   const planName = str(plan?.['name'] ?? summary?.['tier'] ?? 'Hark Pro')
@@ -298,7 +339,7 @@ export function HarkBillingSection({ accountId }: { accountId: string }) {
  * 2. Hark Home Cards & Proactive Actions (`/home/cards`, `/act`, `/dismiss`, `/refresh`)
  */
 export function HarkHomeCardsSection({ accountId, botId }: { accountId: string; botId: string }) {
-  const status = useBotStore((s) => s.accounts[accountId]?.status)
+  const connected = useHarkConnected(accountId)
   const sendMessage = useBotStore((s) => s.sendMessage)
   const [cards, setCards] = useState<
     Array<{
@@ -355,8 +396,8 @@ export function HarkHomeCardsSection({ accountId, botId }: { accountId: string; 
   }, [accountId])
 
   useEffect(() => {
-    if (status === 'online' || status === 'busy') void refresh()
-  }, [refresh, status])
+    if (connected) void refresh()
+  }, [refresh, connected])
 
   const dismissCard = async (id: string) => {
     setBusyId(id)
@@ -542,7 +583,7 @@ export function HarkConversationsSection({ accountId, botId }: { accountId: stri
  * (`/scheduled-tasks`, `/scheduled-tasks/:id/pause`, `/resume`, `DELETE /scheduled-tasks/:id`)
  */
 export function HarkScheduledTasksSection({ accountId }: { accountId: string }) {
-  const status = useBotStore((s) => s.accounts[accountId]?.status)
+  const connected = useHarkConnected(accountId)
   const [tasks, setTasks] = useState<
     Array<{ id: string; title: string; schedule: string; paused: boolean }>
   >([])
@@ -582,8 +623,8 @@ export function HarkScheduledTasksSection({ accountId }: { accountId: string }) 
   }, [accountId])
 
   useEffect(() => {
-    if (status === 'online' || status === 'busy') void refresh()
-  }, [refresh, status])
+    if (connected) void refresh()
+  }, [refresh, connected])
 
   const togglePause = async (id: string, paused: boolean) => {
     setBusyId(id)
@@ -666,7 +707,7 @@ export function HarkScheduledTasksSection({ accountId }: { accountId: string }) 
  * (`/connectors`, `POST /connectors/link-sessions`, `/channel-bindings/list`, `/managed-credentials`)
  */
 export function HarkConnectorsSection({ accountId }: { accountId: string }) {
-  const status = useBotStore((s) => s.accounts[accountId]?.status)
+  const connected = useHarkConnected(accountId)
   const [connectors, setConnectors] = useState<
     Array<{
       id: string
@@ -750,8 +791,8 @@ export function HarkConnectorsSection({ accountId }: { accountId: string }) {
   }, [accountId])
 
   useEffect(() => {
-    if (status === 'online' || status === 'busy') void refresh()
-  }, [refresh, status])
+    if (connected) void refresh()
+  }, [refresh, connected])
 
   /**
    * Exact payload from `DB0LnIrM.js` (`Q.handleConnect`) + `AD8nd0FV.js` (`l`):
@@ -1034,7 +1075,12 @@ export function HarkConnectorsSection({ accountId }: { accountId: string }) {
  */
 export function HarkComputerSection({ accountId, botId }: { accountId: string; botId: string }) {
   const sessionId = useBotStore((s) => s.bots.find((b) => b.id === botId)?.activeSessionId)
-  const status = useBotStore((s) => s.accounts[accountId]?.status)
+  const connected = useHarkConnected(accountId)
+  return <HarkComputerInspector key={JSON.stringify([accountId, sessionId, connected])}
+    accountId={accountId} sessionId={sessionId} connected={connected} />
+}
+
+function HarkComputerInspector({ accountId, sessionId, connected }: { accountId: string; sessionId?: string; connected: boolean }) {
   const toggleWebSession = useBotStore((s) => s.toggleWebSession)
   const webSessionOpen = useBotStore((s) => s.webSessionOpen)
 
@@ -1067,96 +1113,76 @@ export function HarkComputerSection({ accountId, botId }: { accountId: string; b
       status: string
     }>
   >([])
-  const [presignedUrls, setPresignedUrls] = useState<Record<string, string>>({})
   const [askInput, setAskInput] = useState<Record<string, string>>({})
+  const [snapshotGeneration, setSnapshotGeneration] = useState(0)
+  const { lifetime, snapshot } = useHarkSnapshot(accountId, sessionId)
+  const refreshGeneration = useRef(0)
+  const actionGeneration = useRef(0)
 
   const refresh = useCallback(async () => {
-    const hark = getBridge()?.hark
-    if (!hark?.rpc) return
+    const signal = lifetime.current?.signal
+    if (!signal || signal.aborted) return
+    const generation = ++refreshGeneration.current
+    const current = () => !signal.aborted && refreshGeneration.current === generation
     setLoading(true)
     setError(undefined)
     try {
-      const res = await hark.rpc(sessionId ? { accountId, op: 'conversationSnapshot', conversationId: sessionId } : { accountId, op: 'mainConversation' })
-      if (!res.ok || !res.data || typeof res.data !== 'object') return
-      const d = res.data as {
+      const data = await snapshot(signal)
+      if (!current()) return
+      const d = data as {
         conversationId?: string
         panels?: typeof panels
         asks?: typeof asks
       }
-      if (d.conversationId) setConversationId(d.conversationId)
-      const pList = Array.isArray(d.panels) ? d.panels : []
+      setConversationId(d?.conversationId ?? '')
+      const pList = Array.isArray(d?.panels) ? d.panels : []
+      const nextAsks = Array.isArray(d?.asks) ? d.asks : []
       setPanels(pList)
-      setAsks(Array.isArray(d.asks) ? d.asks : [])
-
-      // Presign any S3 screenshot keys via `POST /api/images/presign` `{ keys: [...] }`
-      const keys = pList.map((p) => p.screenshotKey).filter((k): k is string => Boolean(k))
-      if (keys.length > 0) {
-        const presignRaw = await callHark(accountId, '/images/presign', {
-          method: 'POST',
-          body: { keys }
-        }).catch(() => null)
-        const urlsObj = asObj(asObj(presignRaw)?.['urls'])
-        if (urlsObj) {
-          const map: Record<string, string> = {}
-          for (const [k, v] of Object.entries(urlsObj)) {
-            if (typeof v === 'string' && v) map[k] = v
-          }
-          setPresignedUrls((prev) => ({ ...prev, ...map }))
-        }
-      }
+      setAsks(nextAsks)
+      setAskInput((prev) => Object.fromEntries(nextAsks.flatMap(({ id }) => id in prev ? [[id, prev[id]!]] : [])))
+      setSnapshotGeneration(generation)
     } catch (err) {
-      setError(cleanSidebarError(err))
+      if (current()) setError(cleanSidebarError(err))
     } finally {
-      setLoading(false)
+      if (current()) setLoading(false)
     }
-  }, [accountId, sessionId])
+  }, [snapshot, lifetime])
 
   useEffect(() => {
-    if (status === 'online' || status === 'busy') void refresh()
-  }, [refresh, status])
+    if (connected) void refresh()
+  }, [refresh, connected])
 
-  const stopTool = async (dispatchId: string) => {
-    if (!conversationId) return
-    setBusyId(dispatchId)
-    try {
-      await callHark(accountId, '/messages/stop-tool', {
-        method: 'POST',
-        body: { conversationId, dispatchId }
-      })
-      setHint('已停止该电脑/工具任务 (/messages/stop-tool)')
-      await refresh()
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
-    } finally {
-      setBusyId(undefined)
-    }
-  }
-
-  const submitToolResponse = async (ask: (typeof asks)[number], value: string) => {
-    if (!conversationId || !ask.requestId) return
-    setBusyId(ask.id)
+  const runToolAction = async (id: string, path: string, body: Record<string, unknown>, success: string) => {
+    const signal = lifetime.current?.signal
+    if (!conversationId || !signal || signal.aborted) return
+    const generation = ++actionGeneration.current
+    const current = () => !signal.aborted && actionGeneration.current === generation
+    setBusyId(id)
     setError(undefined)
     try {
-      await callHark(accountId, '/messages/tool-response', {
-        method: 'POST',
-        body: {
-          conversationId,
-          requestId: ask.requestId,
-          type: 'user_input',
-          dispatchId: ask.dispatchId,
-          value
-        }
-      })
-      setHint('已提交工具确认响应 (/messages/tool-response)')
+      await callHark(accountId, path, { body: { ...body, conversationId } })
+      if (!current()) return
+      setHint(success)
       await refresh()
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
+      if (current()) setError(cleanSidebarError(err))
     } finally {
-      setBusyId(undefined)
+      if (current()) setBusyId(undefined)
     }
   }
 
-  const activeBrowserPanel = [...panels].reverse().find((p) => p.screenshotUrl || (p.screenshotKey && presignedUrls[p.screenshotKey]) || p.liveViewUrl)
+  const stopTool = (dispatchId: string) =>
+    runToolAction(dispatchId, '/messages/stop-tool', { dispatchId }, '已停止该电脑/工具任务')
+
+  const submitToolResponse = (ask: (typeof asks)[number], value: string) => {
+    if (!ask.requestId) return
+    return runToolAction(ask.id, '/messages/tool-response', {
+      requestId: ask.requestId, type: 'user_input', dispatchId: ask.dispatchId, value
+    }, '已提交工具确认响应')
+  }
+
+  const activeBrowserPanel = currentHarkBrowser(panels)
+  const screenshotGeneration = JSON.stringify([sessionId, conversationId, snapshotGeneration])
 
   return (
     <Section
@@ -1168,20 +1194,12 @@ export function HarkComputerSection({ accountId, botId }: { accountId: string; b
         <div className="relative overflow-hidden rounded-xl border border-line bg-ink/[0.03] p-3">
           {activeBrowserPanel ? (
             <div className="flex flex-col gap-2">
-              {(activeBrowserPanel.screenshotUrl ||
-                (activeBrowserPanel.screenshotKey && presignedUrls[activeBrowserPanel.screenshotKey])) && (
-                <img
-                  src={
-                    activeBrowserPanel.screenshotUrl ||
-                    (activeBrowserPanel.screenshotKey ? presignedUrls[activeBrowserPanel.screenshotKey] : '')
-                  }
-                  alt="Hark computer screen"
-                  className="max-h-52 w-full rounded-lg border border-line bg-black object-contain"
-                />
-              )}
+              <HarkScreenshot accountId={accountId} generation={screenshotGeneration}
+                screenshotKey={activeBrowserPanel.screenshotKey} screenshotUrl={activeBrowserPanel.screenshotUrl}
+                alt="Hark computer screen" className="max-h-52 w-full rounded-lg border border-line bg-black object-contain" />
               <div className="flex items-center justify-between gap-2">
                 <span className="truncate text-[11.5px] text-ink-secondary">
-                  {activeBrowserPanel.url || activeBrowserPanel.title || activeBrowserPanel.kind}
+                  {activeBrowserPanel.label}
                 </span>
                 <span className="rounded-full bg-surface px-2 py-0.5 text-[10px] font-medium text-ink">
                   {activeBrowserPanel.status}
@@ -1251,7 +1269,7 @@ export function HarkComputerSection({ accountId, botId }: { accountId: string; b
         {panels.length > 0 && (
           <ul className="flex flex-col gap-1.5">
             {panels.map((p) => {
-              const imgUrl = p.screenshotUrl || (p.screenshotKey ? presignedUrls[p.screenshotKey] : undefined)
+              const reference = harkScreenshotReference(p.screenshotKey, p.screenshotUrl)
               return (
                 <li key={p.dispatchId} className="rounded-lg border border-line bg-surface p-2.5">
                   <div className="flex items-center justify-between gap-2">
@@ -1272,9 +1290,9 @@ export function HarkComputerSection({ accountId, botId }: { accountId: string; b
                       $ {p.command}
                     </pre>
                   )}
-                  {imgUrl && (
-                    <img
-                      src={imgUrl}
+                  {(reference.screenshotKey || reference.screenshotUrl) && (
+                    <HarkScreenshot
+                      {...reference} accountId={accountId} generation={screenshotGeneration}
                       alt={p.kind}
                       className="mt-2 max-h-36 w-full rounded border border-line object-contain"
                     />
@@ -1306,7 +1324,12 @@ export function HarkComputerSection({ accountId, botId }: { accountId: string; b
  */
 export function HarkLibrarySection({ accountId, botId }: { accountId: string; botId: string }) {
   const sessionId = useBotStore((s) => s.bots.find((b) => b.id === botId)?.activeSessionId)
-  const status = useBotStore((s) => s.accounts[accountId]?.status)
+  const connected = useHarkConnected(accountId)
+  return <HarkLibraryInspector key={JSON.stringify([accountId, sessionId, connected])}
+    accountId={accountId} sessionId={sessionId} connected={connected} />
+}
+
+function HarkLibraryInspector({ accountId, sessionId, connected }: { accountId: string; sessionId?: string; connected: boolean }) {
   const setActiveDocument = useBotStore((s) => s.setActiveDocument)
   const [artifacts, setArtifacts] = useState<
     Array<{
@@ -1320,27 +1343,33 @@ export function HarkLibrarySection({ accountId, botId }: { accountId: string; bo
   >([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string>()
+  const { lifetime, snapshot } = useHarkSnapshot(accountId, sessionId)
+  const refreshGeneration = useRef(0)
+  const activeDownload = useRef<AbortController | null>(null)
+  useEffect(() => () => activeDownload.current?.abort(), [])
 
   const refresh = useCallback(async () => {
-    const hark = getBridge()?.hark
-    if (!hark?.rpc) return
+    const signal = lifetime.current?.signal
+    if (!signal || signal.aborted) return
+    const generation = ++refreshGeneration.current
+    const current = () => !signal.aborted && refreshGeneration.current === generation
     setLoading(true)
     setError(undefined)
     try {
-      const res = await hark.rpc(sessionId ? { accountId, op: 'conversationSnapshot', conversationId: sessionId } : { accountId, op: 'mainConversation' })
-      if (!res.ok || !res.data || typeof res.data !== 'object') return
-      const d = res.data as { artifacts?: typeof artifacts }
-      setArtifacts(Array.isArray(d.artifacts) ? d.artifacts : [])
+      const data = await snapshot(signal)
+      if (!current()) return
+      const d = data as { artifacts?: typeof artifacts } | null
+      setArtifacts(Array.isArray(d?.artifacts) ? d.artifacts : [])
     } catch (err) {
-      setError(cleanSidebarError(err))
+      if (current()) setError(cleanSidebarError(err))
     } finally {
-      setLoading(false)
+      if (current()) setLoading(false)
     }
-  }, [accountId, sessionId])
+  }, [snapshot, lifetime])
 
   useEffect(() => {
-    if (status === 'online' || status === 'busy') void refresh()
-  }, [refresh, status])
+    if (connected) void refresh()
+  }, [refresh, connected])
 
   const previewArtifact = (a: (typeof artifacts)[number]) => {
     setActiveDocument({
@@ -1354,15 +1383,20 @@ export function HarkLibrarySection({ accountId, botId }: { accountId: string; bo
 
   const openOrDownload = async (a: (typeof artifacts)[number]) => {
     const hark = getBridge()?.hark
+    activeDownload.current?.abort()
+    const request = new AbortController()
+    activeDownload.current = request
     if (hark?.rpc) {
       try {
-        const res = await hark.rpc({
+        const res = await harkRpc(hark, {
           accountId,
           op: 'downloadArtifact',
+          requestId: createId('hark_artifact'),
           url: a.downloadUrl && /^https?:\/\//i.test(a.downloadUrl) ? a.downloadUrl : undefined,
           fileId: a.s3Key || (!a.downloadUrl ? a.path : undefined),
           name: a.name
-        })
+        }, request.signal)
+        if (request.signal.aborted) return
         if (res.ok && res.data && typeof res.data === 'object') {
           const d = res.data as { dataBase64: string; mimeType: string; filename?: string }
           if (d.dataBase64) {
@@ -1380,6 +1414,7 @@ export function HarkLibrarySection({ accountId, botId }: { accountId: string; bo
           }
         }
       } catch (err) {
+        if (request.signal.aborted) return
         setError(cleanSidebarError(err))
       }
     }
@@ -1435,7 +1470,7 @@ export function HarkLibrarySection({ accountId, botId }: { accountId: string; bo
  * 8. Hark Invite & Device Sessions (`/invite`, `/invite/claim`, `/sessions`)
  */
 export function HarkInviteAndSessionsSection({ accountId }: { accountId: string }) {
-  const status = useBotStore((s) => s.accounts[accountId]?.status)
+  const connected = useHarkConnected(accountId)
   const [inviteInfo, setInviteInfo] = useState<Record<string, unknown> | null>(null)
   const [claimCode, setClaimCode] = useState('')
   const [sessions, setSessions] = useState<
@@ -1479,8 +1514,8 @@ export function HarkInviteAndSessionsSection({ accountId }: { accountId: string 
   }, [accountId])
 
   useEffect(() => {
-    if (status === 'online' || status === 'busy') void refresh()
-  }, [refresh, status])
+    if (connected) void refresh()
+  }, [refresh, connected])
 
   const claim = async () => {
     if (!claimCode.trim()) return

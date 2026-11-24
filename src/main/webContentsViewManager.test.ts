@@ -14,6 +14,7 @@ vi.mock('electron', () => {
     getUserAgent = () => 'Mozilla/5.0 Chrome/134 Electron/35.0.0'
     setWindowOpenHandler = vi.fn()
     on = vi.fn()
+    once = vi.fn()
     close = vi.fn()
   }
   class WebContentsView {
@@ -37,15 +38,16 @@ import { WebContentsViewManager } from './webContentsViewManager'
 
 function fakeWindow() {
   return {
-    webContents: { on: vi.fn() },
+    webContents: { on: vi.fn(), once: vi.fn(), isDestroyed: () => false },
     on: vi.fn(),
+    once: vi.fn(),
     isDestroyed: () => false,
     contentView: { addChildView: vi.fn(), removeChildView: vi.fn() }
   }
 }
 
 describe('WebContentsViewManager.reloadAccount', () => {
-  it('reloads only the views of the given account, honoring resolveUrl', () => {
+  it('reloads only the views of the given account, honoring resolveUrl', async () => {
     const mgr = new WebContentsViewManager(fakeWindow() as never)
     mgr.create({ botId: 'b1', accountId: 'acc_a', url: 'https://app.hark.com/login' })
     mgr.attach('b1::acc_a', { x: 0, y: 0, width: 100, height: 100 })
@@ -58,10 +60,13 @@ describe('WebContentsViewManager.reloadAccount', () => {
       loadURL: ReturnType<typeof vi.fn>
       reload: ReturnType<typeof vi.fn>
     }
+    const flush = () => new Promise((r) => setTimeout(r, 0)) // loads wait for the account proxy
+    await flush()
     a.loadURL.mockClear()
     b.loadURL.mockClear()
 
     const n = mgr.reloadAccount('acc_a', (cur) => (cur.endsWith('/login') ? 'https://app.hark.com' : undefined))
+    await flush()
     expect(n).toBe(1)
     expect(a.loadURL).toHaveBeenCalledWith('https://app.hark.com')
     expect(b.loadURL).not.toHaveBeenCalled()
@@ -69,6 +74,7 @@ describe('WebContentsViewManager.reloadAccount', () => {
 
     // Already inside the app: plain reload.
     mgr.reloadAccount('acc_a', (cur) => (cur.endsWith('/login') ? 'https://app.hark.com' : undefined))
+    await flush()
     expect(a.reload).toHaveBeenCalledTimes(1)
   })
 })

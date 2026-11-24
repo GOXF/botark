@@ -3,6 +3,7 @@
  * Uses the account partition's own cookies via `session.fetch` — this module
  * never reads, stores or logs cookie or token values.
  */
+import { setTimeout as delay } from 'node:timers/promises'
 
 const ORIGIN = 'https://muse.ai'
 const MUSE_UA =
@@ -40,12 +41,11 @@ export class MuseControlPlane {
 
   constructor(private readonly fetchFn: FetchFn) {}
 
-  private async post(path: string, body: unknown): Promise<Record<string, unknown>> {
+  private async post(path: string, body: unknown, signal?: AbortSignal): Promise<Record<string, unknown>> {
     let lastErr: unknown
     for (let attempt = 0; attempt < 3; attempt++) {
-      if (attempt > 0) {
-        await new Promise((r) => setTimeout(r, 300 * attempt))
-      }
+      if (attempt > 0) await delay(300 * attempt, undefined, { signal })
+      signal?.throwIfAborted()
       try {
         const res = await this.fetchFn(ORIGIN + path, {
           method: 'POST',
@@ -63,7 +63,8 @@ export class MuseControlPlane {
             'Sec-Fetch-Mode': 'cors',
             'Sec-Fetch-Dest': 'empty'
           },
-          body: JSON.stringify(body ?? {})
+          body: JSON.stringify(body ?? {}),
+          signal
         })
         let json: Record<string, unknown> = {}
         try {
@@ -71,6 +72,7 @@ export class MuseControlPlane {
         } catch {
           /* non-JSON */
         }
+        signal?.throwIfAborted()
         if (res.status === 401 || res.status === 403) {
           throw new MuseControlPlaneError(`${path}: not signed in (${res.status})`, res.status, 'signed_out')
         }
@@ -84,6 +86,7 @@ export class MuseControlPlane {
         }
         return json
       } catch (err) {
+        signal?.throwIfAborted()
         lastErr = err
         if (err instanceof MuseControlPlaneError) throw err
         if (attempt >= 2) throw err
@@ -97,19 +100,20 @@ export class MuseControlPlane {
     return { ok: d['ok'] === true, viewerId: String(d['viewer_id'] ?? '') }
   }
 
-  async wake(): Promise<void> {
+  async wake(signal?: AbortSignal): Promise<void> {
     try {
-      await this.post('/api/hatch/vm/wake', { vm_id: this.lease?.vmId, retry_count: this.wakeRetry++ })
+      await this.post('/api/hatch/vm/wake', { vm_id: this.lease?.vmId, retry_count: this.wakeRetry++ }, signal)
     } catch {
-      /* best effort */
+      signal?.throwIfAborted()
     }
   }
 
-  async leaseVm(): Promise<{ vmId: string; vmName: string; gatewayUrl: string }> {
+  async leaseVm(signal?: AbortSignal): Promise<{ vmId: string; vmName: string; gatewayUrl: string }> {
     let last: unknown
     for (const vmType of ['standard', 'hatch_vm']) {
       try {
-        const d = await this.post('/api/hatch/lease-vm', { vmType })
+        const d = await this.post('/api/hatch/lease-vm', { vmType }, signal)
+        signal?.throwIfAborted()
         const gatewayUrl = typeof d['gatewayUrl'] === 'string' ? (d['gatewayUrl'] as string) : ''
         const vmName = typeof d['vmName'] === 'string' ? (d['vmName'] as string) : ''
         const vmId = (typeof d['vmId'] === 'string' && d['vmId']) || vmIdFromGateway(gatewayUrl) || vmName
@@ -119,6 +123,7 @@ export class MuseControlPlane {
         }
         last = new MuseControlPlaneError(`lease-vm: status ${String(d['status'] ?? 'unknown')}`, undefined, 'vm_unavailable')
       } catch (e) {
+        signal?.throwIfAborted()
         if (e instanceof MuseControlPlaneError && e.code === 'signed_out') throw e
         last = e
       }
@@ -127,22 +132,23 @@ export class MuseControlPlane {
   }
 
   /** Full credential fetch for a Noise connect. */
-  async credentials(opts: { forceRefresh?: boolean } = {}): Promise<GatewayCreds> {
-    await this.wake()
-    const lease = this.lease && !opts.forceRefresh ? this.lease : await this.leaseVm()
+  async credentials(opts: { forceRefresh?: boolean; signal?: AbortSignal } = {}): Promise<GatewayCreds> {
+    const { signal } = opts
+    await this.wake(signal)
+    const lease = this.lease && !opts.forceRefresh ? this.lease : await this.leaseVm(signal)
     const body: Record<string, unknown> = { vmAddress: lease.gatewayUrl, vmName: lease.vmName }
     if (opts.forceRefresh) body['force_refresh'] = true
-    const t = await this.post('/api/hatch/token', body)
+    const t = await this.post('/api/hatch/token', body, signal)
     const authToken = typeof t['token'] === 'string' ? (t['token'] as string) : ''
     if (!authToken) throw new MuseControlPlaneError('hatch/token: no token', undefined, 'http')
     let notaryToken = typeof t['notary_token'] === 'string' ? (t['notary_token'] as string) : undefined
     if (!notaryToken) {
       try {
-        const n = await this.post('/api/hatch/noise-notary-token', { vmName: lease.vmName })
+        const n = await this.post('/api/hatch/noise-notary-token', { vmName: lease.vmName }, signal)
         const v = n['notaryToken'] ?? n['notary_token']
         if (typeof v === 'string' && v.trim()) notaryToken = v.trim()
       } catch {
-        /* optional */
+        signal?.throwIfAborted()
       }
     }
     // delegation.* notary tokens need a client-side endorsement (CVM path); skip them.

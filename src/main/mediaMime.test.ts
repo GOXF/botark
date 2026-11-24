@@ -1,11 +1,20 @@
 import { describe, expect, it } from 'vitest'
-import { inferMediaMime, sniffMediaMimeFromBytes } from './mediaMime'
+import { guessMediaMimeFromName, inferMediaMime, sniffMediaMimeFromBytes } from './mediaMime'
 import { HarkConversationSyncState, extractMessages } from './hark/harkClient'
 import { dotAttachmentsToMedia, normalizeRoomMessage } from './dot/dotClient'
 import { extractGrokMedia } from './grok/grokTranscriptDecoder'
 import { extractInlineDataUrlImages } from './hermes/hermesClient'
 
 describe('mediaMime sniffing', () => {
+  it('recognizes ADTS AAC without mislabeling MPEG audio or M4A', () => {
+    const adts = Uint8Array.of(0xff, 0xf1, 0x50, 0x80, 0x02, 0x9f, 0xfc)
+    const mp3 = Uint8Array.of(0xff, 0xfb, 0x90, 0x64, 0, 0, 0)
+    expect(sniffMediaMimeFromBytes(adts)).toBe('audio/aac')
+    expect(sniffMediaMimeFromBytes(mp3)).toBe('audio/mpeg')
+    expect(guessMediaMimeFromName('track.AAC?download=1')).toBe('audio/aac')
+    expect(guessMediaMimeFromName('track.m4a')).toBe('audio/mp4')
+  })
+
   it('sniffs image, video, audio, and pdf magic bytes', () => {
     expect(sniffMediaMimeFromBytes(new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))).toBe('image/png')
     expect(sniffMediaMimeFromBytes(new Uint8Array([0xff, 0xd8, 0xff, 0xe0]))).toBe('image/jpeg')

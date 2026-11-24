@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   Clock,
   Cpu,
@@ -72,12 +72,17 @@ export function HermesServerSection({ accountId }: { accountId: string }) {
   const [loading, setLoading] = useState(false)
   const [savingModel, setSavingModel] = useState(false)
   const [error, setError] = useState<string>()
+  const currentAccount = useRef(accountId)
+  currentAccount.current = accountId
+  const latestRead = useRef(0)
+  const modelWrite = useRef<string | undefined>(undefined)
   const connectAccount = useBotStore((s) => s.connectAccount)
   const setSettingsOpen = useBotStore((s) => s.setSettingsOpen)
 
   const refresh = useCallback(async () => {
     const hermes = getBridge()?.hermes
     if (!hermes) return
+    const read = ++latestRead.current
     setLoading(true)
     setError(undefined)
     try {
@@ -85,14 +90,15 @@ export function HermesServerSection({ accountId }: { accountId: string }) {
         hermes.authStatus(accountId),
         hermes.rpc({ accountId, op: 'models' }).catch(() => ({ ok: false as const, status: 0, message: '' }))
       ])
+      if (currentAccount.current !== accountId || latestRead.current !== read) return
       setStatus(st)
       if (modelsRes.ok && Array.isArray(modelsRes.data)) {
         setModels(modelsRes.data as Array<{ id: string; root?: string }>)
       }
     } catch (err) {
-      setError(cleanSidebarError(err))
+      if (currentAccount.current === accountId && latestRead.current === read) setError(cleanSidebarError(err))
     } finally {
-      setLoading(false)
+      if (currentAccount.current === accountId && latestRead.current === read) setLoading(false)
     }
   }, [accountId])
 
@@ -102,16 +108,28 @@ export function HermesServerSection({ accountId }: { accountId: string }) {
 
   const handleModelChange = async (nextModel: string) => {
     const trimmed = nextModel.trim()
-    if (!trimmed) return
+    if (!trimmed || modelWrite.current) return false
     const hermes = getBridge()?.hermes
-    if (!hermes?.rpc) return
+    if (!hermes?.rpc) return false
+    modelWrite.current = accountId
     setSavingModel(true)
+    setError(undefined)
     try {
       const res = await hermes.rpc({ accountId, op: 'setModel', model: trimmed })
-      if (res.ok) {
-        setStatus((prev) => (prev ? { ...prev, model: trimmed } : prev))
-      }
+      if (!res.ok) throw new Error(res.message)
+      if (currentAccount.current !== accountId) return false
+      const saved = res.data as Pick<HermesAuthStatus, 'model' | 'handle'>
+      latestRead.current++
+      setLoading(false)
+      setStatus((prev) => prev?.accountId === accountId
+        ? { ...prev, ...saved }
+        : { accountId, signedIn: true, ...saved })
+      return true
+    } catch (err) {
+      if (currentAccount.current === accountId) setError(cleanSidebarError(err))
+      return false
     } finally {
+      modelWrite.current = undefined
       setSavingModel(false)
     }
   }
@@ -119,10 +137,10 @@ export function HermesServerSection({ accountId }: { accountId: string }) {
   const handleSaveCustomModel = async () => {
     const trimmed = customModelDraft.trim()
     if (!trimmed) return
+    if (!(await handleModelChange(trimmed))) return
     setCustomModels(persistSavedHermesModel(trimmed))
     setCustomModelDraft('')
     setCustomInputOpen(false)
-    await handleModelChange(trimmed)
   }
 
   const mergedModelOptions = (() => {

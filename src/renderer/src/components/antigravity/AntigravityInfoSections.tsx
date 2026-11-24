@@ -351,7 +351,7 @@ export function AntigravityEnvironmentsSection({ accountId }: { accountId: strin
     const b = agyBridge()
     if (!b?.rpc) return
     setSelectedCapsuleId(capsuleId)
-    await b.rpc({ accountId, action: 'setPrefs', capsuleId })
+    await b.rpc({ accountId, action: 'setPrefs', capsuleId: capsuleId ?? '' })
   }
 
   return (
@@ -460,7 +460,7 @@ export function AntigravityAgentsSection({ accountId }: { accountId: string }) {
     if (!b?.rpc) return
     const next = selectedAgentPath === agentId ? undefined : agentId
     setSelectedAgentPath(next)
-    await b.rpc({ accountId, action: 'setPrefs', agentPath: next })
+    await b.rpc({ accountId, action: 'setPrefs', agentPath: next ?? '' })
   }
 
   return (

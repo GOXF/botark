@@ -25,13 +25,15 @@ export const CUE_WEB_ORIGIN = 'https://cue.im'
 export const CUE_CONNECT_BASE = 'https://api.manus.im'
 export const CUE_MANUS_API_BASE = 'https://api.manus.ai/v2'
 
+type CueCookie = { name: string; value: string; domain?: string; path?: string }
+
 export interface CueStoredTokens {
   accessToken?: string
   refreshToken?: string
   apiKey?: string
   cookieHeader?: string
   cookieNames?: string[]
-  cookies?: Array<{ name: string; value: string; domain?: string; path?: string }>
+  cookies?: CueCookie[]
   accountSlot?: string
   handle?: string
   displayName?: string
@@ -43,29 +45,77 @@ export interface CueStoredTokens {
 type PersistedCueTokenMap = Record<string, { enc: string }>
 
 const withVaultLock = createMutex()
-const refreshInFlight = new Map<string, Promise<CueMainAuth | null>>()
+const refreshInFlight = new WeakMap<CueMainAuth, Promise<CueMainAuth | null>>()
+const credentialIdentities = new WeakMap<CueMainAuth, symbol>()
+const accountRevisions = new Map<string, symbol>()
+const signOuts = new Set<string>()
+let defaultRevision = Symbol()
 const mirroredAccounts = new Set<string>()
+
+export function getCueCredentialRevision(accountId: string): symbol {
+  return accountRevisions.get(accountId) ?? defaultRevision
+}
+
+export function cueCookieCaptureAllowed(accountId: string): boolean {
+  return !signOuts.has(accountId)
+}
+
+export function cueCookieOrigin(domain: string | undefined): string | undefined {
+  const host = (domain || 'cue.im').replace(/^\./, '').toLowerCase()
+  if (/^(?:[a-z0-9-]+\.)*(?:cue\.im|manus\.im|manus\.ai)$/.test(host)) return `https://${host}`
+  return undefined
+}
+
+export function selectCueSessionCookies<T extends CueCookie>(cookies: T[]): T[] {
+  const originRank = (cookie: T): number => {
+    const origin = cueCookieOrigin(cookie.domain)
+    if (!origin) return 0
+    const host = new URL(origin).hostname
+    if (host === 'cue.im') return 4
+    if (host.endsWith('.cue.im')) return 3
+    if (host === 'manus.im' || host.endsWith('.manus.im')) return 2
+    return 1
+  }
+  const nameRank = (name: string): number => name === 'cue_session_id' ? 2 : name === 'session_id' ? 1 : 0
+  return cookies
+    .filter((cookie) => cookie.value && looksLikeCueSessionCookie(cookie.name) && originRank(cookie))
+    .sort((a, b) => originRank(b) - originRank(a) || nameRank(b.name) - nameRank(a.name) ||
+      (a.path?.length ?? 1) - (b.path?.length ?? 1))
+}
+
+export function cueCookiesForOrigin<T extends CueCookie>(
+  cookies: T[],
+  origin: string | undefined
+): T[] {
+  const names = new Set<string>()
+  return cookies.filter((cookie) => {
+    if (cueCookieOrigin(cookie.domain) !== origin || names.has(cookie.name)) return false
+    names.add(cookie.name)
+    return true
+  })
+}
 
 async function mirrorCuePartitionCookies(
   accountId: string,
   tokens: Pick<CueStoredTokens, 'accessToken' | 'cookies'>,
   opts?: { onlyManusMirror?: boolean }
 ): Promise<void> {
-  const cookiesToSet: Array<{ name: string; value: string; domain?: string; path?: string }> = []
+  const cookiesToSet: CueCookie[] = []
   if (tokens.cookies?.length) {
     for (const c of tokens.cookies) {
-      if (opts?.onlyManusMirror && !(c.domain || '').includes('manus.im')) continue
+      const origin = cueCookieOrigin(c.domain)
+      if (!origin || (opts?.onlyManusMirror && !origin.endsWith('manus.im'))) continue
       cookiesToSet.push(c)
     }
   }
   if (tokens.accessToken) {
     if (
       !opts?.onlyManusMirror &&
-      !cookiesToSet.some((c) => (c.domain || '.cue.im').includes('cue.im') && c.name === 'cue_session_id')
+      !cookiesToSet.some((c) => cueCookieOrigin(c.domain)?.endsWith('cue.im') && c.name === 'cue_session_id')
     ) {
       cookiesToSet.push({ name: 'cue_session_id', value: tokens.accessToken, domain: '.cue.im', path: '/' })
     }
-    if (!cookiesToSet.some((c) => (c.domain || '').includes('manus.im') && c.name === 'session_id')) {
+    if (!cookiesToSet.some((c) => cueCookieOrigin(c.domain)?.endsWith('manus.im') && c.name === 'session_id')) {
       cookiesToSet.push({ name: 'session_id', value: tokens.accessToken, domain: '.manus.im', path: '/' })
     }
   }
@@ -75,7 +125,8 @@ async function mirrorCuePartitionCookies(
     const ses = electronSession.fromPartition(partitionForAccount(accountId))
     for (const c of cookiesToSet) {
       const domain = c.domain || '.cue.im'
-      const url = domain.includes('manus.im') ? 'https://manus.im' : CUE_ORIGIN
+      const url = cueCookieOrigin(domain)
+      if (!url) continue
       await ses.cookies.set({
         url,
         name: c.name,
@@ -134,15 +185,24 @@ function readRawVault(): PersistedCueTokenMap {
   return out
 }
 
+export function listSavedCueAccountIds(): string[] {
+  return Object.keys(readRawVault())
+}
+
 export function cueFetcherForAccount(
   accountId: string,
-  explicitFetch?: typeof fetch
+  explicitFetch?: typeof fetch,
+  beforeRequest?: () => void
 ): (input: string | URL, init?: RequestInit) => Promise<Response> {
   return async (input: string | URL, init?: RequestInit): Promise<Response> => {
-    const proxyUrl = await loadAccountTransportProxyUrl(accountId)
+    init?.signal?.throwIfAborted()
     if (explicitFetch) {
+      beforeRequest?.()
       return explicitFetch(input, init)
     }
+    const proxyUrl = await loadAccountTransportProxyUrl(accountId)
+    init?.signal?.throwIfAborted()
+    beforeRequest?.()
     return proxyFetch(proxyUrl, typeof input === 'string' ? input : input.toString(), init)
   }
 }
@@ -209,7 +269,7 @@ export function parseAnyCueCredentialInput(rawInput: string): CueStoredTokens {
     }
 
     if (Array.isArray(parsed)) {
-      const cookies: Array<{ name: string; value: string; domain?: string; path?: string }> = []
+      const cookies: CueCookie[] = []
       for (const item of parsed) {
         if (!item || typeof item !== 'object') continue
         const rec = item as Record<string, unknown>
@@ -225,12 +285,14 @@ export function parseAnyCueCredentialInput(rawInput: string): CueStoredTokens {
       if (cookies.length === 0) {
         throw new Error('Cookie array contains no valid { name, value } entries')
       }
-      const primary = cookies.find((c) => looksLikeCueSessionCookie(c.name)) ?? cookies[0]!
-      const cookieHeader = cookies.map((c) => `${c.name}=${c.value}`).join('; ')
+      const primary = selectCueSessionCookies(cookies)[0]
+      if (!primary) throw new Error('Cookie array contains no Cue session cookie')
+      const scoped = cueCookiesForOrigin(selectCueSessionCookies(cookies), cueCookieOrigin(primary.domain))
+      const cookieHeader = scoped.map((c) => `${c.name}=${c.value}`).join('; ')
       return {
         accessToken: primary.value,
         cookieHeader,
-        cookieNames: cookies.map((c) => c.name),
+        cookieNames: scoped.map((c) => c.name),
         cookies,
         authKind: 'session'
       }
@@ -385,74 +447,76 @@ export function parseAnyCueCredentialInput(rawInput: string): CueStoredTokens {
   throw new Error('Unrecognized Cue credential format (expected Bearer token, JWT, x-manus-api-key, Cookie, or JSON)')
 }
 
+async function saveCueTokens(
+  accountId: string,
+  tokens: CueStoredTokens,
+  identity: symbol,
+  shouldSave: () => boolean,
+  skipPartitionCookieWrite?: boolean
+): Promise<CueMainAuth | null> {
+  if (!shouldSave()) return null
+  const enc = await encryptPayload(JSON.stringify(tokens))
+  if (!shouldSave()) return null
+  const vault = readRawVault()
+  vault[accountId] = { enc }
+  const auth = resolveCueTokens(accountId, tokens)
+  writeJsonAtomic(tokenStorePath(), vault)
+  accountRevisions.set(accountId, Symbol())
+  signOuts.delete(accountId)
+  credentialIdentities.set(auth, identity)
+  setCueMainAuth(auth)
+  mirroredAccounts.delete(accountId)
+  if (tokens.cookies?.length || tokens.accessToken) {
+    await mirrorCuePartitionCookies(
+      accountId,
+      tokens,
+      skipPartitionCookieWrite ? { onlyManusMirror: true } : undefined
+    )
+  }
+  return auth
+}
+
 export async function persistCueTokens(
   accountId: string,
   tokens: CueStoredTokens,
-  opts?: { skipPartitionCookieWrite?: boolean }
+  opts?: { skipPartitionCookieWrite?: boolean; shouldSave?: () => boolean }
 ): Promise<CueMainAuth> {
   return withVaultLock(async () => {
-    const enc = await encryptPayload(JSON.stringify(tokens))
-    const vault = readRawVault()
-    vault[accountId] = { enc }
-    writeJsonAtomic(tokenStorePath(), vault)
-
-    const deviceId = getOrCreateCueDeviceId(accountId)
-    const auth: CueMainAuth = {
-      accountId,
-      accessToken: tokens.accessToken,
-      refreshToken: tokens.refreshToken,
-      apiKey: tokens.apiKey,
-      cookieHeader: tokens.cookieHeader,
-      cookieNames: tokens.cookieNames,
-      accountSlot: tokens.accountSlot || tokens.handle,
-      handle: tokens.handle || tokens.accountSlot,
-      displayName: tokens.displayName || tokens.handle || tokens.accountSlot || 'Cue',
-      baseUrl: tokens.baseUrl,
-      deviceId,
-      authKind: tokens.authKind,
-      expiresAtMs: tokens.expiresAtMs,
-      accountFingerprint: computeCueAccountFingerprint({
-        accountId,
-        accessToken: tokens.accessToken,
-        apiKey: tokens.apiKey,
-        cookieHeader: tokens.cookieHeader,
-        handle: tokens.handle || tokens.accountSlot
-      })
-    }
-    setCueMainAuth(auth)
-    mirroredAccounts.delete(accountId)
-
-    if (tokens.cookies?.length || tokens.accessToken) {
-      await mirrorCuePartitionCookies(
-        accountId,
-        tokens,
-        opts?.skipPartitionCookieWrite ? { onlyManusMirror: true } : undefined
-      )
-    }
-
+    const auth = await saveCueTokens(accountId, tokens, Symbol(), opts?.shouldSave ?? (() => true), opts?.skipPartitionCookieWrite)
+    if (!auth) throw new Error('Cue sign-in attempt is no longer active')
     return auth
   })
 }
 
-export async function loadCueTokens(accountId: string): Promise<CueMainAuth | null> {
-  const ensureMirrored = (auth: CueMainAuth): CueMainAuth => {
-    if (auth.accessToken && !mirroredAccounts.has(accountId)) {
-      mirroredAccounts.add(accountId)
-      void mirrorCuePartitionCookies(
-        accountId,
-        { accessToken: auth.accessToken },
-        { onlyManusMirror: true }
-      ).catch(() => undefined)
-    }
-    return auth
+function resolveCueTokens(accountId: string, tokens: CueStoredTokens): CueMainAuth {
+  return {
+    accountId,
+    accessToken: tokens.accessToken,
+    refreshToken: tokens.refreshToken,
+    apiKey: tokens.apiKey,
+    cookieHeader: tokens.cookieHeader,
+    cookieNames: tokens.cookieNames,
+    accountSlot: tokens.accountSlot || tokens.handle,
+    handle: tokens.handle || tokens.accountSlot,
+    displayName: tokens.displayName || tokens.handle || tokens.accountSlot || 'Cue',
+    baseUrl: tokens.baseUrl,
+    deviceId: getOrCreateCueDeviceId(accountId),
+    authKind: tokens.authKind ?? 'oauth',
+    expiresAtMs: tokens.expiresAtMs,
+    accountFingerprint: computeCueAccountFingerprint({
+      accountId,
+      accessToken: tokens.accessToken,
+      apiKey: tokens.apiKey,
+      cookieHeader: tokens.cookieHeader,
+      handle: tokens.handle || tokens.accountSlot
+    })
   }
+}
 
+async function loadCueTokensLocked(accountId: string): Promise<CueMainAuth | null> {
   const inMem = getCueMainAuth(accountId)
-  if (inMem && (inMem.accessToken || inMem.apiKey || inMem.cookieHeader)) {
-    return ensureMirrored(inMem)
-  }
-  const vault = readRawVault()
-  const entry = vault[accountId]
+  if (inMem) return inMem
+  const entry = readRawVault()[accountId]
   if (!entry?.enc) return null
   try {
     const plain = await decryptPayload(entry.enc)
@@ -461,34 +525,20 @@ export async function loadCueTokens(accountId: string): Promise<CueMainAuth | nu
     if (!parsed.accessToken && !parsed.apiKey && !parsed.cookieHeader && !parsed.refreshToken) {
       return null
     }
-    const deviceId = getOrCreateCueDeviceId(accountId)
-    const auth: CueMainAuth = {
-      accountId,
-      accessToken: parsed.accessToken,
-      refreshToken: parsed.refreshToken,
-      apiKey: parsed.apiKey,
-      cookieHeader: parsed.cookieHeader,
-      cookieNames: parsed.cookieNames,
-      accountSlot: parsed.accountSlot || parsed.handle,
-      handle: parsed.handle || parsed.accountSlot,
-      displayName: parsed.displayName || parsed.handle || parsed.accountSlot || 'Cue',
-      baseUrl: parsed.baseUrl,
-      deviceId,
-      authKind: parsed.authKind ?? 'oauth',
-      expiresAtMs: parsed.expiresAtMs,
-      accountFingerprint: computeCueAccountFingerprint({
-        accountId,
-        accessToken: parsed.accessToken,
-        apiKey: parsed.apiKey,
-        cookieHeader: parsed.cookieHeader,
-        handle: parsed.handle || parsed.accountSlot
-      })
-    }
+    const auth = resolveCueTokens(accountId, parsed)
+    credentialIdentities.set(auth, Symbol())
     setCueMainAuth(auth)
-    return ensureMirrored(auth)
+    if (auth.accessToken && !mirroredAccounts.has(accountId)) {
+      await mirrorCuePartitionCookies(accountId, parsed, { onlyManusMirror: true })
+    }
+    return auth
   } catch {
     return null
   }
+}
+
+export async function loadCueTokens(accountId: string): Promise<CueMainAuth | null> {
+  return getCueMainAuth(accountId) ?? withVaultLock(() => loadCueTokensLocked(accountId))
 }
 
 export async function importCueCredentials(
@@ -505,22 +555,25 @@ export async function clearCueAccountAuth(accountId: string): Promise<void> {
     if (accountId === '*') {
       writeJsonAtomic(tokenStorePath(), {})
       clearCueMainAuth('*')
+      for (const id of Object.keys(vault)) signOuts.add(id)
+      accountRevisions.clear()
+      defaultRevision = Symbol()
       mirroredAccounts.clear()
       return
     }
     delete vault[accountId]
     writeJsonAtomic(tokenStorePath(), vault)
     clearCueMainAuth(accountId)
+    signOuts.add(accountId)
+    accountRevisions.set(accountId, Symbol())
     mirroredAccounts.delete(accountId)
-  })
-  if (accountId !== '*') {
     try {
       const ses = electronSession.fromPartition(partitionForAccount(accountId))
       await ses.clearStorageData().catch(() => undefined)
     } catch {
       /* ignore */
     }
-  }
+  })
 }
 
 export async function hasValidCueAuth(accountId: string): Promise<boolean> {
@@ -528,10 +581,11 @@ export async function hasValidCueAuth(accountId: string): Promise<boolean> {
   if (loaded && Boolean(loaded.accessToken || loaded.apiKey || loaded.cookieHeader)) {
     return true
   }
+  if (!cueCookieCaptureAllowed(accountId)) return false
   try {
     const ses = electronSession.fromPartition(partitionForAccount(accountId))
     const cookies = await ses.cookies.get({})
-    return cookies.some((c) => looksLikeCueSessionCookie(c.name) && Boolean(c.value))
+    return selectCueSessionCookies(cookies).length > 0
   } catch {
     return false
   }
@@ -540,18 +594,35 @@ export async function hasValidCueAuth(accountId: string): Promise<boolean> {
 export async function forceRefreshCueAuth(
   accountId: string,
   baseUrlOverride?: string,
-  explicitFetch?: typeof fetch
+  explicitFetch?: typeof fetch,
+  original?: CueMainAuth
 ): Promise<CueMainAuth | null> {
-  const existingFlight = refreshInFlight.get(accountId)
+  const snapshot = await withVaultLock(async () => {
+    const current = await loadCueTokensLocked(accountId)
+    if (!current) return null
+    const identity = credentialIdentities.get(current)
+    if (!identity || (original && credentialIdentities.get(original) !== identity)) return null
+    const entry = readRawVault()[accountId]
+    return { current, identity, revision: getCueCredentialRevision(accountId), ciphertext: entry?.enc }
+  })
+  if (!snapshot) return null
+  const { current, identity, revision, ciphertext } = snapshot
+  if (original && original !== current) return current
+  if (!current.refreshToken) return null
+  const existingFlight = refreshInFlight.get(current)
   if (existingFlight) return existingFlight
 
   const promise = (async (): Promise<CueMainAuth | null> => {
-    const current = await loadCueTokens(accountId)
-    if (!current?.refreshToken) return null
     const base = (baseUrlOverride || current.baseUrl || CUE_CONNECT_BASE).replace(/\/+$/, '')
-    const fetcher = cueFetcherForAccount(accountId, explicitFetch)
+    const fetcher = cueFetcherForAccount(accountId, explicitFetch, () => {
+      if (getCueCredentialRevision(accountId) !== revision || getCueMainAuth(accountId) !== current) {
+        throw new Error('Cue 账号在刷新前已更改')
+      }
+    })
     const res = await fetcher(`${base}/oauth/token`, {
       method: 'POST',
+      redirect: 'error',
+      signal: AbortSignal.timeout(15_000),
       headers: {
         'Content-Type': 'application/json',
         Accept: 'application/json'
@@ -581,27 +652,36 @@ export async function forceRefreshCueAuth(
       (typeof data['refreshToken'] === 'string' && data['refreshToken'].trim()) ||
       current.refreshToken
     const expiresInSec = typeof data['expires_in'] === 'number' ? data['expires_in'] : 3600
-    return persistCueTokens(accountId, {
-      accessToken: nextAccess,
-      refreshToken: nextRefresh,
-      apiKey: current.apiKey,
-      cookieHeader: current.cookieHeader,
-      cookieNames: current.cookieNames,
-      accountSlot: current.accountSlot,
-      handle: current.handle,
-      displayName: current.displayName,
-      baseUrl: baseUrlOverride || current.baseUrl,
-      authKind: current.authKind,
-      expiresAtMs: Date.now() + expiresInSec * 1000
+    return withVaultLock(() => {
+      if (readRawVault()[accountId]?.enc !== ciphertext) return null
+      return saveCueTokens(accountId, {
+        accessToken: nextAccess,
+        refreshToken: nextRefresh,
+        apiKey: current.apiKey,
+        cookieHeader: current.cookieHeader?.split('; ').map((cookie) =>
+          cookie.endsWith(`=${current.accessToken}`) ? cookie.slice(0, cookie.indexOf('=') + 1) + nextAccess : cookie
+        ).join('; '),
+        cookieNames: current.cookieNames,
+        accountSlot: current.accountSlot,
+        handle: current.handle,
+        displayName: current.displayName,
+        baseUrl: current.baseUrl,
+        authKind: current.authKind,
+        expiresAtMs: Date.now() + expiresInSec * 1000
+      }, identity, () => getCueCredentialRevision(accountId) === revision && getCueMainAuth(accountId) === current)
     })
   })()
 
-  refreshInFlight.set(accountId, promise)
+  refreshInFlight.set(current, promise)
   try {
     return await promise
   } finally {
-    if (refreshInFlight.get(accountId) === promise) {
-      refreshInFlight.delete(accountId)
-    }
+    refreshInFlight.delete(current)
   }
+}
+
+export function currentCueAuthForIdentity(original: CueMainAuth): CueMainAuth | undefined {
+  const current = getCueMainAuth(original.accountId)
+  const identity = credentialIdentities.get(original)
+  return current && identity && credentialIdentities.get(current) === identity ? current : undefined
 }

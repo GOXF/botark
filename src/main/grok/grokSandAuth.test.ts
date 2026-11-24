@@ -1,22 +1,48 @@
-import { describe, expect, it, vi } from 'vitest'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
+
+const { encrypt, decrypt } = vi.hoisted(() => ({
+  encrypt: vi.fn(async (s: string) => Buffer.from(s, 'utf8')),
+  decrypt: vi.fn(async (b: Buffer) => ({ result: b.toString('utf8'), shouldReEncrypt: false }))
+}))
+const directory = mkdtempSync(join(tmpdir(), 'botark-grok-credentials-'))
+const storePath = join(directory, 'grok-sand-tokens.json')
 
 vi.mock('electron', () => ({
-  app: { getPath: () => '/tmp', isReady: () => false },
+  app: { getPath: () => directory, isReady: () => false },
   BrowserWindow: class {},
   safeStorage: {
     isAsyncEncryptionAvailable: async () => true,
-    encryptStringAsync: async (s: string) => Buffer.from(s, 'utf8'),
-    decryptStringAsync: async (b: Buffer) => ({ result: b.toString('utf8'), shouldReEncrypt: false })
+    encryptStringAsync: encrypt,
+    decryptStringAsync: decrypt
   }
 }))
 
 import {
+  clearGrokCredentials,
   createSandPollWake,
   extractAccountHandleFromJwt,
+  forceRefreshSandAccessToken,
+  grokCredentialRevision,
+  loadGrokCredential,
   parseAnyGrokCredentialInput,
   parseWorkosCookieOrToken,
-  pollSandAuth
+  pollSandAuth,
+  replaceGrokCredentials
 } from './grokSandAuth'
+import { ensureGrokAccountWatch, getGrokAccountWatch } from './grokWatchManager'
+import type { GrokConnectClient } from './connectClient'
+
+beforeEach(async () => {
+  await clearGrokCredentials('*')
+  vi.clearAllMocks()
+})
+afterAll(async () => {
+  await clearGrokCredentials('*')
+  rmSync(directory, { recursive: true, force: true })
+})
 
 function fakeJwt(payload: Record<string, unknown>): string {
   const header = Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' })).toString('base64url')
@@ -103,4 +129,81 @@ describe('grokSandAuth universal credential parser & wakeable poll', () => {
     expect(tokens.authId).toBe('fast@grok.com')
     expect(Date.now() - start).toBeLessThan(400)
   })
+})
+
+const identity = { iss: 'https://fixture.example', sub: 'original' }
+const original = { accessToken: fakeJwt(identity), refreshToken: 'refresh-original', selectedTeamId: 'team-original' }
+
+it('inherits refresh credentials and team only for an exact issuer and subject match', async () => {
+  const matching = fakeJwt({ ...identity, email: 'new-handle@example.test' })
+  await expect(parseAnyGrokCredentialInput(matching, { existing: original })).resolves.toMatchObject({
+    refreshToken: original.refreshToken, selectedTeamId: original.selectedTeamId
+  })
+  for (const accessToken of [fakeJwt({ ...identity, sub: 'replacement' }),
+    fakeJwt({ ...identity, iss: 'https://other.example' }), fakeJwt({ sub: identity.sub })]) {
+    const result = await parseAnyGrokCredentialInput(accessToken, { existing: original })
+    expect(result?.refreshToken).toBeUndefined()
+    expect(result?.selectedTeamId).toBeUndefined()
+  }
+})
+
+it.each(['sign-out', 'replacement', 'replacement after refresh rejection'] as const)('keeps a late refresh from undoing %s', async (operation) => {
+  await replaceGrokCredentials('account', () => original)
+  let respond!: (value: Response) => void
+  const fetcher = vi.fn<typeof fetch>(() => new Promise((resolve) => { respond = resolve }))
+  const refresh = forceRefreshSandAccessToken('account', fetcher)
+  await vi.waitFor(() => expect(fetcher).toHaveBeenCalledOnce())
+  const replacement = { accessToken: fakeJwt({ ...identity, sub: 'replacement' }) }
+  if (operation === 'sign-out') await clearGrokCredentials('account')
+  else await replaceGrokCredentials('account', () => replacement)
+  respond(operation === 'replacement after refresh rejection' ? new Response(null, { status: 401 }) : Response.json({
+    access_token: fakeJwt({ ...identity, refreshed: true }), refresh_token: 'old-rotated'
+  }))
+  await expect(refresh).resolves.toBeUndefined()
+  const stored = await loadGrokCredential('account')
+  if (operation === 'sign-out') {
+    expect(stored).toBeUndefined()
+    expect(JSON.parse(readFileSync(storePath, 'utf8'))).toEqual({})
+  } else expect(stored?.tokens).toEqual(replacement)
+})
+
+it('serializes legacy migration, re-encryption, and a replacement against the same file', async () => {
+  writeFileSync(storePath, JSON.stringify({
+    legacy: { plain: true, enc: Buffer.from(JSON.stringify(original)).toString('base64') },
+    encrypted: { enc: Buffer.from(JSON.stringify(original)).toString('base64') }
+  }))
+  decrypt.mockResolvedValueOnce({ result: JSON.stringify(original), shouldReEncrypt: true })
+  let finish!: () => void
+  encrypt.mockImplementationOnce((payload) => new Promise((resolve) => { finish = () => resolve(Buffer.from(payload)) }))
+  const migrating = loadGrokCredential('legacy')
+  await vi.waitFor(() => expect(encrypt).toHaveBeenCalledOnce())
+  const reencrypting = loadGrokCredential('encrypted')
+  const newCredential = replaceGrokCredentials('new-account', () => ({ accessToken: 'replacement' }))
+  finish()
+  await Promise.all([migrating, reencrypting, newCredential])
+  expect(encrypt).toHaveBeenCalledTimes(3)
+  const disk = JSON.parse(readFileSync(storePath, 'utf8'))
+  expect(Object.keys(disk).sort()).toEqual(['encrypted', 'legacy', 'new-account'])
+  expect(disk.legacy.plain).toBeUndefined()
+})
+
+it('invalidates a pending login revision on sign-out and restarts an existing watch on identity change', async () => {
+  await replaceGrokCredentials('account', () => original)
+  const watchTranscripts = vi.fn(async function* (_params: unknown, signal?: AbortSignal) {
+    yield { ping: {} }
+    await new Promise<void>((resolve) => {
+      if (signal?.aborted) resolve()
+      else signal?.addEventListener('abort', () => resolve(), { once: true })
+    })
+  })
+  const watch = ensureGrokAccountWatch({ accountId: 'account', emit: vi.fn(),
+    createClient: async () => ({ watchTranscripts }) as unknown as GrokConnectClient })
+  await vi.waitFor(() => expect(watchTranscripts).toHaveBeenCalledOnce())
+  await replaceGrokCredentials('account', () => ({ accessToken: fakeJwt({ ...identity, sub: 'other' }) }))
+  await vi.waitFor(() => expect(watchTranscripts).toHaveBeenCalledTimes(2))
+  expect(watchTranscripts.mock.calls[0]?.[1]?.aborted).toBe(true)
+  expect(getGrokAccountWatch('account')).not.toBe(watch)
+  const oldRevision = grokCredentialRevision('account')
+  await clearGrokCredentials('account')
+  await expect(replaceGrokCredentials('account', () => original, { expectedRevision: oldRevision })).resolves.toBeNull()
 })

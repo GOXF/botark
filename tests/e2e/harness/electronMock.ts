@@ -583,7 +583,9 @@ export function getElectronMockModule() {
       isPackaged: false,
       isReady: () => false,
       getVersion: () => '0.12.1',
-      getName: () => 'BotArk'
+      getName: () => 'BotArk',
+      isDefaultProtocolClient: () => false,
+      setAsDefaultProtocolClient: () => true
     },
     safeStorage: {
       isEncryptionAvailable: () => electronHarness.encryptionAvailable,

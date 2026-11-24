@@ -33,13 +33,16 @@ export interface ParsedGrokTranscriptEntry {
   entryId: string
   seq: string
   updatedSeq: string
+  revision?: string
   role: 'user' | 'assistant' | 'tool' | 'system'
   kind: string
   text: string
   createdAtMs: number
+  hasTimestamp: boolean
   isStreaming: boolean
   bodyOmitted?: boolean
   clientNonce?: string
+  requestId?: string
   widgets?: MuseOptionWidgetView[]
   richWidgets?: MuseRichWidgetView[]
   media?: MuseMediaPartView[]
@@ -48,11 +51,11 @@ export interface ParsedGrokTranscriptEntry {
   settledApprovalKey?: string
 }
 
-function asObj(v: unknown): Record<string, unknown> | null {
+export function asObj(v: unknown): Record<string, unknown> | null {
   return v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : null
 }
 
-function str(v: unknown): string {
+export function str(v: unknown): string {
   return typeof v === 'string' ? v : v == null ? '' : String(v)
 }
 
@@ -60,20 +63,9 @@ export function decodeTranscriptBody(raw: Record<string, unknown>): Record<strin
   const body = raw['body']
   if (typeof body === 'string' && body.length > 0) {
     try {
-      const parsed = JSON.parse(Buffer.from(body, 'base64').toString('utf8')) as Record<
-        string,
-        unknown
-      >
-      return {
-        ...parsed,
-        // Preserve wire envelope seq / entry_id / body_omitted metadata when not inside body
-        seq: raw['seq'] ?? parsed['seq'],
-        updated_seq: raw['updated_seq'] ?? raw['updatedSeq'] ?? parsed['updated_seq'],
-        entry_kind: raw['entry_kind'] ?? raw['entryKind'] ?? parsed['kind'],
-        entry_id: raw['entry_id'] ?? raw['entryId'] ?? parsed['id'],
-        body_omitted: raw['body_omitted'] ?? raw['bodyOmitted'] ?? false,
-        blob_hash: raw['blob_hash'] ?? raw['blobHash']
-      }
+      const bytes = Uint8Array.from(atob(body.replace(/-/g, '+').replace(/_/g, '/')), (char) => char.charCodeAt(0))
+      const parsed = asObj(JSON.parse(new TextDecoder().decode(bytes)))
+      if (parsed) return { ...parsed, ...raw }
     } catch {
       return raw
     }
@@ -612,12 +604,13 @@ export function parseGrokMessagingCard(
   }
 
   // Choice card -> interactive option chips
+  const options = card['options']
   if (
     kind === 2 ||
     kind === 'GROK_BOT_MESSAGING_CARD_KIND_CHOICE' ||
-    (Array.isArray(card['options']) && (card['options'] as unknown[]).length > 0)
+    (Array.isArray(options) && options.length > 0)
   ) {
-    const opts = (card['options'] as unknown[])
+    const opts = (Array.isArray(options) ? options : [])
       .map((o) => asObj(o))
       .filter((o): o is Record<string, unknown> => Boolean(o))
     const labels = opts.map((o) => str(o['label'] ?? o['id'])).filter(Boolean)
@@ -637,6 +630,7 @@ export function parseGrokMessagingCard(
         }
       }
     }
+    return {}
   }
 
   // Payment details enrichment (`GrokBotMessagingCardPayment`)
@@ -686,6 +680,7 @@ export function textFromEntry(e: Record<string, unknown>): string {
   const candidates = [
     e['text'],
     e['content'],
+    e['message'],
     msg?.['text'],
     msg?.['content'],
     widget?.['prompt'],
@@ -706,19 +701,28 @@ export function parseGrokTranscriptEntry(
   agentId: string,
   sessionId?: string
 ): ParsedGrokTranscriptEntry | null {
+  if (!asObj(raw)) return null
   const e = decodeTranscriptBody(raw)
+  const scopedAgent = raw['agentId'] ?? raw['agent_id'] ?? e['agentId'] ?? e['agent_id']
+  const scopedSession = raw['sessionId'] ?? raw['session_id'] ?? e['sessionId'] ?? e['session_id']
+  if (agentId && (scopedAgent !== undefined && scopedAgent !== agentId ||
+    scopedSession !== undefined && scopedSession !== (sessionId ?? ''))) return null
   const seq = str(e['seq'] ?? '0')
-  const updatedSeq = str(e['updated_seq'] ?? e['updatedSeq'] ?? seq)
+  const updatedSeq = str(raw['updated_seq'] ?? raw['updatedSeq'] ?? e['updated_seq'] ?? e['updatedSeq'] ?? seq)
   const kind = str(e['kind'] ?? e['entry_kind'] ?? e['entryKind'] ?? e['type'] ?? '').toLowerCase()
   const entryId = str(
-    e['id'] ?? e['entry_id'] ?? e['entryId'] ?? e['message_id'] ?? e['messageId'] ?? `seq_${seq}`
+    raw['entry_id'] ?? raw['entryId'] ?? e['id'] ?? e['entry_id'] ?? e['entryId'] ?? e['message_id'] ?? e['messageId'] ?? (seq !== '0' ? `seq_${seq}` : '')
   )
-  const createdAtMs =
-    Number(e['timestampMs'] ?? e['timestamp_ms'] ?? e['sentAtMs'] ?? e['sent_at_ms'] ?? 0) ||
-    Date.now()
-  const isStreaming =
-    e['streaming'] === true || e['isStreaming'] === true || e['is_streaming'] === true
-  const clientNonce = str(e['clientNonce'] ?? e['client_nonce']) || undefined
+  if (!entryId) return null
+  const revision = str(raw['revision'] ?? raw['version'] ?? e['revision']) || undefined
+  const timestamp = Number(e['timestampMs'] ?? e['timestamp_ms'] ?? e['sentAtMs'] ?? e['sent_at_ms'] ?? 0)
+  const hasTimestamp = Number.isFinite(timestamp) && timestamp > 0
+  const createdAtMs = hasTimestamp ? timestamp : Date.now()
+  const isStreaming = (raw['is_streaming'] ?? raw['isStreaming'] ?? raw['streaming'] ??
+    e['is_streaming'] ?? e['isStreaming'] ?? e['streaming']) === true
+  const clientNonce = str(raw['client_nonce'] ?? raw['clientNonce'] ?? e['client_nonce'] ?? e['clientNonce'] ??
+    asObj(e['message'])?.['clientNonce'] ?? asObj(e['message'])?.['client_nonce']) || undefined
+  const requestId = str(raw['request_id'] ?? raw['requestId'] ?? e['request_id'] ?? e['requestId']) || undefined
 
   // Tool calls & background events -> tool chips
   if (kind === 'tool-call' || kind === 'event') {
@@ -737,11 +741,14 @@ export function parseGrokTranscriptEntry(
       entryId,
       seq,
       updatedSeq,
+      revision,
       role: 'tool',
       kind,
       text: '',
       createdAtMs,
+      hasTimestamp,
       isStreaming: false,
+      requestId,
       toolCall: {
         id: entryId,
         name: evType,
@@ -754,21 +761,13 @@ export function parseGrokTranscriptEntry(
   // Skip internal notices / feedback / voice call telemetry unless user-facing
   if (kind === 'feedback') return null
 
-  const roleRaw = str(e['role']).toLowerCase()
-  const isUser =
-    roleRaw === 'user' ||
-    kind === 'message' ||
-    kind === 'user-attachment'
-
-  // Note: in sand replica, `kind: "message"` without `fromAgent` is the user's message;
-  // `kind: "send-message"` is the assistant's message/card/widget!
+  const sender = asObj(e['sender'])
+  const role = str(raw['role'] ?? asObj(raw['sender'])?.['type'] ?? e['role'] ?? sender?.['role'] ?? sender?.['type'] ?? asObj(e['message'])?.['role']).toLowerCase()
   const fromAgent = e['fromAgent'] ?? e['from_agent']
-  const effectiveRole: 'user' | 'assistant' =
-    roleRaw === 'assistant' || kind === 'send-message' || fromAgent != null
-      ? 'assistant'
-      : isUser
-        ? 'user'
-        : 'assistant'
+  let effectiveRole: ParsedGrokTranscriptEntry['role'] = 'system'
+  if (/(?:^|_)user$/.test(role) || kind === 'user-attachment') effectiveRole = 'user'
+  else if (/(?:^|_)(assistant|bot|agent)$/.test(role) || kind === 'send-message' || Boolean(fromAgent)) effectiveRole = 'assistant'
+  else if (kind === 'message') effectiveRole = 'user'
 
   const text = textFromEntry(e)
   const widgets = extractGrokWidgets(e, entryId)
@@ -799,13 +798,16 @@ export function parseGrokTranscriptEntry(
     entryId,
     seq,
     updatedSeq,
+    revision,
     role: effectiveRole,
     kind,
     text,
     createdAtMs,
+    hasTimestamp,
     isStreaming,
     bodyOmitted: Boolean(e['body_omitted'] ?? e['bodyOmitted']),
     clientNonce,
+    requestId,
     widgets: mergedWidgets,
     richWidgets: mergedRichWidgets,
     media,

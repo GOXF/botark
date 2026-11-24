@@ -8,7 +8,11 @@
  */
 
 import { randomUUID } from 'node:crypto'
-import { session as electronSession, type Session } from 'electron'
+import { setTimeout as delay } from 'node:timers/promises'
+import { session as electronSession, type Cookie, type Session } from 'electron'
+import { HARK_PREVIEW_MAX_BYTES, HARK_PREVIEW_TIMEOUT_MS, harkScreenshotReference } from '@shared/harkBrowserPreview'
+import { harkProjectId } from '@shared/harkProjects'
+import { createMutex } from '@shared/proxyPool'
 import { applyProxyToPartition } from '../muse/accountProxy'
 import { guessMediaMimeFromName, inferMediaMime } from '../mediaMime'
 import { partitionForAccount } from '../webContentsViewManager'
@@ -169,6 +173,12 @@ function harkClientHeaders(extra?: Record<string, string>): Record<string, strin
 
 const HARK_REQUEST_TIMEOUT_MS = 30_000
 
+export class HarkRequestTimeout extends Error {
+  constructor(readonly method: string, readonly pathname: string) {
+    super(`Hark ${method} ${pathname} timed out`)
+  }
+}
+
 /** A 401 outside /auth: renew the session once (as Hark's web app does) and try again. */
 async function harkFetch(ses: Session, path: string, init: Parameters<typeof harkFetchOnce>[2] = {}): Promise<unknown> {
   try {
@@ -208,11 +218,12 @@ async function harkFetchOnce(
 
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     if (attempt > 0) {
-      await new Promise((r) => setTimeout(r, 350 * attempt))
+      await delay(350 * attempt, undefined, { signal: init.signal })
     }
+    init.signal?.throwIfAborted()
     // Every attempt gets its own deadline; a stalled request used to leave
     // the bubble on "Sending" and the account `pending` until restart.
-    const deadline = AbortSignal.timeout(init.interactive ? 12000 : HARK_REQUEST_TIMEOUT_MS)
+    const deadline = AbortSignal.timeout(init.interactive ? 12_000 : HARK_REQUEST_TIMEOUT_MS)
     const signal = init.signal ? AbortSignal.any([init.signal, deadline]) : deadline
     try {
       const response = await ses.fetch(url.toString(), {
@@ -251,7 +262,7 @@ async function harkFetchOnce(
       lastErr = err
       if (init.signal?.aborted || err instanceof HarkApiError) throw err
       // A write that timed out may already have landed: don't send it twice.
-      if (deadline.aborted && method !== 'GET') throw new Error(`Hark ${method} ${url.pathname} timed out`)
+      if (deadline.aborted && method !== 'GET') throw new HarkRequestTimeout(method, url.pathname)
       if (attempt + 1 >= maxAttempts) throw err
     }
   }
@@ -318,7 +329,7 @@ export function extractHandle(session: HarkAuthSession): {
 export function looksLikeSessionCookie(name: string): boolean {
   if (name === '__Secure-hark.state' || name === '__Secure-hark.region_flow') return false
   if (name.startsWith('__Secure-hark.')) return true
-  if (/^better-auth\.session/i.test(name)) return true
+  if (/^(?:(?:__Secure|__Host)-)?better-auth\.session/i.test(name)) return true
   if (/hark.*session/i.test(name) && !/state|region/i.test(name)) return true
   return false
 }
@@ -337,9 +348,11 @@ export async function listSessionCookieNames(accountId: string): Promise<string[
  * Import Hark session cookies from a standard Cookie header string,
  * JSON cookie array, or raw `__Secure-hark.session_token` value.
  */
-export async function importHarkCredentials(accountId: string, rawInput: string): Promise<boolean> {
+export async function importHarkCredentials(
+  accountId: string, rawInput: string, verify: () => Promise<HarkAuthSession>
+): Promise<HarkAuthSession> {
   const trimmed = rawInput.trim().replace(/^Cookie:\s*/i, '')
-  if (!trimmed) return false
+  if (!trimmed) return null
   const ses = await preparedSessionForAccount(accountId)
   const exp = Math.floor(Date.now() / 1000) + 86400 * 30
   const pairs: Array<{ name: string; value: string; domain?: string; path?: string }> = []
@@ -383,26 +396,79 @@ export async function importHarkCredentials(accountId: string, rawInput: string)
     }
   }
 
-  if (pairs.length === 0) return false
-  for (const c of pairs) {
-    try {
-      await ses.cookies.set({
-        url: HARK_ORIGIN + (c.path?.startsWith('/') ? c.path : '/'),
-        // Hark sets its auth cookies with Domain=hark.com.
-        domain: c.domain || '.hark.com',
-        name: c.name,
-        value: c.value,
-        path: c.path || '/',
-        secure: true,
-        httpOnly: true,
-        expirationDate: exp
-      })
-    } catch {
-      /* ignore individual cookie errors */
+  if (pairs.length === 0) return null
+  const harkCookies = async () => (await ses.cookies.get({})).filter((c) => isHarkCookieDomain(c.domain))
+  const before = await harkCookies()
+  let verified: HarkAuthSession = null
+  try {
+    // Verify the staged credentials independently of any previously signed-in session.
+    for (const cookie of before) {
+      if (looksLikeSessionCookie(cookie.name)) await setHarkCookie(ses, cookie, 1)
     }
+    let staged = false
+    for (const c of pairs) {
+      // Hark sets its auth cookies with Domain=hark.com.
+      const domain = c.domain || '.hark.com'
+      if (!isHarkCookieDomain(domain)) continue
+      try {
+        await setHarkCookie(ses, {
+          ...c, domain, hostOnly: c.name.startsWith('__Host-'),
+          path: c.path?.startsWith('/') ? c.path : '/',
+          secure: true, httpOnly: true, sameSite: 'lax', expirationDate: exp
+        })
+        staged = true
+      } catch {
+        /* Other entries in a browser export may still be usable. */
+      }
+    }
+    if (staged) verified = await verify()
+    return verified
+  } finally {
+    if (!verified) {
+      const after = await harkCookies()
+      const original = new Map(before.map((cookie) => [harkCookieKey(cookie), cookie]))
+      const current = new Map(after.map((cookie) => [harkCookieKey(cookie), cookie]))
+      for (const [key, cookie] of current) {
+        if (!original.has(key)) await setHarkCookie(ses, cookie, 1)
+      }
+      for (const [key, cookie] of original) {
+        if (JSON.stringify(cookie) !== JSON.stringify(current.get(key))) await setHarkCookie(ses, cookie)
+      }
+    }
+    await ses.cookies.flushStore().catch(() => undefined)
   }
-  await ses.cookies.flushStore().catch(() => undefined)
-  return true
+}
+
+function isHarkCookieDomain(domain?: string): boolean {
+  return /^(?:[\w-]+\.)*hark\.com$/i.test(domain?.replace(/^\./, '') ?? '')
+}
+
+function harkCookieKey(cookie: Cookie): string {
+  return JSON.stringify([cookie.domain, cookie.path, cookie.name])
+}
+
+function setHarkCookie(ses: Session, cookie: Cookie, expirationDate = cookie.expirationDate): Promise<void> {
+  const host = cookie.domain?.replace(/^\./, '') || 'app.hark.com'
+  const path = cookie.path || '/'
+  const url = new URL(`https://${host}`)
+  url.pathname = path
+  return ses.cookies.set({
+    url: url.href, path, name: cookie.name, value: cookie.value,
+    domain: cookie.hostOnly ? undefined : cookie.domain,
+    secure: cookie.secure, httpOnly: cookie.httpOnly, sameSite: cookie.sameSite, expirationDate
+  })
+}
+
+const credentialLocks = new Map<string, { run: ReturnType<typeof createMutex>; pending: number }>()
+
+export function withHarkCredentials<T>(accountId: string, fn: () => Promise<T>): Promise<T> {
+  let lock = credentialLocks.get(accountId)
+  if (!lock) credentialLocks.set(accountId, (lock = { run: createMutex(), pending: 0 }))
+  lock.pending++
+  return lock.run(async () => {
+    try { return await fn() }
+    finally { if (--lock.pending === 0) credentialLocks.delete(accountId) }
+  })
 }
 
 export async function clearHarkAccount(accountId: string): Promise<void> {
@@ -420,24 +486,32 @@ export async function clearHarkAccount(accountId: string): Promise<void> {
  * Fetch the full conversation transcript via `/api/sync/poll?first=1`
  * (since `/conversations/main` only returns `{ conversationId }` metadata).
  */
+export async function pollHarkConversation(
+  ses: Session,
+  conversationId: string,
+  manager: string,
+  options: { first: boolean; cursor?: string; floor?: string; signal?: AbortSignal }
+): Promise<{ frames?: string[]; cursor?: string; floor?: string } | null> {
+  return await harkFetch(ses, '/sync/poll', {
+    method: 'GET',
+    query: {
+      conversationId, manager, v: '2', mode: 'in_tab', dial: 'initial',
+      first: options.first ? '1' : undefined,
+      cursor: options.cursor, floor: options.floor
+    },
+    signal: options.signal
+  }) as { frames?: string[]; cursor?: string; floor?: string } | null
+}
+
 export async function fetchConversationSnapshotSummary(
   accountId: string,
-  conversationId: string
+  conversationId: string,
+  signal?: AbortSignal
 ): Promise<HarkConversationSnapshotSummary> {
   const ses = await preparedSessionForAccount(accountId)
   const managerId = randomUUID()
   const syncState = new HarkConversationSyncState()
-  const pollRes = (await harkFetch(ses, '/sync/poll', {
-    method: 'GET',
-    query: {
-      conversationId,
-      v: '2',
-      manager: managerId,
-      mode: 'in_tab',
-      dial: 'initial',
-      first: '1'
-    }
-  })) as { frames?: string[] } | null
+  const pollRes = await pollHarkConversation(ses, conversationId, managerId, { first: true, signal })
   if (pollRes && Array.isArray(pollRes.frames)) {
     for (const frame of pollRes.frames) {
       syncState.applyFrame(frame)
@@ -472,10 +546,12 @@ export async function listConversations(accountId: string): Promise<unknown> {
 
 export async function getMainConversation(
   accountId: string,
-  timezone = timezoneName()
+  timezone = timezoneName(),
+  signal?: AbortSignal
 ): Promise<unknown> {
   return harkFetch(await preparedSessionForAccount(accountId), '/conversations/main', {
-    query: { timezone }
+    query: { timezone },
+    signal
   })
 }
 
@@ -529,7 +605,8 @@ export async function uploadHarkAttachment(
   const putRes = await ses.fetch(uploadUrl, {
     method: 'PUT',
     headers: { 'Content-Type': String(presign?.['content_type'] ?? contentType) },
-    body: new Uint8Array(bytes)
+    body: new Uint8Array(bytes),
+    signal: AbortSignal.timeout(HARK_REQUEST_TIMEOUT_MS)
   })
   if (!putRes.ok) {
     throw new Error(`Hark S3 upload failed (${putRes.status})`)
@@ -582,44 +659,51 @@ function extractPresignedUrl(presigned: unknown, key: string): string {
 
 export async function downloadHarkArtifact(
   accountId: string,
-  opts: { url?: string; fileId?: string; name?: string }
+  opts: { url?: string; fileId?: string; name?: string; signal?: AbortSignal; preview?: boolean }
 ): Promise<{
   dataBase64: string
   mimeType: string
   filename: string
   text?: string
 }> {
+  const timeout = opts.preview ? AbortSignal.timeout(HARK_PREVIEW_TIMEOUT_MS) : undefined
+  const signal = timeout && opts.signal ? AbortSignal.any([timeout, opts.signal]) : timeout ?? opts.signal
   const ses = await preparedSessionForAccount(accountId)
-  const reference = opts.url?.trim() || opts.fileId?.replace(/^(harkatt|harkfile):\/\//i, '').trim() || ''
+  signal?.throwIfAborted()
+  const preview = opts.preview ? harkScreenshotReference(opts.fileId, opts.url) : undefined
+  const fileId = preview ? preview.screenshotKey : opts.fileId
+  const reference = (preview ? preview.screenshotUrl : opts.url)?.trim() || fileId?.replace(/^(harkatt|harkfile):\/\//i, '').trim() || ''
   let targetUrl = reference.startsWith('/') ? new URL(reference, HARK_ORIGIN).toString() : reference
   if (!/^https?:\/\//i.test(targetUrl)) targetUrl = ''
 
-  if (!targetUrl && opts.fileId) {
-    const key = opts.fileId.replace(/^(harkatt|harkfile):\/\//i, '').trim()
+  if (!targetUrl && fileId) {
+    const key = fileId.replace(/^(harkatt|harkfile):\/\//i, '').trim()
     if (!/^https?:\/\//i.test(key)) {
       for (const endpoint of ['/images/presign', '/files/presign']) {
         if (targetUrl) break
         try {
           const presigned = await harkFetch(ses, endpoint, {
             method: 'POST',
-            body: { keys: [key] }
+            body: { keys: [key] },
+            signal
           })
           const resolved = extractPresignedUrl(presigned, key)
           if (resolved) targetUrl = resolved
         } catch {
-          /* try next presign endpoint */
+          signal?.throwIfAborted()
         }
       }
       if (!targetUrl) {
         try {
           const presigned = await harkFetch(ses, '/files/download', {
             method: 'GET',
-            query: { key }
+            query: { key },
+            signal
           })
           const resolved = extractPresignedUrl(presigned, key)
           if (resolved) targetUrl = resolved
         } catch {
-          /* fall through */
+          signal?.throwIfAborted()
         }
       }
     }
@@ -629,12 +713,12 @@ export async function downloadHarkArtifact(
     throw new Error('Hark artifact URL or S3 key could not be resolved')
   }
 
-  const res = await ses.fetch(targetUrl)
+  const res = signal ? await ses.fetch(targetUrl, { signal }) : await ses.fetch(targetUrl)
   if (!res.ok) {
+    await res.body?.cancel().catch(() => undefined)
     throw new Error(`Hark artifact download failed (${res.status})`)
   }
-  const ab = await res.arrayBuffer()
-  const buf = Buffer.from(ab)
+  const buf = opts.preview ? await readHarkPreview(res, signal!) : Buffer.from(await res.arrayBuffer())
   const filename = opts.name || targetUrl.split('?')[0]?.split('/').pop() || 'artifact'
   const contentType = inferMediaMime({
     headerMime: res.headers.get('content-type') ?? undefined,
@@ -643,12 +727,40 @@ export async function downloadHarkArtifact(
   })
   const isText = /^(text\/|application\/(json|javascript|xml|x-yaml|csv|sql))/i.test(contentType) ||
     /\.(md|markdown|txt|json|csv|html|htm|py|ts|tsx|js|sh|yaml|yml|sql)$/i.test(filename)
+  if (opts.preview && (!buf.length || !contentType.startsWith('image/'))) throw new Error('Hark screenshot unavailable')
 
   return {
     dataBase64: buf.toString('base64'),
     mimeType: contentType,
     filename,
     ...(isText ? { text: buf.toString('utf8') } : {})
+  }
+}
+
+async function readHarkPreview(response: Response, signal: AbortSignal): Promise<Buffer> {
+  const reader = response.body?.getReader()
+  if (!reader) return Buffer.alloc(0)
+  const cancel = () => { void reader.cancel().catch(() => undefined) }
+  signal.addEventListener('abort', cancel, { once: true })
+  try {
+    signal.throwIfAborted()
+    if (Number(response.headers.get('content-length')) > HARK_PREVIEW_MAX_BYTES) {
+      throw new Error('Hark screenshot exceeds 8 MiB')
+    }
+    const chunks: Uint8Array[] = []
+    let size = 0
+    while (true) {
+      const { done, value } = await reader.read()
+      signal.throwIfAborted()
+      if (done) return Buffer.concat(chunks, size)
+      size += value.byteLength
+      if (size > HARK_PREVIEW_MAX_BYTES) throw new Error('Hark screenshot exceeds 8 MiB')
+      chunks.push(value)
+    }
+  } finally {
+    signal.removeEventListener('abort', cancel)
+    await reader.cancel().catch(() => undefined)
+    reader.releaseLock()
   }
 }
 
@@ -774,13 +886,23 @@ export interface HarkConversationSnapshotSummary {
  */
 export class HarkConversationSyncState {
   readonly messages = new Map<string, HarkChatMessage>()
-  readonly windows = new Map<string, Record<string, unknown>>()
   readonly asks = new Map<string, Record<string, unknown>>()
   readonly order: string[] = []
+  private readonly panelsByWindow = new Map<string, Map<string | symbol, Record<string, unknown>>>()
+  historyRevision = 0
   activeActivity: string | null = null
   narration: string | null = null
   /** GOXF: Hark's narration says `working: true` while a turn runs, even before it has a line. */
   narrationWorking = false
+
+  private setWindowPanels(id: string, raw: unknown): void {
+    const panels = new Map<string | symbol, Record<string, unknown>>()
+    for (const panel of Array.isArray(raw) ? raw : []) {
+      if (!panel || typeof panel !== 'object') continue
+      panels.set(panel.dispatchId ? String(panel.dispatchId) : Symbol(), panel)
+    }
+    this.panelsByWindow.set(id, panels)
+  }
 
   applyFrame(rawFrame: string): boolean {
     let parsed: Record<string, unknown>
@@ -789,13 +911,14 @@ export class HarkConversationSyncState {
     } catch {
       return false
     }
+    if (!parsed || typeof parsed !== 'object') return false
     const type = parsed['type']
     if (type !== 'snapshot' && type !== 'patches') return false
 
     if (type === 'snapshot') {
       const data = (parsed['data'] ?? {}) as Record<string, unknown>
       this.messages.clear()
-      this.windows.clear()
+      this.panelsByWindow.clear()
       this.asks.clear()
       this.order.length = 0
       // Joining mid-run: the snapshot carries the same shapes the patches do (string or {label/type}).
@@ -806,7 +929,7 @@ export class HarkConversationSyncState {
       if (data['windows'] && typeof data['windows'] === 'object') {
         for (const [wid, wval] of Object.entries(data['windows'] as Record<string, unknown>)) {
           if (wval && typeof wval === 'object') {
-            this.windows.set(wid, wval as Record<string, unknown>)
+            this.setWindowPanels(wid, (wval as Record<string, unknown>)['panels'])
           }
         }
       }
@@ -843,12 +966,14 @@ export class HarkConversationSyncState {
           this.order.push(m.id)
         }
       }
+      this.historyRevision++
       return true
     }
 
     // type === 'patches'
     const patches = Array.isArray(parsed['data']) ? (parsed['data'] as Array<Record<string, unknown>>) : []
     let changed = false
+    let activityChanged = false
     for (const p of patches) {
       const op = String(p['op'] ?? '')
       if (op === 'entry_add' || op === 'message_add') {
@@ -857,7 +982,7 @@ export class HarkConversationSyncState {
         const val = (p['value'] ?? {}) as Record<string, unknown>
         if (!id) continue
         if (entryKind === 'window') {
-          this.windows.set(id, val)
+          this.setWindowPanels(id, val['panels'])
           changed = true
           continue
         }
@@ -872,9 +997,8 @@ export class HarkConversationSyncState {
       } else if (op === 'window_update') {
         const id = String(p['id'] ?? '')
         const fields = (p['fields'] ?? {}) as Record<string, unknown>
-        const prev = this.windows.get(id) ?? {}
-        if (id) {
-          this.windows.set(id, { ...prev, ...fields })
+        if (id && ('panels' in fields || !this.panelsByWindow.has(id))) {
+          this.setWindowPanels(id, fields['panels'])
           changed = true
         }
       } else if (op === 'ask_update') {
@@ -887,19 +1011,21 @@ export class HarkConversationSyncState {
         }
       } else if (op === 'panel_add' || op === 'panel_update') {
         const id = String(p['id'] ?? p['messageId'] ?? '')
-        const w = this.windows.get(id)
-        if (w) {
-          const panels = Array.isArray(w['panels']) ? [...(w['panels'] as Record<string, unknown>[])] : []
+        const panels = this.panelsByWindow.get(id)
+        if (panels) {
           if (op === 'panel_add' && p['value'] && typeof p['value'] === 'object') {
-            panels.push(p['value'] as Record<string, unknown>)
+            const panel = p['value'] as Record<string, unknown>
+            panels.set(panel['dispatchId'] ? String(panel['dispatchId']) : Symbol(), panel)
+            changed = true
           } else if (op === 'panel_update') {
             const did = String(p['dispatchId'] ?? '')
             const fields = (p['fields'] ?? {}) as Record<string, unknown>
-            const idx = panels.findIndex((pn) => String(pn['dispatchId'] ?? '') === did)
-            if (idx >= 0) panels[idx] = { ...panels[idx]!, ...fields }
+            const panel = panels.get(did)
+            if (panel) {
+              panels.set(did, { ...panel, ...fields })
+              changed = true
+            }
           }
-          this.windows.set(id, { ...w, panels })
-          changed = true
         }
       } else if (op === 'message_update') {
         const id = String(p['id'] ?? p['messageId'] ?? '')
@@ -911,9 +1037,7 @@ export class HarkConversationSyncState {
             (typeof fields['content'] === 'string' && fields['content']) ||
             (typeof fields['text'] === 'string' && fields['text']) ||
             (fields['presentation'] ? patched.content : undefined)
-          const terminalJob =
-            typeof fields['jobStatus'] === 'string' &&
-            /^(completed|cancelled|failed|interrupted|cost_capped)$/i.test(fields['jobStatus'])
+          const terminalJob = harkJobOutcome(fields['jobStatus'])
           const nextStreaming =
             typeof fields['isStreaming'] === 'boolean'
               ? fields['isStreaming']
@@ -948,7 +1072,8 @@ export class HarkConversationSyncState {
             delete updated.narration
           }
           this.messages.set(id, updated)
-          changed = true
+          if (Object.keys(fields).some((key) => key !== 'narration' && key !== 'thought')) changed = true
+          else activityChanged = true
         } else if (id) {
           this.messages.set(id, normalizeSyncMessage(id, fields))
           if (!this.order.includes(id)) this.order.push(id)
@@ -1035,20 +1160,21 @@ export class HarkConversationSyncState {
       } else if (op === 'narration_update') {
         this.narration = harkActivityLabel(p['value'])
         this.narrationWorking = harkNarrationWorking(p['value'], Boolean(this.narration) || this.narrationWorking)
-        changed = true
+        activityChanged = true
       } else if (op === 'active_activity_set') {
         this.activeActivity = harkActivityLabel(p['value'])
-        changed = true
+        activityChanged = true
       } else if (/narration/i.test(op)) {
         // GOXF: tolerate renamed ops (narration_set / narration_clear …).
         this.narration = /clear|remove|delete/i.test(op) ? null : harkActivityLabel(p['value'] ?? p['text'])
-        changed = true
+        activityChanged = true
       } else if (/activ(e_)?ity/i.test(op)) {
         this.activeActivity = /clear|remove|delete/i.test(op) ? null : harkActivityLabel(p['value'] ?? p['text'])
-        changed = true
+        activityChanged = true
       }
     }
-    return changed
+    if (changed) this.historyRevision++
+    return changed || activityChanged
   }
 
   /** GOXF: what Hark's web app shows under the chat while it works ("正在使用我的电脑"). */
@@ -1087,12 +1213,12 @@ export class HarkConversationSyncState {
   }
 
   extractPanels(): HarkActivityPanel[] {
-    const out: HarkActivityPanel[] = []
+    const out = new Map<string, HarkActivityPanel>()
     const pushPanel = (raw: Record<string, unknown>) => {
-      const dispatchId = String(raw['dispatchId'] ?? raw['id'] ?? `panel_${out.length}`)
-      if (out.some((x) => x.dispatchId === dispatchId)) return
+      const dispatchId = String(raw['dispatchId'] ?? raw['id'] ?? `panel_${out.size}`)
+      if (out.has(dispatchId)) return
       const screenshot = (raw['screenshot'] ?? {}) as Record<string, unknown>
-      out.push({
+      out.set(dispatchId, {
         dispatchId,
         kind: String(raw['kind'] ?? raw['type'] ?? 'browser'),
         status: String(raw['status'] ?? 'active'),
@@ -1100,18 +1226,17 @@ export class HarkConversationSyncState {
         url: String(raw['url'] ?? '') || undefined,
         liveViewUrl: String(raw['liveViewUrl'] ?? '') || undefined,
         screenshotKey: String(screenshot['key'] ?? raw['screenshotKey'] ?? '') || undefined,
-        screenshotUrl: String(screenshot['downloadUrl'] ?? raw['previewUrl'] ?? '') || undefined,
+        screenshotUrl: String(screenshot['downloadUrl'] ?? raw['screenshotUrl'] ?? raw['previewUrl'] ?? '') || undefined,
         command: String(raw['command'] ?? '') || undefined
       })
     }
-    for (const w of this.windows.values()) {
-      const panels = Array.isArray(w['panels']) ? (w['panels'] as Record<string, unknown>[]) : []
-      for (const p of panels) if (p && typeof p === 'object') pushPanel(p)
+    for (const panels of this.panelsByWindow.values()) {
+      for (const panel of panels.values()) pushPanel(panel)
     }
     for (const m of this.messages.values()) {
       for (const tc of m.toolCalls ?? []) {
         if (tc.screenshotKey || tc.screenshotUrl || tc.url || tc.command || /browser|computer|shell|coding/i.test(tc.name)) {
-          const panel = out.find((p) => p.dispatchId === tc.dispatchId)
+          const panel = out.get(tc.dispatchId)
           if (panel) {
             if (!panel.screenshotKey && !panel.screenshotUrl) {
               panel.screenshotKey = tc.screenshotKey
@@ -1119,7 +1244,7 @@ export class HarkConversationSyncState {
             }
             continue
           }
-          out.push({
+          out.set(tc.dispatchId, {
             dispatchId: tc.dispatchId,
             kind: tc.name,
             status: tc.status,
@@ -1131,7 +1256,7 @@ export class HarkConversationSyncState {
         }
       }
     }
-    return out
+    return [...out.values()]
   }
 
   extractAsks(): HarkPendingAsk[] {
@@ -1549,24 +1674,30 @@ function normalizeSyncMessage(id: string, raw: Record<string, unknown>): HarkCha
   }
 }
 
-export function isHarkReplyDone(msg: HarkChatMessage): boolean {
-  if (msg.isStreaming === true) {
-    if (msg.jobStatus && /^(completed|cancelled|failed|interrupted|cost_capped)$/i.test(msg.jobStatus)) {
-      return true
-    }
-    return false
-  }
-  const hasPayload =
+type HarkReplyOutcome = 'completed' | 'cancelled' | 'failed' | 'timed-out'
+
+function harkJobOutcome(status: unknown): Exclude<HarkReplyOutcome, 'timed-out'> | undefined {
+  if (typeof status !== 'string') return undefined
+  if (/^(completed|succeeded)$/i.test(status)) return 'completed'
+  if (/^(cancelled|canceled|interrupted)$/i.test(status)) return 'cancelled'
+  if (/^(failed|error|errored|cost_capped)$/i.test(status)) return 'failed'
+  return undefined
+}
+
+function harkReplyOutcome(msg: HarkChatMessage): ReturnType<typeof harkJobOutcome> {
+  if (msg.jobStatus) return harkJobOutcome(msg.jobStatus)
+  if (msg.isStreaming === true) return undefined
+  if (msg.error) return 'failed'
+  if (
     Boolean(msg.content.trim()) ||
-    Boolean(msg.actions && msg.actions.length > 0) ||
-    Boolean(msg.artifacts && msg.artifacts.length > 0) ||
-    Boolean(msg.error) ||
+    Boolean(msg.actions?.length) ||
+    Boolean(msg.artifacts?.length) ||
     Boolean(
-      msg.toolCalls &&
-        msg.toolCalls.length > 0 &&
-        msg.toolCalls.every((tc) => !/^(running|pending|active|started|waiting_for_input|awaiting_input)$/i.test(tc.status))
+      msg.toolCalls?.length &&
+      msg.toolCalls.every((tc) => !/^(running|pending|active|started|waiting_for_input|awaiting_input)$/i.test(tc.status))
     )
-  return hasPayload
+  ) return 'completed'
+  return undefined
 }
 
 /** GOXF: whether Hark's narration object says a turn is still working (string forms keep `fallback`). */
@@ -1614,41 +1745,67 @@ export function harkActivityLabel(v: unknown): string | null {
   return typeof s === 'string' && s ? s : null
 }
 
+const HARK_STREAM_IDLE_MS = 15_000
+
 export async function readHarkStream(
   ses: Session, conversationId: string, manager: string, dial: string, signal: AbortSignal,
-  onFrame: (data: string) => void
+  onFrame: (data: string) => void,
+  idleMs = HARK_STREAM_IDLE_MS,
+  keepAliveOnHeartbeat = false
 ): Promise<void> {
+  const idle = new AbortController()
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const resetIdle = () => {
+    clearTimeout(timer)
+    timer = setTimeout(() => idle.abort(), idleMs)
+  }
+  const streamSignal = AbortSignal.any([signal, idle.signal])
   const url = new URL(HARK_API_BASE + '/sync/conversation')
   url.search = new URLSearchParams({ conversationId, manager, dial, v: '2', mode: 'in_tab', ids: '1', beat: '5' }).toString()
-  const response = await ses.fetch(url.toString(), { credentials: 'include', signal, headers: harkClientHeaders({
-    Accept: 'text/event-stream', 'Cache-Control': 'no-cache'
-  }) })
-  if (!response.ok || !response.body || !response.headers.get('content-type')?.includes('text/event-stream')) {
-    throw new Error('Hark project stream unavailable')
-  }
-  const reader = response.body.getReader()
+  let reader: ReadableStreamDefaultReader<Uint8Array> | undefined
+  const cancel = () => { void reader?.cancel().catch(() => undefined) }
+  streamSignal.addEventListener('abort', cancel, { once: true })
+  resetIdle()
   const decoder = new TextDecoder()
   let buffer = ''
   let eventType = 'message'
   let lines: string[] = []
   try {
-    while (!signal.aborted) {
+    streamSignal.throwIfAborted()
+    const response = await ses.fetch(url.toString(), { credentials: 'include', signal: streamSignal, headers: harkClientHeaders({
+      Accept: 'text/event-stream', 'Cache-Control': 'no-cache'
+    }) })
+    reader = response.body?.getReader()
+    if (!response.ok || !reader || !response.headers.get('content-type')?.includes('text/event-stream')) {
+      throw new Error('Hark project stream unavailable')
+    }
+    while (!streamSignal.aborted) {
       const { done, value } = await reader.read()
       if (done) break
+      if (keepAliveOnHeartbeat) resetIdle()
       buffer += decoder.decode(value, { stream: true })
       let newline: number
-      while (!signal.aborted && (newline = buffer.indexOf('\n')) >= 0) {
+      while (!streamSignal.aborted && (newline = buffer.indexOf('\n')) >= 0) {
         const line = buffer.slice(0, newline).replace(/\r$/, '')
         buffer = buffer.slice(newline + 1)
         if (!line) {
-          if (eventType === 'message' && lines.length) onFrame(lines.join('\n'))
+          if (eventType === 'message' && lines.length) {
+            resetIdle()
+            onFrame(lines.join('\n'))
+          }
           eventType = 'message'
           lines = []
         } else if (line.startsWith('event:')) eventType = line.slice(6).trim()
         else if (line.startsWith('data:')) lines.push(line.slice(5).trimStart())
       }
     }
-  } finally { reader.releaseLock() }
+    streamSignal.throwIfAborted()
+  } finally {
+    clearTimeout(timer)
+    streamSignal.removeEventListener('abort', cancel)
+    await reader?.cancel().catch(() => undefined)
+    reader?.releaseLock()
+  }
 }
 
 const activeHarkWatches = new HarkWatchRegistry()
@@ -1658,7 +1815,7 @@ export function registerHarkViewStop(accountId: string, stop: () => void): () =>
   return () => activeHarkWatches.remove(accountId, token)
 }
 
-/** Stop every reply watch of the account (stop-tool, pause, sign-out). */
+/** Stop reply watches on pause or sign-out. */
 export function cancelHarkWatch(accountId: string, conversationId?: string): void {
   if (conversationId) activeHarkWatches.cancelConversation(accountId, conversationId)
   else activeHarkWatches.cancelAll(accountId)
@@ -1675,7 +1832,9 @@ export async function watchHarkConversationSync(
     responseMessageId?: string
     afterMessageIds?: Set<string>
     timeoutMs?: number
-    onUpdate?: (msg: HarkChatMessage, state: HarkConversationSyncState) => void
+    idleTimeoutMs?: number
+    signal?: AbortSignal
+    onUpdate?: (msg: HarkChatMessage, state: HarkConversationSyncState, done: boolean) => void
     /**
      * GOXF: when set, return as soon as the reply is done but keep the stream
      * open while Hark's turn stays busy; called on every change and once with
@@ -1683,34 +1842,36 @@ export async function watchHarkConversationSync(
      */
     onTail?: (state: HarkConversationSyncState, ended: boolean) => void
   } = {}
-): Promise<{ reply: HarkChatMessage | null; messages: HarkChatMessage[]; tailing: boolean }> {
-  const ses = await preparedSessionForAccount(accountId)
+): Promise<{ outcome: HarkReplyOutcome; reply: HarkChatMessage | null; error?: string; tailing: boolean }> {
   const managerId = randomUUID()
-  const timeoutMs = opts.timeoutMs ?? 90_000
-  let deadline = Date.now() + timeoutMs
+  const timeout = new AbortController()
+  let timer = setTimeout(() => timeout.abort(), opts.timeoutMs ?? 90_000)
   const ac = new AbortController()
-  let timer = setTimeout(() => ac.abort(), timeoutMs)
+  const signal = AbortSignal.any([ac.signal, timeout.signal, ...(opts.signal ? [opts.signal] : [])])
   const syncState = new HarkConversationSyncState()
   const afterIds = opts.afterMessageIds ?? new Set<string>()
-  let lastReply: HarkChatMessage | null = null
-  let finished = false
+  let targetId = opts.responseMessageId
+  let lastText = ''
+  let usingPoll = false
+  const result: { outcome?: HarkReplyOutcome; reply: HarkChatMessage | null; error?: string } = { reply: null }
   let tailing = false
   let lastBusyAt = 0
   let tick: ReturnType<typeof setInterval> | undefined
   let replyDone: () => void = () => {}
   const replyDonePromise = new Promise<void>((resolve) => (replyDone = resolve))
-
-  // Do not cancel an earlier send's watch: that cut its reply short.
-  const abortWatch = () => {
-    finished = true
-    ac.abort()
+  const tailCheck = (): void => {
+    if (harkTurnBusy(syncState, afterIds)) lastBusyAt = Date.now()
+    if (Date.now() - lastBusyAt > HARK_TAIL_IDLE_MS) ac.abort()
+    else opts.onTail?.(syncState, false)
   }
-  const watchToken = activeHarkWatches.add(accountId, abortWatch, opts.responseMessageId, conversationId)
+
+  const watchToken = activeHarkWatches.add(accountId, () => ac.abort(), targetId, conversationId)
 
   const hasPayloadOrActivity = (m?: HarkChatMessage): m is HarkChatMessage =>
     Boolean(
       m &&
-        (m.content.trim() ||
+        (m.jobStatus ||
+          m.content.trim() ||
           m.isStreaming ||
           m.thought ||
           m.narration ||
@@ -1720,157 +1881,135 @@ export async function watchHarkConversationSync(
           m.error)
     )
 
-  const checkState = (): boolean => {
-    if (finished) return true
-    if (tailing) {
-      const now = Date.now()
-      if (harkTurnBusy(syncState, afterIds)) lastBusyAt = now
-      if (now - lastBusyAt > HARK_TAIL_IDLE_MS) {
-        finished = true
-        ac.abort()
-        return true
+  const onFrame = (frame: string): void => {
+    if (signal.aborted || !syncState.applyFrame(frame)) return
+    if (tailing) return tailCheck()
+    if (targetId === undefined) {
+      const claimed = activeHarkWatches.claimedByOthers(accountId, watchToken)
+      const id = syncState.order.findLast((id) => {
+        const message = syncState.messages.get(id)
+        return !afterIds.has(id) && !claimed.has(id) && hasPayloadOrActivity(message) &&
+          /^(assistant|bot|hark)$/i.test(message.role)
+      })
+      if (id) {
+        targetId = id
+        activeHarkWatches.claim(accountId, watchToken, id)
       }
-      opts.onTail?.(syncState, false)
-      return false
     }
-    const all = syncState.orderedMessages()
-    const target = opts.responseMessageId ? syncState.messages.get(opts.responseMessageId) : undefined
-    const claimed = activeHarkWatches.claimedByOthers(accountId, watchToken)
-    const candidate =
-      (hasPayloadOrActivity(target) ? target : undefined) ??
-      [...all]
-        .reverse()
-        .find(
-          (m) =>
-            /assistant|bot|hark/i.test(m.role) &&
-            !afterIds.has(m.id) &&
-            !claimed.has(m.id) &&
-            hasPayloadOrActivity(m)
-        )
-
-    if (candidate) {
-      lastReply = candidate
-      opts.onUpdate?.(candidate, syncState)
-      if (isHarkReplyDone(candidate)) {
-        if (opts.onTail) {
-          tailing = true
-          lastBusyAt = Date.now()
-          deadline = Date.now() + HARK_TAIL_CAP_MS
-          clearTimeout(timer)
-          timer = setTimeout(() => ac.abort(), HARK_TAIL_CAP_MS)
-          tick = setInterval(checkState, 5_000)
-          activeHarkWatches.markTaken(accountId, candidate.id)
-          replyDone()
-          return false
+    const candidate = targetId === undefined ? undefined : syncState.messages.get(targetId)
+    if (hasPayloadOrActivity(candidate) && /^(assistant|bot|hark)$/i.test(candidate.role)) {
+      const outcome = harkReplyOutcome(candidate)
+      if (outcome) {
+        result.outcome = outcome
+        if (outcome === 'completed') {
+          result.reply = candidate
+          opts.onUpdate?.(candidate, syncState, true)
+          if (opts.onTail) {
+            // GOXF: the reply is done; keep watching while Hark's turn stays busy.
+            tailing = true
+            lastBusyAt = Date.now()
+            clearTimeout(timer)
+            timer = setTimeout(() => timeout.abort(), HARK_TAIL_CAP_MS)
+            tick = setInterval(tailCheck, 5_000)
+            activeHarkWatches.markTaken(accountId, candidate.id)
+            replyDone()
+            return
+          }
+        } else {
+          result.error = candidate.error ?? candidate.jobStatus
         }
-        finished = true
         ac.abort()
-        return true
+        return
       }
+      // A first poll snapshot can lag behind the last SSE patch.
+      if (usingPoll && candidate.content.length < lastText.length && lastText.startsWith(candidate.content)) {
+        opts.onUpdate?.({ ...candidate, content: lastText }, syncState, false)
+        return
+      }
+      lastText = candidate.content
+      opts.onUpdate?.(candidate, syncState, false)
     } else if (syncState.narration || syncState.activeActivity) {
-      const dummyId = opts.responseMessageId || 'hark_thinking'
       opts.onUpdate?.(
-        {
-          id: dummyId,
-          role: 'assistant',
-          content: '',
-          isStreaming: true
-        },
-        syncState
+        { id: targetId ?? 'hark_thinking', role: 'assistant', content: '', isStreaming: true },
+        syncState,
+        false
       )
     }
-    return false
   }
 
-  const runPollLoop = async (): Promise<void> => {
+  const runPollLoop = async (ses: Session): Promise<void> => {
     let cursor: string | undefined
     let floor: string | undefined
     let first = true
     const pollMgr = randomUUID()
-    while (Date.now() < deadline && !ac.signal.aborted && !finished) {
+    while (!signal.aborted) {
       try {
-        const pollRes = (await harkFetch(ses, '/sync/poll', {
-          method: 'GET',
-          query: {
-            conversationId,
-            v: '2',
-            manager: pollMgr,
-            mode: 'in_tab',
-            dial: 'initial',
-            ...(first ? { first: '1' } : {}),
-            ...(cursor ? { cursor } : {}),
-            ...(floor ? { floor } : {})
-          },
-          signal: ac.signal
-        })) as { frames?: string[]; cursor?: string; floor?: string } | null
+        const pollRes = await pollHarkConversation(ses, conversationId, pollMgr, { first, cursor, floor, signal })
         if (pollRes && Array.isArray(pollRes.frames)) {
           first = false
           if (pollRes.cursor) cursor = pollRes.cursor
           if (pollRes.floor) floor = pollRes.floor
           for (const frame of pollRes.frames) {
-            if (syncState.applyFrame(frame) && checkState()) {
-              return
-            }
+            onFrame(frame)
+            if (signal.aborted) return
           }
         }
       } catch {
         /* ignore transient poll error */
       }
-      if (finished || ac.signal.aborted) return
-      // While tailing the SSE stream carries the updates; the poll is only a slow fallback.
-      await new Promise((r) => setTimeout(r, tailing ? 5000 : 1200))
+      // While tailing, the poll is only a slow fallback.
+      if (!signal.aborted) await delay(tailing ? 5000 : 1200, undefined, { signal })
     }
   }
 
-  const runSseStream = async (): Promise<void> => {
-    let dialMode = 'initial'
-    while (Date.now() < deadline && !ac.signal.aborted && !finished) {
+  const loops = (async () => {
+    try {
+      signal.throwIfAborted()
+      const ses = await preparedSessionForAccount(accountId)
       try {
-        const dial = dialMode
-        dialMode = 'reconnect'
-        await readHarkStream(ses, conversationId, managerId, dial, ac.signal, (frame) => {
-          if (syncState.applyFrame(frame)) checkState()
-        })
+        await readHarkStream(ses, conversationId, managerId, 'initial', signal, onFrame, opts.idleTimeoutMs)
       } catch {
-        /* aborted or transient disconnect — retry below if still active */
+        // The SSE reader is closed before the poller can take over the reducer.
       }
-      if (finished || ac.signal.aborted) return
-      await new Promise((r) => setTimeout(r, 1200))
+      if (!signal.aborted) {
+        usingPoll = true
+        await runPollLoop(ses)
+      }
+    } catch (error) {
+      if (!signal.aborted) throw error
+    } finally {
+      clearTimeout(timer)
+      clearInterval(tick)
+      ac.abort()
+      if (result.reply) activeHarkWatches.markTaken(accountId, result.reply.id)
+      activeHarkWatches.remove(accountId, watchToken)
+      if (tailing) opts.onTail?.(syncState, true)
     }
-  }
-
-  const loops = Promise.race([runSseStream(), runPollLoop()]).finally(() => {
-    finished = true
-    ac.abort()
-    clearTimeout(timer)
-    clearInterval(tick)
-    const done = lastReply as HarkChatMessage | null
-    if (done?.id) activeHarkWatches.markTaken(accountId, done.id)
-    activeHarkWatches.remove(accountId, watchToken)
-    if (tailing) opts.onTail?.(syncState, true)
-  })
+  })()
+  loops.catch(() => undefined) // a failure after the reply was returned has nobody to report to
   await Promise.race([loops, replyDonePromise])
 
-  // `tailing`: the reply is done but Hark's turn is still busy; the watch goes on in the background.
-  return { reply: lastReply, messages: syncState.orderedMessages(), tailing: tailing && !finished && harkTurnBusy(syncState, afterIds) }
+  return {
+    ...result,
+    outcome: result.outcome ?? (timeout.signal.aborted ? 'timed-out' : 'cancelled'),
+    // `tailing`: the reply is done but Hark's turn is still busy; the watch goes on in the background.
+    tailing: tailing && !signal.aborted && harkTurnBusy(syncState, afterIds)
+  }
 }
 
-export function conversationIdFromPayload(payload: unknown): string | undefined {
+export function conversationIdFromPayload(payload: unknown, allowMain = true): string | undefined {
   if (!payload || typeof payload !== 'object') return undefined
   const root = payload as Record<string, unknown>
-  for (const key of ['id', 'conversationId', 'conversation_id'] as const) {
-    const v = root[key]
-    if (typeof v === 'string' && v) return v
-  }
   const conv = root['conversation']
-  if (conv && typeof conv === 'object') {
-    const id = (conv as { id?: unknown }).id
-    if (typeof id === 'string' && id) return id
+  if (!allowMain && (Object.hasOwn(root, 'conversationId') || Object.hasOwn(root, 'conversation_id') || Object.hasOwn(root, 'conversation'))) {
+    return harkProjectId(root['conversationId'] ?? root['conversation_id'] ?? (conv as { id?: unknown } | undefined)?.id)
   }
+  const projectId = harkProjectId(root['conversationId']) ?? harkProjectId(root['conversation_id']) ??
+    harkProjectId((conv as { id?: unknown } | undefined)?.id) ?? harkProjectId(root['id'])
+  if (projectId) return projectId
   const main = root['main']
-  if (main && typeof main === 'object') {
-    const id = (main as { id?: unknown }).id
-    if (typeof id === 'string' && id) return id
+  if (allowMain && main && typeof main === 'object') {
+    return harkProjectId((main as { id?: unknown }).id)
   }
   return undefined
 }

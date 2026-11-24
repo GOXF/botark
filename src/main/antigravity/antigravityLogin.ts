@@ -28,6 +28,7 @@ import {
 } from './antigravityProtocol'
 
 const loginWindows = new Map<string, BrowserWindow>()
+const loginAttempts = new Map<string, symbol>()
 
 export type AntigravityLoginSuccess = {
   accountId: string
@@ -80,7 +81,17 @@ export async function openAntigravityLoginWindow(accountId: string, parent?: Bro
     return
   }
 
-  await applyProxyToPartition(accountId)
+  const attempt = Symbol()
+  loginAttempts.set(accountId, attempt)
+  const ownsAttempt = () => loginAttempts.get(accountId) === attempt
+  const finishAttempt = () => { if (ownsAttempt()) loginAttempts.delete(accountId) }
+  try {
+    await applyProxyToPartition(accountId)
+  } catch (error) {
+    finishAttempt()
+    throw error
+  }
+  if (!ownsAttempt()) return
 
   const partition = partitionForAccount(accountId)
   const ses = electronSession.fromPartition(partition)
@@ -90,8 +101,11 @@ export async function openAntigravityLoginWindow(accountId: string, parent?: Bro
 
   // Already signed in on this partition?
   const already = await probeAntigravitySession(accountId)
+  if (!ownsAttempt()) return
   if (already.signedIn) {
     const cookieNames = await listAntigravityCookieNames(accountId)
+    if (!ownsAttempt()) return
+    finishAttempt()
     emit({
       accountId,
       signedIn: true,
@@ -206,13 +220,14 @@ export async function openAntigravityLoginWindow(accountId: string, parent?: Bro
   let checking = false
 
   const finishIfSignedIn = async (): Promise<void> => {
-    if (settling || checking || win.isDestroyed()) return
+    if (settling || checking || win.isDestroyed() || !ownsAttempt()) return
     checking = true
     try {
       const probe = await probeAntigravitySession(accountId)
-      if (!probe.signedIn || settling || win.isDestroyed()) return
-      settling = true
+      if (!probe.signedIn || settling || win.isDestroyed() || !ownsAttempt()) return
       const cookieNames = await listAntigravityCookieNames(accountId)
+      if (settling || win.isDestroyed() || !ownsAttempt()) return
+      settling = true
       emit({
         accountId,
         signedIn: true,
@@ -227,6 +242,7 @@ export async function openAntigravityLoginWindow(accountId: string, parent?: Bro
       } catch {
         /* ignore */
       }
+      finishAttempt()
     } finally {
       checking = false
     }
@@ -316,11 +332,14 @@ export async function openAntigravityLoginWindow(accountId: string, parent?: Bro
     closeChildPopups()
     const wasTracked = loginWindows.get(accountId) === win
     if (wasTracked) loginWindows.delete(accountId)
-    if (!wasTracked || settling) return
+    if (!wasTracked || settling || !ownsAttempt()) return
     void (async () => {
       const probe = await probeAntigravitySession(accountId)
+      if (!ownsAttempt()) return
       if (probe.signedIn) {
         const cookieNames = await listAntigravityCookieNames(accountId)
+        if (!ownsAttempt()) return
+        finishAttempt()
         emit({
           accountId,
           signedIn: true,
@@ -331,6 +350,7 @@ export async function openAntigravityLoginWindow(accountId: string, parent?: Bro
         })
         return
       }
+      finishAttempt()
       emit({ accountId, signedIn: false, windowClosed: true })
     })()
   })
@@ -346,6 +366,7 @@ export async function openAntigravityLoginWindow(accountId: string, parent?: Bro
 }
 
 export function closeAntigravityLoginWindow(accountId: string): void {
+  loginAttempts.delete(accountId)
   const win = loginWindows.get(accountId)
   loginWindows.delete(accountId)
   if (win && !win.isDestroyed()) win.destroy()

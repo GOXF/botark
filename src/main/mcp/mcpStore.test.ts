@@ -28,6 +28,7 @@ vi.mock('electron', () => ({
 import {
   getMcpRegistryPath,
   loadMcpRegistry,
+  removePersistedScope,
   removePersistedServer,
   savePersistedServer,
   saveScopeDirectory
@@ -42,6 +43,20 @@ describe('mcpStore', () => {
     await mkdir(state.userDataDir, { recursive: true })
     state.encryptionAvailable = true
     state.decryptShouldFail = false
+  })
+
+  it('deletes just the requested room scope while retaining shared directory trust', async () => {
+    for (const scopeId of ['deleted-room', 'other-room']) {
+      await saveScopeDirectory({ scopeId, directory: tmpRoot })
+    }
+    await savePersistedServer({
+      scopeId: 'deleted-room', targetScope: 'scope', source: 'manual',
+      server: { name: 'room-only', transport: 'stdio', command: 'fixture', enabled: true, needsConfig: false, unresolvedVars: [] }
+    })
+    expect(await removePersistedScope('deleted-room')).toBe(0)
+    const registry = await loadMcpRegistry()
+    expect(registry.scopes.has('deleted-room')).toBe(false)
+    expect(registry.scopes.get('other-room')).toMatchObject({ trusted: true, directory: tmpRoot })
   })
 
   afterEach(async () => {

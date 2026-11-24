@@ -9,5 +9,7 @@ it('connects to the local DS Bot endpoint with the selected scope and client tok
 })
 it('rejects an empty client token or invalid local port before saving', () => {
   expect(() => dsBotServer(8797, '', 'global')).toThrow()
+  expect(() => dsBotServer(8797, 'fixture\u0000token', 'global')).toThrow()
+  expect(() => dsBotServer(8797, 'fixture\r\ntoken', 'global')).toThrow()
   expect(() => dsBotServer(65536, 'fixture', 'global')).toThrow()
 })

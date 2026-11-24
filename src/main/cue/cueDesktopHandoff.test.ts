@@ -1,20 +1,25 @@
 ﻿import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-const persistCueTokens = vi.fn(async (accountId: string, tokens: Record<string, unknown>) => ({
+const persistCueTokens = vi.fn(async (accountId: string, tokens: Record<string, unknown>, opts?: { shouldSave: () => boolean }) => ({
   accountId,
   handle: tokens['handle'],
   displayName: tokens['displayName'],
-  accountSlot: tokens['accountSlot']
+  accountSlot: tokens['accountSlot'],
+  ...(opts?.shouldSave() === false ? { accountId: '' } : {})
 }))
 const openExternal = vi.fn(async (_url: string) => undefined)
+const isDefaultProtocolClient = vi.fn(() => true)
+const setAsDefaultProtocolClient = vi.fn(() => false)
+const credentialRevision = Symbol()
 
 vi.mock('electron', () => ({
-  app: { isDefaultProtocolClient: () => true, setAsDefaultProtocolClient: vi.fn() },
+  app: { isDefaultProtocolClient: () => isDefaultProtocolClient(), setAsDefaultProtocolClient: () => setAsDefaultProtocolClient() },
   shell: { openExternal: (url: string) => openExternal(url) }
 }))
 vi.mock('./cueAuth', () => ({
   decodeJwtClaims: () => ({ handle: 'me@example.com', displayName: 'me' }),
-  persistCueTokens: (accountId: string, tokens: Record<string, unknown>) => persistCueTokens(accountId, tokens)
+  getCueCredentialRevision: () => credentialRevision,
+  persistCueTokens: (...args: Parameters<typeof persistCueTokens>) => persistCueTokens(...args)
 }))
 
 const mod = await import('./cueDesktopHandoff')
@@ -69,7 +74,8 @@ describe('Cue system-browser login hand-off', () => {
           { name: 'cue_session_id', value: 'jwt.token.value', domain: '.cue.im', path: '/' },
           { name: 'session_id', value: 'jwt.token.value', domain: '.manus.im', path: '/' }
         ]
-      })
+      }),
+      expect.objectContaining({ shouldSave: expect.any(Function) })
     )
     expect(events).toEqual([expect.objectContaining({ accountId: 'acc_cue_1', signedIn: true, handle: 'me@example.com' })])
     // A nonce works once only.
@@ -81,5 +87,32 @@ describe('Cue system-browser login hand-off', () => {
     const old = mod.issueCueLoginNonce('acc_old', 0)
     expect(mod.consumeCueLoginNonce(old, 31 * 60 * 1000)).toBeNull()
     expect(persistCueTokens).not.toHaveBeenCalled()
+  })
+
+  it('reports protocol registration failure before opening the browser and revokes failed launches', async () => {
+    isDefaultProtocolClient.mockReturnValueOnce(false)
+    await expect(mod.startCueBrowserLogin('launch-fixture')).rejects.toThrow('无法注册')
+    expect(openExternal).not.toHaveBeenCalled()
+
+    openExternal.mockRejectedValueOnce(new Error('Cannot launch browser'))
+    await expect(mod.startCueBrowserLogin('launch-fixture')).rejects.toThrow('Cannot launch browser')
+    const nonce = new URL(openExternal.mock.calls[0]![0]).searchParams.get('nonce')!
+    expect(await mod.handleCueDesktopCallbackUrl(cb('cuedev', 'oauth/desktop-callback', { token: 'T', nonce }))).toBe(false)
+    expect(persistCueTokens).not.toHaveBeenCalled()
+  })
+
+  it('rechecks that the claimed nonce is active before saving credentials', async () => {
+    const nonce = mod.issueCueLoginNonce('cancel-fixture')
+    let commit!: () => void
+    persistCueTokens.mockImplementationOnce((accountId, _tokens, opts) => new Promise((resolve, reject) => {
+      commit = () => {
+        if (opts?.shouldSave()) resolve({ accountId, handle: undefined, displayName: undefined, accountSlot: undefined })
+        else reject(new Error('Revoked'))
+      }
+    }))
+    const result = mod.handleCueDesktopCallbackUrl(cb('cuedev', 'oauth/desktop-callback', { nonce, token: 'T' }))
+    mod.revokeCueLoginNonce('cancel-fixture')
+    commit()
+    expect(await result).toBe(false)
   })
 })

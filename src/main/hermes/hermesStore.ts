@@ -15,6 +15,8 @@ import { readJsonFile, writeJsonAtomic } from '../jsonFile'
 
 const STORE_FILE = 'hermes-accounts.json'
 const withStoreLock = createMutex()
+const accountRevisions = new Map<string, symbol>()
+let defaultRevision = Symbol()
 
 export interface StoredHermesAccountRecord {
   baseUrl: string
@@ -128,12 +130,12 @@ function decryptApiKey(encBase64: string): string | undefined {
   return safeStorage.decryptString(Buffer.from(encBase64, 'base64'))
 }
 
-function resolveRecord(accountId: string, rec: StoredHermesAccountRecord): ResolvedHermesAccount {
-  const apiKey = rec.apiKeyEnc ? decryptApiKey(rec.apiKeyEnc) : undefined
+type HermesAccountMetadata = Omit<ResolvedHermesAccount, 'apiKey'>
+
+function accountMetadata(accountId: string, rec: StoredHermesAccountRecord): HermesAccountMetadata {
   return {
     accountId,
     baseUrl: rec.baseUrl,
-    apiKey,
     hasApiKey: Boolean(rec.apiKeyEnc),
     displayName: rec.displayName,
     model: rec.model,
@@ -146,24 +148,26 @@ export function getHermesAccount(accountId: string): ResolvedHermesAccount | nul
   if (!id) return null
   const rec = readRawStore()[id]
   if (!rec?.baseUrl) return null
-  return resolveRecord(id, rec)
+  return { ...accountMetadata(id, rec), apiKey: rec.apiKeyEnc ? decryptApiKey(rec.apiKeyEnc) : undefined }
 }
 
-export function listHermesAccountRecords(): Array<Omit<ResolvedHermesAccount, 'apiKey'>> {
-  const store = readRawStore()
-  const out: Array<Omit<ResolvedHermesAccount, 'apiKey'>> = []
-  for (const [accountId, rec] of Object.entries(store)) {
-    if (!rec?.baseUrl) continue
-    out.push({
-      accountId,
-      baseUrl: rec.baseUrl,
-      hasApiKey: Boolean(rec.apiKeyEnc),
-      displayName: rec.displayName,
-      model: rec.model,
-      updatedAtMs: rec.updatedAtMs
-    })
-  }
-  return out
+export function getHermesAccountMetadata(accountId: string): HermesAccountMetadata | null {
+  const rec = readRawStore()[accountId]
+  return rec?.baseUrl ? accountMetadata(accountId, rec) : null
+}
+
+export function listHermesAccountRecords(): HermesAccountMetadata[] {
+  return Object.entries(readRawStore())
+    .filter(([, rec]) => rec?.baseUrl)
+    .map(([accountId, rec]) => accountMetadata(accountId, rec))
+}
+
+export function getHermesAccountRevision(accountId: string): symbol {
+  return accountRevisions.get(accountId) ?? defaultRevision
+}
+
+export function sameHermesOrigin(first: string, second: string): boolean {
+  return new URL(first).origin === new URL(second).origin
 }
 
 export async function saveHermesAccount(args: {
@@ -171,20 +175,24 @@ export async function saveHermesAccount(args: {
   baseUrl: string
   apiKey?: string
   keepExistingKey?: boolean
+  expectedRevision: symbol
   displayName?: string
   model?: string
-}): Promise<ResolvedHermesAccount> {
+}): Promise<HermesAccountMetadata> {
   const id = (args.accountId ?? '').trim()
   if (!id) throw new Error('accountId required')
   const normalizedUrl = normalizeHermesBaseUrl(args.baseUrl)
   return withStoreLock(async () => {
+    if (args.expectedRevision !== getHermesAccountRevision(id)) {
+      throw new Error('验证期间 Hermes 账号配置已更改，请重试')
+    }
     const store = readRawStore()
     const prev = store[id]
     let apiKeyEnc: string | undefined
     const trimmedKey = typeof args.apiKey === 'string' ? args.apiKey.trim() : ''
     if (trimmedKey) {
       apiKeyEnc = encryptApiKey(trimmedKey)
-    } else if (args.keepExistingKey && prev?.apiKeyEnc) {
+    } else if (args.keepExistingKey && prev?.apiKeyEnc && sameHermesOrigin(normalizedUrl, prev.baseUrl)) {
       apiKeyEnc = prev.apiKeyEnc
     }
     const next: StoredHermesAccountRecord = {
@@ -196,11 +204,12 @@ export async function saveHermesAccount(args: {
     }
     store[id] = next
     writeRawStore(store)
-    return resolveRecord(id, next)
+    accountRevisions.set(id, Symbol())
+    return accountMetadata(id, next)
   })
 }
 
-export async function updateHermesAccountModel(accountId: string, model: string): Promise<ResolvedHermesAccount> {
+export async function updateHermesAccountModel(accountId: string, model: string): Promise<HermesAccountMetadata> {
   const id = (accountId ?? '').trim()
   if (!id) throw new Error('accountId required')
   return withStoreLock(async () => {
@@ -214,7 +223,8 @@ export async function updateHermesAccountModel(accountId: string, model: string)
     }
     store[id] = next
     writeRawStore(store)
-    return resolveRecord(id, next)
+    accountRevisions.set(id, Symbol())
+    return accountMetadata(id, next)
   })
 }
 
@@ -224,6 +234,8 @@ export async function clearHermesAccount(accountId: string): Promise<void> {
   await withStoreLock(async () => {
     if (id === '*') {
       writeRawStore({})
+      accountRevisions.clear()
+      defaultRevision = Symbol()
       return
     }
     const store = readRawStore()
@@ -231,6 +243,7 @@ export async function clearHermesAccount(accountId: string): Promise<void> {
       delete store[id]
       writeRawStore(store)
     }
+    accountRevisions.set(id, Symbol())
   })
 }
 

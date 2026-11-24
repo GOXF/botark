@@ -1,4 +1,4 @@
-import { RoomList } from '@/rooms/RoomView'
+import { PinnedRoomsList, RoomList } from '@/rooms/RoomView'
 import { type KeyboardEvent } from 'react'
 import { Plus, Search, Settings } from 'lucide-react'
 import { hasSeenOnboarding } from '@/components/onboarding/OnboardingGuide'
@@ -70,6 +70,7 @@ export function Sidebar({ onAddBot }: SidebarProps) {
       <div className="flex min-h-0 flex-1 flex-col items-center" onKeyDown={typeToSearch}>
         <div className="drag-region h-[42px] w-full shrink-0" />
         <div className="flex min-h-0 w-full flex-1 flex-col items-center px-1.5 pt-1 pb-2">
+          <PinnedRoomsList compact />
           {view === 'collab' ? <><RoomList compact /><BotList /></> : <><BotList />{view === 'board' && <RoomList compact />}</>}
         </div>
         <div className="no-drag flex shrink-0 flex-col items-center gap-1.5 pb-3 pt-1">
@@ -139,6 +140,7 @@ export function Sidebar({ onAddBot }: SidebarProps) {
 
       <div className="flex min-h-0 flex-1 flex-col px-2 pt-0.5 pb-2">
         {/* GOXF v12: 会话 lists conversations only; 协作 puts group chats first (bots below, to drag in). */}
+        <PinnedRoomsList />
         {view === 'collab' ? <><RoomList /><BotList /></> : <><BotList />{view === 'board' && <RoomList />}</>}
       </div>
 

@@ -1,6 +1,6 @@
 import { createServer } from 'node:http'
 import { mkdtemp, mkdir, readFile, realpath, rm, writeFile } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { parse } from 'yaml'
@@ -8,6 +8,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 import { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js'
+import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js'
 import { ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js'
 import type { BrowserWindow } from 'electron'
 import type { WorkspaceRequest, WorkspaceView } from '@shared/workspace'
@@ -52,12 +53,13 @@ vi.mock('../hermes/hermesStore', () => ({
 
 import { registerWorkspaceIpc, stopWorkspaces } from './hub'
 import { getMcpRegistryPath } from './mcpStore'
+import { dsBotServer } from '@shared/dsBotMcp'
 
 const sender = { mainFrame: {} }
 let root: string
 let tempBase: string
 
-const request = (scope: string, req: WorkspaceRequest): Promise<WorkspaceView> =>
+const request = (scope: string, req: WorkspaceRequest | { op: 'dispose' }): Promise<WorkspaceView> =>
   mocks.handle.mock.calls[0]![1]({ sender, senderFrame: sender.mainFrame }, scope, req)
 
 const runTool = (
@@ -77,7 +79,7 @@ const sdkServerIndex = require.resolve('@modelcontextprotocol/sdk/server/index.j
 const sdkStdio = require.resolve('@modelcontextprotocol/sdk/server/stdio.js')
 const sdkTypes = require.resolve('@modelcontextprotocol/sdk/types.js')
 
-function stdioEchoScript(toolName = 'hello', extraInit = '') {
+function stdioEchoScript(toolName = 'hello', extraInit = '', result = "{content:[{type:'text',text:'ok:'+req.params.name}]}") {
   return [
     `const { Server } = require(${JSON.stringify(sdkServerIndex)})`,
     `const { StdioServerTransport } = require(${JSON.stringify(sdkStdio)})`,
@@ -85,7 +87,7 @@ function stdioEchoScript(toolName = 'hello', extraInit = '') {
     extraInit,
     `const server = new Server({name:'fixture',version:'1'}, {capabilities:{tools:{}}})`,
     `server.setRequestHandler(ListToolsRequestSchema, async () => ({tools:[{name:'${toolName}',inputSchema:{type:'object'}}]}))`,
-    `server.setRequestHandler(CallToolRequestSchema, async (req) => ({content:[{type:'text',text:'ok:'+req.params.name}]}))`,
+    `server.setRequestHandler(CallToolRequestSchema, async (req) => (${result}))`,
     'server.connect(new StdioServerTransport())'
   ]
     .filter(Boolean)
@@ -107,7 +109,7 @@ beforeEach(async () => {
 })
 
 afterEach(async () => {
-  stopWorkspaces()
+  await stopWorkspaces()
   await rm(tempBase, { recursive: true, force: true, maxRetries: 6, retryDelay: 120 }).catch(() => undefined)
 })
 
@@ -147,6 +149,8 @@ describe('workspace MCP hub', () => {
     } finally {
       await client.close()
     }
+    await stopWorkspaces()
+    expect(parse(await readFile(yaml, 'utf8')).mcp_servers.botark_workspace).toBeUndefined()
   })
 
   it('starts and stops an imported stdio server using its actual MCP handshake', async () => {
@@ -360,8 +364,8 @@ describe('workspace MCP hub', () => {
 
     // 2. Server without `tools` capability connects cleanly with 0 tools
     const promptsOnly = [
-      "const { Server } = require('@modelcontextprotocol/sdk/server/index.js')",
-      "const { StdioServerTransport } = require('@modelcontextprotocol/sdk/server/stdio.js')",
+      `const { Server } = require(${JSON.stringify(sdkServerIndex)})`,
+      `const { StdioServerTransport } = require(${JSON.stringify(sdkStdio)})`,
       "const server = new Server({name:'prompts-only',version:'1'}, {capabilities:{prompts:{}}})",
       'server.connect(new StdioServerTransport())'
     ].join('\n')
@@ -401,6 +405,109 @@ describe('workspace MCP hub', () => {
     expect(statusWhilePending.servers.some((s) => s.name === 'slow-approve')).toBe(true)
     releaseConfirm({ response: 0 })
     await expect(pendingStart).rejects.toThrow(/取消/)
+  })
+
+  it('does not start a removed server after batch approval and disposes the deleted scope', async () => {
+    const pendingApproval = vi.fn()
+    let allow!: (choice: { response: number }) => void
+    mocks.confirm.mockImplementationOnce(() => new Promise((resolve) => {
+      allow = resolve
+      pendingApproval()
+    }))
+    const importer = request('room', {
+      op: 'importJson', autoStart: true,
+      rawJson: JSON.stringify({ mcpServers: { removed: {
+        command: process.execPath, args: ['-e', stdioEchoScript('ghost')]
+      } } })
+    })
+    await vi.waitFor(() => expect(pendingApproval).toHaveBeenCalledOnce())
+    await request('room', { op: 'dispose' })
+    allow({ response: 1 })
+    expect((await importer).tools).toEqual([])
+    expect((await request('room', { op: 'status' })).directory).toBeUndefined()
+    await stopWorkspaces()
+    expect((await request('room', { op: 'status' })).servers).toEqual([])
+  })
+
+  it('bounds a stalled HTTP session shutdown', async () => {
+    const deleted = vi.fn()
+    const mcp = new Server({ name: 'Stalled transport', version: '1' }, { capabilities: {} })
+    const transport = new StreamableHTTPServerTransport({
+      sessionIdGenerator: () => 'stalled-delete',
+      enableJsonResponse: true
+    })
+    await mcp.connect(transport)
+    const http = createServer((req, res) => {
+      if (req.method === 'DELETE') {
+        deleted()
+        return
+      }
+      void transport.handleRequest(req, res)
+    })
+    await new Promise<void>((resolve) => http.listen(0, '127.0.0.1', resolve))
+    try {
+      const port = (http.address() as { port: number }).port
+      await request('room', { op: 'upsert', autoStart: true, server: dsBotServer(port, 'fixture', 'scope') })
+      await request('room', { op: 'stop', server: 'ds-bot' })
+      expect(deleted).toHaveBeenCalledOnce()
+    } finally {
+      await mcp.close()
+      http.closeAllConnections()
+      await new Promise<void>((resolve) => http.close(() => resolve()))
+    }
+  })
+
+  it('uses fixed global cwd, restarts scoped servers after a workspace change, and routes aliases ending in underscores', async () => {
+    const script = stdioEchoScript('cwd', '', "{structuredContent:{cwd:process.cwd()},isError:true}")
+    const nodeTool = { command: process.execPath, args: ['-e', script] }
+    await request('room', { op: 'upsert', autoStart: true, server: { ...nodeTool, name: 'global_', targetScope: 'global' } })
+    expect(mocks.confirm.mock.lastCall?.[1].detail).toContain(homedir())
+    await request('room', { op: 'upsert', autoStart: true, server: { ...nodeTool, name: 'scoped' } })
+    expect(mocks.confirm.mock.lastCall?.[1].detail).toContain(root)
+    expect(JSON.parse(await runTool('room', 'global___cwd', {}))).toMatchObject({
+      isError: true, structuredContent: { cwd: homedir() }
+    })
+    expect(JSON.parse(await runTool('room', 'scoped__cwd', {}))).toMatchObject({ structuredContent: { cwd: root } })
+    const otherRoot = join(tempBase, 'other')
+    await mkdir(otherRoot)
+    const rebound = await request('room', { op: 'bind', directory: otherRoot })
+    expect(rebound.servers).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: 'global_', cwd: homedir(), running: true }),
+      expect.objectContaining({ name: 'scoped', cwd: otherRoot, running: true })
+    ]))
+    expect(JSON.parse(await runTool('room', 'scoped__cwd', {}))).toMatchObject({ structuredContent: { cwd: otherRoot } })
+  })
+
+  it('keeps a running DS Bot client when key encryption fails and terminates its negotiated HTTP session on stop', async () => {
+    const deletions = vi.fn()
+    const mcp = new Server({ name: 'DS fixture', version: '1' }, { capabilities: { tools: {} } })
+    mcp.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [{ name: 'ping', inputSchema: { type: 'object' } }] }))
+    const transport = new StreamableHTTPServerTransport({
+      sessionIdGenerator: () => 'fixture-session',
+      enableJsonResponse: true
+    })
+    await mcp.connect(transport)
+    const http = createServer((req, res) => {
+      if (req.method === 'DELETE') deletions(req.headers['mcp-session-id'])
+      void transport.handleRequest(req, res)
+    })
+    await new Promise<void>((resolve) => http.listen(0, '127.0.0.1', resolve))
+    const port = (http.address() as { port: number }).port
+    try {
+      await request('room', { op: 'upsert', autoStart: true, server: dsBotServer(port, 'working-fixture', 'scope') })
+      mocks.encryptionAvailable = false
+      await expect(request('room', {
+        op: 'upsert', autoStart: true, server: dsBotServer(port, 'unwritable-fixture', 'scope')
+      })).rejects.toThrow('safeStorage')
+      expect((await request('room', { op: 'status' })).tools.map((tool) => tool.name)).toContain('ds-bot__ping')
+      expect(deletions).not.toHaveBeenCalled()
+      await request('room', { op: 'stop', server: 'ds-bot' })
+      expect(deletions).toHaveBeenCalledExactlyOnceWith('fixture-session')
+    } finally {
+      await mcp.close()
+      http.closeAllConnections()
+      await new Promise<void>((resolve) => http.close(() => resolve()))
+    }
   })
 
   it('detectConfigs and optimizeReady discover, merge non-destructively, isolate failures, and return readiness report', async () => {

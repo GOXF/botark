@@ -9,6 +9,7 @@ import type { BotAccount, ChatMessage } from "@/types"
 export const SEND_HARD_TIMEOUT_MS = 12 * 60_000
 
 export const SEND_TIMEOUT_TEXT = "发送超时，可能已经送达；重试前先确认对方是否收到"
+export const SEND_STILL_PENDING_TEXT = "发送超时，可能已经送达；正在等待原发送完成"
 export const INTERRUPTED_SEND_TEXT = "应用关闭时还没确认送达，可能已经发出；重试前先确认"
 export const INTERRUPTED_REPLY_TEXT = "已送达，但应用关闭时回复还没收完"
 export const ACCEPTED_THEN_FAILED_TEXT = "已送达，但等待回复时出错；重发前先确认对方是否已回复"
@@ -45,6 +46,23 @@ export function createInFlightSet(): { enter(id: string): boolean; leave(id: str
     },
     leave(id) {
       ids.delete(id)
+    }
+  }
+}
+
+/** Hold the send slot until the transport settles, including after a UI timeout. */
+export function createDeliveryAttempts() {
+  const attempts = new Map<string, symbol>()
+  return {
+    begin(key: string) {
+      if (attempts.has(key)) return
+      const id = Symbol()
+      attempts.set(key, id)
+      return id
+    },
+    isCurrent: (key: string, id: symbol) => attempts.get(key) === id,
+    finish(key: string, id: symbol) {
+      if (attempts.get(key) === id) attempts.delete(key)
     }
   }
 }
@@ -106,6 +124,10 @@ export function sanitizePersisted<
           changed = true
           return { ...m, delivery: "no-reply" as const, error: INTERRUPTED_REPLY_TEXT }
         }
+        if (m.delivery === "no-reply" && m.error === SEND_STILL_PENDING_TEXT) {
+          changed = true
+          return { ...m, error: INTERRUPTED_SEND_TEXT }
+        }
         if (m.delivery !== "sending") return m
         changed = true
         return { ...m, delivery: "failed" as const, error: INTERRUPTED_SEND_TEXT }
@@ -156,76 +178,117 @@ export function toPersistedMessages(
   return out
 }
 
-function compactPersistedEnvelope(rawJson: string, maxPerBot: number, dropLargeHtml: boolean): string | null {
+const QUOTA_FALLBACK_BYTES = 4 * 1024 * 1024
+const OMITTED_BODY = '[Message body omitted from local history]'
+
+function tryCompactWorkspace(rawJson: string, write: (value: string) => void): boolean {
   try {
     const parsed = JSON.parse(rawJson) as {
       state?: { messages?: Record<string, ChatMessage[]> }
       version?: number
     }
-    if (!parsed?.state?.messages || typeof parsed.state.messages !== "object") return null
-    const compacted: Record<string, ChatMessage[]> = {}
-    for (const [botId, list] of Object.entries(parsed.state.messages)) {
-      if (!Array.isArray(list)) continue
-      const sliced = list.length > maxPerBot ? list.slice(-maxPerBot) : list
-      compacted[botId] = sliced.map((m) => {
-        const media = m.media?.filter((part) => !/^data:/i.test(part.path))
-        const richWidgets = dropLargeHtml
-          ? m.richWidgets?.filter((w) => !(w.kind === "html" && w.html.length > 8_192))
-          : m.richWidgets
-        return media?.length === m.media?.length && richWidgets?.length === m.richWidgets?.length
-          ? m
-          : { ...m, media: media?.length ? media : undefined, richWidgets }
-      })
+    if (!parsed?.state?.messages || typeof parsed.state.messages !== 'object') return false
+    const histories = Object.entries(parsed.state.messages)
+    const limits = [
+      { count: Infinity, text: 64 * 1024, html: Infinity, bytes: QUOTA_FALLBACK_BYTES },
+      { count: 120, text: 8 * 1024, html: Infinity, bytes: QUOTA_FALLBACK_BYTES / 2 },
+      { count: 30, text: 2048, html: 8192, bytes: QUOTA_FALLBACK_BYTES / 4 },
+      { count: 30, text: 256, html: 0, bytes: 128 * 1024 },
+      { count: 1, text: 0, html: 0, bytes: 32 * 1024 },
+      { count: 0, text: 0, html: 0, bytes: QUOTA_FALLBACK_BYTES }
+    ]
+    for (const limit of limits) {
+      const messages: Record<string, ChatMessage[]> = {}
+      if (limit.count > 0) {
+        for (const [botId, list] of histories) {
+          if (!Array.isArray(list)) continue
+          messages[botId] = list.slice(-limit.count).map((m) => {
+            const rawText = typeof m.text === 'string' ? m.text : ''
+            return {
+              ...m,
+              text: rawText.length > limit.text ? `${OMITTED_BODY}\n${rawText.slice(0, limit.text)}` : rawText,
+              media: m.media?.filter((part) => !/^data:/i.test(part.path)),
+              richWidgets: m.richWidgets?.filter((w) => w.kind !== 'html' || w.html.length <= limit.html)
+            }
+          })
+        }
+      }
+      const value = JSON.stringify({ ...parsed, state: { ...parsed.state, messages } })
+      // Budget the entire serialized snapshot across bots, including JSON escaping.
+      if ((limit.count > 0 && value.length * 2 > limit.bytes) || value === rawJson) continue
+      try {
+        write(value)
+        return true
+      } catch {
+        /* try the next smaller snapshot */
+      }
     }
-    return JSON.stringify({
-      ...parsed,
-      state: { ...parsed.state, messages: compacted }
-    })
   } catch {
-    return null
+    /* The value is not a workspace snapshot. */
   }
+  return false
 }
 
 /**
- * localStorage that never throws out of zustand's `set()`. On quota exhaustion,
- * first removes inline media from the persisted copy, then compacts history
- * and oversized HTML if needed to retain the rest of the workspace.
+ * localStorage that never throws out of Zustand's writes. A deferred value
+ * lets the debounced path coalesce serialization as well as storage writes.
  */
 export function createSafeStorage(
   backing: () => Pick<Storage, 'getItem' | 'setItem' | 'removeItem'> | undefined,
-  onError: (error: unknown) => void = () => undefined
-): Pick<Storage, 'getItem' | 'setItem' | 'removeItem'> {
-  return {
-    getItem: (name) => {
+  onError: (error: unknown) => void = () => undefined,
+  { debounceMs = 0 }: { debounceMs?: number } = {}
+) {
+  type Value = string | (() => string)
+  const pending = new Map<string, Value>()
+  let timer: ReturnType<typeof setTimeout> | undefined
+
+  const write = (name: string, value: Value) => {
+    try {
+      const store = backing()
+      if (!store) return
+      const serialized = typeof value === 'string' ? value : value()
       try {
+        store.setItem(name, serialized)
+      } catch (error) {
+        const quota = error instanceof Error && (error.name === 'QuotaExceededError' || error.message.includes('QuotaExceededError'))
+        if (!quota || !tryCompactWorkspace(serialized, (snapshot) => store.setItem(name, snapshot))) throw error
+      }
+    } catch (error) {
+      onError(error)
+    }
+  }
+  const flush = () => {
+    clearTimeout(timer)
+    timer = undefined
+    for (const [name, value] of pending) {
+      pending.delete(name)
+      write(name, value)
+    }
+  }
+  return {
+    flush,
+    getItem: (name: string) => {
+      try {
+        const queued = pending.get(name)
+        if (queued !== undefined) {
+          pending.delete(name)
+          write(name, queued)
+        }
         return backing()?.getItem(name) ?? null
       } catch (error) {
         onError(error)
         return null
       }
     },
-    setItem: (name, value) => {
-      let store: ReturnType<typeof backing>
-      try {
-        store = backing()
-        store?.setItem(name, value)
-      } catch (error) {
-        if (store) {
-          for (const [limit, dropLargeHtml] of [[Infinity, false], [120, false], [30, true]] as const) {
-            const compacted = compactPersistedEnvelope(value, limit, dropLargeHtml)
-            if (!compacted || compacted === value) continue
-            try {
-              store.setItem(name, compacted)
-              return
-            } catch {
-              /* try the next smaller snapshot */
-            }
-          }
-        }
-        onError(error)
-      }
+    setItem: (name: string, value: Value) => {
+      if (debounceMs <= 0) return write(name, value)
+      pending.set(name, value)
+      clearTimeout(timer)
+      timer = setTimeout(flush, debounceMs)
     },
-    removeItem: (name) => {
+    removeItem: (name: string) => {
+      pending.delete(name)
+      if (pending.size === 0) clearTimeout(timer)
       try {
         backing()?.removeItem(name)
       } catch (error) {
@@ -239,10 +302,10 @@ export function createSafeStorage(
  * A bot reply arrived: the newest user message still flagged `no-reply`
  * did get an answer after all.
  */
-export function clearNoReplyFlag(list: ChatMessage[]): ChatMessage[] {
+export function clearNoReplyFlag(list: ChatMessage[], accountId?: string): ChatMessage[] {
   for (let i = list.length - 1; i >= 0; i--) {
     const m = list[i]!
-    if (m.role !== "user") continue
+    if (m.role !== "user" || (accountId !== undefined && m.accountId !== accountId)) continue
     if (m.delivery !== "no-reply" && m.delivery !== "accepted") return list
     const next = list.slice()
     next[i] = { ...m, delivery: "sent", error: undefined }

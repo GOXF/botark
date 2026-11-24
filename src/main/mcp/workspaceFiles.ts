@@ -5,6 +5,8 @@ import { randomUUID } from 'node:crypto'
 import type { WorkspaceTool } from '@shared/workspace'
 
 const MAX_BYTES = 96 * 1024
+const SEARCH_EXCLUDED_DIRECTORIES = new Set(['.git', 'node_modules', 'dist', 'out', '.next', 'target'])
+const edits = new Map<string, Promise<string>>()
 const string = { type: 'string' }
 const workspacePath = { type: 'string', description: 'Relative to the selected workspace. Use "." for its root.' }
 function tool(name: string, description: string, fields: string[]): WorkspaceTool {
@@ -47,7 +49,60 @@ async function readText(path: string) {
   } finally { await file.close() }
 }
 
-export async function workspaceFile(root: string, name: string, args: Record<string, unknown>): Promise<string> {
+async function editFile(
+  root: string,
+  dest: string,
+  name: string,
+  args: Record<string, unknown>,
+  assertCurrent?: () => void
+): Promise<string> {
+  assertCurrent?.()
+  const parent = dirname(dest)
+  if (await realpath(parent) !== parent) throw new Error('Workspace directory changed during edit')
+  const existing = await lstat(dest).catch((error: NodeJS.ErrnoException) => {
+    if (error.code !== 'ENOENT') throw error
+    return null
+  })
+  if (existing && !existing.isFile()) throw new Error('Target must be a regular file')
+  let output: string
+  if (name === 'patch') {
+    const source = await readText(dest)
+    const before = field(args, 'before')
+    const at = source.indexOf(before)
+    if (!before || at < 0 || source.indexOf(before, at + 1) !== -1) throw new Error('Patch must match exactly once')
+    output = source.slice(0, at) + field(args, 'after') + source.slice(at + before.length)
+  } else output = field(args, 'text')
+  if (Buffer.byteLength(output) > MAX_BYTES) throw new Error('Output exceeds 96 KiB')
+  const tmp = join(parent, '.botark-' + randomUUID())
+  const file = await open(tmp, 'wx', existing ? existing.mode & 0o777 : 0o600)
+  try {
+    try {
+      await file.writeFile(output)
+    } finally {
+      await file.close()
+    }
+    if (await realpath(parent) !== parent) throw new Error('Workspace directory changed during edit')
+    const now = await lstat(dest).catch((error: NodeJS.ErrnoException) => {
+      if (error.code !== 'ENOENT') throw error
+      return null
+    })
+    if (now?.dev !== existing?.dev || now?.ino !== existing?.ino || now?.ctimeMs !== existing?.ctimeMs) {
+      throw new Error('File changed during edit')
+    }
+    assertCurrent?.()
+    await rename(tmp, dest)
+  } finally {
+    await rm(tmp, { force: true })
+  }
+  return `Saved ${relative(root, dest)}`
+}
+
+export async function workspaceFile(
+  root: string,
+  name: string,
+  args: Record<string, unknown>,
+  assertCurrent?: () => void
+): Promise<string> {
   const path = resolve(root, field(args, 'path'))
   within(root, path)
   if (name === 'write' || name === 'patch') {
@@ -55,30 +110,17 @@ export async function workspaceFile(root: string, name: string, args: Record<str
     const parent = await realpath(dirname(path))
     within(root, parent)
     const dest = join(parent, basename(path))
-    const existing = await lstat(dest).catch((error: NodeJS.ErrnoException) => {
-      if (error.code !== 'ENOENT') throw error
-      return null
-    })
-    if (existing && !existing.isFile()) throw new Error('Target must be a regular file')
-    let output: string
-    if (name === 'patch') {
-      const source = await readText(dest)
-      const before = field(args, 'before')
-      const at = source.indexOf(before)
-      if (!before || at < 0 || source.indexOf(before, at + 1) !== -1) throw new Error('Patch must match exactly once')
-      output = source.slice(0, at) + field(args, 'after') + source.slice(at + before.length)
-    } else output = field(args, 'text')
-    if (Buffer.byteLength(output) > MAX_BYTES) throw new Error('Output exceeds 96 KiB')
-    const tmp = join(parent, '.botark-' + randomUUID())
-    const file = await open(tmp, 'wx', existing ? existing.mode & 0o777 : 0o600)
+    const key = process.platform === 'win32' || process.platform === 'darwin'
+      ? dest.normalize('NFC').toLowerCase()
+      : dest
+    const edit = (edits.get(key) ?? Promise.resolve()).catch(() => undefined)
+      .then(() => editFile(root, dest, name, args, assertCurrent))
+    edits.set(key, edit)
     try {
-      try { await file.writeFile(output) } finally { await file.close() }
-      within(root, await realpath(parent))
-      const now = await lstat(dest).catch((e: NodeJS.ErrnoException) => { if (e.code !== 'ENOENT') throw e; return null })
-      if (now?.ino !== existing?.ino || now?.ctimeMs !== existing?.ctimeMs) throw new Error('File changed during edit')
-      await rename(tmp, dest)
-    } finally { await rm(tmp, { force: true }) }
-    return `Saved ${relative(root, dest)}`
+      return await edit
+    } finally {
+      if (edits.get(key) === edit) edits.delete(key)
+    }
   }
   const canonical = await realpath(path)
   within(root, canonical)
@@ -92,6 +134,7 @@ export async function workspaceFile(root: string, name: string, args: Record<str
     const directory = await realpath(directories.pop()!)
     within(root, directory)
     for await (const item of await opendir(directory)) {
+      if (name === 'search' && item.isDirectory() && SEARCH_EXCLUDED_DIRECTORIES.has(item.name)) continue
       const entry = join(directory, item.name)
       if (item.name.toLowerCase().includes(query)) entries.push(relative(root, entry) + (item.isDirectory() ? '/' : ''))
       if (name === 'search' && item.isDirectory()) directories.push(entry)

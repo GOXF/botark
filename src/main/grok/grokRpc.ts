@@ -1,4 +1,6 @@
 import { BrowserWindow } from 'electron'
+import { setTimeout as delay } from 'node:timers/promises'
+import type { GrokRequest } from '../../adapters/grokbot/grokRequests'
 import {
   GROK_CHANNELS,
   type GrokMainEvent,
@@ -9,16 +11,21 @@ import {
   type MuseRichWidgetView,
   type MuseToolCallView
 } from '@shared/ipc'
-import { getGrokMainAuth, setGrokMainAuth } from './grokAuthStore'
 import { inferMediaMime } from '../mediaMime'
 import { GrokConnectClient, GrokConnectError } from './connectClient'
 import { getOrCreateGrokMachineId } from './grokMachineId'
 import {
+  activeGrokCredentialSignal,
   forceRefreshSandAccessToken,
-  getValidSandAccessToken,
+  getValidGrokCredential,
+  grokCredentialRevision,
   grokFetcherForAccount
 } from './grokSandAuth'
-import { parseGrokTranscriptEntry, type ParsedGrokTranscriptEntry } from './grokTranscriptDecoder'
+import { asObj, str, type ParsedGrokTranscriptEntry } from './grokTranscriptDecoder'
+import {
+  compareGrokEntries, GrokEntryRevisions, grokRows, grokSeq, hydrateGrokEntry,
+  isGrokSendAnchor, matchesGrokScope, readGrokTranscriptGap, transcriptEntries
+} from './grokTranscriptWatch'
 import {
   ensureGrokAccountWatch,
   getGrokAccountWatch,
@@ -32,55 +39,31 @@ export function broadcastGrokEvent(event: GrokMainEvent): void {
   }
 }
 
-/**
- * Resolve the write-capable sand accessToken for an account.
- * Writes (Send/Transcript/approvals) require the PKCE sand token or xAI token.
- * Falls back to the in-memory web token only when no sand token exists.
- */
-async function resolveClientAuth(accountId: string): Promise<{
-  accessToken: string
-  teamId?: string
-  machineId: string
-  accountSlot?: string
-}> {
-  const stored = getGrokMainAuth(accountId)
-  const machineId = stored?.machineId?.trim() || getOrCreateGrokMachineId(accountId)
-  if (machineId !== stored?.machineId && stored) {
-    setGrokMainAuth({ ...stored, machineId })
-  }
-  const sand = await getValidSandAccessToken(accountId)
-  if (sand?.accessToken) {
-    return {
-      accessToken: sand.accessToken,
-      teamId: sand.selectedTeamId ?? stored?.teamId,
-      machineId,
-      accountSlot: stored?.accountSlot
-    }
-  }
-  if (stored?.accessToken) {
-    return {
-      accessToken: stored.accessToken,
-      teamId: stored.teamId,
-      machineId,
-      accountSlot: stored.accountSlot
-    }
-  }
-  throw new GrokConnectError(401, 'Not signed in (no sand or web token)', 'not-connected')
-}
-
 export async function clientForGrokAccount(
   accountId: string,
   timeZone?: string
 ): Promise<GrokConnectClient> {
-  const auth = await resolveClientAuth(accountId)
+  const revision = grokCredentialRevision(accountId)
+  const credential = await getValidGrokCredential(accountId)
+  if (!credential || revision !== grokCredentialRevision(accountId)) {
+    throw new GrokConnectError(401, 'Not signed in (no current Grok credential)', 'not-connected')
+  }
   return new GrokConnectClient({
-    auth,
+    auth: {
+      accessToken: credential.tokens.accessToken,
+      teamId: credential.tokens.selectedTeamId,
+      accountSlot: credential.tokens.authId,
+      machineId: credential.machineId || getOrCreateGrokMachineId(accountId)
+    },
     fetchImpl: grokFetcherForAccount(accountId),
     timeZone: timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone
   })
 }
 
 function fail(error: unknown): GrokRpcResponse {
+  if (error instanceof Error && error.name === 'AbortError') {
+    return { ok: false, status: 0, code: 'aborted', message: error.message }
+  }
   if (error instanceof GrokConnectError) {
     return {
       ok: false,
@@ -96,51 +79,13 @@ function fail(error: unknown): GrokRpcResponse {
 
 const GROK_REPLY_SETTLE_MS = 12_000
 
-function parseBigIntSeq(val?: string): bigint {
-  if (!val) return 0n
-  try {
-    return BigInt(val)
-  } catch {
-    return 0n
-  }
-}
-
-async function hydrateOmittedEntry(
-  client: GrokConnectClient,
-  agentId: string,
-  sessionId: string,
-  stub: ParsedGrokTranscriptEntry
-): Promise<ParsedGrokTranscriptEntry> {
-  try {
-    let beforeSeq: string | undefined
-    try {
-      const s = BigInt(stub.seq || '0')
-      if (s > 0n) beforeSeq = (s + 1n).toString()
-    } catch {
-      beforeSeq = undefined
-    }
-    const page = (await client.listTranscriptEntries({
-      agentId,
-      sessionId: sessionId || undefined,
-      beforeSeq,
-      limit: 5
-    })) as Record<string, unknown>
-    const entries = Array.isArray(page['entries'])
-      ? (page['entries'] as Array<Record<string, unknown>>)
-      : []
-    const match = entries.find((raw) => {
-      const eid = String(raw['entry_id'] ?? raw['entryId'] ?? '')
-      const seq = String(raw['seq'] ?? '')
-      return (eid && eid === stub.entryId) || (seq && seq === stub.seq)
-    })
-    if (match && !(match['body_omitted'] ?? match['bodyOmitted'])) {
-      const hydrated = parseGrokTranscriptEntry(match, agentId, sessionId)
-      if (hydrated) return hydrated
-    }
-  } catch {
-    /* fallback to stub if hydration RPC fails */
-  }
-  return stub
+interface GrokReplyBubble {
+  messageId: string
+  text: string
+  widgets?: MuseOptionWidgetView[]
+  richWidgets?: MuseRichWidgetView[]
+  tools?: MuseToolCallView[]
+  media?: MuseMediaPartView[]
 }
 
 export async function watchUntilReply(
@@ -153,229 +98,256 @@ export async function watchUntilReply(
     afterUpdatedSeq?: string
     afterMessageId?: string
     timeoutMs?: number
+    signal?: AbortSignal
   }
-): Promise<{
+): Promise<Partial<GrokReplyBubble> & {
   text: string
-  messageId?: string
-  messages?: Array<{
-    messageId: string
-    text: string
-    widgets?: MuseOptionWidgetView[]
-    richWidgets?: MuseRichWidgetView[]
-    tools?: MuseToolCallView[]
-    media?: MuseMediaPartView[]
-  }>
-  widgets?: MuseOptionWidgetView[]
-  richWidgets?: MuseRichWidgetView[]
-  tools?: MuseToolCallView[]
-  media?: MuseMediaPartView[]
+  messages: GrokReplyBubble[]
+  echoEntryId?: string
   turnFailed?: { code: string; summary: string }
 }> {
-  const timeoutMs = args.timeoutMs ?? 90_000
   const ac = new AbortController()
-  const timer = setTimeout(() => ac.abort(), timeoutMs)
-  const watchHandle = getGrokAccountWatch(args.accountId)
-
-  const assistantBubbles = new Map<
-    string,
-    {
-      messageId: string
-      text: string
-      widgets?: MuseOptionWidgetView[]
-      richWidgets?: MuseRichWidgetView[]
-      tools?: MuseToolCallView[]
-      media?: MuseMediaPartView[]
-    }
-  >()
+  const timer = setTimeout(() => ac.abort(), args.timeoutMs ?? 90_000)
+  const revision = grokCredentialRevision(args.accountId)
+  const credentialSignal = activeGrokCredentialSignal(args.accountId)
+  const signal = AbortSignal.any([ac.signal, credentialSignal, ...(args.signal ? [args.signal] : [])])
+  const { accountId, agentId, sessionId } = args
+  const watchHandle = getGrokAccountWatch(accountId)
+  const streamsInBackground = watchHandle?.watchesSession(agentId, sessionId) ?? false
+  const revisions = new GrokEntryRevisions()
+  const bubbles = new Map<string, { entry: ParsedGrokTranscriptEntry; bubble: GrokReplyBubble }>()
   const collectedTools = new Map<string, MuseToolCallView>()
+  const pending = new Map<string, ParsedGrokTranscriptEntry>()
+  const afterSeq = grokSeq(args.afterUpdatedSeq)
+  const sentId = args.afterMessageId
+  let cursor = afterSeq
+  let generation = 0
+  let anchor: ParsedGrokTranscriptEntry | undefined
+  let anchorOrder: number | undefined
+  let received = 0
+  const entryOrder = new Map<string, number>()
+  let echoEntryId: string | undefined
+  let anchorLookup: Promise<ParsedGrokTranscriptEntry | undefined> | undefined
+  let nextAnchorLookupAt = 0
   let turnFailed: { code: string; summary: string } | undefined
   let isAgentRunning = false
-  let idleSettleTimer: ReturnType<typeof setTimeout> | undefined
-  const afterSeq = parseBigIntSeq(args.afterUpdatedSeq)
-  let seenUserAnchor = false
+  let settleTimer: ReturnType<typeof setTimeout> | undefined
 
-  const armSettle = (delayMs: number = GROK_REPLY_SETTLE_MS) => {
-    if (idleSettleTimer) clearTimeout(idleSettleTimer)
-    idleSettleTimer = setTimeout(() => ac.abort(), delayMs)
+  const assertCurrent = () => {
+    signal.throwIfAborted()
+    if (revision !== grokCredentialRevision(accountId)) throw new DOMException('Grok credentials changed', 'AbortError')
+  }
+  const matchesScope = (row: Record<string, unknown>) => matchesGrokScope(row, agentId, sessionId)
+  const isAnchor = (entry: ParsedGrokTranscriptEntry) => Boolean(
+    (sentId && isGrokSendAnchor(entry, sentId)) || (echoEntryId && isGrokSendAnchor(entry, echoEntryId))
+  )
+  const armSettle = (ms: number) => {
+    clearTimeout(settleTimer)
+    settleTimer = setTimeout(() => ac.abort(), ms)
+  }
+
+  const lookupAnchor = async (): Promise<ParsedGrokTranscriptEntry | undefined> => {
+    if (!sentId) return undefined
+    try {
+      const status = asObj(await client.getSendStatus({ agentId, sessionId, messageId: sentId }, signal))
+      assertCurrent()
+      echoEntryId = str(status?.['echoEntryId'] ?? status?.['echo_entry_id']) || undefined
+    } catch { assertCurrent() }
+    const page = await readGrokTranscriptGap(client, { agentId, sessionId }, {
+      floor: afterSeq, stopAt: (entry) => isAnchor(entry) || Boolean(echoEntryId && entry.entryId === echoEntryId), signal
+    })
+    assertCurrent()
+    let candidate = page.entries.find(isAnchor)
+    if (!candidate && echoEntryId) {
+      const stub = page.entries.find((entry) => entry.entryId === echoEntryId && entry.bodyOmitted)
+      if (stub) {
+        const hydrated = await hydrateGrokEntry(client, agentId, sessionId, stub, signal)
+        if (isAnchor(hydrated)) candidate = hydrated
+      }
+    }
+    return candidate
+  }
+
+  const acceptEntries = async (entries: ParsedGrokTranscriptEntry[]) => {
+    const hydrated: Array<{ entry: ParsedGrokTranscriptEntry; order: number }> = []
+    for (const entry of entries) {
+      assertCurrent()
+      const seq = grokSeq(entry.updatedSeq)
+      if (seq > cursor) cursor = seq
+      const parsed = await hydrateGrokEntry(client, agentId, sessionId, entry, signal)
+      assertCurrent()
+      const order = ++received
+      hydrated.push({ entry: parsed, order })
+      if (isAnchor(parsed) && (anchorOrder === undefined || !anchor)) {
+        anchor = parsed
+        anchorOrder = order
+      }
+    }
+    for (const { entry, order } of hydrated) {
+      if (entry.role !== 'assistant' && entry.role !== 'tool') continue
+      const updated = grokSeq(entry.updatedSeq)
+      if (updated > 0n && updated <= afterSeq) continue
+      if (revisions.accept(entry)) {
+        pending.set(entry.entryId, entry)
+        entryOrder.set(entry.entryId, order)
+        if (pending.size > 2048) {
+          const oldest = pending.keys().next().value!
+          pending.delete(oldest)
+          entryOrder.delete(oldest)
+        }
+      }
+    }
+    if (sentId && !anchor && pending.size && Date.now() >= nextAnchorLookupAt) {
+      anchorLookup ??= lookupAnchor().catch(() => undefined).finally(() => {
+        nextAnchorLookupAt = Date.now() + 1000
+        anchorLookup = undefined
+      })
+      anchor = await anchorLookup
+      assertCurrent()
+    }
+    if (sentId && !anchor) return
+
+    for (const entry of [...pending.values()].sort(compareGrokEntries)) {
+      pending.delete(entry.entryId)
+      const order = entryOrder.get(entry.entryId)
+      entryOrder.delete(entry.entryId)
+      if (anchor?.requestId && entry.requestId && anchor.requestId !== entry.requestId) continue
+      const seq = grokSeq(entry.seq)
+      const anchorSeq = grokSeq(anchor?.seq)
+      const updated = grokSeq(entry.updatedSeq)
+      const anchorUpdated = grokSeq(anchor?.updatedSeq)
+      if (anchor) {
+        const followsAnchor = seq > 0n && anchorSeq > 0n ? seq > anchorSeq
+          : updated > 0n && anchorUpdated > 0n ? updated > anchorUpdated
+          : anchor.hasTimestamp && entry.hasTimestamp && entry.createdAtMs !== anchor.createdAtMs
+            ? entry.createdAtMs > anchor.createdAtMs
+            : Boolean(anchor.requestId && entry.requestId === anchor.requestId) ||
+              (anchorOrder !== undefined && order !== undefined && order > anchorOrder)
+        if (!followsAnchor) continue
+      }
+      if (entry.role === 'tool' && entry.toolCall) {
+        collectedTools.set(entry.toolCall.id, entry.toolCall)
+        continue
+      }
+      const media = await watchHandle?.resolveMediaUrls(client, agentId, sessionId, entry.media, signal) ?? entry.media
+      assertCurrent()
+      if (!entry.text && !entry.widgets?.length && !entry.richWidgets?.length && !media?.length) continue
+      const messageId = `grok_${entry.entryId}`
+      const bubble = {
+        messageId, text: entry.text, widgets: entry.widgets, richWidgets: entry.richWidgets, media,
+        tools: collectedTools.size ? [...collectedTools.values()] : undefined
+      }
+      bubbles.set(messageId, { entry, bubble })
+      if (!streamsInBackground) broadcastGrokEvent({
+        type: 'stream', accountId, conversationId: args.conversationId, agentId,
+        sessionId: sessionId || undefined, ...bubble, done: !entry.isStreaming
+      })
+      if (entry.isStreaming) clearTimeout(settleTimer)
+      else armSettle(isAgentRunning ? GROK_REPLY_SETTLE_MS : 2_200)
+    }
+  }
+
+  const resetGeneration = (next: number) => {
+    generation = next
+    cursor = 0n
+    revisions.clear()
+    pending.clear()
+    entryOrder.clear()
+    bubbles.clear()
+    collectedTools.clear()
+    anchor = undefined
+    anchorOrder = undefined
+    nextAnchorLookupAt = 0
+    clearTimeout(settleTimer)
   }
 
   try {
-    const cursors = [
-      {
-        agent_id: args.agentId,
-        generation: 0,
-        after_updated_seq: args.afterUpdatedSeq ?? '0',
-        session_id: args.sessionId
-      }
-    ]
-    for await (const frame of client.watchTranscripts({ cursors }, ac.signal)) {
-      // Handle turn_failed immediately
-      const tf = (frame['turn_failed'] ?? frame['turnFailed']) as
-        | Record<string, unknown>
-        | undefined
-      if (tf) {
-        const tfAgent = String(tf['agentId'] ?? tf['agent_id'] ?? '')
-        if (!tfAgent || tfAgent === args.agentId) {
-          turnFailed = {
-            code: String(tf['code'] ?? 'TURN_FAILED'),
-            summary: String(tf['summary'] ?? 'Grok Bot 执行该轮对话失败')
+    let failures = 0
+    let gapFloor: bigint | undefined
+    let lastBackfilled: bigint | undefined
+    while (!signal.aborted && !turnFailed) {
+      assertCurrent()
+      let reconnect = false
+      try {
+        if (gapFloor !== undefined) {
+          const result = await readGrokTranscriptGap(client, { agentId, sessionId }, { floor: gapFloor, signal })
+          if (result.generation !== undefined && result.generation > generation) resetGeneration(result.generation)
+          await acceptEntries(result.entries)
+          const watermark = grokSeq(result.watermark)
+          if (watermark > cursor) cursor = watermark
+          gapFloor = undefined
+        }
+        for await (const frame of client.watchTranscripts({
+          cursors: [{ agent_id: agentId, generation, after_updated_seq: cursor.toString(), session_id: sessionId }],
+          includeUnlistedAgents: false
+        }, signal)) {
+          assertCurrent()
+          const tf = asObj(frame['turn_failed'] ?? frame['turnFailed'])
+          if (tf && matchesScope(tf)) {
+            const related = str(tf['messageId'] ?? tf['message_id'] ?? tf['clientNonce'] ?? tf['client_nonce'])
+            if (related && sentId && related !== sentId && related !== echoEntryId && related !== anchor?.entryId) continue
+            turnFailed = {
+              code: str(tf['code'] ?? 'TURN_FAILED'),
+              summary: str(tf['summary'] ?? 'Grok Bot 执行该轮对话失败')
+            }
+            if (!streamsInBackground) broadcastGrokEvent({
+              type: 'turn_failed', accountId, agentId, sessionId: sessionId || undefined,
+              turnId: str(tf['turnId'] ?? tf['turn_id']) || undefined, ...turnFailed
+            })
+            break
           }
-          broadcastGrokEvent({
-            type: 'turn_failed',
-            accountId: args.accountId,
-            agentId: args.agentId,
-            sessionId: args.sessionId || undefined,
-            code: turnFailed.code,
-            summary: turnFailed.summary
-          })
-          break
-        }
-      }
-
-      // Track live agent_state so we settle quickly once `is_running` becomes false!
-      const st = (frame['agent_state'] ?? frame['agentState']) as
-        | Record<string, unknown>
-        | undefined
-      if (st) {
-        const stAgent = String(st['agentId'] ?? st['agent_id'] ?? '')
-        if (!stAgent || stAgent === args.agentId) {
-          const running = Boolean(st['isRunning'] ?? st['is_running'])
-          const composing = Boolean(st['isComposingMessage'] ?? st['is_composing_message'])
-          isAgentRunning = running || composing
-          if (!isAgentRunning && assistantBubbles.size > 0) {
-            armSettle(1_800)
-          } else if (isAgentRunning && idleSettleTimer) {
-            clearTimeout(idleSettleTimer)
+          const state = asObj(frame['agent_state'] ?? frame['agentState'])
+          if (state && matchesScope(state)) {
+            isAgentRunning = Boolean(state['isRunning'] ?? state['is_running']) ||
+              Boolean(state['isComposingMessage'] ?? state['is_composing_message'])
+            if (isAgentRunning) clearTimeout(settleTimer)
+            else if ([...bubbles.values()].some(({ entry }) => !entry.isStreaming)) armSettle(1_800)
           }
+          const cleared = asObj(frame['cleared'])
+          if (cleared && matchesScope(cleared)) {
+            const next = Number(cleared['newGeneration'] ?? cleared['new_generation'])
+            if (Number.isSafeInteger(next) && next > generation) resetGeneration(next)
+          }
+          const expired = asObj(frame['cursor_too_old'] ?? frame['cursorTooOld'])
+          if (expired && matchesScope(expired)) {
+            gapFloor = cursor
+            if (lastBackfilled !== cursor) {
+              lastBackfilled = cursor
+              cursor = 0n
+              reconnect = true
+            }
+            break
+          }
+          const rows = grokRows(frame)
+          if (!rows || !matchesScope(rows)) continue
+          const frameGeneration = Number(rows['generation'] ?? generation)
+          if (!Number.isSafeInteger(frameGeneration) || frameGeneration < generation) continue
+          if (frameGeneration > generation) {
+            if (generation !== 0) resetGeneration(frameGeneration)
+            else generation = frameGeneration
+          }
+          await acceptEntries(transcriptEntries(rows, agentId, sessionId))
         }
+      } catch (error) {
+        if (signal.aborted) break
+        assertCurrent()
+        if (error instanceof GrokConnectError && (error.status === 401 || error.status === 403)) throw error
       }
-
-      const rows =
-        (frame['rows'] as Record<string, unknown> | undefined) ??
-        (frame['Rows'] as Record<string, unknown> | undefined) ??
-        (Array.isArray(frame['entries']) ? frame : undefined)
-      if (!rows) continue
-      const isReplay = rows['replay'] === true
-      const entries = (Array.isArray(rows['entries']) ? rows['entries'] : []) as Record<
-        string,
-        unknown
-      >[]
-
-      const parsedEntries = entries
-        .map((raw) => parseGrokTranscriptEntry(raw, args.agentId, args.sessionId))
-        .filter((x): x is ParsedGrokTranscriptEntry => Boolean(x))
-      const anchorIdx =
-        isReplay && args.afterMessageId
-          ? parsedEntries.findIndex(
-              (p) => p.entryId === args.afterMessageId || p.clientNonce === args.afterMessageId
-            )
-          : -1
-
-      for (let idx = 0; idx < parsedEntries.length; idx++) {
-        let parsed = parsedEntries[idx]!
-
-        if (
-          args.afterMessageId &&
-          (parsed.entryId === args.afterMessageId || parsed.clientNonce === args.afterMessageId)
-        ) {
-          seenUserAnchor = true
-          continue
-        }
-        if (isReplay && anchorIdx >= 0 && idx < anchorIdx) continue
-
-        const entrySeq = parseBigIntSeq(parsed.updatedSeq || parsed.seq)
-        if (afterSeq > 0n && entrySeq > 0n && entrySeq <= afterSeq) continue
-
-        if (parsed.role === 'tool' && parsed.toolCall) {
-          collectedTools.set(parsed.toolCall.id, parsed.toolCall)
-          continue
-        }
-
-        if (parsed.role !== 'assistant') continue
-        if (isReplay && !parsed.isStreaming) {
-          if (afterSeq > 0n && entrySeq === 0n && !seenUserAnchor) continue
-          if (afterSeq === 0n && args.afterMessageId && !seenUserAnchor) continue
-        }
-
-        if (parsed.bodyOmitted) {
-          parsed = await hydrateOmittedEntry(client, args.agentId, args.sessionId, parsed)
-        }
-
-        const resolvedMedia = watchHandle
-          ? await watchHandle.resolveMediaUrls(
-              client,
-              args.agentId,
-              args.sessionId,
-              parsed.media
-            )
-          : parsed.media
-
-        const hasPayload =
-          Boolean(parsed.text) ||
-          Boolean(parsed.widgets?.length) ||
-          Boolean(parsed.richWidgets?.length) ||
-          Boolean(resolvedMedia?.length)
-        if (!hasPayload) continue
-
-        const msgId = `grok_${parsed.entryId}`
-        const toolsArr = collectedTools.size > 0 ? [...collectedTools.values()] : undefined
-
-        assistantBubbles.set(msgId, {
-          messageId: msgId,
-          text: parsed.text,
-          widgets: parsed.widgets,
-          richWidgets: parsed.richWidgets,
-          tools: toolsArr,
-          media: resolvedMedia
-        })
-
-        // Emit stream frame only when persistent AccountWatchController is not already
-        // streaming this account, avoiding duplicate Watch IPC broadcasts per token.
-        if (!watchHandle) {
-          broadcastGrokEvent({
-            type: 'stream',
-            accountId: args.accountId,
-            conversationId: args.conversationId,
-            agentId: args.agentId,
-            sessionId: args.sessionId || undefined,
-            messageId: msgId,
-            text: parsed.text,
-            done: !parsed.isStreaming,
-            ...(parsed.widgets?.length ? { widgets: parsed.widgets } : {}),
-            ...(parsed.richWidgets?.length ? { richWidgets: parsed.richWidgets } : {}),
-            ...(toolsArr ? { tools: toolsArr } : {}),
-            ...(resolvedMedia?.length ? { media: resolvedMedia } : {})
-          })
-        }
-
-        if (!parsed.isStreaming) {
-          armSettle(isAgentRunning ? GROK_REPLY_SETTLE_MS : 2_200)
-        } else if (idleSettleTimer) {
-          clearTimeout(idleSettleTimer)
-        }
+      if (signal.aborted || turnFailed) break
+      if (!reconnect) {
+        const ms = Math.min(20_000, Math.round(1_200 * Math.pow(1.7, failures++)))
+        await delay(ms, undefined, { signal }).catch(() => undefined)
       }
     }
-  } catch (error) {
-    if (!ac.signal.aborted && assistantBubbles.size === 0 && !turnFailed) {
-      throw error
-    }
+    args.signal?.throwIfAborted()
+    if (revision !== grokCredentialRevision(accountId)) throw new DOMException('Grok credentials changed', 'AbortError')
+    const messages = [...bubbles.values()].filter(({ entry }) => !entry.isStreaming)
+      .sort((a, b) => compareGrokEntries(a.entry, b.entry)).map(({ bubble }) => bubble)
+    return { ...messages.at(-1), text: messages.at(-1)?.text ?? '', messages, turnFailed, echoEntryId }
   } finally {
+    ac.abort()
     clearTimeout(timer)
-    if (idleSettleTimer) clearTimeout(idleSettleTimer)
-  }
-
-  const all = [...assistantBubbles.values()]
-  const last = all[all.length - 1]
-  const toolsArr = collectedTools.size > 0 ? [...collectedTools.values()] : undefined
-  return {
-    text: last?.text ?? '',
-    messageId: last?.messageId,
-    messages: all,
-    widgets: last?.widgets,
-    richWidgets: last?.richWidgets,
-    tools: last?.tools ?? toolsArr,
-    media: last?.media,
-    turnFailed
+    clearTimeout(settleTimer)
   }
 }
 
@@ -490,8 +462,19 @@ async function downloadGrokArtifact(
 }
 
 /** One attempt of a typed Grok RPC. */
-async function runGrokRpcOnce(request: GrokRpcRequest): Promise<GrokRpcResponse> {
+async function runGrokRpcOnce(
+  request: Exclude<GrokRequest, { op: 'cancelRequest' }>,
+  context: { revision: number; accessToken?: string },
+  signal?: AbortSignal
+): Promise<GrokRpcResponse> {
   try {
+    const assertCurrent = () => {
+      signal?.throwIfAborted()
+      if (context.revision !== grokCredentialRevision(request.accountId)) {
+        throw new DOMException('Grok credentials changed', 'AbortError')
+      }
+    }
+    assertCurrent()
     const defaultSession = ''
 
     if (request.op === 'stopWatch') {
@@ -504,6 +487,7 @@ async function runGrokRpcOnce(request: GrokRpcRequest): Promise<GrokRpcResponse>
         accountId: request.accountId,
         agentIds: request.agentIds,
         conversationMap: request.conversationMap,
+        targets: request.targets,
         createClient: () => clientForGrokAccount(request.accountId, request.timeZone),
         emit: broadcastGrokEvent
       })
@@ -522,7 +506,8 @@ async function runGrokRpcOnce(request: GrokRpcRequest): Promise<GrokRpcResponse>
     }
 
     const client = await clientForGrokAccount(request.accountId, request.timeZone)
-    const auth = await resolveClientAuth(request.accountId)
+    assertCurrent()
+    context.accessToken = client.accessToken
 
     switch (request.op) {
       case 'listAgents': {
@@ -530,6 +515,7 @@ async function runGrokRpcOnce(request: GrokRpcRequest): Promise<GrokRpcResponse>
           role: request.role,
           includeTeamAgents: request.includeTeamAgents
         })) as Record<string, unknown> | null
+        assertCurrent()
         const agents = Array.isArray(data?.['agents'])
           ? (data['agents'] as Array<Record<string, unknown>>)
           : []
@@ -595,23 +581,26 @@ async function runGrokRpcOnce(request: GrokRpcRequest): Promise<GrokRpcResponse>
               fileName: att.name,
               mimeType: att.mimeType,
               bytes: Buffer.from(att.dataBase64, 'base64')
-            })
+            }, signal)
+            assertCurrent()
             attachmentPaths.push(uploaded.alias)
             attachmentNames.push(uploaded.fileName)
           }
         }
+        assertCurrent()
         const data = await client.sendUserMessage({
           agentId: request.agentId,
           messageId: request.messageId,
           text: request.text,
           sessionId: request.sessionId ?? defaultSession,
-          machineId: request.machineId ?? auth.machineId,
+          machineId: request.machineId ?? client.machineId,
           sentAtMs: request.sentAtMs,
           replyToId: request.replyToId,
           replyQuote: request.replyQuote,
           attachmentPaths,
           attachmentNames
-        })
+        }, signal)
+        assertCurrent()
 
         // Inspect 0.79.3 `SendGrokBotUserMessageResponse` refusal / delivery!
         const delivery = data['delivery']
@@ -646,57 +635,48 @@ async function runGrokRpcOnce(request: GrokRpcRequest): Promise<GrokRpcResponse>
         return { ok: true, data }
       }
       case 'listTranscriptEntries': {
-        const rawPage = (await client.listTranscriptEntries({
+        const sessionId = request.sessionId ?? defaultSession
+        const rawPage = asObj(await client.listTranscriptEntries({
           agentId: request.agentId,
-          sessionId: request.sessionId ?? defaultSession,
+          sessionId,
           limit: request.limit,
           beforeSeq: request.beforeSeq
-        })) as Record<string, unknown>
+        }, signal)) ?? {}
+        assertCurrent()
+        if (request.watermarkOnly) return { ok: true, data: rawPage }
 
-        // Also return pre-decoded, chronological `hydrated` entries with resolved presigned media!
-        const entries = Array.isArray(rawPage['entries'])
-          ? (rawPage['entries'] as Array<Record<string, unknown>>)
-          : []
         const watchHandle = ensureGrokAccountWatch({
           accountId: request.accountId,
-          agentIds: [request.agentId],
+          targets: [{ agentId: request.agentId, sessionId }],
           createClient: () => clientForGrokAccount(request.accountId, request.timeZone),
           emit: broadcastGrokEvent
         })
-        const parsedList = entries
-          .map((r) =>
-            parseGrokTranscriptEntry(r, request.agentId, request.sessionId ?? defaultSession)
-          )
-          .filter((x): x is NonNullable<typeof x> => Boolean(x))
-        parsedList.sort((a, b) => {
-          try {
-            const sa = BigInt(a.seq || '0')
-            const sb = BigInt(b.seq || '0')
-            if (sa !== sb) return sa < sb ? -1 : 1
-          } catch {
-            /* fallback */
-          }
-          return a.createdAtMs - b.createdAtMs
-        })
+        const parsedList = transcriptEntries(rawPage, request.agentId, sessionId).sort(compareGrokEntries)
 
         const hydrated: Array<Record<string, unknown>> = []
         let pendingTools: MuseToolCallView[] = []
         for (const rawItem of parsedList) {
-          const item = rawItem.bodyOmitted
-            ? await hydrateOmittedEntry(client, request.agentId, request.sessionId ?? defaultSession, rawItem)
-            : rawItem
+          assertCurrent()
+          const item = await hydrateGrokEntry(client, request.agentId, sessionId, rawItem, signal)
           if (item.role === 'tool' && item.toolCall) {
             pendingTools.push(item.toolCall)
             continue
           }
+          if (item.role !== 'user' && item.role !== 'assistant') continue
           const media = await watchHandle.resolveMediaUrls(
             client,
             request.agentId,
-            request.sessionId ?? defaultSession,
-            item.media
+            sessionId,
+            item.media,
+            signal
           )
+          assertCurrent()
           hydrated.push({
             id: item.role === 'assistant' ? `grok_${item.entryId}` : item.entryId,
+            clientNonce: item.clientNonce,
+            requestId: item.requestId,
+            seq: item.seq,
+            isStreaming: item.isStreaming,
             role: item.role === 'user' ? 'user' : 'bot',
             text: item.text,
             createdAt: item.createdAtMs,
@@ -920,7 +900,8 @@ async function runGrokRpcOnce(request: GrokRpcRequest): Promise<GrokRpcResponse>
           sessionId: request.sessionId ?? defaultSession,
           afterUpdatedSeq: request.afterUpdatedSeq,
           afterMessageId: request.afterMessageId,
-          timeoutMs: request.timeoutMs
+          timeoutMs: request.timeoutMs,
+          signal
         })
         return { ok: true, data }
       }
@@ -929,6 +910,7 @@ async function runGrokRpcOnce(request: GrokRpcRequest): Promise<GrokRpcResponse>
           throw new Error('Invalid Grok ConnectRPC method name')
         }
         const data = await client.unary(request.method, request.params ?? {}, request.service)
+        assertCurrent()
         return { ok: true, data }
       }
       default: {
@@ -946,18 +928,13 @@ async function runGrokRpcOnce(request: GrokRpcRequest): Promise<GrokRpcResponse>
 }
 
 /** Dispatch a typed Grok RPC; on 401 refresh sand token once and retry. */
-export async function runGrokRpc(request: GrokRpcRequest): Promise<GrokRpcResponse> {
-  const first = await runGrokRpcOnce(request)
-  if (first.ok || first.status !== 401) return first
-  const refreshed = await forceRefreshSandAccessToken(request.accountId).catch(() => null)
-  if (!refreshed?.accessToken) return first
-  const stored = getGrokMainAuth(request.accountId)
-  setGrokMainAuth({
-    accountId: request.accountId,
-    accessToken: refreshed.accessToken,
-    accountSlot: stored?.accountSlot,
-    teamId: refreshed.selectedTeamId ?? stored?.teamId,
-    machineId: stored?.machineId ?? getOrCreateGrokMachineId(request.accountId)
-  })
-  return runGrokRpcOnce(request)
+export async function runGrokRpc(request: Exclude<GrokRequest, { op: 'cancelRequest' }>, signal?: AbortSignal): Promise<GrokRpcResponse> {
+  const context: { revision: number; accessToken?: string } = { revision: grokCredentialRevision(request.accountId) }
+  const credentialSignal = activeGrokCredentialSignal(request.accountId)
+  const scopedSignal = signal ? AbortSignal.any([signal, credentialSignal]) : credentialSignal
+  const first = await runGrokRpcOnce(request, context, scopedSignal)
+  if (first.ok || first.status !== 401 || scopedSignal.aborted || !context.accessToken) return first
+  const refreshed = await forceRefreshSandAccessToken(request.accountId, undefined, context.accessToken, context.revision).catch(() => undefined)
+  if (!refreshed || scopedSignal.aborted || context.revision !== grokCredentialRevision(request.accountId)) return first
+  return runGrokRpcOnce(request, context, scopedSignal)
 }

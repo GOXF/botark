@@ -1,13 +1,33 @@
 import type { AdapterEvent } from '@adapters/types'
 import type { Bot } from '@/types'
 
+export function getEventBot(
+  bots: readonly Bot[],
+  accountId: string,
+  conversationId?: string,
+  sessionId?: string
+): Bot | undefined {
+  if (conversationId?.startsWith('room-turn-')) return
+  const matches = (bot: Bot) => bot.activeAccountId === accountId &&
+    (!sessionId || !bot.activeSessionId || bot.activeSessionId === sessionId)
+  // Adapters use accountId only when there is no explicit bot ID.
+  return conversationId && conversationId !== accountId
+    ? bots.find((bot) => bot.id === conversationId && matches(bot))
+    : bots.find(matches)
+}
+
 export function belongsToSelectedSession(event: AdapterEvent, bots: Bot[]): boolean {
-  const source = event.type === 'message' ? event.message : event
-  if ('conversationId' in source && source.conversationId.startsWith('room-turn-')) return false
-  if (!('sessionId' in source) || !source.sessionId) return true
-  const bot = 'conversationId' in source
-    ? bots.find((b) => b.id === source.conversationId)
-    : bots.find((b) => b.activeAccountId === source.accountId)
-  return !!bot && bot.activeAccountId === source.accountId &&
-    (!bot.activeSessionId || bot.activeSessionId === source.sessionId)
+  switch (event.type) {
+    case 'message': {
+      const message = event.message
+      return Boolean(getEventBot(bots, message.accountId, message.conversationId, message.sessionId))
+    }
+    case 'typing':
+    case 'message_delta':
+      return Boolean(getEventBot(bots, event.accountId, event.conversationId, event.sessionId))
+    case 'activity':
+      return Boolean(getEventBot(bots, event.accountId, undefined, event.sessionId))
+    default:
+      return true
+  }
 }

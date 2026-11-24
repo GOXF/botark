@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from 'vitest'
 import { createAttachmentDraft } from './attachmentDraft'
+import { renderToStaticMarkup } from 'react-dom/server'
+import { createElement } from 'react'
+import { createInlineLinkScanner, MarkdownText } from './MarkdownText'
 
 describe('attachment drafts', () => {
   it('blocks sending immediately and preserves selection order across overlapping reads', async () => {
@@ -57,5 +60,95 @@ describe('attachment drafts', () => {
     await first
 
     expect(draft.forSend()).toMatchObject([{ name: 'new.txt' }])
+  })
+
+  it('uses a browser data URL read and keeps the base64 payload only', async () => {
+    let finish!: () => void
+    const file = new File(['audio'], 'sample.wav')
+    const arrayBuffer = vi.spyOn(file, 'arrayBuffer')
+    class Reader {
+      result: string | null = null
+      onload?: () => void
+      readAsDataURL() {
+        finish = () => {
+          this.result = 'data:audio/wav;base64,YXVkaW8='
+          this.onload?.()
+        }
+      }
+    }
+    vi.stubGlobal('FileReader', Reader)
+    try {
+      const draft = createAttachmentDraft(() => undefined)
+      const reading = draft.add([file])
+      expect(draft.forSend()).toBeNull()
+      finish()
+      await reading
+      expect(arrayBuffer).not.toHaveBeenCalled()
+      expect(draft.forSend()).toMatchObject([{ name: 'sample.wav', mimeType: 'audio/wav', dataBase64: 'YXVkaW8=' }])
+    } finally {
+      vi.unstubAllGlobals()
+      arrayBuffer.mockRestore()
+    }
+  })
+
+  it('joins multiple encoding chunks without adding padding in the middle', async () => {
+    const bytes = Uint8Array.from({ length: 51_200 }, (_, i) => i % 256)
+    const draft = createAttachmentDraft(() => undefined)
+    await draft.add([new File([bytes], 'chunked.dat')])
+    expect(draft.forSend()?.[0]?.dataBase64).toBe(Buffer.from(bytes).toString('base64'))
+  })
+})
+
+describe('Markdown inline parsing', () => {
+  it('scans 64,000 unmatched opening brackets in under 5 ms', () => {
+    const unmatched = '['.repeat(64_000)
+    const markdown = (text: string) => renderToStaticMarkup(createElement(MarkdownText, { text }))
+    markdown('**bold** [link](https://example.test)')
+    const start = performance.now()
+    const link = createInlineLinkScanner(unmatched)(0)
+    const markup = markdown(unmatched)
+    const elapsed = performance.now() - start
+    expect(link).toBeNull()
+    expect(elapsed).toBeLessThan(5)
+    expect(markup).toContain(unmatched)
+  })
+
+  it('preserves link and image rendering alongside code, emphasis, tables, lists and quotes', () => {
+    const text = [
+      '`[literal](https://literal.test)` and **[link](https://example.test)** and *italic* ~~strike~~',
+      '`[` [outside](https://outside.test)',
+      '',
+      '![image](https://example.test/a.png) ![](https://example.test/b.png) []() [unfinished',
+      'drop [[hatch_widget:hidden]] keep [[hatch_widget:unfinished',
+      '',
+      '| Heading |',
+      '| --- |',
+      '| table value |',
+      '',
+      '> quoted',
+      '',
+      '- listed',
+      '',
+      '```ts',
+      'const val = 1',
+      '```'
+    ].join('\n')
+    const markup = renderToStaticMarkup(createElement(MarkdownText, { text }))
+    expect(markup).toContain('[literal](https://literal.test)')
+    expect(markup).not.toContain('href="https://literal.test"')
+    expect(markup).toContain('href="https://example.test"')
+    expect(markup).toContain('href="https://outside.test"')
+    expect(markup).toContain('>outside</a>')
+    expect(markup).toContain('<strong')
+    expect(markup).toContain('<em')
+    expect(markup).toContain('<del')
+    expect(markup).toContain('alt="image"')
+    expect(markup).toContain('alt=""')
+    expect(markup).toContain('[]() [unfinished')
+    expect(markup).toContain('drop  keep [[hatch_widget:unfinished')
+    expect(markup).toContain('<table')
+    expect(markup).toContain('<blockquote')
+    expect(markup).toContain('<ul')
+    expect(markup).toContain('<code>const val = 1</code>')
   })
 })

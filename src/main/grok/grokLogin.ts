@@ -9,15 +9,15 @@ import {
 } from '../googleOAuthUaGuard'
 import { applyProxyToPartition } from '../muse/accountProxy'
 import { partitionForAccount } from '../webContentsViewManager'
-import { setGrokMainAuth } from './grokAuthStore'
 import { getOrCreateGrokMachineId } from './grokMachineId'
 import {
   createPkce,
   createSandPollWake,
   extractAccountHandleFromJwt,
+  grokCredentialRevision,
   parseWorkosCookieOrToken,
-  persistSandTokens,
   pollSandAuth,
+  replaceGrokCredentials,
   sandLoginUrl
 } from './grokSandAuth'
 
@@ -86,6 +86,10 @@ export function cancelGrokLogin(accountId: string): void {
   flight.cancel(true)
 }
 
+export function cancelAllGrokLogins(): void {
+  for (const accountId of activeLogins.keys()) cancelGrokLogin(accountId)
+}
+
 /**
  * Open Grok Bot official PKCE login (`loginDeepControl?redirectTarget=sand`) and poll
  * `api2.cursor.sh/auth/poll` via `proxyFetch` (system-proxy & per-account-proxy aware).
@@ -109,13 +113,18 @@ export async function openGrokLoginWindow(
     existing.wake()
     return
   }
-  if (existing) {
-    existing.cancel(true)
-    activeLogins.delete(accountId)
-  }
+  if (existing) cancelGrokLogin(accountId)
 
-  // Enforce per-account proxy (or system proxy mode) BEFORE loading any network URL.
-  await applyProxyToPartition(accountId)
+  const revision = grokCredentialRevision(accountId)
+  const flight: ActiveLoginFlight = { cancel: () => undefined, wake: () => undefined }
+  activeLogins.set(accountId, flight)
+  try {
+    await applyProxyToPartition(accountId)
+  } catch (error) {
+    if (activeLogins.get(accountId) === flight) activeLogins.delete(accountId)
+    throw error
+  }
+  if (activeLogins.get(accountId) !== flight) return
 
   const partition = partitionForAccount(accountId)
   const ses = electronSession.fromPartition(partition)
@@ -161,46 +170,25 @@ export async function openGrokLoginWindow(
     if (settling || aborted) return
     if (!accessToken || accessToken.length < 20) return
     settling = true
-    activeLogins.delete(accountId)
+    if (activeLogins.get(accountId) === flight) activeLogins.delete(accountId)
     cleanupTimersAndPopups()
 
     const resolvedSlot =
       extractAccountHandleFromJwt(accessToken) ?? finishOpts.accountSlot
 
-    setGrokMainAuth({
-      accountId,
-      accessToken,
-      accountSlot: resolvedSlot,
-      teamId: finishOpts.teamId,
-      machineId
+    const authKind = finishOpts.authKind ?? (finishOpts.fromPkce ? 'cursor' : 'web')
+    void replaceGrokCredentials(accountId, () => ({
+      accessToken, refreshToken: finishOpts.refreshToken, authId: resolvedSlot,
+      selectedTeamId: finishOpts.teamId, xaiIssuer: finishOpts.xaiIssuer,
+      xaiClientId: finishOpts.xaiClientId, expiresAtMs: finishOpts.expiresAtMs, authKind
+    }), {
+      expectedRevision: revision, machineId,
+      committed: () => captureListener?.({
+        accountId, signedIn: true, accountSlot: resolvedSlot, teamId: finishOpts.teamId, machineId, authKind
+      })
+    }).catch((error) => console.error('[grok] auth capture failed', error)).finally(() => {
+      if (win && !win.isDestroyed()) win.close()
     })
-    if (finishOpts.fromPkce || finishOpts.refreshToken || finishOpts.authKind) {
-      void persistSandTokens(accountId, {
-        accessToken,
-        refreshToken: finishOpts.refreshToken,
-        authId: resolvedSlot,
-        selectedTeamId: finishOpts.teamId,
-        xaiIssuer: finishOpts.xaiIssuer,
-        xaiClientId: finishOpts.xaiClientId,
-        expiresAtMs: finishOpts.expiresAtMs,
-        authKind: finishOpts.authKind ?? 'cursor'
-      }).catch((err) => console.warn('[grok] safeStorage persist failed', err))
-    }
-
-    const payload: GrokAuthCaptured = {
-      accountId,
-      signedIn: true,
-      accountSlot: resolvedSlot,
-      teamId: finishOpts.teamId,
-      machineId,
-      authKind: finishOpts.authKind ?? (finishOpts.fromPkce ? 'cursor' : 'web')
-    }
-    try {
-      captureListener?.(payload)
-    } catch (error) {
-      console.error('[grok] auth capture listener failed', error)
-    }
-    if (win && !win.isDestroyed()) win.close()
   }
 
   const cancel = (silent = false) => {
@@ -219,6 +207,8 @@ export async function openGrokLoginWindow(
       }
     }
   }
+  flight.cancel = cancel
+  flight.wake = () => pollWake.wake()
 
   // Primary path: official PKCE /auth/poll via account/system proxy
   void pollSandAuth(uuid, verifier, {
@@ -250,10 +240,6 @@ export async function openGrokLoginWindow(
 
   // System default browser mode: open external browser + poll in background
   if (opts.openInBrowser) {
-    activeLogins.set(accountId, {
-      cancel,
-      wake: () => pollWake.wake()
-    })
     await shell.openExternal(deepUrl)
     return
   }
@@ -278,11 +264,7 @@ export async function openGrokLoginWindow(
     }
   })
 
-  activeLogins.set(accountId, {
-    win,
-    cancel,
-    wake: () => pollWake.wake()
-  })
+  flight.win = win
 
   const guardDeepLinks = (wc: WebContents): void => {
     const intercept = (event: Electron.Event, url: string) => {
@@ -470,7 +452,7 @@ export async function openGrokLoginWindow(
     const wasSettling = settling
     const wasSilent = silentAbort
     aborted = true
-    activeLogins.delete(accountId)
+    if (activeLogins.get(accountId) === flight) activeLogins.delete(accountId)
     cleanupTimersAndPopups()
     pollWake.wake()
 

@@ -9,6 +9,7 @@ import { cn } from '@/lib/cn'
 import { cleanSidebarError, isOnlineAccountStatus } from '@/lib/sidebarCompat'
 import { useBotStore } from '@/store/botStore'
 import { t } from '@/lib/i18n'
+import type { MuseWorkspaceFile } from '../../../../main/muse-native/fs'
 
 type Filter = 'all' | 'pinned' | 'artifact' | 'library'
 const FILTERS: ReadonlyArray<[Filter, string]> = [
@@ -78,13 +79,15 @@ function decodeBase64Utf8(b64: string): string {
 
 function InlineFilePreview({ accountId, file }: { accountId: string; file: MuseFileEntryView }) {
   const [loading, setLoading] = useState(false)
-  const [preview, setPreview] = useState<{ mimeType: string; dataBase64?: string; text?: string } | null>(null)
+  const [preview, setPreview] = useState<{ mimeType: string; dataBase64?: string; text?: string; truncated?: boolean } | null>(null)
   const [err, setErr] = useState<string>()
+  const [downloading, setDownloading] = useState(false)
+  const [downloadError, setDownloadError] = useState<string>()
+  const path = file.path || (file.id.includes('/') ? file.id : '')
 
   const load = useCallback(async () => {
     const muse = getBridge()?.muse
     if (!muse) return
-    const path = file.path || (file.id.includes('/') ? file.id : '')
     if (!path) {
       setErr(t('Preview unavailable'))
       return
@@ -93,7 +96,7 @@ function InlineFilePreview({ accountId, file }: { accountId: string; file: MuseF
     setErr(undefined)
     try {
       if (muse.previewWorkspaceFile) {
-        const res = await muse.previewWorkspaceFile(accountId, path)
+        const res: Awaited<ReturnType<typeof muse.previewWorkspaceFile>> & { truncated?: boolean } = await muse.previewWorkspaceFile(accountId, path)
         const mt = (res.mimeType || file.mimeType || '').toLowerCase()
         const isText =
           mt.startsWith('text/') ||
@@ -101,10 +104,12 @@ function InlineFilePreview({ accountId, file }: { accountId: string; file: MuseF
           mt.includes('xml') ||
           mt.includes('javascript') ||
           /\.(md|txt|json|py|ts|tsx|js|jsx|sh|yaml|yml|toml|html|css|csv|log)$/i.test(file.name)
+        const text = isText ? decodeBase64Utf8(res.dataBase64) : undefined
         setPreview({
           mimeType: res.mimeType || file.mimeType || 'application/octet-stream',
           dataBase64: res.dataBase64,
-          text: isText ? decodeBase64Utf8(res.dataBase64).slice(0, 60_000) : undefined
+          text: text?.slice(0, 60_000),
+          truncated: Boolean(res.truncated || (text && text.length > 60_000))
         })
         return
       }
@@ -113,10 +118,12 @@ function InlineFilePreview({ accountId, file }: { accountId: string; file: MuseF
         const o = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {}
         const content = typeof o['content'] === 'string' ? (o['content'] as string) : typeof o['text'] === 'string' ? (o['text'] as string) : ''
         const b64 = typeof o['data_base64'] === 'string' ? (o['data_base64'] as string) : undefined
+        const text = content || (b64 ? decodeBase64Utf8(b64) : JSON.stringify(raw, null, 2) || '')
         setPreview({
           mimeType: file.mimeType || 'text/plain',
           dataBase64: b64,
-          text: content || (b64 ? decodeBase64Utf8(b64).slice(0, 60_000) : JSON.stringify(raw, null, 2).slice(0, 20_000))
+          text: text.slice(0, 60_000),
+          truncated: o['truncated'] === true || text.length > 60_000
         })
       }
     } catch (e) {
@@ -124,55 +131,58 @@ function InlineFilePreview({ accountId, file }: { accountId: string; file: MuseF
     } finally {
       setLoading(false)
     }
-  }, [accountId, file.id, file.mimeType, file.name, file.path])
+  }, [accountId, file.mimeType, file.name, path])
 
   useEffect(() => {
     void load()
   }, [load])
 
-  const downloadFile = () => {
-    if (!preview?.dataBase64 && !preview?.text) return
-    let blob: Blob
-    if (preview.dataBase64) {
-      const bin = atob(preview.dataBase64)
+  const downloadFile = async () => {
+    const muse = getBridge()?.muse
+    if (!muse?.rpc || !path) return
+    setDownloading(true)
+    setDownloadError(undefined)
+    try {
+      const fileData = await muse.rpc({ accountId, method: 'workspace.download', params: { path } }) as MuseWorkspaceFile
+      if (!fileData || fileData.truncated !== false || typeof fileData.dataBase64 !== 'string' ||
+          !Number.isSafeInteger(fileData.byteLength) || fileData.byteLength < 0) {
+        throw new Error('Muse did not return the complete file')
+      }
+      const bin = atob(fileData.dataBase64)
+      if (bin.length !== fileData.byteLength) throw new Error('Muse returned an incomplete file')
       const bytes = new Uint8Array(bin.length)
       for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i)
-      blob = new Blob([bytes], { type: preview.mimeType || 'application/octet-stream' })
-    } else {
-      blob = new Blob([preview.text || ''], { type: 'text/plain;charset=utf-8' })
+      const blob = new Blob([bytes], { type: fileData.mimeType || 'application/octet-stream' })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = file.name || 'download'
+      a.click()
+      setTimeout(() => URL.revokeObjectURL(url), 2000)
+    } catch (error) {
+      setDownloadError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setDownloading(false)
     }
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = file.name || 'download'
-    a.click()
-    setTimeout(() => URL.revokeObjectURL(url), 2000)
   }
 
   const setActiveDocument = useBotStore((s) => s.setActiveDocument)
 
-  if (loading) {
-    return <p className="col-span-2 pt-1 text-ink-muted">{t('Loading preview…')}</p>
-  }
-  if (err || !preview) {
-    return <p className="col-span-2 pt-1 text-ink-muted">{err || t('Preview unavailable')}</p>
-  }
-
-  const mt = preview.mimeType.toLowerCase()
+  const mt = preview?.mimeType.toLowerCase() ?? ''
   return (
     <div className="col-span-2 mt-1.5 flex flex-col gap-1.5 border-t border-line pt-2">
       <div className="flex items-center justify-between">
         <span className="text-[11px] font-medium text-ink-secondary">{t('Preview')}</span>
         <div className="flex items-center gap-1">
-          <button
+          {preview && <button
             type="button"
             onClick={() =>
               setActiveDocument({
                 accountId,
                 title: file.name,
                 path: file.path || file.id,
-                markdown: mt.includes('markdown') || file.name.endsWith('.md') ? preview.text : undefined,
-                html: mt.includes('html') || file.name.endsWith('.html') ? preview.text : undefined,
+                markdown: !preview.truncated && (mt.includes('markdown') || file.name.endsWith('.md')) ? preview.text : undefined,
+                html: !preview.truncated && (mt.includes('html') || file.name.endsWith('.html')) ? preview.text : undefined,
                 mimeType: preview.mimeType,
                 platformId: 'meta-muse'
               })
@@ -180,17 +190,24 @@ function InlineFilePreview({ accountId, file }: { accountId: string; file: MuseF
             className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-medium text-accent-600 hover:bg-surface"
           >
             画布打开
-          </button>
+          </button>}
           <button
             type="button"
-            onClick={downloadFile}
+            disabled={downloading || !path}
+            onClick={() => void downloadFile()}
             className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-medium text-accent-600 hover:bg-surface"
           >
-            <Download className="size-3" /> {t('Download')}
+            <Download className="size-3" /> {downloading ? t('Downloading…') : t('Download')}
           </button>
         </div>
       </div>
-      {mt.startsWith('image/') && preview.dataBase64 ? (
+      {downloadError && <p className="text-status-error" role="alert">{downloadError}</p>}
+      {preview?.truncated && <p className="text-ink-muted">{t('Preview truncated. Download the full file.')}</p>}
+      {loading ? (
+        <p className="text-ink-muted">{t('Loading preview…')}</p>
+      ) : err || !preview ? (
+        <p className="text-ink-muted">{err || t('Preview unavailable')}</p>
+      ) : mt.startsWith('image/') && preview.dataBase64 ? (
         <img
           src={`data:${preview.mimeType};base64,${preview.dataBase64}`}
           alt={file.name}
@@ -213,6 +230,10 @@ function InlineFilePreview({ accountId, file }: { accountId: string; file: MuseF
 
 /** Muse Library & Artifacts: search (local + fs.search), filter chips, remote/local pins, inline preview, and delete. */
 export function FilesSection({ accountId }: { accountId: string }) {
+  return <AccountFilesSection key={accountId} accountId={accountId} />
+}
+
+function AccountFilesSection({ accountId }: { accountId: string }) {
   const [items, setItems] = useState<MuseFileEntryView[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string>()
@@ -222,7 +243,7 @@ export function FilesSection({ accountId }: { accountId: string }) {
   const [pins, setPins] = useState<Set<string>>(() => loadPins(accountId))
   const [confirmDelete, setConfirmDelete] = useState<string>()
   const [busyKey, setBusyKey] = useState<string>()
-  const status = useBotStore((s) => s.accounts[accountId]?.status)
+  const connected = useBotStore((s) => isOnlineAccountStatus(s.accounts[accountId]?.status))
 
   const refresh = useCallback(async () => {
     const muse = getBridge()?.muse
@@ -239,8 +260,8 @@ export function FilesSection({ accountId }: { accountId: string }) {
   }, [accountId])
 
   useEffect(() => {
-    if (isOnlineAccountStatus(status)) void refresh()
-  }, [refresh, status])
+    if (connected) void refresh()
+  }, [refresh, connected])
 
   useEffect(() => {
     const muse = getBridge()?.muse
@@ -418,7 +439,7 @@ export function FilesSection({ accountId }: { accountId: string }) {
                         </dd>
                       </>
                     )}
-                    <InlineFilePreview accountId={accountId} file={f} />
+                    <InlineFilePreview key={JSON.stringify([accountId, f.id, f.path])} accountId={accountId} file={f} />
                   </dl>
                 )}
               </li>

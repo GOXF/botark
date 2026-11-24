@@ -19,7 +19,7 @@ import { STATUS_LABEL } from '@/components/ui/Status'
 import { cn } from '@/lib/cn'
 import { useBotStore } from '@/store/botStore'
 import type { Bot, BotAccount } from '@/types'
-import { t } from '@/lib/i18n'
+import { useT } from '@/lib/i18n'
 
 interface AccountListProps {
   bot: Bot
@@ -27,13 +27,13 @@ interface AccountListProps {
 }
 
 const LOGIN_CTA_LABEL: Record<PlatformId, string> = {
-  'meta-muse': '使用 Muse 登录',
-  grok: '使用 Grok Bot 登录',
-  hark: '使用 Hark 登录',
-  dot: '使用 ChatGPT Dot 登录',
-  hermes: '配置 Hermes 连接',
-  antigravity: '使用 Antigravity 登录',
-  cue: '使用 Cue 登录'
+  'meta-muse': 'Sign in with Muse',
+  grok: 'Sign in with Grok Bot',
+  hark: 'Sign in with Hark',
+  dot: 'Sign in with ChatGPT Dot',
+  hermes: 'Configure Hermes connection',
+  antigravity: 'Sign in with Antigravity',
+  cue: 'Sign in with Cue'
 }
 
 /**
@@ -41,6 +41,7 @@ const LOGIN_CTA_LABEL: Record<PlatformId, string> = {
  * sending account; signed-out accounts on all 4 platforms offer 1-click login.
  */
 export function AccountList({ bot, accounts }: AccountListProps) {
+  const t = useT()
   const setActiveAccount = useBotStore((s) => s.setActiveAccount)
   const connectAccount = useBotStore((s) => s.connectAccount)
   const disconnectAccount = useBotStore((s) => s.disconnectAccount)
@@ -163,7 +164,7 @@ export function AccountList({ bot, accounts }: AccountListProps) {
               )}
               <Menu onOpenChange={(open) => !open && setConfirmRemove(null)}>
                 <MenuTrigger
-                  aria-label={`Actions for ${name}`}
+                  aria-label={t('Actions for {name}', { name })}
                   disabled={account.pending}
                   className={cn(
                     'press-icon absolute inset-0 grid place-items-center rounded-full text-ink-secondary hover:bg-hover hover:text-ink',

@@ -127,6 +127,50 @@ describe('hermesClient protocol helpers', () => {
     expect(parser.flush()).toEqual([{ event: 'done', data: '{}' }])
   })
 
+  it('caps unfinished SSE frames across chunks and lines', () => {
+    const parser = new SseParser()
+    expect(parser.feed('data: ' + 'x'.repeat(9 * 1024 * 1024) + '\n')).toEqual([])
+    expect(() => parser.feed('data: ' + 'x'.repeat(8 * 1024 * 1024))).toThrow('SSE')
+  })
+
+  it.each([
+    { stream: streamNativeSessionTurn, terminal: 'event: run.completed\ndata: {}\n\n' },
+    { stream: streamOpenAICompatTurn, terminal: 'data: [DONE]\n\n' },
+    { stream: streamOpenAICompatTurn, terminal: 'data: {"choices":[{"finish_reason":"stop"}]}\n\n' }
+  ])('settles both stream formats at their terminal markers before EOF', async ({ stream, terminal }) => {
+    const cancel = vi.fn()
+    const response = new Response(new ReadableStream<Uint8Array>({
+      start: (controller) => controller.enqueue(new TextEncoder().encode(terminal)),
+      cancel
+    }))
+    const onDelta = vi.fn()
+    await stream({
+      accountId: 'fixture', baseUrl: 'http://127.0.0.1:8642',
+      sessionId: 'session', sessionKey: 'fixture', userContent: 'Hello',
+      controller: new AbortController(), callbacks: { onDelta }, fetchImpl: async () => response
+    })
+    expect(cancel).toHaveBeenCalledOnce()
+    expect(onDelta).toHaveBeenCalledWith(expect.objectContaining({ done: true, sessionId: 'session' }))
+  })
+
+  it('rejects run.failed after partial text even with an open connection', async () => {
+    const cancel = vi.fn()
+    const response = new Response(new ReadableStream<Uint8Array>({
+      start: (controller) => controller.enqueue(new TextEncoder().encode(
+        'event: assistant.delta\ndata: {"delta":"partial text"}\n\nevent: run.failed\ndata: {"message":"Fixture failed"}\n\n'
+      )),
+      cancel
+    }))
+    const onDelta = vi.fn()
+    await expect(streamNativeSessionTurn({
+      accountId: 'fixture', baseUrl: 'http://127.0.0.1:8642',
+      sessionId: 'session', sessionKey: 'fixture', userContent: 'Hello',
+      controller: new AbortController(), callbacks: { onDelta }, fetchImpl: async () => response
+    })).rejects.toMatchObject({ code: 'run_failed', message: 'Fixture failed' })
+    expect(cancel).toHaveBeenCalledOnce()
+    expect(onDelta.mock.calls.map(([delta]) => delta.done)).toEqual([false])
+  })
+
   it('maps Hermes session transcript rows including tool calls', () => {
     const msgs = mapHermesTranscriptMessages([
       { id: 1, role: 'user', content: 'check disk', timestamp: 1700000000 },
@@ -151,6 +195,13 @@ describe('hermesClient protocol helpers', () => {
 })
 
 describe('probeHermesServer', () => {
+  it.each([404, 502, 200])('requires a valid authentication endpoint response (HTTP %s)', async (status) => {
+    const fetchImpl: typeof fetch = async (input) => String(input).endsWith('/health')
+      ? Response.json({ status: 'ok' })
+      : Response.json({}, { status })
+    await expect(probeHermesServer({ baseUrl: 'http://127.0.0.1:8642', fetchImpl }))
+      .resolves.toMatchObject({ reachable: true, authenticated: false })
+  })
   it('succeeds against healthy authenticated Hermes API server', async () => {
     const mockFetch: typeof fetch = async (input, init) => {
       const url = String(input)

@@ -1,5 +1,8 @@
+import { once } from 'node:events'
+import { createServer, request, type IncomingMessage, type RequestListener } from 'node:http'
 import { createSecureServer, type Http2SecureServer } from 'node:http2'
 import { createServer as createNetServer, connect, type AddressInfo, type Server as NetServer } from 'node:net'
+import { gunzipSync, gzipSync } from 'node:zlib'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { closeAllLocalProxyBridges, ensureLocalProxyBridge } from './localProxyBridge'
 import { proxyFetch } from './proxyTransport'
@@ -56,6 +59,28 @@ let tlsTarget: Http2SecureServer
 let httpsProxy: Http2SecureServer
 let socksAuthServer: NetServer
 const portOf = (s: Http2SecureServer | NetServer) => (s.address() as AddressInfo).port
+
+async function readBody(stream: IncomingMessage): Promise<Buffer> {
+  const chunks: Buffer[] = []
+  for await (const chunk of stream) chunks.push(chunk as Buffer)
+  return Buffer.concat(chunks)
+}
+
+async function withHttpProxy<T>(
+  handler: RequestListener,
+  run: (bridge: string) => Promise<T>
+): Promise<T> {
+  const upstream = createServer(handler)
+  upstream.listen(0, '127.0.0.1')
+  await once(upstream, 'listening')
+  try {
+    const bridge = await ensureLocalProxyBridge({ mode: 'http', host: '127.0.0.1', port: portOf(upstream) })
+    return await run(bridge)
+  } finally {
+    await closeAllLocalProxyBridges()
+    await new Promise<void>((resolve) => upstream.close(() => resolve()))
+  }
+}
 
 beforeAll(async () => {
   tlsTarget = createSecureServer({ key: TEST_KEY, cert: TEST_CERT, allowHTTP1: true }, (_req, res) => {
@@ -196,5 +221,166 @@ describe('localProxyBridge', () => {
     })
     expect(res.status).toBe(200)
     expect(await res.text()).toBe('bridged-ok')
+  })
+
+  it('starts forwarding the upload before the client finishes sending it', async () => {
+    let sawFirstChunk!: (chunk: string) => void
+    const firstChunk = new Promise<string>((resolve) => { sawFirstChunk = resolve })
+    await withHttpProxy((req, res) => {
+      req.once('data', (chunk: Buffer) => sawFirstChunk(chunk.toString()))
+      void readBody(req).then((body) => res.end(body), () => res.destroy())
+    }, async (bridge) => {
+      const client = request(bridge, { path: 'http://origin.example/upload', method: 'POST', headers: { 'content-length': 11 } })
+      const response = once(client, 'response').then(([res]) => readBody(res as IncomingMessage))
+      try {
+        client.write('hello')
+        await expect(firstChunk).resolves.toBe('hello')
+        client.end(' world')
+        expect((await response).toString()).toBe('hello world')
+      } finally {
+        client.destroy()
+        await response.catch(() => undefined)
+      }
+    })
+  }, 3_000)
+
+  it('preserves repeated response headers, compressed bytes and their length', async () => {
+    const compressed = gzipSync('gzip should travel unchanged')
+    const cookies = ['first=1; Expires=Wed, 09 Jun 2027 10:18:14 GMT', 'second=2; HttpOnly']
+    await withHttpProxy((_req, res) => {
+      res.writeHead(200, {
+        'content-encoding': 'gzip',
+        'content-length': compressed.length,
+        'set-cookie': cookies,
+        'x-repeated': ['one', 'two'],
+        'connection': 'x-upstream-only',
+        'x-upstream-only': 'private'
+      })
+      res.end(compressed)
+    }, async (bridge) => {
+      const client = request(bridge, { path: 'http://origin.example/gzip', headers: { 'accept-encoding': 'gzip' } })
+      const promise = once(client, 'response')
+      client.end()
+      const [response] = await promise as [IncomingMessage]
+      expect(response.headers['set-cookie']).toEqual(cookies)
+      expect(response.headersDistinct['x-repeated']).toEqual(['one', 'two'])
+      expect(response.headers['x-upstream-only']).toBeUndefined()
+      expect(response.headers['content-encoding']).toBe('gzip')
+      expect(response.headers['content-length']).toBe(String(compressed.length))
+      const body = await readBody(response)
+      expect(body.equals(compressed)).toBe(true)
+      expect(gunzipSync(body).toString()).toBe('gzip should travel unchanged')
+    })
+  })
+
+  it('aborts an upstream upload when the downstream client disconnects', async () => {
+    let readChunk!: () => void
+    const started = new Promise<void>((resolve) => { readChunk = resolve })
+    let closeRequest!: (complete: boolean) => void
+    const closed = new Promise<boolean>((resolve) => { closeRequest = resolve })
+    await withHttpProxy((req) => {
+      req.once('data', readChunk)
+      req.once('close', () => closeRequest(req.complete))
+      req.on('error', () => undefined)
+    }, async (bridge) => {
+      const client = request(bridge, { path: 'http://origin.example/aborted-upload', method: 'POST' })
+      client.on('error', () => undefined)
+      client.write('first chunk')
+      try {
+        await started
+      } finally {
+        client.destroy()
+      }
+      await expect(closed).resolves.toBe(false)
+    })
+  })
+
+  it('aborts an upstream response when the downstream leaves mid-download', async () => {
+    let closeResponse!: () => void
+    const closed = new Promise<void>((resolve) => { closeResponse = resolve })
+    await withHttpProxy((_req, res) => {
+      res.once('close', closeResponse)
+      res.write('first chunk')
+    }, async (bridge) => {
+      const client = request(bridge, { path: 'http://origin.example/aborted-download' })
+      const promise = once(client, 'response')
+      client.end()
+      const [response] = await promise as [IncomingMessage]
+      await once(response, 'data')
+      response.on('error', () => undefined)
+      response.destroy()
+      await closed
+    })
+  })
+
+  it('uses the effective verification policy and CA fingerprint in the cache key', async () => {
+    const cfg = { mode: 'https' as const, host: 'localhost', port: portOf(httpsProxy), username: 'proxyuser', password: 'proxypass' }
+    const withCa = await ensureLocalProxyBridge(cfg, { ca: TEST_CERT })
+    const withoutVerification = await ensureLocalProxyBridge(cfg, { ca: TEST_CERT, rejectUnauthorized: false })
+    const otherCa = await ensureLocalProxyBridge(cfg, { ca: 'different CA' })
+    const strict = await ensureLocalProxyBridge(cfg)
+
+    expect(new Set([withCa, withoutVerification, otherCa, strict]).size).toBe(4)
+    await expect(ensureLocalProxyBridge(cfg, { ca: Buffer.from(TEST_CERT), rejectUnauthorized: true })).resolves.toBe(withCa)
+    const target = `https://localhost:${portOf(tlsTarget)}/api`
+    await expect(proxyFetch(strict, target, undefined, { requestTls: { ca: TEST_CERT } })).rejects.toThrow()
+    const response = await proxyFetch(withoutVerification, target, undefined, { requestTls: { ca: TEST_CERT } })
+    expect(await response.text()).toBe('bridged-ok')
+  })
+
+  it('closes both tunnel sockets when either peer goes away', async () => {
+    const upstream = createNetServer((socket) => socket.once('data', () => {
+      socket.write('HTTP/1.1 200 Connection Established\r\n\r\n')
+      socket.resume()
+    }))
+    upstream.listen(0, '127.0.0.1')
+    await once(upstream, 'listening')
+    try {
+      const bridge = new URL(await ensureLocalProxyBridge({ mode: 'http', host: '127.0.0.1', port: portOf(upstream) }))
+      for (const closeClient of [true, false]) {
+        const connection = once(upstream, 'connection')
+        const client = connect(Number(bridge.port), bridge.hostname)
+        const clientClosed = once(client, 'close')
+        client.write('CONNECT origin.example:443 HTTP/1.1\r\nHost: origin.example:443\r\n\r\n')
+        const [peer] = await connection as [ReturnType<typeof connect>]
+        const upstreamClosed = once(peer, 'close')
+        expect(String((await once(client, 'data'))[0])).toContain('200 Connection Established')
+        if (closeClient) client.end()
+        else peer.end()
+        await Promise.all([clientClosed, upstreamClosed])
+      }
+    } finally {
+      await closeAllLocalProxyBridges()
+      await new Promise<void>((resolve) => upstream.close(() => resolve()))
+    }
+  })
+
+  it('closes pending HTTP and SOCKS CONNECT negotiations when shutting down', async () => {
+    const upstream = createNetServer((socket) => socket.resume())
+    upstream.listen(0, '127.0.0.1')
+    await once(upstream, 'listening')
+    try {
+      for (const mode of ['http', 'socks5'] as const) {
+        const bridge = new URL(await ensureLocalProxyBridge({ mode, host: '127.0.0.1', port: portOf(upstream) }))
+        const connection = once(upstream, 'connection')
+        const client = connect(Number(bridge.port), bridge.hostname)
+        client.resume()
+        const clientClosed = once(client, 'close')
+        client.write('CONNECT origin.example:443 HTTP/1.1\r\nHost: origin.example:443\r\n\r\n')
+        const [peer] = await connection as [ReturnType<typeof connect>]
+        const upstreamClosed = once(peer, 'close')
+        await once(peer, 'data')
+        await closeAllLocalProxyBridges()
+        await Promise.all([clientClosed, upstreamClosed])
+      }
+    } finally {
+      await closeAllLocalProxyBridges()
+      await new Promise<void>((resolve) => upstream.close(() => resolve()))
+    }
+  })
+
+  it('refuses to create a bridge with password-only credentials', async () => {
+    await expect(ensureLocalProxyBridge({ mode: 'socks5', host: '127.0.0.1', port: 1080, password: 'secret' }))
+      .rejects.toThrow('Proxy password requires a username')
   })
 })

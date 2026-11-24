@@ -109,6 +109,40 @@ function CodeBlock({ lang, code }: { lang: string; code: string }) {
   )
 }
 
+type InlineLink = { end: number; bracket: number; closeLabel: number; image: boolean }
+
+/** Scan at a candidate opener. Null means the rest of the text has no links. */
+export function createInlineLinkScanner(text: string) {
+  let closeLabel = -1
+  let closeUrl = -1
+  let nextBracket = text.indexOf('[')
+  let exhausted = false
+
+  return (from: number): InlineLink | null | undefined => {
+    if (exhausted) return null
+    if (nextBracket !== -1 && nextBracket < from) nextBracket = text.indexOf('[', from)
+    const bracket = nextBracket
+    if (bracket === -1) return null
+    const image = bracket === from + 1 && text[from] === '!'
+    if (bracket !== from && !image) return
+    if (closeLabel < bracket) closeLabel = text.indexOf(']', bracket + 1)
+    if (closeLabel === -1) {
+      exhausted = true
+      return null
+    }
+    const urlStart = closeLabel + 2
+    if (text[closeLabel + 1] === '(' && (image || closeLabel > bracket + 1)) {
+      if (closeUrl < urlStart) closeUrl = text.indexOf(')', urlStart)
+      if (closeUrl === -1) {
+        exhausted = true
+        return null
+      }
+      if (closeUrl > urlStart) return { end: closeUrl + 1, bracket, closeLabel, image }
+    }
+    nextBracket = text.indexOf('[', closeLabel + 1)
+  }
+}
+
 function renderInline(
   text: string,
   keyPrefix: string,
@@ -117,22 +151,78 @@ function renderInline(
   onLinkClick?: (href: string, label: string) => boolean
 ): ReactNode[] {
   const nodes: ReactNode[] = []
-  // Match image ![alt](url), link [label](url), **bold**, ~~strike~~, *italic*, `code`, or bare https:// URL
-  const re =
-    /(!\[[^\]]*\]\([^)]+\)|\[[^\]]+\]\([^)]+\)|\*\*[^*]+\*\*|~~[^~]+~~|`[^`]+`|\*[^*\n]+\*|https?:\/\/[^\s<>)]+)/g
+  const scanLink = createInlineLinkScanner(text)
+  const bareUrl = /https?:\/\/[^\s<>)]+/y
+  const candidates = /[*!\[`~h]/g
+  const afterUnmatchedBrackets = /[*`~h]/g
+  let nextStar = -1
+  let nextTilde = -1
+  let nextBacktick = -1
+  let nextNewline = -1
   let last = 0
-  let match: RegExpExecArray | null
   let i = 0
 
-  while ((match = re.exec(text)) !== null) {
-    if (match.index > last) {
-      nodes.push(text.slice(last, match.index))
+  let match: RegExpExecArray | null
+  let tokenStart = candidates
+  while ((match = tokenStart.exec(text))) {
+    const start = match.index
+    let end = start
+    let link: InlineLink | undefined
+    switch (match[0]) {
+      case '[':
+      case '!': {
+        if (match[0] === '!' && text[start + 1] !== '[') continue
+        const candidate = scanLink(start)
+        link = candidate ?? undefined
+        if (link) end = link.end
+        if (candidate === null) {
+          tokenStart = afterUnmatchedBrackets
+          tokenStart.lastIndex = start + 1
+        }
+        break
+      }
+      case '*': {
+        const bold = text[start + 1] === '*'
+        const content = start + (bold ? 2 : 1)
+        if (nextStar < content) nextStar = text.indexOf('*', content)
+        if (nextStar <= content) continue
+        if (bold) {
+          if (text[nextStar + 1] === '*') end = nextStar + 2
+        } else {
+          if (nextNewline < content) {
+            const index = text.indexOf('\n', content)
+            nextNewline = index === -1 ? text.length : index
+          }
+          if (nextStar < nextNewline) end = nextStar + 1
+        }
+        break
+      }
+      case '~': {
+        if (text[start + 1] !== '~') continue
+        const content = start + 2
+        if (nextTilde < content) nextTilde = text.indexOf('~', content)
+        if (nextTilde > content && text[nextTilde + 1] === '~') end = nextTilde + 2
+        break
+      }
+      case '`':
+        if (nextBacktick < start + 1) nextBacktick = text.indexOf('`', start + 1)
+        if (nextBacktick > start + 1) end = nextBacktick + 1
+        break
+      case 'h':
+        bareUrl.lastIndex = start
+        if (bareUrl.test(text)) end = bareUrl.lastIndex
+        break
     }
-    const token = match[0]!
-    if (token.startsWith('![')) {
-      const m = /^!\[([^\]]*)\]\(([^)]+)\)$/.exec(token)
-      const alt = m?.[1] ?? ''
-      const url = m?.[2]?.trim() ?? ''
+    if (end === start) continue
+    const token = link ? '' : text.slice(start, end)
+    const label = link ? text.slice(link.bracket + 1, link.closeLabel) : ''
+    const href = link ? text.slice(link.closeLabel + 2, link.end - 1).trim() : ''
+    if (start > last) {
+      nodes.push(text.slice(last, start))
+    }
+    if (link?.image) {
+      const alt = label
+      const url = href
       if (/^data:video\//i.test(url) || (/^https?:\/\//i.test(url) && /\.(mp4|m4v|webm|mov|mkv)(?:[?#].*)?$/i.test(url))) {
         nodes.push(
           <video
@@ -176,12 +266,9 @@ function renderInline(
           }
         }
       } else {
-        nodes.push(token)
+        nodes.push(text.slice(start, end))
       }
-    } else if (token.startsWith('[')) {
-      const m = /^\[([^\]]+)\]\(([^)]+)\)$/.exec(token)
-      const label = m?.[1] ?? token
-      const href = m?.[2]?.trim() ?? ''
+    } else if (link) {
       if (/^https?:\/\//i.test(href)) {
         nodes.push(
           <a
@@ -300,7 +387,8 @@ function renderInline(
     } else {
       nodes.push(token)
     }
-    last = match.index + token.length
+    last = end
+    tokenStart.lastIndex = end
     i += 1
   }
   if (last < text.length) nodes.push(text.slice(last))
@@ -334,7 +422,7 @@ function renderBlocks(
 ): ReactNode[] {
   const inline = (s: string, key: string) =>
     renderInline(s, key, onFileLinkClick, suppressWorkspaceImages, onLinkClick)
-  const cleaned = text.replace(/\[\[hatch_widget:[^\]]+\]\]/g, '').replace(/\r\n/g, '\n')
+  const cleaned = removeHatchWidgets(text).replace(/\r\n/g, '\n')
   const lines = cleaned.split('\n')
   const blocks: ReactNode[] = []
   let i = 0
@@ -530,6 +618,29 @@ function renderBlocks(
   }
 
   return blocks
+}
+
+function removeHatchWidgets(text: string): string {
+  const prefix = '[[hatch_widget:'
+  const pieces: string[] = []
+  let consumed = 0
+  let from = 0
+  let close = -1
+  for (let start = text.indexOf(prefix); start !== -1; start = text.indexOf(prefix, from)) {
+    const content = start + prefix.length
+    if (close < content) close = text.indexOf(']', content)
+    if (close === -1) break
+    if (close > content && text[close + 1] === ']') {
+      pieces.push(text.slice(consumed, start))
+      consumed = close + 2
+      from = consumed
+    } else {
+      from = close + 1
+    }
+  }
+  if (consumed === 0) return text
+  pieces.push(text.slice(consumed))
+  return pieces.join('')
 }
 
 export const MarkdownText = memo(function MarkdownText({

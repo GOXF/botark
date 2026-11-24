@@ -58,7 +58,15 @@ export class MuseQuotaError extends Error {
   }
 }
 
-let cachedActionId: string | null = FALLBACK_ACTION_ID
+type ActionCacheKey = object | string
+const accountActionIds = new Map<string, string>()
+const deploymentActionIds = new WeakMap<object, string>()
+
+function actionCache(key: ActionCacheKey) {
+  return typeof key === 'string'
+    ? { read: () => accountActionIds.get(key), write: (id: string) => accountActionIds.set(key, id) }
+    : { read: () => deploymentActionIds.get(key), write: (id: string) => deploymentActionIds.set(key, id) }
+}
 
 function str(v: unknown): string {
   return typeof v === 'string' ? v : v == null ? '' : String(v)
@@ -154,12 +162,13 @@ function extractActionIdFromSource(source: string): string | null {
 }
 
 /** Best-effort: scrape muse.ai bundles for the current Server Action id. */
-export async function discoverSubscriptionActionId(fetchFn: FetchFn): Promise<string | null> {
+export async function discoverSubscriptionActionId(fetchFn: FetchFn, signal?: AbortSignal): Promise<string | null> {
   const seenScripts = new Set<string>()
   const scriptQueue: string[] = []
   // Probe authenticated app routes (/settings, /chat) BEFORE `/` so marketing landing
   // chunks do not crowd out the authenticated settings/subscription chunks.
   for (const pagePath of ['/settings', '/chat', '/']) {
+    signal?.throwIfAborted()
     try {
       const res = await fetchFn(ORIGIN + pagePath, {
         method: 'GET',
@@ -189,6 +198,7 @@ export async function discoverSubscriptionActionId(fetchFn: FetchFn): Promise<st
     }
   }
   for (const url of scriptQueue.slice(0, 96)) {
+    signal?.throwIfAborted()
     try {
       const r = await fetchFn(url, { headers: { Accept: '*/*' } })
       if (!r.ok) continue
@@ -260,64 +270,54 @@ function looksLikeSubscription(text: string): boolean {
  */
 export async function fetchSubscription(
   fetchFn: FetchFn,
-  opts: { includeAgreement?: boolean; rediscover?: boolean } = {}
+  opts: { includeAgreement?: boolean; rediscover?: boolean; accountId?: string; deployment?: string; signal?: AbortSignal } = {}
 ): Promise<MuseQuotaSnapshot> {
   const includeAgreement = opts.includeAgreement === true
   const fetchedAt = Date.now()
-
-  const tryIds: string[] = []
-  if (cachedActionId) tryIds.push(cachedActionId)
-  if (FALLBACK_ACTION_ID && !tryIds.includes(FALLBACK_ACTION_ID)) tryIds.push(FALLBACK_ACTION_ID)
-
+  const cache = actionCache(opts.accountId === undefined ? fetchFn : JSON.stringify([opts.accountId, opts.deployment ?? ORIGIN]))
+  const cached = cache.read()
+  const tryIds = new Set([cached ?? FALLBACK_ACTION_ID, FALLBACK_ACTION_ID])
   let lastStatus = 0
   let lastText = ''
+  let parseError: MuseQuotaError | undefined
 
-  for (const id of tryIds) {
+  const tryAction = async (id: string): Promise<MuseQuotaSnapshot | undefined> => {
+    opts.signal?.throwIfAborted()
     const { status, text } = await postAction(fetchFn, id, includeAgreement)
+    opts.signal?.throwIfAborted()
     lastStatus = status
     lastText = text
     if (status === 401 || status === 403) {
       throw new MuseQuotaError(`quota: not signed in (${status})`, 'signed_out')
     }
-    if (status >= 200 && status < 300 && looksLikeSubscription(text)) {
-      cachedActionId = id
+    if (status < 200 || status >= 300 || !looksLikeSubscription(text)) return
+    try {
       const parsed = parseSubscriptionActionBody(text)
-      return {
-        fetchedAt,
-        stale: false,
-        success: parsed.success,
-        subscription: parsed.subscription
-      }
+      if (parsed.success && parsed.subscription && (cache.read() === cached || cache.read() === id)) cache.write(id)
+      return { fetchedAt, stale: false, success: parsed.success, subscription: parsed.subscription }
+    } catch (error) {
+      if (!(error instanceof MuseQuotaError) || error.code !== 'parse') throw error
+      parseError = error
     }
   }
 
-  // Hash may have rotated — rediscover once.
+  for (const id of tryIds) {
+    const snapshot = await tryAction(id)
+    if (snapshot) return snapshot
+  }
   if (opts.rediscover !== false) {
-    const discovered = await discoverSubscriptionActionId(fetchFn)
-    if (discovered && !tryIds.includes(discovered)) {
-      cachedActionId = discovered
-      const { status, text } = await postAction(fetchFn, discovered, includeAgreement)
-      lastStatus = status
-      lastText = text
-      if (status === 401 || status === 403) {
-        throw new MuseQuotaError(`quota: not signed in (${status})`, 'signed_out')
-      }
-      if (status >= 200 && status < 300 && looksLikeSubscription(text)) {
-        const parsed = parseSubscriptionActionBody(text)
-        return {
-          fetchedAt,
-          stale: false,
-          success: parsed.success,
-          subscription: parsed.subscription
-        }
-      }
+    const discovered = await discoverSubscriptionActionId(fetchFn, opts.signal)
+    opts.signal?.throwIfAborted()
+    if (discovered && !tryIds.has(discovered)) {
+      const snapshot = await tryAction(discovered)
+      if (snapshot) return snapshot
     }
   }
 
-  // Try direct REST subscription endpoints if Next.js Server Action hash rotated away
   const viaRest = await tryRestSubscriptionEndpoints(fetchFn, fetchedAt)
+  opts.signal?.throwIfAborted()
   if (viaRest) return viaRest
-
+  if (parseError) throw parseError
   if (lastStatus === 404 || lastStatus === 400 || lastStatus === 409 || !looksLikeSubscription(lastText)) {
     throw new MuseQuotaError(
       `quota: fetchSubscriptionAction unavailable (HTTP ${lastStatus || 'n/a'})`,

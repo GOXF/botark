@@ -5,6 +5,7 @@ export interface SlackBinding {
   channel: string
   thread?: string
   defaultThread?: string
+  bindingGeneration?: number
 }
 export interface SlackInbound {
   channel: string
@@ -14,6 +15,7 @@ export interface SlackInbound {
   fork: boolean
   user: string
   text: string
+  bindingGeneration?: number
 }
 export interface SlackState {
   connected: boolean
@@ -25,7 +27,7 @@ export type SlackRequest =
   | { op: 'connect'; appToken?: string; botToken?: string }
   | { op: 'bind'; roomId: string; channel: string; thread?: string }
   | { op: 'unbind'; roomId: string }
-  | { op: 'post'; roomId: string; channel?: string; thread?: string; text: string }
+  | { op: 'post'; roomId: string; channel?: string; thread?: string; bindingGeneration?: number; text: string }
   | { op: 'received'; id: string }
 export interface SlackBridge {
   request(req: SlackRequest): Promise<SlackState>

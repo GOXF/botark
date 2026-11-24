@@ -1,4 +1,4 @@
-import { useState, type KeyboardEvent } from 'react'
+import { memo, useMemo, useState, type KeyboardEvent } from 'react'
 import { ChevronRight, MoreHorizontal, Pencil, Plus, Trash2 } from 'lucide-react'
 import { ArkProjectStackSvg } from '@/components/ui/ArkGlyphs'
 import { InlineEdit } from '@/components/ui/InlineEdit'
@@ -7,7 +7,7 @@ import { cn } from '@/lib/cn'
 import { getBotStatus, lastMessage } from '@/lib/selectors'
 import { useBotStore } from '@/store/botStore'
 import { applyDropOutOfRoom, BOT_DRAG_MIME, isRoomMemberDrag, showRoomDndNotice } from '@/rooms/roomDnd'
-import type { BotGroup } from '@/types'
+import type { Bot, BotGroup } from '@/types'
 import { BotListItem } from './BotListItem'
 import { ConfigureSectionsDialog } from './ConfigureSectionsDialog'
 import { t } from '@/lib/i18n'
@@ -125,31 +125,39 @@ function SectionHeader({
   )
 }
 
+const BotRow = memo(function BotRow({ bot, layout }: { bot: Bot; layout: 'collapsed' | 'pinned' | 'expanded' }) {
+  const status = useBotStore((s) => getBotStatus(bot, s.accounts))
+  const typing = useBotStore((s) => s.typing[bot.id] === true)
+  const activity = useBotStore((s) => s.activity[bot.activeAccountId])
+  const last = useBotStore((s) => layout === 'expanded' && !typing && !activity?.busy
+    ? lastMessage(s.messages[bot.id]) : undefined)
+  const selected = useBotStore((s) => s.selectedBotId === bot.id)
+  const selectBot = useBotStore((s) => s.selectBot)
+  return (
+    <BotListItem bot={bot} layout={layout} status={status} last={last} typing={typing}
+      activity={activity} selected={selected} onSelect={selectBot} />
+  )
+})
+
 export function BotList() {
   const groups = useBotStore((s) => s.groups)
   const bots = useBotStore((s) => s.bots)
-  const accounts = useBotStore((s) => s.accounts)
-  const messages = useBotStore((s) => s.messages)
-  const typing = useBotStore((s) => s.typing)
-  const activity = useBotStore((s) => s.activity)
   const collapsed = useBotStore((s) => s.collapsedGroups)
   const sidebarCollapsed = useBotStore((s) => s.sidebarCollapsed)
-  const selectedBotId = useBotStore((s) => s.selectedBotId)
-  const selectBot = useBotStore((s) => s.selectBot)
   const toggleGroup = useBotStore((s) => s.toggleGroup)
   const addGroup = useBotStore((s) => s.addGroup)
   const reorderBot = useBotStore((s) => s.reorderBot)
   const [dragId, setDragId] = useState<string | null>(null)
   const [dropAt, setDropAt] = useState<string | null>(null)
   const [memberOver, setMemberOver] = useState(false)
-  const pinnedBots = bots.filter((b) => b.pinned)
+  const pinnedBots = useMemo(() => bots.filter((b) => b.pinned), [bots])
   const [configureOpen, setConfigureOpen] = useState(false)
 
   // Always-on Grok-like section chrome — include empty sections so New section is visible.
-  const sections = groups.map((group) => ({
+  const sections = useMemo(() => groups.map((group) => ({
     group,
     bots: bots.filter((b) => b.groupId === group.id && !b.pinned)
-  }))
+  })), [bots, groups])
 
   // Compact Rail Mode (Grok Bot `isCollapsed`)
   if (sidebarCollapsed) {
@@ -157,17 +165,7 @@ export function BotList() {
       <div className="flex h-full min-h-0 w-full flex-col items-center overflow-y-auto" onKeyDown={moveBetweenRows}>
         <div className="flex flex-col items-center gap-1.5 py-1">
           {pinnedBots.map((bot) => (
-            <BotListItem
-              key={bot.id}
-              bot={bot}
-              layout="collapsed"
-              status={getBotStatus(bot, accounts)}
-              last={lastMessage(messages[bot.id])}
-              typing={typing[bot.id] === true}
-              activity={activity[bot.activeAccountId]}
-              selected={bot.id === selectedBotId}
-              onSelect={selectBot}
-            />
+            <BotRow key={bot.id} bot={bot} layout="collapsed" />
           ))}
           {pinnedBots.length > 0 && sections.some((s) => s.bots.length > 0) && (
             <div className="my-1 h-px w-6 rounded-full bg-ink/10" aria-hidden />
@@ -180,17 +178,7 @@ export function BotList() {
                   <div className="my-0.5 h-px w-5 rounded-full bg-ink/10" aria-hidden />
                 )}
                 {s.bots.map((bot) => (
-                  <BotListItem
-                    key={bot.id}
-                    bot={bot}
-                    layout="collapsed"
-                    status={getBotStatus(bot, accounts)}
-                    last={lastMessage(messages[bot.id])}
-                    typing={typing[bot.id] === true}
-                    activity={activity[bot.activeAccountId]}
-                    selected={bot.id === selectedBotId}
-                    onSelect={selectBot}
-                  />
+                  <BotRow key={bot.id} bot={bot} layout="collapsed" />
                 ))}
               </div>
             ))}
@@ -251,16 +239,7 @@ export function BotList() {
                       e.dataTransfer.setData(BOT_DRAG_MIME, bot.id)
                     }}
                   >
-                    <BotListItem
-                      bot={bot}
-                      layout="pinned"
-                      status={getBotStatus(bot, accounts)}
-                      last={lastMessage(messages[bot.id])}
-                      typing={typing[bot.id] === true}
-                      activity={activity[bot.activeAccountId]}
-                      selected={bot.id === selectedBotId}
-                      onSelect={selectBot}
-                    />
+                    <BotRow bot={bot} layout="pinned" />
                   </div>
                 ))}
               </div>
@@ -324,16 +303,7 @@ export function BotList() {
                             'before:absolute before:inset-x-2 before:-top-px before:h-0.5 before:rounded-full before:bg-accent-500'
                         )}
                       >
-                        <BotListItem
-                          bot={bot}
-                          layout="expanded"
-                          status={getBotStatus(bot, accounts)}
-                          last={lastMessage(messages[bot.id])}
-                          typing={typing[bot.id] === true}
-                          activity={activity[bot.activeAccountId]}
-                          selected={bot.id === selectedBotId}
-                          onSelect={selectBot}
-                        />
+                        <BotRow bot={bot} layout="expanded" />
                       </li>
                     ))}
                   </ul>

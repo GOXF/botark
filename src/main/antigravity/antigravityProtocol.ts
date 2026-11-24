@@ -9,6 +9,7 @@
  */
 
 import { createHash } from 'node:crypto'
+import type { AntigravityMainEvent } from '@shared/ipc'
 
 export const ANTIGRAVITY_ORIGIN = 'https://antigravity.google.com'
 export const ANTIGRAVITY_API_ORIGIN = 'https://aicode.clients6.google.com'
@@ -139,6 +140,12 @@ export interface AntigravityParsedStep {
   toolSummary?: string
   toolAction?: string
   messageId?: string
+}
+
+export type AntigravityTurnEvent = AntigravityMainEvent & {
+  messageId?: string
+  waitingForApproval?: boolean
+  error?: { status: number; message: string }
 }
 
 export interface AntigravityStateUpdate {
@@ -727,7 +734,10 @@ export function mergeTrajectorySteps(
   update: AntigravityStateUpdate
 ): void {
   for (const step of update.steps) {
-    acc.set(step.index, step)
+    const previous = acc.get(step.index)
+    acc.set(step.index, previous?.type === step.type && previous.clientMessageId && !step.clientMessageId
+      ? { ...step, clientMessageId: previous.clientMessageId }
+      : step)
   }
 }
 
@@ -841,7 +851,8 @@ export function extractTranscriptFromSteps(
  */
 export function extractTurnProgress(
   stepsMap: ReadonlyMap<number, AntigravityParsedStep>,
-  afterStepIndex: number
+  afterStepIndex: number,
+  beforeStepIndex = Infinity
 ): {
   text: string
   tools: NonNullable<AntigravityTranscriptMessage['tools']>
@@ -849,7 +860,7 @@ export function extractTurnProgress(
   hasError: boolean
 } {
   const ordered = [...stepsMap.values()]
-    .filter((s) => s.index > afterStepIndex)
+    .filter((s) => s.index > afterStepIndex && s.index < beforeStepIndex)
     .sort((a, b) => a.index - b.index)
 
   const parts: string[] = []
@@ -896,6 +907,27 @@ export function extractTurnProgress(
   }
 }
 
+export function findAntigravityTurn(
+  steps: ReadonlyMap<number, AntigravityParsedStep>,
+  clientMessageId: string
+): { userStepIndex: number; nextUserStepIndex: number } | undefined {
+  let userStepIndex: number | undefined
+  for (const step of steps.values()) {
+    if (step.clientMessageId === clientMessageId && step.type === CORTEX_STEP_TYPE.USER_INPUT) {
+      userStepIndex = step.index
+      break
+    }
+  }
+  if (userStepIndex === undefined) return undefined
+  let nextUserStepIndex = Infinity
+  for (const step of steps.values()) {
+    if (step.index > userStepIndex && step.type === CORTEX_STEP_TYPE.USER_INPUT) {
+      nextUserStepIndex = Math.min(nextUserStepIndex, step.index)
+    }
+  }
+  return { userStepIndex, nextUserStepIndex }
+}
+
 export type StreamBodyEvent =
   | { kind: 'message'; payload: unknown }
   | { kind: 'status'; code: number; message: string }
@@ -907,84 +939,99 @@ export type StreamBodyEvent =
  * Emits each `msg` as soon as its closing bracket arrives over chunked HTTP.
  */
 export class JspbStreamBodyParser {
-  private depth = 0
+  private readonly brackets: string[] = []
   private inString = false
   private escaped = false
-  private outerElementIndex = 0
-  private capturing = false
-  private captureBuf = ''
+  private wrapper: 'before' | 'messages' | 'separator' | 'status' | 'end' | 'done' = 'before'
+  private frame = ''
+  private frameKind?: StreamBodyEvent['kind']
+
+  constructor(private readonly maxFrameChars = 8 * 1024 * 1024) {}
 
   push(chunk: string): StreamBodyEvent[] {
     const events: StreamBodyEvent[] = []
-    for (let i = 0; i < chunk.length; i++) {
-      const ch = chunk[i]
-
-      if (this.capturing) {
-        this.captureBuf += ch
+    for (const ch of chunk) {
+      if (!this.frameKind) {
+        if (/\s/.test(ch)) continue
+        if (this.wrapper === 'before' && ch === '[') {
+          this.wrapper = 'messages'
+          this.brackets.push(']')
+          continue
+        }
+        if (this.wrapper === 'messages') {
+          if (this.brackets.length === 1 && ch === '[') {
+            this.brackets.push(']')
+            continue
+          }
+          if (this.brackets.length === 2) {
+            if (ch === ',') continue
+            if (ch === ']') {
+              this.brackets.pop()
+              this.wrapper = 'separator'
+              continue
+            }
+            if (ch === '[' || ch === '{') {
+              this.frameKind = 'message'
+              this.frame = ch
+              this.brackets.push(ch === '[' ? ']' : '}')
+              continue
+            }
+          }
+        }
+        if (this.wrapper === 'separator' && ch === ',') {
+          this.wrapper = 'status'
+          continue
+        }
+        if (this.wrapper === 'status' && ch === '[') {
+          this.frameKind = 'status'
+          this.frame = ch
+          this.brackets.push(']')
+          continue
+        }
+        if ((this.wrapper === 'end' || this.wrapper === 'separator') && ch === ']') {
+          this.brackets.pop()
+          this.wrapper = 'done'
+          continue
+        }
+        throw new Error('Invalid Antigravity stream wrapper')
       }
 
+      if (this.frame.length + ch.length > this.maxFrameChars) {
+        throw new Error('Antigravity stream frame exceeds its size limit')
+      }
+      this.frame += ch
       if (this.inString) {
-        if (this.escaped) {
-          this.escaped = false
-        } else if (ch === '\\') {
-          this.escaped = true
-        } else if (ch === '"') {
-          this.inString = false
+        if (this.escaped) this.escaped = false
+        else if (ch === '\\') this.escaped = true
+        else if (ch === '"') this.inString = false
+        continue
+      }
+      if (ch === '"') this.inString = true
+      else if (ch === '[' || ch === '{') this.brackets.push(ch === '[' ? ']' : '}')
+      else if (ch === ']' || ch === '}') {
+        if (this.brackets.pop() !== ch) throw new Error('Unbalanced Antigravity stream frame')
+        const frameDepth = this.frameKind === 'message' ? 2 : 1
+        if (this.brackets.length !== frameDepth) continue
+
+        const payload = JSON.parse(this.frame)
+        if (this.frameKind === 'message') {
+          events.push({ kind: 'message', payload })
+        } else {
+          const [code = 0, message = ''] = payload as unknown[]
+          if (typeof code !== 'number') throw new Error('Invalid Antigravity stream status')
+          events.push({ kind: 'status', code, message: typeof message === 'string' ? message : '' })
+          this.wrapper = 'end'
         }
-        continue
-      }
-
-      if (ch === '"') {
-        this.inString = true
-        continue
-      }
-
-      if (ch === '[' || ch === '{') {
-        this.depth++
-        // Depth 1: outer wrapper `[`
-        // Depth 2: outerElementIndex 0 = messages array `[`, outerElementIndex 1 = status array `[`
-        // Depth 3 (when outerElementIndex === 0): individual message payload `[`
-        if (this.depth === 3 && this.outerElementIndex === 0) {
-          this.capturing = true
-          this.captureBuf = ch
-        } else if (this.depth === 2 && this.outerElementIndex === 1) {
-          this.capturing = true
-          this.captureBuf = ch
-        }
-        continue
-      }
-
-      if (ch === ']' || ch === '}') {
-        if (this.depth === 3 && this.outerElementIndex === 0 && this.capturing) {
-          const raw = this.captureBuf
-          this.capturing = false
-          this.captureBuf = ''
-          try {
-            events.push({ kind: 'message', payload: JSON.parse(raw) })
-          } catch {
-            /* ignore malformed frame */
-          }
-        } else if (this.depth === 2 && this.outerElementIndex === 1 && this.capturing) {
-          const raw = this.captureBuf
-          this.capturing = false
-          this.captureBuf = ''
-          try {
-            const st = JSON.parse(raw) as unknown[]
-            const code = typeof st[0] === 'number' ? st[0] : 0
-            const message = typeof st[1] === 'string' ? st[1] : ''
-            events.push({ kind: 'status', code, message })
-          } catch {
-            /* ignore malformed status */
-          }
-        }
-        this.depth = Math.max(0, this.depth - 1)
-        continue
-      }
-
-      if (ch === ',' && this.depth === 1) {
-        this.outerElementIndex++
+        this.frameKind = undefined
+        this.frame = ''
       }
     }
     return events
+  }
+
+  finish(): void {
+    if (this.wrapper !== 'done' || this.brackets.length || this.frameKind || this.inString) {
+      throw new Error('Truncated Antigravity stream response')
+    }
   }
 }

@@ -18,8 +18,8 @@ export function migratePoolSlot<T extends PoolSlot>(raw: Omit<T, 'assignedAccoun
  * theirs (manual bindings are never limited); unbound ones go to the
  * least-loaded proxy that is under `limit` (0 = unlimited) and did not time out.
  *
- * A binding is dropped only when its account is neither listed nor kept alive
- * by `keep` (e.g. a login still in flight), so partial caller lists never free
+ * A binding is dropped when it duplicates an earlier one, or its account is
+ * neither listed nor kept alive by `keep` (e.g. a login still in flight), so partial caller lists never free
  * a live account's proxy.
  */
 export function planPoolAssignment<T extends PoolSlot>(
@@ -29,9 +29,15 @@ export function planPoolAssignment<T extends PoolSlot>(
   limit = 0
 ): { pool: T[]; assigned: Array<{ accountId: string; slot: T }> } {
   const listed = new Set(accountIds)
+  const held = new Set<string>()
   const next = pool.map((slot) => ({
     ...slot,
-    assignedAccountIds: slot.assignedAccountIds.filter((id) => listed.has(id) || keep(id))
+    // An account keeps only its first saved binding; a duplicate in a later slot is freed.
+    assignedAccountIds: slot.assignedAccountIds.filter((id) => {
+      if (held.has(id) || (!listed.has(id) && !keep(id))) return false
+      held.add(id)
+      return true
+    })
   }))
   const assigned: Array<{ accountId: string; slot: T }> = []
   for (const accountId of listed) {

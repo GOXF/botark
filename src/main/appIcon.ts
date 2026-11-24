@@ -14,27 +14,33 @@ export function getAppWindowIcon(): NativeImage | string | undefined {
   if (resolvedOnce) return cachedIcon
   resolvedOnce = true
 
-  const candidates = [
+  const candidates = new Set([
     join(__dirname, '../../build/icon.png'),
     process.resourcesPath ? join(process.resourcesPath, 'app/build/icon.png') : '',
     join(process.cwd(), 'build/icon.png')
-  ].filter(Boolean)
+  ].filter(Boolean))
 
   for (const candidate of candidates) {
     if (!existsSync(candidate)) continue
+    let imageApi: typeof nativeImage | undefined
     try {
-      if (nativeImage && typeof nativeImage.createFromPath === 'function') {
-        const img = nativeImage.createFromPath(candidate)
-        if (img && typeof img.isEmpty === 'function' && !img.isEmpty()) {
-          cachedIcon = img
-          return cachedIcon
-        }
+      imageApi = nativeImage
+    } catch {
+      /* Electron mocks may omit nativeImage entirely. */
+    }
+    if (typeof imageApi?.createFromPath !== 'function') {
+      cachedIcon = candidate
+      return cachedIcon
+    }
+    try {
+      const img = imageApi.createFromPath(candidate)
+      if (img && typeof img.isEmpty === 'function' && !img.isEmpty()) {
+        cachedIcon = img
+        return cachedIcon
       }
     } catch {
-      /* fallback to raw path in mock/headless environments */
+      /* try the next candidate */
     }
-    cachedIcon = candidate
-    return cachedIcon
   }
 
   return undefined

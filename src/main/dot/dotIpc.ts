@@ -2,9 +2,7 @@ import { BrowserWindow, ipcMain, type IpcMainInvokeEvent } from 'electron'
 import {
   DOT_CHANNELS,
   type DotImportCredentialsRequest,
-  type DotMainEvent,
   type DotOpenLoginRequest,
-  type DotRpcRequest,
   type DotRpcResponse
 } from '@shared/ipc'
 import {
@@ -17,20 +15,21 @@ import {
   createDotPage,
   deleteDot,
   deleteDotPage,
+  disconnectDotAccount,
   DotApiError,
   dotAttachmentsToMedia,
   downloadDotFile,
-  ensureCelsiusWatcher,
   exportDotMemorySnapshot,
   getDot,
   getDotAuthStatus,
+  getDotCredentialRevision,
   getDotRateLimits,
   getDotThreadGoal,
   getStoredDotAccount,
   importDotCredentialsFromRaw,
   importDotMemorySnapshot,
+  initializeDots,
   isDotAckMessage,
-  isEphemeralRoomTurnBotId,
   listDotLibraryNodes,
   listDotModels,
   listDots,
@@ -41,25 +40,26 @@ import {
   patchStoredDotAccount,
   pauseDotRuntime,
   resumeDotRuntime,
+  selectDotProfile,
   sendAndWatchDotRoomReply,
   setDotThreadGoal,
   streamDotNativeTurn
 } from './dotClient'
 import { cancelDotLogin, onDotLoginEvent, openDotLoginWindow } from './dotLogin'
-import { resolveDotTarget } from '@shared/dotTarget'
+import type { DotTurnEvent, DotTurnRequest } from '@shared/dotTarget'
 
 function ownerWindow(event: IpcMainInvokeEvent): BrowserWindow | undefined {
   return BrowserWindow.fromWebContents(event.sender) ?? undefined
 }
 
-function broadcast(payload: DotMainEvent): void {
+function broadcast(payload: DotTurnEvent): void {
   for (const win of BrowserWindow.getAllWindows()) {
     if (win.isDestroyed() || win.webContents.isDestroyed()) continue
     win.webContents.send(DOT_CHANNELS.event, payload)
   }
 }
 
-export async function runDotRpc(req: DotRpcRequest): Promise<DotRpcResponse> {
+export async function runDotRpc(req: DotTurnRequest): Promise<DotRpcResponse> {
   try {
     switch (req.op) {
       case 'authStatus':
@@ -84,7 +84,7 @@ export async function runDotRpc(req: DotRpcRequest): Promise<DotRpcResponse> {
           }))
         }
       case 'listDots':
-        return { ok: true, data: await listDots(req.accountId, req.ensureDefault ?? true) }
+        return { ok: true, data: await (req.ensureDefault ? initializeDots(req.accountId) : listDots(req.accountId)) }
       case 'createDot':
         return {
           ok: true,
@@ -98,24 +98,11 @@ export async function runDotRpc(req: DotRpcRequest): Promise<DotRpcResponse> {
       case 'deleteDot':
         return { ok: true, data: await deleteDot(req.accountId, req.dotId) }
       case 'selectDot': {
-        const dot = await getDot(req.accountId, req.dotId)
-        patchStoredDotAccount(req.accountId, {
-          activeDotId: dot.id,
-          roomId: dot.messagingRoomId,
-          threadId: dot.activeRootThreadId,
-          ...(req.botId && !isEphemeralRoomTurnBotId(req.botId) ? { botId: req.botId } : {})
-        })
-        void ensureCelsiusWatcher(req.accountId, dot.messagingRoomId)
-        const history = await listRoomMessages(req.accountId, {
-          roomId: dot.messagingRoomId,
-          dotId: dot.id,
-          limit: 32
-        })
+        const history = await selectDotProfile(req.accountId, req.dotId, req.botId)
         return {
           ok: true,
           data: {
-            dot,
-            roomId: history.roomId,
+            ...history,
             messages: history.messages.map((m) => ({
               ...m,
               media: dotAttachmentsToMedia(m.attachments)
@@ -134,13 +121,11 @@ export async function runDotRpc(req: DotRpcRequest): Promise<DotRpcResponse> {
       case 'resumeRuntime':
         return { ok: true, data: await resumeDotRuntime(req.accountId, req.dotId) }
       case 'cancelTurn':
-        broadcast({
-          type: 'activity',
-          accountId: req.accountId,
-          activityCode: 'idle',
-          busy: false
-        })
-        return { ok: true, data: await cancelDotTurn(req.accountId, req.dotId) }
+        if (req.disconnect) {
+          disconnectDotAccount(req.accountId)
+          return { ok: true, data: null }
+        }
+        return { ok: true, data: await cancelDotTurn(req.accountId, req.dotId, req.turnId) }
       case 'listThreads':
         return { ok: true, data: await listDotThreads(req.accountId, req.dotId) }
       case 'listRoomMessages': {
@@ -153,7 +138,7 @@ export async function runDotRpc(req: DotRpcRequest): Promise<DotRpcResponse> {
         return {
           ok: true,
           data: {
-            roomId: listed.roomId,
+            ...listed,
             messages: listed.messages.map((m) => ({
               ...m,
               media: dotAttachmentsToMedia(m.attachments)
@@ -171,27 +156,25 @@ export async function runDotRpc(req: DotRpcRequest): Promise<DotRpcResponse> {
       }
       case 'sendMessage': {
         const acc = getStoredDotAccount(req.accountId)
-        // After a profile switch the renderer can still name the old dot/room.
-        const target = resolveDotTarget(req, acc)
         const mode = req.mode ?? acc?.mode ?? 'dot'
-        if (req.botId && !isEphemeralRoomTurnBotId(req.botId)) {
-          patchStoredDotAccount(req.accountId, { botId: req.botId })
-        }
+        const turnId = req.turnId
 
         const nativeThreadId =
           req.roomId && req.roomId !== acc?.roomId ? req.roomId : undefined
 
         const runNativeTurn = async () => {
           const out = await streamDotNativeTurn(req.accountId, {
+            turnId,
             text: req.text,
             threadId: nativeThreadId,
             model: req.model ?? acc?.model ?? 'gpt-6-astra',
             effort: req.effort ?? acc?.effort ?? 'medium',
-            onSent: () => broadcast({ type: 'sent', accountId: req.accountId }),
+            onSent: () => broadcast({ type: 'sent', accountId: req.accountId, turnId }),
             onActivity: (code, text, busy) => {
               broadcast({
                 type: 'activity',
                 accountId: req.accountId,
+                turnId,
                 activityCode: code,
                 activityText: text,
                 busy
@@ -201,6 +184,7 @@ export async function runDotRpc(req: DotRpcRequest): Promise<DotRpcResponse> {
               broadcast({
                 type: 'stream',
                 accountId: req.accountId,
+                turnId,
                 conversationId: req.botId,
                 messageId,
                 text,
@@ -230,29 +214,33 @@ export async function runDotRpc(req: DotRpcRequest): Promise<DotRpcResponse> {
 
         // Default: Calpico Room + Celsius WS mode (`mode === 'dot'`)
         const result = await sendAndWatchDotRoomReply(req.accountId, {
+          turnId,
           botId: req.botId,
-          dotId: target.dotId,
-          roomId: target.roomId,
+          dotId: req.dotId,
+          roomId: req.roomId,
           text: req.text,
           attachments: req.attachments,
-          onSent: () => broadcast({ type: 'sent', accountId: req.accountId }),
+          onSent: () => broadcast({ type: 'sent', accountId: req.accountId, turnId }),
           onActivity: (code, text, busy) => {
             broadcast({
               type: 'activity',
               accountId: req.accountId,
+              turnId,
               activityCode: code,
               activityText: text,
               busy
             })
           },
-          onMessage: (msg, done, stillBusy) => {
+          onMessage: (msg, done, stillBusy, target) => {
             const media = dotAttachmentsToMedia(msg.attachments)
             const msgId = msg.id.startsWith('dot_') ? msg.id : `dot_${msg.id}`
             broadcast({
               type: 'stream',
               accountId: req.accountId,
+              turnId,
               conversationId: req.botId ?? acc?.botId,
-              dotId: target.dotId ?? acc?.activeDotId,
+              dotId: target?.dotId,
+              roomId: msg.roomId,
               messageId: msgId,
               text: msg.text,
               done,
@@ -260,14 +248,6 @@ export async function runDotRpc(req: DotRpcRequest): Promise<DotRpcResponse> {
               ...(media ? { media } : {})
             })
           }
-        })
-
-        // Always ensure idle state after sendAndWatchDotRoomReply resolves
-        broadcast({
-          type: 'activity',
-          accountId: req.accountId,
-          activityCode: 'idle',
-          busy: false
         })
 
         const hydratedReplies = result.replies.map((r) => ({
@@ -344,12 +324,13 @@ export async function runDotRpc(req: DotRpcRequest): Promise<DotRpcResponse> {
               busy
             })
           },
-          onMessage: (msg, done) => {
+          onMessage: (msg, done, _stillBusy, target) => {
             broadcast({
               type: 'stream',
               accountId: req.accountId,
               conversationId: targetBotId,
-              dotId: req.dotId ?? acc?.activeDotId,
+              dotId: target?.dotId,
+              roomId: msg.roomId,
               messageId: msg.id.startsWith('dot_') ? msg.id : `dot_${msg.id}`,
               text: msg.text,
               done
@@ -444,6 +425,7 @@ export function registerDotIpc(): void {
 
   // Forward asynchronous / autonomous Dot messages (e.g., clock triggers, delayed Phase-2 file replies) to renderer
   onDotRealtimeEvent((ev) => {
+    if (ev.turnId) return // The turn's own watcher handles matching messages and activity.
     if (
       ev.type === 'message' &&
       ev.message.role === 'bot' &&
@@ -456,7 +438,8 @@ export function registerDotIpc(): void {
         type: 'stream',
         accountId: ev.accountId,
         conversationId: ev.botId,
-        dotId: ev.dotId,
+        dotId: ev.target.dotId,
+        roomId: ev.target.roomId,
         messageId: msgId,
         text: ev.message.text,
         done: ev.done,
@@ -467,6 +450,8 @@ export function registerDotIpc(): void {
       broadcast({
         type: 'activity',
         accountId: ev.accountId,
+        dotId: ev.target.dotId,
+        roomId: ev.target.roomId,
         activityCode: ev.code,
         activityText: ev.text,
         busy: ev.busy
@@ -498,6 +483,7 @@ export function registerDotIpc(): void {
       throw new TypeError('Invalid dot importCredentials request')
     }
     const req = request as DotImportCredentialsRequest
+    const revision = getDotCredentialRevision(req.accountId)
     let preExported: Awaited<ReturnType<typeof exportDotMemorySnapshot>> | null = null
     if (req.migrateDataFromAccountId) {
       const prevAcc = getStoredDotAccount(req.migrateDataFromAccountId)
@@ -507,11 +493,13 @@ export function registerDotIpc(): void {
         }).catch(() => null)
       }
     }
+    if (revision !== getDotCredentialRevision(req.accountId)) return getDotAuthStatus(req.accountId)
     const stored = await importDotCredentialsFromRaw(req.accountId, req.rawInput ?? '', {
       refreshToken: req.refreshToken,
       chatgptAccountId: req.chatgptAccountId,
       proxyUrl: req.proxyUrl
     })
+    const importedRevision = getDotCredentialRevision(req.accountId)
     let migration: { goalCopied: boolean; memoriesCopied: number } | undefined
     if (
       preExported &&
@@ -526,7 +514,7 @@ export function registerDotIpc(): void {
           .catch(() => undefined)
       }
       const memoriesCopied = preExported.globalMemoriesCount + preExported.roomMessagesCount
-      if (memoriesCopied > 0 && preExported.markdown) {
+      if (memoriesCopied > 0 && preExported.markdown && importedRevision === getDotCredentialRevision(req.accountId)) {
         void importDotMemorySnapshot(req.accountId, {
           markdown: preExported.markdown,
           goal: preExported.goal
@@ -535,6 +523,7 @@ export function registerDotIpc(): void {
       migration = { goalCopied, memoriesCopied }
     }
     const st = await getDotAuthStatus(req.accountId)
+    if (!st.signedIn || importedRevision !== getDotCredentialRevision(req.accountId)) return st
     broadcast({
       type: 'login',
       accountId: req.accountId,
@@ -554,22 +543,26 @@ export function registerDotIpc(): void {
     if (typeof accountId !== 'string') throw new TypeError('Invalid accountId')
     if (accountId === '*') {
       clearAllStoredDotAccounts()
+      await cancelDotLogin('*')
       return { accountId: '*', signedIn: false }
     }
     clearStoredDotAccount(accountId)
+    const revision = getDotCredentialRevision(accountId)
+    await cancelDotLogin(accountId)
+    if (revision !== getDotCredentialRevision(accountId)) return getDotAuthStatus(accountId)
     broadcast({
       type: 'login',
       accountId,
       signedIn: false
     })
-    return getDotAuthStatus(accountId)
+    return { accountId, signedIn: false }
   })
 
   ipcMain.handle(DOT_CHANNELS.rpc, async (_event, request: unknown) => {
     if (typeof request !== 'object' || request === null) {
       return { ok: false as const, status: 0, message: 'Invalid dot rpc request' }
     }
-    const req = request as DotRpcRequest
+    const req = request as DotTurnRequest
     if (typeof req.accountId !== 'string' || typeof req.op !== 'string') {
       return { ok: false as const, status: 0, message: 'accountId and op required' }
     }

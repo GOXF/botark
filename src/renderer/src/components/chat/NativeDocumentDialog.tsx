@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Check, Copy, Download, FileCode, FileText, Maximize2, Minimize2, RefreshCw, X, ZoomIn, ZoomOut } from 'lucide-react'
 import { Dialog } from '@/components/ui/Dialog'
 import { Button } from '@/components/ui/Button'
@@ -21,212 +21,242 @@ export interface NativeDocumentTarget {
   agentId?: string
 }
 
-function decodeBase64Utf8(b64: string): string {
-  try {
-    const bin = atob(b64)
-    const bytes = new Uint8Array(bin.length)
-    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i)
-    return new TextDecoder('utf-8', { fatal: false }).decode(bytes)
-  } catch {
-    return ''
-  }
+function documentTargetKey(target: NativeDocumentTarget): string {
+  return JSON.stringify([
+    target.platformId, target.accountId, target.agentId, target.path, target.title,
+    target.mimeType, target.markdown, target.html
+  ])
 }
 
-function useDocumentContent(target: NativeDocumentTarget | null) {
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState<string>()
-  const [content, setContent] = useState<string>('')
-  const [rawBase64, setRawBase64] = useState<string>()
-  const [mime, setMime] = useState<string>('text/markdown')
+function isTextMime(mime: string): boolean {
+  return mime.startsWith('text/') ||
+    mime === 'image/svg+xml' ||
+    /^application\/(?:[^/]+\+)?(?:json|xml|markdown|javascript|x-javascript|x-sh|x-yaml|yaml)$/.test(mime)
+}
 
-  const loadFromVm = useCallback(async () => {
-    if (!target) return
-    setRawBase64(undefined)
-    if (target.markdown) {
-      setContent(target.markdown)
-      setMime('text/markdown')
-      setError(undefined)
-      return
-    }
-    if (target.html) {
-      setContent(target.html)
-      setMime('text/html')
-      setError(undefined)
-      return
-    }
-    if (!target.path) return
+function base64Bytes(base64: string) {
+  const bin = atob(base64)
+  const bytes = new Uint8Array(bin.length)
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i)
+  return bytes
+}
 
-    const bridge = getBridge()
-    setLoading(true)
-    setError(undefined)
+interface DocumentContent {
+  content: string
+  rawBase64?: string
+  mime: string
+}
+
+interface DownloadedDocument {
+  dataBase64?: string
+  mimeType?: string
+  text?: unknown
+}
+
+function downloadedContent(
+  data: DownloadedDocument,
+  target: NativeDocumentTarget,
+  fallbackMime: string
+): DocumentContent {
+  const mime = (data.mimeType || target.mimeType || fallbackMime).split(';')[0]!.trim().toLowerCase()
+  const rawBase64 = typeof data.dataBase64 === 'string' ? data.dataBase64 : undefined
+  const isText = isTextMime(mime)
+  if (rawBase64 === undefined && (!isText || typeof data.text !== 'string')) {
+    throw new Error(t('Document preview is unavailable'))
+  }
+  let content = ''
+  if (isText) {
+    if (typeof data.text === 'string') content = data.text
+    else if (rawBase64 !== undefined) content = new TextDecoder().decode(base64Bytes(rawBase64))
+  }
+  return { rawBase64, mime, content }
+}
+
+async function loadDocument(target: NativeDocumentTarget): Promise<DocumentContent> {
+  if (target.markdown) return { content: target.markdown, mime: 'text/markdown' }
+  if (target.html) return { content: target.html, mime: 'text/html' }
+  const rawPath = target.path?.trim()
+  if (!rawPath) {
+    if (target.markdown !== undefined) return { content: target.markdown, mime: 'text/markdown' }
+    if (target.html !== undefined) return { content: target.html, mime: 'text/html' }
+    throw new Error(t('Document preview is unavailable'))
+  }
+  const bridge = getBridge()
+  const isHttpUrl = /^https?:\/\//i.test(rawPath)
+  const isDotFileId = /^(CalpicoFile_|file_|libfile_|sediment:\/\/|dotfile:\/\/|dotatt:\/\/)/i.test(rawPath)
+  const isHarkFile =
+    target.platformId === 'hark' ||
+    /^(harkatt:\/\/|harkfile:\/\/)/i.test(rawPath) ||
+    /hark\.com|hark\.ai/i.test(rawPath)
+
+  const isGrokFile =
+    target.platformId === 'grok' ||
+    /^(grokstore:\/\/|grokatt:\/\/|grokdoc:\/\/)/i.test(rawPath)
+
+  if (isGrokFile && bridge?.grok?.rpc) {
+    let groupChatId: string | undefined
+    let storeId: string | undefined
+    let documentId: string | undefined
+    if (rawPath.startsWith('grokdoc://')) {
+      // grokdoc://<groupChatId>/<storeId>/<documentId>
+      const parts = rawPath.slice('grokdoc://'.length).split('/')
+      groupChatId = parts[0]
+      storeId = parts[1]
+      documentId = parts.slice(2).join('/')
+    }
+    const grokRes = await bridge.grok.rpc({
+      accountId: target.accountId,
+      op: 'downloadAttachment',
+      agentId: target.agentId,
+      path: !groupChatId && !isHttpUrl ? rawPath : undefined,
+      url: isHttpUrl ? rawPath : undefined,
+      groupChatId,
+      storeId,
+      documentId,
+      name: target.title
+    })
+    if (grokRes.ok && grokRes.data && typeof grokRes.data === 'object') {
+      return downloadedContent(grokRes.data as DownloadedDocument, target, 'text/markdown')
+    }
+    if (!grokRes.ok) {
+      throw new Error(grokRes.message || `Grok document load failed (${grokRes.status})`)
+    }
+  }
+
+  if (isHarkFile && bridge?.hark?.rpc) {
+    const cleanRef = rawPath.replace(/^(harkatt|harkfile):\/\//i, '')
+    const harkRes = await bridge.hark.rpc({
+      accountId: target.accountId,
+      op: 'downloadArtifact',
+      url: /^https?:\/\//i.test(cleanRef) ? cleanRef : undefined,
+      fileId: !/^https?:\/\//i.test(cleanRef) ? cleanRef : undefined,
+      name: target.title
+    })
+    if (harkRes.ok && harkRes.data && typeof harkRes.data === 'object') {
+      return downloadedContent(harkRes.data as DownloadedDocument, target, 'text/plain')
+    }
+    if (!harkRes.ok) {
+      throw new Error(harkRes.message || `Hark document load failed (${harkRes.status})`)
+    }
+  }
+
+  const isMuseUrl = target.platformId === 'meta-muse' || /^https?:\/\/(?:[^/]*\.)?muse\.ai\//i.test(rawPath)
+
+  if ((isHttpUrl || isDotFileId) && bridge?.dot?.rpc && target.platformId !== 'hark' && !isMuseUrl) {
+    const dotRes = await bridge.dot.rpc({
+      accountId: target.accountId,
+      op: 'downloadFile',
+      url: isHttpUrl ? rawPath : undefined,
+      fileId: !isHttpUrl ? rawPath.replace(/^(sediment|dotfile|dotatt):\/\//i, '') : undefined,
+      name: target.title
+    })
+    if (dotRes.ok && dotRes.data && typeof dotRes.data === 'object') {
+      return downloadedContent(dotRes.data as DownloadedDocument, target, 'text/plain')
+    }
+    if (!isHttpUrl && !dotRes.ok) {
+      throw new Error(dotRes.message || `Download failed (${dotRes.status})`)
+    }
+  }
+
+  if (isHttpUrl && bridge?.hark?.rpc) {
+    const harkRes = await bridge.hark.rpc({
+      accountId: target.accountId,
+      op: 'downloadArtifact',
+      url: rawPath,
+      name: target.title
+    })
+    if (harkRes.ok && harkRes.data && typeof harkRes.data === 'object') {
+      return downloadedContent(harkRes.data as DownloadedDocument, target, 'text/plain')
+    }
+  }
+
+  const muse = bridge?.muse
+  if (muse && (!target.platformId || target.platformId === 'meta-muse' || isMuseUrl)) {
+    const cleanPath = rawPath.replace(/^\/+/, '')
+    let previewError: unknown
+    if (muse.previewWorkspaceFile) {
+      try {
+        const res = await muse.previewWorkspaceFile(target.accountId, cleanPath)
+        return downloadedContent(res, target, 'text/markdown')
+      } catch (error) {
+        previewError = error
+      }
+    }
+    if (muse.rpc) {
+      const raw = await muse.rpc({
+        accountId: target.accountId,
+        method: 'fs.read',
+        params: { path: cleanPath }
+      })
+      const o = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {}
+      const rawBase64 = typeof o['data_base64'] === 'string' ? o['data_base64'] : undefined
+      const mime = o['mimeType'] || o['mime_type']
+      const inline = typeof o['content'] === 'string' ? o['content'] : o['text']
+      if (rawBase64 !== undefined || typeof inline === 'string') {
+        return downloadedContent({
+          dataBase64: rawBase64,
+          mimeType: typeof mime === 'string' ? mime : undefined,
+          text: inline
+        }, target, 'text/markdown')
+      }
+      if (raw == null) throw new Error(t('Document preview is unavailable'))
+      return { content: JSON.stringify(raw, null, 2), mime: 'application/json' }
+    }
+    if (previewError) throw previewError
+  }
+  throw new Error(t('Document preview is unavailable'))
+}
+
+type DocumentRequest = { targetKey: string; requestId: number }
+type DocumentLoad = DocumentRequest & (
+  | { status: 'loading' }
+  | { status: 'loaded'; data: DocumentContent }
+  | { status: 'error'; error: string }
+)
+
+function useDocumentContent(target: NativeDocumentTarget) {
+  const targetKey = useMemo(() => documentTargetKey(target), [target])
+  const sequence = useRef(0)
+  const currentTarget = useRef({ target, targetKey })
+  const [load, setLoad] = useState<DocumentLoad>()
+
+  useLayoutEffect(() => {
+    currentTarget.current = { target, targetKey }
+  }, [target, targetKey])
+
+  const reload = useCallback(async () => {
+    const current = currentTarget.current
+    if (current.targetKey !== targetKey) return
+    const request = { targetKey, requestId: ++sequence.current }
+    setLoad({ ...request, status: 'loading' })
     try {
-      const rawPath = target.path.trim()
-      const isHttpUrl = /^https?:\/\//i.test(rawPath)
-      const isDotFileId = /^(CalpicoFile_|file_|libfile_|sediment:\/\/|dotfile:\/\/|dotatt:\/\/)/i.test(rawPath)
-      const isHarkFile =
-        target.platformId === 'hark' ||
-        /^(harkatt:\/\/|harkfile:\/\/)/i.test(rawPath) ||
-        /hark\.com|hark\.ai/i.test(rawPath)
-
-      const isGrokFile =
-        target.platformId === 'grok' ||
-        /^(grokstore:\/\/|grokatt:\/\/|grokdoc:\/\/)/i.test(rawPath)
-
-      if (isGrokFile && bridge?.grok?.rpc) {
-        let groupChatId: string | undefined
-        let storeId: string | undefined
-        let documentId: string | undefined
-        if (rawPath.startsWith('grokdoc://')) {
-          // grokdoc://<groupChatId>/<storeId>/<documentId>
-          const parts = rawPath.slice('grokdoc://'.length).split('/')
-          groupChatId = parts[0]
-          storeId = parts[1]
-          documentId = parts.slice(2).join('/')
-        }
-        const grokRes = await bridge.grok.rpc({
-          accountId: target.accountId,
-          op: 'downloadAttachment',
-          agentId: target.agentId,
-          path: !groupChatId && !isHttpUrl ? rawPath : undefined,
-          url: isHttpUrl ? rawPath : undefined,
-          groupChatId,
-          storeId,
-          documentId,
-          name: target.title
-        })
-        if (grokRes.ok && grokRes.data && typeof grokRes.data === 'object') {
-          const d = grokRes.data as {
-            dataBase64: string
-            mimeType: string
-            text?: string
-          }
-          setRawBase64(d.dataBase64)
-          setMime(d.mimeType || target.mimeType || 'text/markdown')
-          setContent(d.text ?? decodeBase64Utf8(d.dataBase64))
-          return
-        }
-        if (!grokRes.ok) {
-          throw new Error(grokRes.message || `Grok document load failed (${grokRes.status})`)
-        }
+      const data = await loadDocument(current.target)
+      if (sequence.current === request.requestId) setLoad({ ...request, status: 'loaded', data })
+    } catch (error) {
+      if (sequence.current === request.requestId) {
+        setLoad({ ...request, status: 'error', error: error instanceof Error ? error.message : String(error) })
       }
-
-      if (isHarkFile && bridge?.hark?.rpc) {
-        const cleanRef = rawPath.replace(/^(harkatt|harkfile):\/\//i, '')
-        const harkRes = await bridge.hark.rpc({
-          accountId: target.accountId,
-          op: 'downloadArtifact',
-          url: /^https?:\/\//i.test(cleanRef) ? cleanRef : undefined,
-          fileId: !/^https?:\/\//i.test(cleanRef) ? cleanRef : undefined,
-          name: target.title
-        })
-        if (harkRes.ok && harkRes.data && typeof harkRes.data === 'object') {
-          const d = harkRes.data as {
-            dataBase64: string
-            mimeType: string
-            text?: string
-          }
-          setRawBase64(d.dataBase64)
-          setMime(d.mimeType || target.mimeType || 'text/plain')
-          setContent(d.text ?? decodeBase64Utf8(d.dataBase64))
-          return
-        }
-        if (!harkRes.ok) {
-          throw new Error(harkRes.message || `Hark document load failed (${harkRes.status})`)
-        }
-      }
-
-      const isMuseUrl = target.platformId === 'meta-muse' || /^https?:\/\/(?:[^/]*\.)?muse\.ai\//i.test(rawPath)
-
-      if ((isHttpUrl || isDotFileId) && bridge?.dot?.rpc && target.platformId !== 'hark' && !isMuseUrl) {
-        const dotRes = await bridge.dot.rpc({
-          accountId: target.accountId,
-          op: 'downloadFile',
-          url: isHttpUrl ? rawPath : undefined,
-          fileId: !isHttpUrl ? rawPath.replace(/^(sediment|dotfile|dotatt):\/\//i, '') : undefined,
-          name: target.title
-        })
-        if (dotRes.ok && dotRes.data && typeof dotRes.data === 'object') {
-          const d = dotRes.data as {
-            dataBase64: string
-            mimeType: string
-            filename?: string
-            name?: string
-            text?: string
-          }
-          setRawBase64(d.dataBase64)
-          setMime(d.mimeType || target.mimeType || 'text/plain')
-          setContent(d.text ?? decodeBase64Utf8(d.dataBase64))
-          return
-        }
-        if (!isHttpUrl && !dotRes.ok) {
-          throw new Error(dotRes.message || `Download failed (${dotRes.status})`)
-        }
-      }
-
-      if (isHttpUrl && bridge?.hark?.rpc) {
-        const harkRes = await bridge.hark.rpc({
-          accountId: target.accountId,
-          op: 'downloadArtifact',
-          url: rawPath,
-          name: target.title
-        })
-        if (harkRes.ok && harkRes.data && typeof harkRes.data === 'object') {
-          const d = harkRes.data as { dataBase64: string; mimeType: string; text?: string }
-          setRawBase64(d.dataBase64)
-          setMime(d.mimeType || target.mimeType || 'text/plain')
-          setContent(d.text ?? decodeBase64Utf8(d.dataBase64))
-          return
-        }
-      }
-
-      const muse = bridge?.muse
-      if (muse && (!target.platformId || target.platformId === 'meta-muse' || isMuseUrl)) {
-        const cleanPath = rawPath.replace(/^\/+/, '')
-        if (muse.previewWorkspaceFile) {
-          try {
-            const res = await muse.previewWorkspaceFile(target.accountId, cleanPath)
-            setRawBase64(res.dataBase64)
-            setMime(res.mimeType || target.mimeType || 'text/markdown')
-            setContent(decodeBase64Utf8(res.dataBase64))
-            return
-          } catch {
-            // Fall through to fs.read
-          }
-        }
-        if (muse.rpc) {
-          const raw = await muse.rpc({
-            accountId: target.accountId,
-            method: 'fs.read',
-            params: { path: cleanPath }
-          })
-          const o = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {}
-          const text =
-            typeof o['content'] === 'string'
-              ? (o['content'] as string)
-              : typeof o['text'] === 'string'
-                ? (o['text'] as string)
-                : typeof o['data_base64'] === 'string'
-                  ? decodeBase64Utf8(o['data_base64'] as string)
-                  : JSON.stringify(raw, null, 2)
-          setContent(text)
-          setMime(target.mimeType || 'text/markdown')
-          return
-        }
-      }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
-    } finally {
-      setLoading(false)
     }
-  }, [target])
+  }, [targetKey])
 
-  useEffect(() => {
-    if (target) {
-      void loadFromVm()
-    }
-  }, [target, loadFromVm])
+  useLayoutEffect(() => {
+    void reload()
+    return () => { sequence.current++ }
+  }, [reload])
 
-  return { loading, error, content, rawBase64, mime, reload: loadFromVm }
+  const current = load?.targetKey === targetKey && load.requestId === sequence.current ? load : undefined
+  const data = current?.status === 'loaded' ? current.data : undefined
+  return {
+    targetKey,
+    requestId: current?.requestId,
+    loading: !current || current.status === 'loading',
+    ready: data !== undefined,
+    error: current?.status === 'error' ? current.error : undefined,
+    content: data?.content ?? '',
+    rawBase64: data?.rawBase64,
+    mime: data?.mime ?? '',
+    reload
+  }
 }
 
 function triggerTargetDownload(
@@ -238,11 +268,8 @@ function triggerTargetDownload(
   isMarkdown: boolean
 ) {
   let blob: Blob
-  if (rawBase64) {
-    const bin = atob(rawBase64)
-    const bytes = new Uint8Array(bin.length)
-    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i)
-    blob = new Blob([bytes], { type: mime || 'application/octet-stream' })
+  if (rawBase64 !== undefined) {
+    blob = new Blob([base64Bytes(rawBase64)], { type: mime || 'application/octet-stream' })
   } else {
     blob = new Blob([content], { type: `${mime || 'text/plain'};charset=utf-8` })
   }
@@ -267,23 +294,43 @@ function triggerTargetDownload(
 }
 
 function useBase64BlobUrl(rawBase64: string | undefined, mime: string, enabled: boolean): string | null {
-  const [url, setUrl] = useState<string | null>(null)
+  const [blob, setBlob] = useState<{ data: string; mime: string; url: string }>()
   useEffect(() => {
     if (!enabled || !rawBase64) {
-      setUrl(null)
+      setBlob(undefined)
       return
     }
-    const bin = atob(rawBase64)
-    const bytes = new Uint8Array(new ArrayBuffer(bin.length))
-    for (let i = 0; i < bin.length; i += 1) bytes[i] = bin.charCodeAt(i)
-    const blob = new Blob([bytes], { type: mime || 'application/octet-stream' })
-    const nextUrl = URL.createObjectURL(blob)
-    setUrl(nextUrl)
+    const url = URL.createObjectURL(new Blob([base64Bytes(rawBase64)], { type: mime || 'application/octet-stream' }))
+    setBlob({ data: rawBase64, mime, url })
     return () => {
-      URL.revokeObjectURL(nextUrl)
+      URL.revokeObjectURL(url)
     }
   }, [rawBase64, mime, enabled])
-  return url
+  return enabled && blob && blob.data === rawBase64 && blob.mime === mime ? blob.url : null
+}
+
+function useCopyDocument(content: string, requestId: number | undefined) {
+  const [copiedId, setCopiedId] = useState<number>()
+  const current = useRef(requestId)
+  const reset = useRef<ReturnType<typeof setTimeout>>(undefined)
+  useLayoutEffect(() => {
+    current.current = requestId
+    return () => {
+      current.current = undefined
+      clearTimeout(reset.current)
+    }
+  }, [requestId])
+
+  const copyContent = () => {
+    if (!requestId || !content || current.current !== requestId) return
+    void navigator.clipboard.writeText(content).then(() => {
+      if (current.current !== requestId) return
+      setCopiedId(requestId)
+      clearTimeout(reset.current)
+      reset.current = setTimeout(() => setCopiedId(undefined), 1600)
+    }, () => {})
+  }
+  return { copied: requestId !== undefined && copiedId === requestId, copyContent }
 }
 
 function ZoomableImagePreview({ src, alt, maxHeightClass }: { src: string; alt: string; maxHeightClass: string }) {
@@ -340,14 +387,14 @@ export function DocumentCanvasPane({
   onClose: () => void
   onOpenNestedDoc?: (next: NativeDocumentTarget) => void
 }) {
-  const { loading, error, content, rawBase64, mime, reload } = useDocumentContent(target)
+  const { targetKey, requestId, loading, ready, error, content, rawBase64, mime, reload } = useDocumentContent(target)
   const [mode, setMode] = useState<'rendered' | 'source'>('rendered')
-  const [copied, setCopied] = useState(false)
+  const { copied, copyContent } = useCopyDocument(content, requestId)
   const [expandedModal, setExpandedModal] = useState(false)
 
   useEffect(() => {
     setMode('rendered')
-  }, [target.title, target.path, target.markdown, target.html])
+  }, [targetKey])
 
   const lowerName = (target.path || target.title || '').toLowerCase()
   const isMarkdown =
@@ -369,16 +416,6 @@ export function DocumentCanvasPane({
     isPdf ? 'application/pdf' : isVideo ? (mime.startsWith('video/') ? mime : 'video/mp4') : isAudio ? (mime.startsWith('audio/') ? mime : 'audio/mpeg') : mime,
     Boolean(rawBase64 && (isVideo || isAudio || isPdf))
   )
-
-  const copyContent = () => {
-    void navigator.clipboard.writeText(content).then(
-      () => {
-        setCopied(true)
-        setTimeout(() => setCopied(false), 1600)
-      },
-      () => {}
-    )
-  }
 
   return (
     <aside
@@ -431,15 +468,14 @@ export function DocumentCanvasPane({
               <RefreshCw className={cn('size-3.5', loading && 'animate-spin')} />
             </Button>
           )}
-          {content && (
-            <Button size="sm" variant="ghost" onClick={copyContent} title={copied ? '已复制' : t('Copy')}>
-              {copied ? <Check className="size-3.5 text-status-online" /> : <Copy className="size-3.5" />}
-            </Button>
-          )}
+          <Button size="sm" variant="ghost" disabled={!ready || !content} onClick={copyContent} title={copied ? '已复制' : t('Copy')}>
+            {copied ? <Check className="size-3.5 text-status-online" /> : <Copy className="size-3.5" />}
+          </Button>
           <Button
             size="sm"
             variant="ghost"
-            onClick={() => triggerTargetDownload(target, content, rawBase64, mime, isHtml, isMarkdown)}
+            disabled={!ready}
+            onClick={() => ready && triggerTargetDownload(target, content, rawBase64, mime, isHtml, isMarkdown)}
             title={t('Download')}
           >
             <Download className="size-3.5" />
@@ -529,15 +565,17 @@ export function NativeDocumentDialog({
   target: NativeDocumentTarget | null
   onClose: () => void
 }) {
-  const { loading, error, content, rawBase64, mime, reload } = useDocumentContent(target)
+  return target ? <OpenNativeDocumentDialog target={target} onClose={onClose} /> : null
+}
+
+function OpenNativeDocumentDialog({ target, onClose }: { target: NativeDocumentTarget; onClose: () => void }) {
+  const { targetKey, requestId, loading, ready, error, content, rawBase64, mime, reload } = useDocumentContent(target)
   const [mode, setMode] = useState<'rendered' | 'source'>('rendered')
-  const [copied, setCopied] = useState(false)
+  const { copied, copyContent } = useCopyDocument(content, requestId)
 
   useEffect(() => {
-    if (target) setMode('rendered')
-  }, [target])
-
-  if (!target) return null
+    setMode('rendered')
+  }, [targetKey])
 
   const lowerName = (target.path || target.title || '').toLowerCase()
   const isMarkdown =
@@ -556,19 +594,9 @@ export function NativeDocumentDialog({
     Boolean(rawBase64 && (isVideo || isAudio || isPdf))
   )
 
-  const copyContent = () => {
-    void navigator.clipboard.writeText(content).then(
-      () => {
-        setCopied(true)
-        setTimeout(() => setCopied(false), 1600)
-      },
-      () => {}
-    )
-  }
-
   return (
     <Dialog
-      open={Boolean(target)}
+      open
       onOpenChange={(open) => {
         if (!open) onClose()
       }}
@@ -615,16 +643,15 @@ export function NativeDocumentDialog({
               <RefreshCw className={cn('size-3.5', loading && 'animate-spin')} /> {t('Refresh')}
             </Button>
           )}
-          {content && (
-            <Button size="sm" variant="secondary" onClick={copyContent}>
-              {copied ? <Check className="size-3.5 text-status-online" /> : <Copy className="size-3.5" />}
-              {copied ? '已复制' : t('Copy')}
-            </Button>
-          )}
+          <Button size="sm" variant="secondary" disabled={!ready || !content} onClick={copyContent}>
+            {copied ? <Check className="size-3.5 text-status-online" /> : <Copy className="size-3.5" />}
+            {copied ? '已复制' : t('Copy')}
+          </Button>
           <Button
             size="sm"
             variant="primary"
-            onClick={() => triggerTargetDownload(target, content, rawBase64, mime, isHtml, isMarkdown)}
+            disabled={!ready}
+            onClick={() => ready && triggerTargetDownload(target, content, rawBase64, mime, isHtml, isMarkdown)}
           >
             <Download className="size-3.5" /> {t('Download')}
           </Button>

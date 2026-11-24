@@ -23,6 +23,7 @@ function errorMessage(error: unknown): string {
 export function usePlatformLogin(botId: string) {
   const [phase, setPhase] = useState<LoginPhase>({ kind: 'idle' })
   const accountId = useRef(createId('acc'))
+  const attemptId = useRef(0)
   const pending = useRef<PlatformId | null>(null)
   const unsubscribe = useRef<(() => void) | null>(null)
 
@@ -32,6 +33,7 @@ export function usePlatformLogin(botId: string) {
   }
 
   const discard = () => {
+    attemptId.current++
     stopListening()
     const platformId = pending.current
     pending.current = null
@@ -48,6 +50,7 @@ export function usePlatformLogin(botId: string) {
 
   /** The session is now owned by a bot; stop guarding it. */
   const keep = () => {
+    attemptId.current++
     stopListening()
     pending.current = null
   }
@@ -55,19 +58,21 @@ export function usePlatformLogin(botId: string) {
   useEffect(() => () => discard(), [])
 
   const signedIn = (platformId: PlatformId) => {
+    attemptId.current++
     stopListening()
     setPhase({ kind: 'signed-in', platformId })
   }
 
-  const openWindow = async (platformId: PlatformId) => {
+  const openWindow = async (platformId: PlatformId, id: string) => {
     const adapter = adapterRegistry.get(platformId)
-    if (!adapter?.openLogin) return
-    const id = accountId.current
+    if (!adapter?.openLogin || accountId.current !== id || pending.current !== platformId) return
+    const attempt = ++attemptId.current
     setPhase({ kind: 'waiting', platformId, windowClosed: false })
     try {
       const status = await adapter.openLogin(id, botId)
-      if (LIVE.has(status) && accountId.current === id) signedIn(platformId)
+      if (attemptId.current === attempt && LIVE.has(status)) signedIn(platformId)
     } catch (error) {
+      if (attemptId.current !== attempt) return
       discard()
       setPhase({ kind: 'idle', error: errorMessage(error) })
     }
@@ -76,6 +81,7 @@ export function usePlatformLogin(botId: string) {
   const start = (platformId: PlatformId) => {
     const adapter = adapterRegistry.get(platformId)
     if (!adapter) return
+    if (pending.current) discard()
     // Adapters without an interactive login (the mock) count as signed in.
     if (!adapter.openLogin) {
       setPhase({ kind: 'signed-in', platformId })
@@ -86,6 +92,7 @@ export function usePlatformLogin(botId: string) {
     // Subscribe before opening so an already existing session is not missed.
     stopListening()
     unsubscribe.current = adapter.subscribe((event: AdapterEvent) => {
+      if (accountId.current !== id || pending.current !== platformId) return
       if (event.type === 'login' && event.accountId === id) {
         if (event.signedIn) signedIn(platformId)
         else if (event.windowClosed) {
@@ -96,9 +103,10 @@ export function usePlatformLogin(botId: string) {
         signedIn(platformId)
       }
     })
-    void openWindow(platformId)
+    void openWindow(platformId, id)
   }
 
+  const id = accountId.current
   return {
     phase,
     /** Id of the account being signed in (stable until `discard`). */
@@ -106,13 +114,13 @@ export function usePlatformLogin(botId: string) {
       return accountId.current
     },
     start,
-    reopen: () => phase.kind === 'waiting' && void openWindow(phase.platformId),
+    reopen: () => phase.kind === 'waiting' && void openWindow(phase.platformId, id),
     /**
      * Credentials were imported into this account's partition by hand
      * (paste-import). Advance immediately like a window sign-in.
      */
     markSignedIn: () => {
-      if (pending.current) signedIn(pending.current)
+      if (accountId.current === id && pending.current) signedIn(pending.current)
     },
     discard,
     keep

@@ -11,7 +11,7 @@ import {
 } from '../googleOAuthUaGuard'
 import { applyProxyToPartition } from '../muse/accountProxy'
 import { partitionForAccount } from '../webContentsViewManager'
-import { DOT_ORIGIN, getStoredDotAccount, trySyncFromElectronPartition } from './dotClient'
+import { DOT_ORIGIN, getDotCredentialRevision, getStoredDotAccount, trySyncFromElectronPartition } from './dotClient'
 
 const DOT_LOGIN_URL = `${DOT_ORIGIN}/dots`
 
@@ -45,6 +45,7 @@ export type DotLoginEvent =
     }
 
 const loginWindows = new Map<string, BrowserWindow>()
+const loginAttempts = new Map<string, symbol>()
 const loginChildWindows = new Map<string, Set<BrowserWindow>>()
 const loginListeners = new Set<(event: DotLoginEvent) => void>()
 
@@ -74,8 +75,21 @@ export async function openDotLoginWindow(
     return
   }
 
+  const attempt = Symbol()
+  loginAttempts.set(accountId, attempt)
+  const revision = getDotCredentialRevision(accountId)
   // Enforce per-account proxy BEFORE loading chatgpt.com/dots (fail-closed on unreadable proxy).
-  await applyProxyToPartition(accountId)
+  try {
+    await applyProxyToPartition(accountId)
+  } catch (error) {
+    if (loginAttempts.get(accountId) === attempt) loginAttempts.delete(accountId)
+    throw error
+  }
+  if (loginAttempts.get(accountId) !== attempt) return
+  if (revision !== getDotCredentialRevision(accountId)) {
+    loginAttempts.delete(accountId)
+    return
+  }
 
   const partition = partitionForAccount(accountId)
   const ses = electronSession.fromPartition(partition)
@@ -116,6 +130,8 @@ export async function openDotLoginWindow(
   }
 
   let captured = false
+  let checking = false
+  const probeController = new AbortController()
   let handedOffToBrowser = false
   let lastBlockCheckAt = 0
 
@@ -236,9 +252,12 @@ export async function openDotLoginWindow(
   attachNavigationGuards(win.webContents, win)
 
   const pollSession = async () => {
-    if (captured || win.isDestroyed()) return
-    const synced = await trySyncFromElectronPartition(accountId).catch(() => undefined)
-    if (synced && synced.accessToken) {
+    const ownsWindow = () => loginWindows.get(accountId) === win && loginAttempts.get(accountId) === attempt && !win.isDestroyed()
+    if (captured || checking || !ownsWindow() || revision !== getDotCredentialRevision(accountId)) return
+    checking = true
+    try {
+      const synced = await trySyncFromElectronPartition(accountId, ownsWindow, probeController.signal).catch(() => undefined)
+      if (!synced?.accessToken || !ownsWindow() || getDotCredentialRevision(accountId) !== revision + 1) return
       captured = true
       emitLogin({
         accountId,
@@ -250,6 +269,8 @@ export async function openDotLoginWindow(
       })
       closeChildPopups()
       if (!win.isDestroyed()) win.close()
+    } finally {
+      checking = false
     }
   }
 
@@ -283,10 +304,13 @@ export async function openDotLoginWindow(
   win.webContents.on('did-create-window', trackChildWindow)
 
   win.on('closed', () => {
+    probeController.abort()
     clearInterval(interval)
     closeChildPopups()
+    if (loginWindows.get(accountId) !== win) return
     loginChildWindows.delete(accountId)
     loginWindows.delete(accountId)
+    if (loginAttempts.get(accountId) === attempt) loginAttempts.delete(accountId)
     if (!captured) {
       const existing = getStoredDotAccount(accountId)
       if (existing?.accessToken) {
@@ -312,6 +336,11 @@ export async function openDotLoginWindow(
 }
 
 export async function cancelDotLogin(accountId: string): Promise<void> {
+  if (accountId === '*') {
+    await Promise.all([...new Set([...loginWindows.keys(), ...loginAttempts.keys()])].map(cancelDotLogin))
+    return
+  }
+  loginAttempts.delete(accountId)
   const win = loginWindows.get(accountId)
   loginWindows.delete(accountId)
   const children = loginChildWindows.get(accountId)

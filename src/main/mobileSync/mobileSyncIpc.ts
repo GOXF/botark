@@ -9,20 +9,29 @@ import {
   type MobileSendCommand,
   type MobileSendResult,
   type MobileSyncStateView,
-  type MobileWorkspaceSnapshot
+  type MobileWorkspaceSnapshotUpdate
 } from '@shared/mobileSync'
 import { getHermesAccount, listHermesAccountRecords } from '../hermes/hermesStore'
-import { defaultMobileSyncDevicesPath, MobileSyncServer } from './mobileSyncServer'
+import {
+  defaultMobileSyncDevicesPath,
+  MOBILE_SEND_UNCONFIRMED,
+  MobileSyncServer,
+  SEND_RETRY_TTL_MS
+} from './mobileSyncServer'
 
 let syncServer: MobileSyncServer | null = null
-let initialSnapshot: MobileWorkspaceSnapshot | undefined
 let registered = false
 const pendingSends = new Map<string, { contents: WebContents; finish: (result: MobileSendResult) => void }>()
+const pendingSnapshots = new Map<WebContents, { id: string; promise: Promise<void>; finish: () => void }>()
 
 function broadcastState(state: MobileSyncStateView): void {
   for (const win of BrowserWindow.getAllWindows()) {
     if (win.isDestroyed() || win.webContents.isDestroyed()) continue
-    win.webContents.send(MOBILE_SYNC_CHANNELS.stateChanged, state)
+    try {
+      win.webContents.send(MOBILE_SYNC_CHANNELS.stateChanged, state)
+    } catch {
+      /* The renderer can disappear during a sync state change. */
+    }
   }
 }
 
@@ -34,13 +43,15 @@ function dispatchCommandToRenderer(command: MobileRelayCommand): void {
 
 function dispatchSendToRenderer(command: MobileSendCommand): Promise<MobileSendResult> {
   const win = BrowserWindow.getAllWindows().find((w) => !w.isDestroyed() && !w.webContents.isDestroyed())
-  const unavailable = { ok: false, status: 503, message: 'Desktop did not confirm that it queued the message' } as const
+  const unavailable = { ok: false, status: 503, message: 'Desktop renderer is unavailable' } as const
   if (!win) return Promise.resolve(unavailable)
   const contents = win.webContents
   const id = randomUUID()
   return new Promise((resolve) => {
-    const onDestroyed = () => finish(unavailable)
-    const timer = setTimeout(onDestroyed, 5000)
+    // HTTP can time out while the renderer is still handling this request. Keep its
+    // acknowledgment listener so the next request with the same ID can reconcile it.
+    const onDestroyed = () => finish(MOBILE_SEND_UNCONFIRMED)
+    const timer = setTimeout(onDestroyed, SEND_RETRY_TTL_MS).unref()
     const finish = (result: MobileSendResult) => {
       clearTimeout(timer)
       pendingSends.delete(id)
@@ -55,6 +66,38 @@ function dispatchSendToRenderer(command: MobileSendCommand): Promise<MobileSendR
       finish(unavailable)
     }
   })
+}
+
+function requestRendererSnapshot(preferred?: WebContents): Promise<void> {
+  const contents = preferred ?? BrowserWindow.getAllWindows()
+    .find((win) => !win.isDestroyed() && !win.webContents.isDestroyed())?.webContents
+  if (!contents || contents.isDestroyed()) return Promise.resolve()
+  const pending = pendingSnapshots.get(contents)
+  if (pending) return pending.promise
+
+  const id = randomUUID()
+  let complete!: () => void
+  const promise = new Promise<void>((resolve) => { complete = resolve })
+  const finish = () => {
+    clearTimeout(timer)
+    pendingSnapshots.delete(contents)
+    contents.removeListener('destroyed', finish)
+    complete()
+  }
+  const timer = setTimeout(finish, 3_000)
+  pendingSnapshots.set(contents, { id, promise, finish })
+  contents.once('destroyed', finish)
+  try {
+    contents.send(MOBILE_SYNC_CHANNELS.stateChanged, { ...ensureServer().getState(), snapshotRequestId: id })
+  } catch {
+    finish()
+  }
+  return promise
+}
+
+async function stopServer(): Promise<MobileSyncStateView> {
+  for (const pending of pendingSnapshots.values()) pending.finish()
+  return ensureServer().stop()
 }
 
 function collectDirectHermesCredentials(): DirectHermesCredential[] {
@@ -85,19 +128,16 @@ function ensureServer(): MobileSyncServer {
       getDirectCredentials: collectDirectHermesCredentials,
       onCommand: dispatchCommandToRenderer,
       onSendMessage: dispatchSendToRenderer,
+      refreshSnapshot: requestRendererSnapshot,
       onStateChange: broadcastState
     })
-    if (initialSnapshot) {
-      syncServer.updateSnapshot(initialSnapshot)
-      initialSnapshot = undefined
-    }
   }
   return syncServer
 }
 
 export async function stopMobileSyncServer(): Promise<void> {
   if (syncServer) {
-    await syncServer.stop().catch(() => undefined)
+    await stopServer().catch(() => undefined)
   }
 }
 
@@ -112,7 +152,7 @@ export function registerMobileSyncIpc(): void {
 
   ipcMain.handle(MOBILE_SYNC_CHANNELS.getState, () => ensureServer().getState())
   ipcMain.handle(MOBILE_SYNC_CHANNELS.start, () => ensureServer().start())
-  ipcMain.handle(MOBILE_SYNC_CHANNELS.stop, () => ensureServer().stop())
+  ipcMain.handle(MOBILE_SYNC_CHANNELS.stop, stopServer)
   ipcMain.handle(MOBILE_SYNC_CHANNELS.rotatePairing, () => ensureServer().rotatePairing())
 
   ipcMain.handle(MOBILE_SYNC_CHANNELS.setIncludeDirectCredentials, (_event, enabled: unknown) => {
@@ -126,6 +166,7 @@ export function registerMobileSyncIpc(): void {
 
   ipcMain.handle(MOBILE_SYNC_CHANNELS.exportOfflineBundle, async (event) => {
     const srv = ensureServer()
+    await requestRendererSnapshot(event.sender)
     const { bundleJson, transferKey, fingerprint } = srv.createOfflineEncryptedBundle()
     const win = BrowserWindow.fromWebContents(event.sender) ?? undefined
     const defaultName = `BotArk-Sync-${fingerprint}.botark-sync`
@@ -152,10 +193,17 @@ export function registerMobileSyncIpc(): void {
     }
   })
 
-  ipcMain.on(MOBILE_SYNC_CHANNELS.pushSnapshot, (_event, snapshot: unknown) => {
+  ipcMain.on(MOBILE_SYNC_CHANNELS.pushSnapshot, (event, snapshot: unknown) => {
     if (!snapshot || typeof snapshot !== 'object') return
-    if (syncServer) syncServer.updateSnapshot(snapshot as MobileWorkspaceSnapshot)
-    else initialSnapshot = snapshot as MobileWorkspaceSnapshot
+    const { snapshotRequestId, publishSnapshot, ...workspace } = snapshot as MobileWorkspaceSnapshotUpdate
+    if (snapshotRequestId) {
+      const pending = pendingSnapshots.get(event.sender)
+      if (!pending || pending.id !== snapshotRequestId) return
+      ensureServer().updateSnapshot(workspace, Boolean(publishSnapshot))
+      pending.finish()
+    } else {
+      ensureServer().updateSnapshot(workspace)
+    }
   })
 
   ipcMain.on(MOBILE_SYNC_CHANNELS.pushEvent, (_event, payload: unknown) => {

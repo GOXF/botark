@@ -4,16 +4,19 @@ import {
   type CueAuthSessionPayload,
   type CueAuthStatus,
   type CueImportCredentialsRequest,
-  type CueMainEvent,
   type CueOpenLoginRequest,
   type CueRpcRequest,
   type CueRpcResponse
 } from '@shared/ipc'
+import type { CueTurnEvent } from '../../adapters/cue/events'
 import { loadAccountProxyUrl } from '../muse/accountProxy'
 import {
   clearCueAccountAuth,
+  currentCueAuthForIdentity,
   hasValidCueAuth,
   importCueCredentials,
+  getCueCredentialRevision,
+  listSavedCueAccountIds,
   loadCueTokens,
   persistCueTokens
 } from './cueAuth'
@@ -25,7 +28,7 @@ import {
   fetchCueSessionHistory
 } from './cueClient'
 import { sendCueNativeMessage } from './cueChatSocket'
-import { onCueHandoffSignedIn } from './cueDesktopHandoff'
+import { onCueHandoffSignedIn, revokeCueLoginNonce } from './cueDesktopHandoff'
 import { getOrCreateCueDeviceId } from './cueDeviceId'
 import { runCueOpenApi, verifyCueApiKey } from './cueOpenApi'
 import {
@@ -45,7 +48,7 @@ function ownerWindow(event: IpcMainInvokeEvent): BrowserWindow | undefined {
   return BrowserWindow.fromWebContents(event.sender) ?? undefined
 }
 
-function broadcast(payload: CueMainEvent): void {
+function broadcast(payload: CueTurnEvent): void {
   for (const win of BrowserWindow.getAllWindows()) {
     if (win.isDestroyed() || win.webContents.isDestroyed()) continue
     win.webContents.send(CUE_CHANNELS.event, payload)
@@ -90,7 +93,32 @@ async function buildSessionPayload(accountId: string): Promise<CueAuthSessionPay
   }
 }
 
-export async function runCueRpc(req: CueRpcRequest): Promise<CueRpcResponse> {
+async function resolveNativeSession(
+  req: Extract<CueRpcRequest, { op: 'sendMessage' | 'getHistory' }>
+): Promise<{ sessionId: string } | Extract<CueRpcResponse, { ok: false }>> {
+  const sessionId = req.sessionId?.trim()
+  if (sessionId) return { sessionId }
+  const agentId = req.agentId?.trim()
+  const named = agentId && agentId !== 'agent-default' && !agentId.startsWith('cue_default_')
+  if (named) {
+    const agent = await fetchCueAgentById(req.accountId, agentId).catch(() => null)
+    if (agent?.id === agentId && agent.sessionId) return { sessionId: agent.sessionId }
+  }
+  const roster = await fetchCueAgents(req.accountId, { limit: 50 }).catch(() => null)
+  if (roster && !roster.ok && [401, 403].includes(roster.status)) {
+    return { ok: false, status: roster.status, message: 'Cue 会话已失效，请重新登录' }
+  }
+  const exact = roster?.agents.find((agent) => agent.id === agentId && agent.sessionId)
+  const chosen = exact ?? (!named ? roster?.agents.find((agent) => agent.sessionId) : undefined)
+  if (chosen?.sessionId) return { sessionId: chosen.sessionId }
+  return {
+    ok: false,
+    status: 404,
+    message: '未找到该 Cue Agent 对应的会话（session_uid），请点击「同步 Agent」刷新，或先在 Cue 客户端创建 Agent。'
+  }
+}
+
+export async function runCueRpc(req: CueRpcRequest & { requestId?: string }): Promise<CueRpcResponse> {
   try {
     let auth = await loadCueTokens(req.accountId)
     if (!auth || (!auth.accessToken && !auth.apiKey && !auth.cookieHeader)) {
@@ -101,7 +129,10 @@ export async function runCueRpc(req: CueRpcRequest): Promise<CueRpcResponse> {
     }
     const baseUrl = req.baseUrl || auth?.baseUrl
     if (auth?.apiKey && !baseUrl) {
-      return await runCueOpenApi(req, auth.apiKey)
+      const openedWith = auth
+      return await runCueOpenApi(req, auth.apiKey, { beforeRequest: () => {
+        if (!currentCueAuthForIdentity(openedWith)) throw new Error('Cue 账号已更改，请重试')
+      } })
     }
     if (!baseUrl) {
       if (!auth || (!auth.accessToken && !auth.cookieHeader && !(await hasValidCueAuth(req.accountId)))) {
@@ -145,18 +176,9 @@ export async function runCueRpc(req: CueRpcRequest): Promise<CueRpcResponse> {
           return { ok: true, data: { tasks: [] } }
         }
         case 'getHistory': {
-          let sessionId = req.sessionId?.trim()
-          if (!sessionId && req.agentId && req.agentId !== 'agent-default' && !req.agentId.startsWith('cue_default_')) {
-            const agent = await fetchCueAgentById(req.accountId, req.agentId).catch(() => null)
-            sessionId = agent?.sessionId
-          }
-          if (!sessionId) {
-            const list = await fetchCueAgents(req.accountId, { limit: 50 }).catch(() => null)
-            sessionId = list?.agents.find((a) => Boolean(a.sessionId))?.sessionId
-          }
-          if (!sessionId) {
-            return { ok: true, data: { sessionId: undefined, messages: [] } }
-          }
+          const resolved = await resolveNativeSession(req)
+          if ('ok' in resolved) return resolved
+          const { sessionId } = resolved
           const hist = await fetchCueSessionHistory(req.accountId, sessionId, { limit: req.limit ?? 300 })
           return { ok: true, data: { sessionId, messages: hist.messages } }
         }
@@ -184,31 +206,17 @@ export async function runCueRpc(req: CueRpcRequest): Promise<CueRpcResponse> {
           return { ok: true, data: res.data }
         }
         case 'sendMessage': {
-          let sessionId = req.sessionId?.trim()
-          if (!sessionId && req.agentId && req.agentId !== 'agent-default' && !req.agentId.startsWith('cue_default_')) {
-            const agent = await fetchCueAgentById(req.accountId, req.agentId).catch(() => null)
-            sessionId = agent?.sessionId
-          }
-          if (!sessionId) {
-            const list = await fetchCueAgents(req.accountId, { limit: 50 }).catch(() => null)
-            if (list && !list.ok && (list.status === 401 || list.status === 403)) {
-              return { ok: false, status: list.status, message: 'Cue 会话已失效，请重新登录' }
-            }
-            const matched = req.agentId ? list?.agents.find((a) => a.id === req.agentId && a.sessionId) : undefined
-            sessionId = matched?.sessionId ?? list?.agents.find((a) => Boolean(a.sessionId))?.sessionId
-          }
-          if (!sessionId) {
-            return {
-              ok: false,
-              status: 400,
-              message: '未找到该 Cue Agent 对应的会话（session_uid），请点击「同步 Agent」刷新，或先在 Cue 客户端创建 Agent。'
-            }
+          const resolved = await resolveNativeSession(req)
+          if ('ok' in resolved) return resolved
+          if (auth && !currentCueAuthForIdentity(auth)) {
+            return { ok: false, status: 409, message: 'Cue 账号在发送前已更改，请重试' }
           }
           const result = await sendCueNativeMessage({
             accountId: req.accountId,
-            sessionId,
+            sessionId: resolved.sessionId,
             agentId: req.agentId,
             conversationId: req.conversationId,
+            requestId: req.requestId,
             text: req.text
           })
           return { ok: true, data: result }
@@ -344,7 +352,7 @@ export async function runCueRpc(req: CueRpcRequest): Promise<CueRpcResponse> {
 export function registerCueIpc(): void {
   setCueWatchEventEmitter((ev) => broadcast(ev))
   onCueHandoffSignedIn((ev) => {
-    closeCueLoginWindow(ev.accountId)
+    closeCueLoginWindow(ev.accountId, true)
     broadcast({
       type: 'auth',
       accountId: ev.accountId,
@@ -402,6 +410,8 @@ export function registerCueIpc(): void {
     CUE_CHANNELS.importCredentials,
     async (_event, req: CueImportCredentialsRequest) => {
       const raw = req.credential ?? req.rawInput ?? req.accessToken ?? ''
+      revokeCueLoginNonce(req.accountId)
+      const revision = getCueCredentialRevision(req.accountId)
       const trimmed = raw.trim()
       const looksLikeSessionOrJwtOrJson =
         /^(?:Cookie\s*:|Bearer\s+|\{|\[|eyJ[A-Za-z0-9_-]+\.)/i.test(trimmed) ||
@@ -414,7 +424,9 @@ export function registerCueIpc(): void {
         if (previous?.apiKey && !previous.baseUrl && previous.accountSlot && previous.accountSlot !== identity.accountSlot) {
           throw new Error('该 API Key 属于其他 Manus 账号，请选择「新增 Cue 账号」')
         }
-        await persistCueTokens(req.accountId, { apiKey, authKind: 'api-key', ...identity })
+        await persistCueTokens(req.accountId, { apiKey, authKind: 'api-key', ...identity }, {
+          shouldSave: () => revision === getCueCredentialRevision(req.accountId)
+        })
       } else {
         await importCueCredentials(req.accountId, raw)
       }
@@ -432,8 +444,13 @@ export function registerCueIpc(): void {
   )
 
   ipcMain.handle(CUE_CHANNELS.clearAuth, async (_event, accountId: string) => {
+    const signedOut = accountId === '*' ? listSavedCueAccountIds() : [accountId]
+    revokeCueLoginNonce(accountId)
+    closeCueLoginWindow(accountId, true)
     stopCueAccountWatch(accountId)
     await clearCueAccountAuth(accountId)
+    for (const id of signedOut) broadcast({ type: 'auth', accountId: id, signedIn: false })
+    if (accountId === '*') return { accountId, signedIn: false } satisfies CueAuthStatus
     return buildAuthStatus(accountId)
   })
 
@@ -445,7 +462,7 @@ export function registerCueIpc(): void {
     return buildSessionPayload(accountId)
   })
 
-  ipcMain.handle(CUE_CHANNELS.rpc, async (_event, req: CueRpcRequest) => {
+  ipcMain.handle(CUE_CHANNELS.rpc, async (_event, req: CueRpcRequest & { requestId?: string }) => {
     return runCueRpc(req)
   })
 }

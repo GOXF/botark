@@ -46,17 +46,40 @@ function queueFile(file: File): DraftAttachment {
 
 async function readFile(file: File, entry: DraftAttachment): Promise<DraftAttachment> {
   try {
-    const bytes = new Uint8Array(await file.arrayBuffer())
-    if (bytes.length === 0) return { ...entry, status: 'empty' }
-    let binary = ''
-    const chunk = 0x8000
-    for (let i = 0; i < bytes.length; i += chunk) {
-      binary += String.fromCharCode(...bytes.subarray(i, i + chunk))
-    }
-    return { file: { ...entry.file, dataBase64: btoa(binary) }, status: 'ready' }
+    const dataBase64 = typeof FileReader !== 'undefined'
+      ? await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader()
+        reader.onload = () => {
+          const data = reader.result
+          const comma = typeof data === 'string' ? data.indexOf(',') : -1
+          if (typeof data === 'string' && comma >= 0) resolve(data.slice(comma + 1))
+          else reject(new Error('Invalid attachment data URL'))
+        }
+        reader.onerror = () => reject(reader.error)
+        reader.onabort = () => reject(new Error('Attachment read aborted'))
+        reader.readAsDataURL(file)
+      })
+      : await encodeAttachmentChunks(await file.arrayBuffer())
+    if (!dataBase64) return { ...entry, status: 'empty' }
+    return { file: { ...entry.file, dataBase64 }, status: 'ready' }
   } catch {
     return { ...entry, status: 'read-failed' }
   }
+}
+
+// Non-DOM runtimes can read File but lack FileReader. Chunk on multiples of
+// three so joined base64 has padding only at the end.
+async function encodeAttachmentChunks(buffer: ArrayBuffer): Promise<string> {
+  const bytes = new Uint8Array(buffer)
+  const chunkSize = 24 * 1024
+  const chunks: string[] = []
+  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+    if (offset > 0 && offset % (chunkSize * 16) === 0) {
+      await new Promise<void>((resolve) => setTimeout(resolve, 0))
+    }
+    chunks.push(btoa(String.fromCharCode(...bytes.subarray(offset, offset + chunkSize))))
+  }
+  return chunks.join('')
 }
 
 /** Keeps file selection synchronous so a submit in the same event turn sees it. */

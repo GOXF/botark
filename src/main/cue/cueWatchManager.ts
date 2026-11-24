@@ -3,7 +3,7 @@
  * Mirrors `grokWatchManager.ts`: isolates watch loops, pending approvals,
  * and stream fan-out per `accountId`, and cleans up all watches on quit.
  */
-import type { CueMainEvent } from '@shared/ipc'
+import type { CueTurnEvent } from '../../adapters/cue/events'
 import { stopCueChatSocket } from './cueChatSocket'
 
 interface CueAccountWatchController {
@@ -15,13 +15,13 @@ interface CueAccountWatchController {
 }
 
 const watches = new Map<string, CueAccountWatchController>()
-let eventEmitter: ((event: CueMainEvent) => void) | undefined
+let eventEmitter: ((event: CueTurnEvent) => void) | undefined
 
-export function setCueWatchEventEmitter(emitter: (event: CueMainEvent) => void): void {
+export function setCueWatchEventEmitter(emitter: (event: CueTurnEvent) => void): void {
   eventEmitter = emitter
 }
 
-export function emitCueWatchEvent(event: CueMainEvent): void {
+export function emitCueWatchEvent(event: CueTurnEvent): void {
   try {
     eventEmitter?.(event)
   } catch (err) {

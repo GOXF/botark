@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { createPortal } from 'react-dom'
+import * as RadixDialog from '@radix-ui/react-dialog'
 import { getPlatform } from '@adapters/platforms'
 import type { PlatformId } from '@adapters/types'
 import {
@@ -21,7 +21,8 @@ import { IconButton } from '@/components/ui/IconButton'
 import { PlatformGlyph } from '@/components/ui/PlatformGlyph'
 import { runtimePlatform } from '@/lib/bridge'
 import { cn } from '@/lib/cn'
-import { t } from '@/lib/i18n'
+import { t, useT } from '@/lib/i18n'
+import { useOverlayLock } from '@/lib/overlay'
 import { shortcutLabel } from '@/lib/shortcuts'
 import { useBotStore } from '@/store/botStore'
 
@@ -193,10 +194,12 @@ function FullScreenGuideBody({
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && onClose) {
-        e.preventDefault()
-        onClose()
-      } else if (e.key === 'ArrowRight' && stepIndex < STEPS.length - 1) {
+      if (e.defaultPrevented || e.isComposing || e.metaKey || e.ctrlKey || e.altKey) return
+      if (
+        !onClose &&
+        document.querySelector('[role="dialog"][data-state="open"]')
+      ) return
+      if (e.key === 'ArrowRight' && stepIndex < STEPS.length - 1) {
         e.preventDefault()
         setStep(STEPS[stepIndex + 1]!.id)
         setPokeSignal((n) => n + 1)
@@ -713,19 +716,22 @@ export function OnboardingStage() {
 export function OnboardingDialog() {
   const open = useBotStore((s) => s.onboardingOpen)
   const setOpen = useBotStore((s) => s.setOnboardingOpen)
+  const tr = useT()
+  useOverlayLock(open)
 
-  if (!open || typeof document === 'undefined') return null
-
-  return createPortal(
-    <div
-      role="dialog"
-      aria-modal="true"
-      aria-label="BotArk 操作指南"
-      className="fixed inset-0 z-50 animate-veil-in"
-    >
-      <FullScreenGuideBody isOverlay onClose={() => setOpen(false)} />
-    </div>,
-    document.body
+  return (
+    <RadixDialog.Root open={open} onOpenChange={setOpen}>
+      <RadixDialog.Portal>
+        <RadixDialog.Content
+          aria-describedby={undefined}
+          data-onboarding-dialog
+          className="fixed inset-0 z-50 animate-veil-in outline-none"
+        >
+          <RadixDialog.Title className="sr-only">{tr('BotArk guide')}</RadixDialog.Title>
+          <FullScreenGuideBody isOverlay onClose={() => setOpen(false)} />
+        </RadixDialog.Content>
+      </RadixDialog.Portal>
+    </RadixDialog.Root>
   )
 }
 

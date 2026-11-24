@@ -9,7 +9,7 @@
  *    `hardenVaultFilePermissions`) surfaced in the Right-Side Inspector & Settings.
  * 3. Shared macOS `Developer ID Application` code-signature detector for `updater.ts`.
  */
-import { execFileSync } from 'node:child_process'
+import { spawnSync } from 'node:child_process'
 import { chmodSync, existsSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { app, ipcMain, safeStorage } from 'electron'
@@ -22,7 +22,7 @@ import {
   type SecurityVaultStatus,
   type VaultStatusRequest
 } from '@shared/ipc'
-import { readJsonFile, writeJsonAtomic } from './jsonFile'
+import { readJsonFile, writeJsonAtomicAsync } from './jsonFile'
 import { getProxyView, ProxyConfigUnreadableError } from './muse/accountProxy'
 import { partitionForAccount } from './webContentsViewManager'
 
@@ -101,8 +101,8 @@ function readVault(): VaultStore {
   )
 }
 
-function writeVault(store: VaultStore): void {
-  writeJsonAtomic(vaultPath(), store, 0o600)
+function writeVault(store: VaultStore): Promise<void> {
+  return writeJsonAtomicAsync(vaultPath(), store)
 }
 
 function validateKey(key: string): string {
@@ -113,18 +113,32 @@ function validateKey(key: string): string {
   return trimmed
 }
 
+function isPrivateKey(key: string): boolean {
+  return key.startsWith('internal.')
+}
+
+function validatePublicKey(key: string): string {
+  const cleanKey = validateKey(key)
+  if (isPrivateKey(cleanKey)) throw new Error('Private vault key')
+  return cleanKey
+}
+
+async function isSafeStorageAvailable(): Promise<boolean> {
+  try {
+    return typeof safeStorage.isAsyncEncryptionAvailable === 'function'
+      ? await safeStorage.isAsyncEncryptionAvailable()
+      : Boolean(safeStorage.isEncryptionAvailable?.())
+  } catch {
+    return false
+  }
+}
+
 export async function isVaultEncryptionAvailable(): Promise<boolean> {
   try {
-    if (typeof safeStorage.isAsyncEncryptionAvailable === 'function') {
-      return await safeStorage.isAsyncEncryptionAvailable()
-    }
-    if (typeof safeStorage.isEncryptionAvailable === 'function') {
-      return safeStorage.isEncryptionAvailable()
-    }
+    return await isSafeStorageAvailable() && safeStorage.getSelectedStorageBackend?.() !== 'basic_text'
   } catch {
-    /* unavailable */
+    return false
   }
-  return false
 }
 
 async function encryptPayload(plaintext: string): Promise<string> {
@@ -140,7 +154,8 @@ async function encryptPayload(plaintext: string): Promise<string> {
 }
 
 async function decryptPayload(encBase64: string): Promise<string> {
-  const available = await isVaultEncryptionAvailable()
+  // Allow recovery of legacy ciphertext from the backend that wrote it.
+  const available = await isSafeStorageAvailable()
   if (!available) {
     throw new Error('系统钥匙串加密（safeStorage）当前不可用，无法解密保险箱数据')
   }
@@ -154,7 +169,8 @@ async function decryptPayload(encBase64: string): Promise<string> {
 
 export async function getVaultSecret(key: string): Promise<string | null> {
   const cleanKey = validateKey(key)
-  const entry = readVault()[cleanKey]
+  const store = readVault()
+  const entry = Object.hasOwn(store, cleanKey) ? store[cleanKey] : undefined
   if (!entry?.enc) return null
   try {
     return await decryptPayload(entry.enc)
@@ -176,31 +192,34 @@ export async function setVaultSecret(
     await deleteVaultSecret(cleanKey)
     return { ok: true, encrypted: true, updatedAtMs: Date.now() }
   }
-  const enc = await encryptPayload(value)
-  const updatedAtMs = Date.now()
-  await withVaultLock(() => {
-    const store = readVault()
-    store[cleanKey] = { enc, updatedAtMs }
-    writeVault(store)
+  return withVaultLock(async () => {
+    const enc = await encryptPayload(value)
+    const updatedAtMs = Date.now()
+    const store = { ...readVault(), [cleanKey]: { enc, updatedAtMs } }
+    await writeVault(store)
+    return { ok: true, encrypted: true, updatedAtMs }
   })
-  return { ok: true, encrypted: true, updatedAtMs }
 }
 
 export async function deleteVaultSecret(key: string): Promise<void> {
   const cleanKey = validateKey(key)
-  await withVaultLock(() => {
+  await withVaultLock(async () => {
     const store = readVault()
-    if (cleanKey in store) {
+    if (Object.hasOwn(store, cleanKey)) {
       delete store[cleanKey]
-      writeVault(store)
+      await writeVault(store)
     }
   })
 }
 
 export async function clearAllVaultSecrets(): Promise<void> {
-  await withVaultLock(() => {
-    writeVault({})
-  })
+  await withVaultLock(() => writeVault({}))
+}
+
+function clearPublicVaultSecrets(): Promise<void> {
+  return withVaultLock(() => writeVault(Object.fromEntries(
+    Object.entries(readVault()).filter(([key]) => isPrivateKey(key))
+  )))
 }
 
 let cachedSignatureInfo: { codeSigned: boolean; authority?: string } | null = null
@@ -219,24 +238,20 @@ export function inspectMacCodeSignature(): { codeSigned: boolean; authority?: st
     const exe = process.execPath
     const appIdx = exe.indexOf('.app/')
     const bundlePath = appIdx > 0 ? exe.slice(0, appIdx + 4) : exe
-    const out = execFileSync('/usr/bin/codesign', ['-dv', '--verbose=2', bundlePath], {
+    // `codesign -dv` normally writes its signature metadata to stderr.
+    const result = spawnSync('/usr/bin/codesign', ['-dv', '--verbose=2', bundlePath], {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
       timeout: 3_500
     })
-    return parseCodesignOutput(out)
-  } catch (err) {
-    // `codesign -dv` writes signature metadata to stderr on exit 0, or throws on unsigned.
-    const stderr =
-      err && typeof err === 'object' && 'stderr' in err
-        ? String((err as { stderr?: unknown }).stderr ?? '')
-        : ''
-    if (stderr) {
-      return parseCodesignOutput(stderr)
+    if (result.status === 0 && !result.error) {
+      return parseCodesignOutput(`${result.stdout ?? ''}\n${result.stderr ?? ''}`)
     }
-    cachedSignatureInfo = { codeSigned: false }
-    return cachedSignatureInfo
+  } catch {
+    /* codesign is unavailable */
   }
+  cachedSignatureInfo = { codeSigned: false }
+  return cachedSignatureInfo
 }
 
 function parseCodesignOutput(raw: string): { codeSigned: boolean; authority?: string } {
@@ -397,27 +412,24 @@ export function registerVaultIpc(): void {
 
   ipcMain.handle(VAULT_CHANNELS.getSecret, async (_event, key: unknown) => {
     if (typeof key !== 'string') throw new TypeError('Vault key required')
-    if (validateKey(key).startsWith('internal.')) throw new Error('Private vault key')
-    return getVaultSecret(key)
+    return getVaultSecret(validatePublicKey(key))
   })
 
   ipcMain.handle(VAULT_CHANNELS.setSecret, async (_event, key: unknown, value: unknown) => {
     if (typeof key !== 'string' || typeof value !== 'string') {
       throw new TypeError('Vault key and string value required')
     }
-    if (validateKey(key).startsWith('internal.')) throw new Error('Private vault key')
-    return setVaultSecret(key, value)
+    return setVaultSecret(validatePublicKey(key), value)
   })
 
   ipcMain.handle(VAULT_CHANNELS.deleteSecret, async (_event, key: unknown) => {
     if (typeof key !== 'string') throw new TypeError('Vault key required')
-    if (validateKey(key).startsWith('internal.')) throw new Error('Private vault key')
-    await deleteVaultSecret(key)
+    await deleteVaultSecret(validatePublicKey(key))
     return { ok: true as const }
   })
 
   ipcMain.handle(VAULT_CHANNELS.clearAll, async () => {
-    await clearAllVaultSecrets()
+    await clearPublicVaultSecrets()
     return { ok: true as const }
   })
 

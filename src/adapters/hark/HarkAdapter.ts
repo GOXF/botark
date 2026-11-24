@@ -1,8 +1,10 @@
 import { statusAfterSendFailure } from '../sendFailure'
 import { createId } from '@shared/id'
-import type { HarkMainEvent, HarkRpcRequest, HarkRpcResponse } from '@shared/ipc'
+import type { HarkMainEvent } from '@shared/ipc'
+import { harkProjectId } from '@shared/harkProjects'
 import { getBotHubBridge } from '../meta-muse/electronBridge'
 import { HARK_DRAFT_SESSION } from '@shared/harkProjects'
+import { harkRpc, type HarkRequest } from './harkRequests'
 import {
   AdapterError,
   type AdapterEvent,
@@ -16,13 +18,17 @@ import {
   type Unsubscribe
 } from '../types'
 
-async function invokeHarkRpc(request: HarkRpcRequest): Promise<unknown> {
+async function invokeHarkRpc(request: HarkRequest, signal?: AbortSignal): Promise<unknown> {
   const bridge = getBotHubBridge()?.hark
   if (!bridge?.rpc) {
     throw new AdapterError('not-connected', 'Hark IPC unavailable (Electron main required)')
   }
-  const res = (await bridge.rpc(request)) as HarkRpcResponse
+  const res = await harkRpc(bridge, request, signal)
   if (!res.ok) {
+    if (request.op === 'sendMessage' && res.status === 0 &&
+      (res.code === 'send-timeout' || res.message === 'Hark POST /api/messages/send timed out')) {
+      throw new AdapterError('no-reply', 'Hark 发送超时，消息可能已经送达')
+    }
     throw new AdapterError(
       res.status === 401 ? 'not-connected' : 'network',
       res.message || `Hark RPC failed (${res.status})`
@@ -42,6 +48,7 @@ export class HarkAdapter implements PlatformAdapter {
   private readonly accounts = new Map<string, PlatformAccount>()
   private readonly statuses = new Map<string, ConnectionStatus>()
   private readonly listeners = new Set<AdapterListener>()
+  private readonly publishedReplies = new Set<string>()
   private bridgeUnsub: Unsubscribe | null = null
 
   constructor() {
@@ -95,43 +102,10 @@ export class HarkAdapter implements PlatformAdapter {
           })
         }
       } else {
-        this.emit({
-          type: 'typing',
-          conversationId: convId,
-          sessionId: event.sessionId,
-          accountId: event.accountId,
-          isTyping: false
+        this.finishReply({
+          id: event.messageId, conversationId: convId, sessionId: event.sessionId, accountId: event.accountId,
+          text: event.text, createdAt: Date.now(), tools: event.tools, media: event.media, richWidgets: event.richWidgets
         })
-        this.emit({
-          type: 'activity',
-          sessionId: event.sessionId,
-          accountId: event.accountId,
-          activity: {
-            code: 'idle',
-            text: null,
-            emoji: null,
-            agentId: null,
-            subagents: 0,
-            busy: false
-          }
-        })
-        this.setStatus(event.accountId, 'online')
-        if (event.text || event.tools?.length || event.media?.length || event.richWidgets?.length) {
-          this.emit({
-            type: 'message',
-            message: {
-              id: event.messageId,
-              conversationId: convId,
-              sessionId: event.sessionId,
-              accountId: event.accountId,
-              text: event.text,
-              createdAt: Date.now(),
-              tools: event.tools,
-              media: event.media,
-              richWidgets: event.richWidgets
-            }
-          })
-        }
       }
       return
     }
@@ -176,6 +150,27 @@ export class HarkAdapter implements PlatformAdapter {
   private setStatus(accountId: string, status: ConnectionStatus, detail?: string): void {
     this.statuses.set(accountId, status)
     this.emit({ type: 'status', accountId, status, detail })
+  }
+
+  private clearReplyActivity(accountId: string, conversationId: string, sessionId?: string): void {
+    this.emit({ type: 'typing', accountId, conversationId, sessionId, isTyping: false })
+    this.emit({
+      type: 'activity', accountId, sessionId,
+      activity: { code: 'idle', text: null, emoji: null, agentId: null, subagents: 0, busy: false }
+    })
+  }
+
+  /** `tailing`: Hark's turn goes on, so keep the live status and let the tail's final `done` publish again. */
+  private finishReply(message: IncomingMessage, tailing = false): void {
+    const { accountId, conversationId, sessionId, id } = message
+    const key = JSON.stringify([accountId, sessionId, id])
+    if (this.publishedReplies.has(key)) return
+    if (!tailing) this.clearReplyActivity(accountId, conversationId, sessionId)
+    if (message.text || message.tools?.length || message.media?.length || message.richWidgets?.length) {
+      if (!tailing) this.publishedReplies.add(key)
+      if (this.publishedReplies.size > 512) this.publishedReplies.delete(this.publishedReplies.values().next().value!)
+      this.emit({ type: 'message', message })
+    }
   }
 
   private upsert(accountId: string, patch?: Partial<PlatformAccount>): void {
@@ -256,16 +251,22 @@ export class HarkAdapter implements PlatformAdapter {
     message.signal?.throwIfAborted()
     this.bindBridgeEvents()
     const draft = message.sessionId === HARK_DRAFT_SESSION
+    const sessionId = draft ? undefined : harkProjectId(message.sessionId)
+    if (!draft && !sessionId && (message.sessionId !== undefined || message.conversationId.startsWith('room-turn-'))) {
+      throw new AdapterError('network', 'No Hark project ID')
+    }
     const before = (draft
       // Draft project: create it now, untitled, so Hark names it from this first message.
       ? { ...(await invokeHarkRpc({ accountId: message.accountId, op: 'createConversation', title: '' }) as { conversationId?: string }), messages: [] }
-      : await invokeHarkRpc(message.sessionId
-        ? { accountId: message.accountId, op: 'conversationSnapshot', conversationId: message.sessionId }
+      : await invokeHarkRpc(sessionId
+        ? { accountId: message.accountId, op: 'conversationSnapshot', conversationId: sessionId }
         : { accountId: message.accountId, op: 'mainConversation' }
-      )) as { conversationId?: string; messages: Array<{ id: string }> }
+      )) as { conversationId?: string; messages: Array<{ id: string }> } | null
     message.signal?.throwIfAborted()
-    const conversationId = before.conversationId
-    if (!conversationId) throw new AdapterError('network', 'No Hark conversation ID')
+    const conversationId = harkProjectId(before?.conversationId)
+    if (!conversationId || (sessionId && sessionId !== conversationId)) {
+      throw new AdapterError('network', 'No matching Hark conversation ID')
+    }
     const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone
     this.setStatus(message.accountId, 'busy')
     this.emit({
@@ -277,6 +278,7 @@ export class HarkAdapter implements PlatformAdapter {
     })
 
     let accepted = false
+    let settledByReply = false
     try {
       const beforeMsgs = Array.isArray(before?.messages) ? before.messages : []
       const afterIds = beforeMsgs.map((m) => m.id)
@@ -300,6 +302,7 @@ export class HarkAdapter implements PlatformAdapter {
       }
 
       accepted = true
+      const acceptedAt = Date.now()
       message.onAccepted?.(draft ? conversationId : undefined)
       message.signal?.throwIfAborted()
       if (sent?.idempotencyKey) afterIds.push(sent.idempotencyKey)
@@ -311,10 +314,12 @@ export class HarkAdapter implements PlatformAdapter {
         botId: message.conversationId,
         responseMessageId: sent?.responseMessageId,
         timezone: timeZone,
-        afterMessageCount: beforeMsgs.length,
-        afterMessageIds: afterIds,
+        afterMessageIds: sent?.responseMessageId ? undefined : afterIds,
+        requestId: createId('hark_watch'),
         timeoutMs: 90_000
-      })) as {
+      }, message.signal)) as {
+        outcome?: 'completed' | 'timed-out' | 'cancelled' | 'failed'
+        error?: string
         /** The reply is done but Hark's turn goes on; main clears the status when it ends. */
         tailing?: boolean
         reply?: {
@@ -328,98 +333,50 @@ export class HarkAdapter implements PlatformAdapter {
       }
 
       message.signal?.throwIfAborted()
-      if (!polled?.tailing) {
-        this.emit({
-          type: 'typing',
+      if (polled?.outcome === 'cancelled') throw new AdapterError('no-reply', 'Hark 回复已取消')
+      if (polled?.outcome === 'failed') throw new AdapterError('no-reply', polled.error || 'Hark 回复失败')
+      const reply = polled?.outcome === 'timed-out' ? null : polled?.reply
+      if (reply) {
+        this.finishReply({
+          id: reply.id.startsWith('hark_') ? reply.id : `hark_${reply.id}`,
           sessionId: conversationId,
           conversationId: message.conversationId,
           accountId: message.accountId,
-          isTyping: false
-        })
-        this.emit({
-          type: 'activity',
-          sessionId: conversationId,
-          accountId: message.accountId,
-          activity: {
-            code: 'idle',
-            text: null,
-            emoji: null,
-            agentId: null,
-            subagents: 0,
-            busy: false
-          }
-        })
-      }
-
-      const replyText = polled?.reply?.content?.trim() ?? ''
-      const replyTools = polled?.reply?.tools
-      const replyMedia = polled?.reply?.media
-      const replyRich = polled?.reply?.richWidgets
-      if (replyText || replyTools?.length || replyMedia?.length || replyRich?.length) {
-        const rawReplyId = polled?.reply?.id
-        const normalizedReplyId = rawReplyId
-          ? rawReplyId.startsWith('hark_')
-            ? rawReplyId
-            : `hark_${rawReplyId}`
-          : createId('msg')
-        const incoming: IncomingMessage & {
-          tools?: import('../types').MuseToolCall[]
-          media?: import('../types').MuseMediaPart[]
-          richWidgets?: import('../types').MuseRichWidget[]
-        } = {
-          id: normalizedReplyId,
-          sessionId: conversationId,
-          conversationId: message.conversationId,
-          accountId: message.accountId,
-          text: replyText,
+          text: reply.content.trim(),
           createdAt: Date.now(),
-          ...(replyTools?.length ? { tools: replyTools } : {}),
-          ...(replyMedia?.length ? { media: replyMedia } : {}),
-          ...(replyRich?.length ? { richWidgets: replyRich } : {})
-        }
-        this.emit({ type: 'message', message: incoming })
+          tools: reply.tools, media: reply.media, richWidgets: reply.richWidgets
+        }, polled?.tailing)
+        settledByReply = true
       }
 
       this.setStatus(message.accountId, 'online')
       return {
-        messageId: createId('msg'),
-        acceptedAt: Date.now(),
+        messageId: sent?.idempotencyKey ?? createId('msg'),
+        acceptedAt,
         sessionId: conversationId,
-        ...(replyText || replyTools?.length || replyMedia?.length || replyRich?.length ? {} : { noReply: true })
+        ...(reply && (reply.content.trim() || reply.tools?.length || reply.media?.length || reply.richWidgets?.length)
+          ? {} : { noReply: true })
       }
     } catch (error) {
-      this.emit({
-        type: 'typing',
-        sessionId: conversationId,
-        conversationId: message.conversationId,
-        accountId: message.accountId,
-        isTyping: false
-      })
-      this.emit({
-        type: 'activity',
-        sessionId: conversationId,
-        accountId: message.accountId,
-        activity: {
-          code: 'idle',
-          text: null,
-          emoji: null,
-          agentId: null,
-          subagents: 0,
-          busy: false
-        }
-      })
       const detail = error instanceof Error ? error.message : String(error)
-      // A send that timed out may have landed (harkFetch never retries writes):
-      // report it as unanswered so the user does not blindly double-send.
-      const writeTimedOut = /Hark (POST|PUT|PATCH) \S+ timed out/.test(detail)
-      if (accepted || writeTimedOut) {
-        // The message is (or may be) on Hark already; only the answer is missing.
+      if (error instanceof AdapterError && error.code === 'no-reply') {
         this.setStatus(message.accountId, 'online')
+        throw error
+      }
+      if (accepted) {
+        this.setStatus(message.accountId, 'online')
+        if (message.signal?.aborted) {
+          const cancelled = new AdapterError('no-reply', 'Hark 回复已取消')
+          cancelled.name = 'AbortError'
+          throw cancelled
+        }
         throw new AdapterError('no-reply', `Hark 已收到消息，但读取回复失败：${detail}`)
       }
       const next = statusAfterSendFailure(error)
       this.setStatus(message.accountId, next, next === 'error' ? detail : undefined)
       throw error instanceof AdapterError ? error : new AdapterError('network', detail)
+    } finally {
+      if (!settledByReply) this.clearReplyActivity(message.accountId, message.conversationId, conversationId)
     }
   }
 

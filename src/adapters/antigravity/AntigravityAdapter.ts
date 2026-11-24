@@ -1,5 +1,5 @@
 import { createId } from '@shared/id'
-import type { AntigravityMainEvent } from '@shared/ipc'
+import type { AntigravityTurnEvent } from '../../main/antigravity/antigravityProtocol'
 import { getBotHubBridge } from '../meta-muse/electronBridge'
 import { statusAfterSendFailure } from '../sendFailure'
 import {
@@ -15,6 +15,22 @@ import {
   type Unsubscribe
 } from '../types'
 
+interface TurnOutcome {
+  hasReply: boolean
+  sessionId?: string
+}
+
+interface PendingTurn {
+  id: string
+  conversationId: string
+  waiting: boolean
+  acceptedAt?: number
+  onAccepted?: () => void
+  resolve: (outcome: TurnOutcome) => void
+  reject: (error: AdapterError) => void
+  cleanupAbort?: () => void
+}
+
 /**
  * Google Antigravity Cloud Agents adapter (`https://antigravity.google.com/`).
  *
@@ -29,18 +45,7 @@ export class AntigravityAdapter implements PlatformAdapter {
   private readonly accounts = new Map<string, PlatformAccount>()
   private readonly statuses = new Map<string, ConnectionStatus>()
   private readonly listeners = new Set<AdapterListener>()
-  private readonly pendingTurns = new Map<
-    string,
-    {
-      conversationId: string
-      serverMessageId?: string
-      needsApproval?: boolean
-      settled: boolean
-      resolve: (outcome: { hasReply: boolean; sessionId?: string }) => void
-      reject: (error: unknown) => void
-      cleanupAbort?: () => void
-    }
-  >()
+  private readonly pendingTurns = new Map<string, PendingTurn>()
   private bridgeUnsub: Unsubscribe | null = null
 
   constructor() {
@@ -53,117 +58,89 @@ export class AntigravityAdapter implements PlatformAdapter {
     this.bridgeUnsub = b.antigravity.onEvent((event) => this.handleMainEvent(event))
   }
 
-  private handleMainEvent(event: AntigravityMainEvent): void {
-    if (event.type === 'activity') {
-      this.emit({
-        type: 'activity',
-        accountId: event.accountId,
-        activity: {
-          code: event.activityCode,
-          text: event.activityText ?? null,
-          emoji: event.activityEmoji ?? null,
-          agentId: null,
-          subagents: 0,
-          busy: event.busy
-        }
-      })
-      const pending = this.pendingTurns.get(event.accountId)
-      if (event.activityCode === 'needs_approval') {
-        if (pending && !pending.settled) pending.needsApproval = true
-        this.setStatus(event.accountId, 'attention', event.activityText ?? undefined)
-      } else if (event.busy) {
-        if (this.getStatus(event.accountId) === 'offline') {
-          this.setStatus(event.accountId, 'busy')
-        }
-      } else if (!pending || pending.settled) {
-        if (this.getStatus(event.accountId) !== 'online') {
-          this.setStatus(event.accountId, 'online')
-        }
-      }
-      return
-    }
-
-    if (event.type === 'stream') {
-      const convId = event.conversationId ?? event.accountId
-      const pending = this.pendingTurns.get(event.accountId)
-      if (!event.done) {
-        if (this.getStatus(event.accountId) === 'offline') {
-          this.setStatus(event.accountId, 'busy')
-        }
+  private handleMainEvent(event: AntigravityTurnEvent): void {
+    if (event.type !== 'login') {
+      const turn = this.pendingTurns.get(event.accountId)
+      if (!turn || event.messageId !== turn.id) return
+      if (event.type === 'activity') {
         this.emit({
-          type: 'typing',
-          conversationId: convId,
+          type: 'activity',
           accountId: event.accountId,
-          isTyping: true
+          activity: {
+            code: event.activityCode,
+            text: event.activityText ?? null,
+            emoji: event.activityEmoji ?? null,
+            agentId: null,
+            subagents: 0,
+            busy: event.busy
+          }
         })
-        if (event.text || event.tools?.length) {
-          this.emit({
-            type: 'message_delta',
-            messageId: event.messageId,
-            conversationId: convId,
+        if (event.activityCode === 'needs_approval') {
+          turn.waiting = true
+          this.setStatus(event.accountId, 'attention', event.activityText ?? undefined)
+        } else if (event.busy) {
+          turn.waiting = false
+          if (this.getStatus(event.accountId) !== 'busy') this.setStatus(event.accountId, 'busy')
+        }
+        return
+      }
+
+      this.acceptTurn(turn)
+      if (event.error) {
+        const failure = this.sendError(event.error.status, event.error.message)
+        this.rejectPendingTurn(event.accountId, failure)
+        this.emitIdle(event.accountId)
+        this.setStatus(event.accountId, statusAfterSendFailure(failure), failure.message)
+        return
+      }
+
+      const hasReply = Boolean(event.text || event.tools?.length)
+      const replyId = `agy_reply_${turn.id}`
+      if (event.waitingForApproval) turn.waiting = true
+      this.emit({
+        type: 'typing',
+        sessionId: event.sessionId,
+        conversationId: turn.conversationId,
+        accountId: event.accountId,
+        isTyping: !event.done && !turn.waiting
+      })
+      if (!event.done && !turn.waiting && hasReply) {
+        this.emit({
+          type: 'message_delta',
+          sessionId: event.sessionId,
+          messageId: replyId,
+          conversationId: turn.conversationId,
+          accountId: event.accountId,
+          text: event.text,
+          tools: event.tools
+        })
+      }
+      if (event.waitingForApproval) {
+        this.setStatus(event.accountId, 'attention')
+        turn.resolve({ hasReply, sessionId: event.sessionId })
+      } else if (event.done) {
+        this.clearTurn(event.accountId, turn)
+        this.emitIdle(event.accountId)
+        this.setStatus(event.accountId, 'online')
+        turn.resolve({ hasReply, sessionId: event.sessionId })
+      }
+      if ((event.done || turn.waiting) && hasReply) {
+        this.emit({
+          type: 'message',
+          message: {
+            id: replyId,
+            sessionId: event.sessionId,
+            conversationId: turn.conversationId,
             accountId: event.accountId,
             text: event.text,
+            createdAt: Date.now(),
             tools: event.tools
-          })
-        }
-      } else {
-        const matchesPending =
-          pending &&
-          !pending.settled &&
-          (convId === pending.conversationId ||
-            (pending.serverMessageId !== undefined && pending.serverMessageId === event.messageId))
-        const hasReply = Boolean(event.text || event.tools?.length)
-        const keepAttention =
-          Boolean(matchesPending && pending.needsApproval) ||
-          this.getStatus(event.accountId) === 'attention'
-
-        this.emit({
-          type: 'typing',
-          conversationId: convId,
-          accountId: event.accountId,
-          isTyping: false
+          }
         })
-        if (!keepAttention) {
-          this.emit({
-            type: 'activity',
-            accountId: event.accountId,
-            activity: {
-              code: 'idle',
-              text: null,
-              emoji: null,
-              agentId: null,
-              subagents: 0,
-              busy: false
-            }
-          })
-          this.setStatus(event.accountId, 'online')
-        } else {
-          this.setStatus(event.accountId, 'attention')
-        }
-        if (hasReply) {
-          this.emit({
-            type: 'message',
-            message: {
-              id: event.messageId,
-              conversationId: convId,
-              accountId: event.accountId,
-              text: event.text,
-              createdAt: Date.now(),
-              tools: event.tools
-            }
-          })
-        }
-        if (matchesPending) {
-          pending.settled = true
-          this.pendingTurns.delete(event.accountId)
-          pending.cleanupAbort?.()
-          pending.resolve({ hasReply, sessionId: event.sessionId })
-        }
       }
       return
     }
 
-    if (event.type !== 'login') return
     if (event.signedIn) {
       this.emit({
         type: 'login',
@@ -193,19 +170,35 @@ export class AntigravityAdapter implements PlatformAdapter {
     this.setStatus(event.accountId, 'offline')
   }
 
-  private rejectPendingTurn(accountId: string, error: unknown): void {
-    const pending = this.pendingTurns.get(accountId)
-    if (!pending || pending.settled) return
-    pending.settled = true
-    this.pendingTurns.delete(accountId)
-    pending.cleanupAbort?.()
+  private acceptTurn(turn: PendingTurn): void {
+    if (turn.acceptedAt !== undefined) return
+    turn.acceptedAt = Date.now()
+    turn.onAccepted?.()
+  }
+
+  private sendError(status: number, message: string): AdapterError {
+    return new AdapterError(status === 401 || status === 403 ? 'not-connected' : 'network', message)
+  }
+
+  private clearTurn(accountId: string, turn: PendingTurn): void {
+    if (this.pendingTurns.get(accountId) === turn) this.pendingTurns.delete(accountId)
+    turn.cleanupAbort?.()
+  }
+
+  private rejectPendingTurn(accountId: string, error: AdapterError): void {
+    const turn = this.pendingTurns.get(accountId)
+    if (!turn) return
+    this.clearTurn(accountId, turn)
+    this.emit({ type: 'typing', conversationId: turn.conversationId, accountId, isTyping: false })
+    turn.reject(error)
+  }
+
+  private emitIdle(accountId: string): void {
     this.emit({
-      type: 'typing',
-      conversationId: pending.conversationId,
+      type: 'activity',
       accountId,
-      isTyping: false
+      activity: { code: 'idle', text: null, emoji: null, agentId: null, subagents: 0, busy: false }
     })
-    pending.reject(error)
   }
 
   private emit(event: AdapterEvent): void {
@@ -306,128 +299,79 @@ export class AntigravityAdapter implements PlatformAdapter {
       throw new AdapterError('network', 'Aborted')
     }
 
-    this.rejectPendingTurn(message.accountId, new AdapterError('network', 'Superseded by new message'))
+    const { accountId, signal } = message
+    this.rejectPendingTurn(accountId, new AdapterError('network', 'Superseded by new message'))
 
-    const clientMessageId = createId('agy_msg')
-    let resolveTurn!: (outcome: { hasReply: boolean; sessionId?: string }) => void
-    let rejectTurn!: (error: unknown) => void
-    const turnPromise = new Promise<{ hasReply: boolean; sessionId?: string }>((resolve, reject) => {
+    const id = createId('agy_msg')
+    let resolveTurn!: PendingTurn['resolve']
+    let rejectTurn!: PendingTurn['reject']
+    const completion = new Promise<TurnOutcome>((resolve, reject) => {
       resolveTurn = resolve
       rejectTurn = reject
     })
-    const pendingTurn: {
-      conversationId: string
-      serverMessageId?: string
-      needsApproval?: boolean
-      settled: boolean
-      resolve: (outcome: { hasReply: boolean; sessionId?: string }) => void
-      reject: (error: unknown) => void
-      cleanupAbort?: () => void
-    } = {
+    let rejectInterrupted!: PendingTurn['reject']
+    const interrupted = new Promise<never>((_, reject) => { rejectInterrupted = reject })
+    // Cancellation can arrive before IPC acknowledges the send.
+    void completion.catch(() => undefined)
+    void interrupted.catch(() => undefined)
+    const turn: PendingTurn = {
+      id,
       conversationId: message.conversationId,
-      settled: false,
+      waiting: false,
+      onAccepted: message.onAccepted,
       resolve: resolveTurn,
-      reject: rejectTurn
+      reject: (error) => {
+        rejectTurn(error)
+        rejectInterrupted(error)
+      }
     }
-    this.pendingTurns.set(message.accountId, pendingTurn)
+    this.pendingTurns.set(accountId, turn)
 
     const onAbort = () => {
-      if (pendingTurn.settled) return
-      pendingTurn.settled = true
-      if (this.pendingTurns.get(message.accountId) === pendingTurn) {
-        this.pendingTurns.delete(message.accountId)
-      }
-      pendingTurn.cleanupAbort?.()
-      void bridge.cancelRun(message.accountId).catch(() => undefined)
-      this.emit({
-        type: 'typing',
-        conversationId: message.conversationId,
-        accountId: message.accountId,
-        isTyping: false
-      })
-      this.emit({
-        type: 'activity',
-        accountId: message.accountId,
-        activity: {
-          code: 'idle',
-          text: null,
-          emoji: null,
-          agentId: null,
-          subagents: 0,
-          busy: false
-        }
-      })
-      this.setStatus(message.accountId, 'online')
-      pendingTurn.reject(new AdapterError('network', 'Aborted'))
+      if (this.pendingTurns.get(accountId) !== turn) return
+      this.rejectPendingTurn(accountId, new AdapterError('network', 'Aborted'))
+      void bridge.cancelRun(accountId).catch(() => undefined)
+      this.emitIdle(accountId)
+      this.setStatus(accountId, 'online')
+    }
+    if (signal) {
+      signal.addEventListener('abort', onAbort, { once: true })
+      turn.cleanupAbort = () => signal.removeEventListener('abort', onAbort)
     }
 
-    if (message.signal) {
-      message.signal.addEventListener('abort', onAbort, { once: true })
-      pendingTurn.cleanupAbort = () => message.signal?.removeEventListener('abort', onAbort)
-    }
-
-    this.setStatus(message.accountId, 'busy')
     try {
-      const res = await bridge.sendMessage({
-        accountId: message.accountId,
-        conversationId: message.conversationId,
-        sessionId: message.sessionId,
-        text: message.text,
-        clientMessageId
-      })
-      if (pendingTurn.settled) {
-        const outcome = await turnPromise
-        return {
-          messageId: clientMessageId,
-          acceptedAt: Date.now(),
-          sessionId: res.ok ? res.cascadeId : outcome.sessionId,
-          ...(outcome.hasReply ? {} : { noReply: true })
-        }
-      }
-      if (!res.ok) {
-        pendingTurn.settled = true
-        if (this.pendingTurns.get(message.accountId) === pendingTurn) {
-          this.pendingTurns.delete(message.accountId)
-        }
-        pendingTurn.cleanupAbort?.()
-        const err = new AdapterError(
-          res.status === 401 || res.status === 403 ? 'not-connected' : 'network',
-          res.message || `Antigravity send failed (${res.status})`
-        )
-        const nextStatus = statusAfterSendFailure(err)
-        this.setStatus(message.accountId, nextStatus, err.message)
-        throw err
-      }
-      pendingTurn.serverMessageId = res.messageId
-      message.onAccepted?.()
-      if (message.signal?.aborted) {
-        onAbort()
-      }
-      const outcome = await turnPromise
+      this.setStatus(accountId, 'busy')
+      signal?.throwIfAborted()
+      const response = await Promise.race([
+        bridge.sendMessage({
+          accountId,
+          conversationId: message.conversationId,
+          sessionId: message.sessionId,
+          text: message.text,
+          clientMessageId: id
+        }),
+        interrupted
+      ])
+      if (!response.ok) throw this.sendError(response.status, response.message)
+      if (response.messageId !== id) throw new AdapterError('network', 'Antigravity acknowledged a different message')
+      this.acceptTurn(turn)
+
+      const outcome = await completion
       return {
-        messageId: clientMessageId,
-        acceptedAt: Date.now(),
-        sessionId: res.cascadeId || outcome.sessionId,
+        messageId: id,
+        acceptedAt: turn.acceptedAt ?? Date.now(),
+        sessionId: response.cascadeId || outcome.sessionId,
         ...(outcome.hasReply ? {} : { noReply: true })
       }
     } catch (error) {
-      if (!pendingTurn.settled) {
-        pendingTurn.settled = true
-        if (this.pendingTurns.get(message.accountId) === pendingTurn) {
-          this.pendingTurns.delete(message.accountId)
-        }
-        pendingTurn.cleanupAbort?.()
+      const detail = error instanceof Error ? error.message : String(error)
+      const failure = error instanceof AdapterError ? error : new AdapterError('network', detail)
+      if (this.pendingTurns.get(accountId) === turn) {
+        this.rejectPendingTurn(accountId, failure)
+        this.emitIdle(accountId)
+        this.setStatus(accountId, statusAfterSendFailure(failure), failure.message)
       }
-      if (message.signal?.aborted) {
-        this.setStatus(message.accountId, 'online')
-        throw error instanceof AdapterError ? error : new AdapterError('network', 'Aborted')
-      }
-      const err =
-        error instanceof AdapterError
-          ? error
-          : new AdapterError('network', error instanceof Error ? error.message : String(error))
-      this.setStatus(message.accountId, statusAfterSendFailure(err), err.message)
-      throw err
+      throw failure
     }
   }
 

@@ -19,6 +19,26 @@ describe('interpretLatestRelease', () => {
       releaseNotes: 'n'
     })
   })
+
+  it.each([
+    null,
+    [],
+    'v2.0.0',
+    {},
+    { tag_name: 2, name: 'v2.0.0' },
+    { tag_name: 'v2.0.garbage' },
+    { tag_name: 'v2.0.0', prerelease: 'false' },
+    { tag_name: 'v2.0.0', body: ['invalid'] },
+    { draft: true }
+  ].map((payload) => ({ payload })))('rejects malformed successful responses ($payload)', ({ payload }) => {
+    expect(interpretLatestRelease({ status: 200, ok: true }, payload, '1.0.0', newer).type).toBe('error')
+  })
+
+  it('ignores valid drafts and prereleases', () => {
+    const ok = { status: 200, ok: true }
+    expect(interpretLatestRelease(ok, { tag_name: 'v2.0.0', draft: true }, '1.0.0', newer).type).toBe('not-available')
+    expect(interpretLatestRelease(ok, { tag_name: 'v2.0.0-rc.1', prerelease: true }, '1.0.0', newer).type).toBe('not-available')
+  })
   it('words network failures', () => {
     expect(checkFailedMessage(new Error('The operation was aborted due to timeout'))).toContain('超时')
   })

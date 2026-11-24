@@ -34,22 +34,31 @@ function extractLeadingJsonObject(raw: string): string {
   return source
 }
 
+export function isToolRequest(text: string): boolean {
+  return /^\s*\[TOOL\]/i.test(text)
+}
+
 export function requestedTool(text: string) {
-  const trimmed = text.trimStart()
-  if (!trimmed.startsWith('[TOOL]')) return undefined
-  const payload = extractLeadingJsonObject(trimmed.slice(6))
-  const value = JSON.parse(payload)
+  if (!isToolRequest(text)) return undefined
+  const payload = extractLeadingJsonObject(text.trimStart().slice(6))
+  let value: unknown
+  try {
+    value = JSON.parse(payload)
+  } catch {
+    throw new Error('无效的工具请求：JSON 格式有误')
+  }
   if (
     !value ||
     typeof value !== 'object' ||
-    Array.isArray(value) ||
+    !('name' in value) ||
     typeof value.name !== 'string' ||
     !value.name.trim() ||
+    !('args' in value) ||
     !value.args ||
     typeof value.args !== 'object' ||
     Array.isArray(value.args)
   ) {
     throw new Error('无效的工具请求')
   }
-  return value as { name: string; args: Record<string, unknown> }
+  return { name: value.name, args: value.args as Record<string, unknown> }
 }

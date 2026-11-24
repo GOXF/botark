@@ -1,4 +1,4 @@
-import { useRef, useState, type ReactNode } from 'react'
+import { useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from 'react'
 import { cn } from '@/lib/cn'
 import { SIDEBAR_DEFAULT, SIDEBAR_MAX, SIDEBAR_MIN, useBotStore } from '@/store/botStore'
 import { t } from '@/lib/i18n'
@@ -10,18 +10,46 @@ interface AppShellProps {
   asideOpen: boolean
 }
 
+function dragWidth(start: { x: number; width: number }, clientX: number): number {
+  return Math.round(Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, start.width + clientX - start.x)))
+}
+
 /**
  * Right-edge grip of the sidebar: drag to resize, double-click to reset,
  * ←/→ when focused.
  */
-function SidebarGrip() {
+function SidebarGrip({ sidebarRef }: { sidebarRef: RefObject<HTMLElement | null> }) {
   const width = useBotStore((s) => s.sidebarWidth)
   const setWidth = useBotStore((s) => s.setSidebarWidth)
   const [dragging, setDragging] = useState(false)
-  const start = useRef<{ x: number; width: number } | null>(null)
+  const drag = useRef<{ pointerId: number; x: number; width: number; next: number } | null>(null)
+  const frame = useRef<number | null>(null)
+  const grip = useRef<HTMLDivElement>(null)
+
+  const endDrag = (commit: boolean) => {
+    const current = drag.current
+    if (!current) return
+    drag.current = null
+    if (frame.current !== null) cancelAnimationFrame(frame.current)
+    frame.current = null
+    if (commit) setWidth(current.next)
+    const savedWidth = useBotStore.getState().sidebarWidth
+    if (sidebarRef.current) {
+      sidebarRef.current.style.width = `${savedWidth}px`
+      sidebarRef.current.style.removeProperty('transition-property')
+    }
+    grip.current?.setAttribute('aria-valuenow', String(savedWidth))
+    setDragging(false)
+  }
+
+  useLayoutEffect(() => () => {
+    if (frame.current !== null) cancelAnimationFrame(frame.current)
+    if (drag.current) sidebarRef.current?.style.removeProperty('transition-property')
+  }, [sidebarRef])
 
   return (
     <div
+      ref={grip}
       role="separator"
       aria-orientation="vertical"
       aria-label={t('Resize sidebar')}
@@ -30,18 +58,31 @@ function SidebarGrip() {
       aria-valuenow={width}
       tabIndex={0}
       onPointerDown={(event) => {
+        if (event.button !== 0 || drag.current) return
         event.currentTarget.setPointerCapture(event.pointerId)
-        start.current = { x: event.clientX, width }
+        drag.current = { pointerId: event.pointerId, x: event.clientX, width, next: width }
+        sidebarRef.current?.style.setProperty('transition-property', 'none')
         setDragging(true)
       }}
       onPointerMove={(event) => {
-        if (!start.current) return
-        setWidth(start.current.width + event.clientX - start.current.x)
+        const current = drag.current
+        if (!current || event.pointerId !== current.pointerId) return
+        current.next = dragWidth(current, event.clientX)
+        if (frame.current !== null) return
+        frame.current = requestAnimationFrame(() => {
+          frame.current = null
+          if (sidebarRef.current) sidebarRef.current.style.width = `${current.next}px`
+          grip.current?.setAttribute('aria-valuenow', String(current.next))
+        })
       }}
-      onPointerUp={() => {
-        start.current = null
-        setDragging(false)
+      onPointerUp={(event) => {
+        const current = drag.current
+        if (!current || event.pointerId !== current.pointerId) return
+        current.next = dragWidth(current, event.clientX)
+        endDrag(true)
       }}
+      onLostPointerCapture={(event) => { if (drag.current?.pointerId === event.pointerId) endDrag(false) }}
+      onPointerCancel={(event) => { if (drag.current?.pointerId === event.pointerId) endDrag(false) }}
       onDoubleClick={() => setWidth(SIDEBAR_DEFAULT)}
       onKeyDown={(event) => {
         if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
@@ -50,7 +91,7 @@ function SidebarGrip() {
         }
       }}
       className={cn(
-        'no-drag group absolute inset-y-0 -right-[3px] z-10 w-1.5 cursor-col-resize outline-none',
+        'no-drag group absolute inset-y-0 -right-[3px] z-10 w-1.5 touch-none cursor-col-resize outline-none',
         dragging && 'cursor-col-resize'
       )}
     >
@@ -71,17 +112,19 @@ function SidebarGrip() {
  * details panel on one white surface.
  */
 export function AppShell({ sidebar, main, aside, asideOpen }: AppShellProps) {
+  const sidebarRef = useRef<HTMLElement>(null)
   const sidebarWidth = useBotStore((s) => s.sidebarWidth)
   const sidebarCollapsed = useBotStore((s) => s.sidebarCollapsed)
   return (
     <div className="flex h-full w-full overflow-hidden bg-canvas text-ink">
       <nav
+        ref={sidebarRef}
         aria-label={t('Bots')}
         style={{ width: sidebarCollapsed ? 68 : sidebarWidth }}
         className="relative flex shrink-0 flex-col border-r border-ink/[0.12] bg-canvas transition-[width] duration-[300ms] ease-spring-shape"
       >
         {sidebar}
-        {!sidebarCollapsed && <SidebarGrip />}
+        {!sidebarCollapsed && <SidebarGrip sidebarRef={sidebarRef} />}
       </nav>
 
       <div className="flex min-w-0 flex-1">

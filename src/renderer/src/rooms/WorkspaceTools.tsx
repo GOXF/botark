@@ -66,20 +66,19 @@ interface KvRow {
 const WORKSPACE_SYNC_EVENT = 'botark:workspace-updated'
 
 function parseArgsText(raw: string): string[] {
-  const trimmed = raw.trim()
-  if (!trimmed) return []
   const args: string[] = []
   let current = ''
+  let inArg = false
   let quote: '"' | "'" | null = null
   let escaped = false
-  for (let i = 0; i < trimmed.length; i++) {
-    const ch = trimmed[i]!
+  for (const ch of raw) {
     if (escaped) {
       current += ch
       escaped = false
       continue
     }
     if (ch === '\\' && quote !== "'") {
+      inArg = true
       escaped = true
       continue
     }
@@ -92,26 +91,30 @@ function parseArgsText(raw: string): string[] {
       continue
     }
     if (ch === '"' || ch === "'") {
+      inArg = true
       quote = ch
       continue
     }
     if (/\s/.test(ch)) {
-      if (current) {
+      if (inArg) {
         args.push(current)
         current = ''
+        inArg = false
       }
       continue
     }
+    inArg = true
     current += ch
   }
-  if (current) args.push(current)
+  if (escaped) current += '\\'
+  if (inArg) args.push(current)
   return args
 }
 
 function formatArgsText(args?: string[]): string {
   if (!args?.length) return ''
   return args
-    .map((a) => (/\s/.test(a) || !a ? `"${a.replace(/"/g, '\\"')}"` : a))
+    .map((a) => (/[\s'"\\]/.test(a) || !a ? `"${a.replace(/["\\]/g, '\\$&')}"` : a))
     .join(' ')
 }
 
@@ -176,6 +179,7 @@ function McpServerFormDialog({
   const [targetScope, setTargetScope] = useState<McpConfigScope>('scope')
   const [command, setCommand] = useState('')
   const [argsText, setArgsText] = useState('')
+  const [argsEdited, setArgsEdited] = useState(false)
   const [cwd, setCwd] = useState('')
   const [url, setUrl] = useState('')
   const [kvRows, setKvRows] = useState<KvRow[]>([])
@@ -185,6 +189,7 @@ function McpServerFormDialog({
   useEffect(() => {
     if (!open) return
     setFormError('')
+    setArgsEdited(false)
     if (initialServer) {
       setName(initialServer.name)
       const resolved =
@@ -247,7 +252,7 @@ function McpServerFormDialog({
         name: trimmedName,
         transport: 'stdio',
         command: command.trim(),
-        args: parseArgsText(argsText),
+        args: initialServer && !argsEdited ? initialServer.args : parseArgsText(argsText),
         ...(cwd.trim() ? { cwd: cwd.trim() } : {}),
         ...(hasNewKv ? { env: kvMap } : !isEdit || !keepSecrets ? { env: {} } : {}),
         targetScope: scopeId === '__global__' ? 'global' : targetScope,
@@ -370,7 +375,10 @@ function McpServerFormDialog({
             >
               <TextInput
                 value={argsText}
-                onChange={(e) => setArgsText(e.target.value)}
+                onChange={(e) => {
+                  setArgsEdited(true)
+                  setArgsText(e.target.value)
+                }}
                 placeholder="-y @modelcontextprotocol/server-filesystem ."
                 className="h-8 font-mono text-[12px]"
               />
@@ -562,6 +570,134 @@ function McpPasteJsonDialog({
   )
 }
 
+function McpToolForm({ externalTools, active, busy, onRun }: {
+  externalTools: WorkspaceTool[]
+  active: boolean
+  busy: boolean
+  onRun: (name: string, collectArgs: () => Record<string, unknown>) => Promise<void>
+}) {
+  const locale = usePrefsStore((s) => s.locale)
+  const L = (zh: string, en: string) => (locale === 'en' ? en : zh)
+  const [mcpTool, setMcpTool] = useState(externalTools[0]?.name ?? '')
+  const [fieldValues, setFieldValues] = useState<Record<string, string>>({})
+  const [rawJsonMode, setRawJsonMode] = useState(false)
+  const [argsJson, setArgsJson] = useState('{}')
+
+  useEffect(() => {
+    const nextTool = externalTools.find((t) => t.name === mcpTool) ?? externalTools[0]
+    if (mcpTool !== (nextTool?.name ?? '')) {
+      setMcpTool(nextTool?.name ?? '')
+      setFieldValues({})
+      setArgsJson('{}')
+    }
+  }, [externalTools, mcpTool])
+
+  const selectedMcpSpec = useMemo(
+    () => externalTools.find((t) => t.name === mcpTool),
+    [externalTools, mcpTool]
+  )
+  const scalarFields = useMemo(() => extractScalarFields(selectedMcpSpec), [selectedMcpSpec])
+
+  const runCustomMcpTool = () =>
+    onRun(mcpTool, () => {
+      let parsedArgs: Record<string, unknown> = {}
+      if (!rawJsonMode && scalarFields !== null) {
+        for (const f of scalarFields) {
+          const raw = (fieldValues[f.key] ?? '').trim()
+          if (!raw) {
+            if (f.required) throw new Error(L(`请填写 ${f.key}`, `${f.key} is required`))
+            continue
+          }
+          if (f.type === 'number' || f.type === 'integer') {
+            const num = Number(raw)
+            if (Number.isNaN(num)) throw new Error(L(`${f.key} 需为数字`, `${f.key} must be a number`))
+            parsedArgs[f.key] = num
+          } else if (f.type === 'boolean') {
+            parsedArgs[f.key] = raw === 'true' || raw === '1'
+          } else {
+            parsedArgs[f.key] = raw
+          }
+        }
+      } else {
+        try {
+          parsedArgs = JSON.parse(argsJson || '{}') as Record<string, unknown>
+        } catch {
+          throw new Error(L('JSON 格式有误', 'Invalid JSON format'))
+        }
+      }
+      return parsedArgs
+    })
+
+  if (!active || !externalTools.length) return null
+
+  return (
+    <div className="flex flex-col gap-2 rounded-xl border border-line bg-surface p-2.5">
+      <div className="flex items-center gap-1.5">
+        <Select
+          size="xs"
+          aria-label={L('工作区工具', 'Workspace tool')}
+          value={mcpTool}
+          onValueChange={(next) => {
+            setMcpTool(next)
+            setFieldValues({})
+            setArgsJson('{}')
+          }}
+          className="flex-1"
+          options={externalTools.map((t) => ({
+            value: t.name,
+            label: t.name,
+            description: t.description
+          }))}
+        />
+        {scalarFields !== null && scalarFields.length > 0 && (
+          <button
+            type="button"
+            onClick={() => setRawJsonMode((v) => !v)}
+            title={rawJsonMode ? L('切换表单', 'Form view') : L('切换 JSON', 'JSON view')}
+            className="press-icon grid size-7 shrink-0 place-items-center rounded-lg text-ink-muted hover:bg-hover hover:text-ink"
+          >
+            <Code2 className="size-3.5" />
+          </button>
+        )}
+      </div>
+
+      {!rawJsonMode && scalarFields !== null ? (
+        scalarFields.map((f) => (
+          <TextInput
+            key={f.key}
+            value={fieldValues[f.key] ?? ''}
+            onChange={(e) =>
+              setFieldValues((prev) => ({ ...prev, [f.key]: e.target.value }))
+            }
+            placeholder={`${f.key}${f.required ? ' *' : ''}`}
+            className="h-8 font-mono text-[12px]"
+          />
+        ))
+      ) : (
+        <textarea
+          aria-label={L('工具参数 JSON', 'Tool arguments JSON')}
+          value={argsJson}
+          rows={2}
+          onChange={(e) => setArgsJson(e.target.value)}
+          placeholder='{"key": "value"}'
+          className="w-full resize-none rounded-lg border border-line-strong bg-sunken/40 px-2.5 py-1.5 font-mono text-[12px] text-ink outline-none focus:border-accent-300"
+        />
+      )}
+
+      <Button
+        size="sm"
+        variant="primary"
+        disabled={busy || !mcpTool}
+        onClick={() => void runCustomMcpTool()}
+        className="w-full"
+      >
+        {busy ? <Loader2 className="animate-spin" /> : <Play />}
+        {L('运行并插入', 'Run & Insert')}
+      </Button>
+    </div>
+  )
+}
+
 function WorkspaceStudioBody({
   scope,
   recipient,
@@ -591,10 +727,6 @@ function WorkspaceStudioBody({
   const hasUserSwitchedTabRef = useRef(false)
   const [path, setPath] = useState('.')
   const [range, setRange] = useState('')
-  const [mcpTool, setMcpTool] = useState<string>('')
-  const [fieldValues, setFieldValues] = useState<Record<string, string>>({})
-  const [rawJsonMode, setRawJsonMode] = useState(false)
-  const [argsJson, setArgsJson] = useState('{}')
   const [error, setError] = useState('')
   const [hint, setHint] = useState('')
   const [busy, setBusy] = useState(false)
@@ -642,20 +774,6 @@ function WorkspaceStudioBody({
     () => (state?.tools ?? []).filter((t) => t.name.includes('__')),
     [state?.tools]
   )
-
-  useEffect(() => {
-    if (!externalTools.some((t) => t.name === mcpTool)) {
-      setMcpTool(externalTools[0]?.name ?? '')
-      setFieldValues({})
-      setArgsJson('{}')
-    }
-  }, [externalTools, mcpTool])
-
-  const selectedMcpSpec = useMemo(
-    () => externalTools.find((t) => t.name === mcpTool),
-    [externalTools, mcpTool]
-  )
-  const scalarFields = useMemo(() => extractScalarFields(selectedMcpSpec), [selectedMcpSpec])
 
   if (!bridge) return null
 
@@ -816,39 +934,6 @@ function WorkspaceStudioBody({
           ? `@file ${targetPath}${lines ? `:${lines[1]}-${lines[2]}` : ''}`
           : `@folder ${targetPath}`
       append({ label, text: result })
-      onAfterAppend?.()
-    })
-
-  const runCustomMcpTool = () =>
-    act(async () => {
-      if (!mcpTool) return
-      let parsedArgs: Record<string, unknown> = {}
-      if (!rawJsonMode && scalarFields !== null) {
-        for (const f of scalarFields) {
-          const raw = (fieldValues[f.key] ?? '').trim()
-          if (!raw) {
-            if (f.required) throw new Error(L(`请填写 ${f.key}`, `${f.key} is required`))
-            continue
-          }
-          if (f.type === 'number' || f.type === 'integer') {
-            const num = Number(raw)
-            if (Number.isNaN(num)) throw new Error(L(`${f.key} 需为数字`, `${f.key} must be a number`))
-            parsedArgs[f.key] = num
-          } else if (f.type === 'boolean') {
-            parsedArgs[f.key] = raw === 'true' || raw === '1'
-          } else {
-            parsedArgs[f.key] = raw
-          }
-        }
-      } else {
-        try {
-          parsedArgs = JSON.parse(argsJson || '{}') as Record<string, unknown>
-        } catch {
-          throw new Error(L('JSON 格式有误', 'Invalid JSON format'))
-        }
-      }
-      const result = await bridge.run(scope, mcpTool, parsedArgs, recipient)
-      append({ label: mcpTool, text: result })
       onAfterAppend?.()
     })
 
@@ -1246,75 +1331,18 @@ function WorkspaceStudioBody({
               })}
             </div>
           )}
-
-          {externalTools.length > 0 && (
-            <div className="flex flex-col gap-2 rounded-xl border border-line bg-surface p-2.5">
-              <div className="flex items-center gap-1.5">
-                <Select
-                  size="xs"
-                  aria-label={L('工作区工具', 'Workspace tool')}
-                  value={mcpTool}
-                  onValueChange={(next) => {
-                    setMcpTool(next)
-                    setFieldValues({})
-                    setArgsJson('{}')
-                  }}
-                  className="flex-1"
-                  options={externalTools.map((t) => ({
-                    value: t.name,
-                    label: t.name,
-                    description: t.description
-                  }))}
-                />
-                {scalarFields !== null && scalarFields.length > 0 && (
-                  <button
-                    type="button"
-                    onClick={() => setRawJsonMode((v) => !v)}
-                    title={rawJsonMode ? L('切换表单', 'Form view') : L('切换 JSON', 'JSON view')}
-                    className="press-icon grid size-7 shrink-0 place-items-center rounded-lg text-ink-muted hover:bg-hover hover:text-ink"
-                  >
-                    <Code2 className="size-3.5" />
-                  </button>
-                )}
-              </div>
-
-              {!rawJsonMode && scalarFields !== null ? (
-                scalarFields.map((f) => (
-                  <TextInput
-                    key={f.key}
-                    value={fieldValues[f.key] ?? ''}
-                    onChange={(e) =>
-                      setFieldValues((prev) => ({ ...prev, [f.key]: e.target.value }))
-                    }
-                    placeholder={`${f.key}${f.required ? ' *' : ''}`}
-                    className="h-8 font-mono text-[12px]"
-                  />
-                ))
-              ) : (
-                <textarea
-                  aria-label={L('工具参数 JSON', 'Tool arguments JSON')}
-                  value={argsJson}
-                  rows={2}
-                  onChange={(e) => setArgsJson(e.target.value)}
-                  placeholder='{"key": "value"}'
-                  className="w-full resize-none rounded-lg border border-line-strong bg-sunken/40 px-2.5 py-1.5 font-mono text-[12px] text-ink outline-none focus:border-accent-300"
-                />
-              )}
-
-              <Button
-                size="sm"
-                variant="primary"
-                disabled={busy || !mcpTool}
-                onClick={() => void runCustomMcpTool()}
-                className="w-full"
-              >
-                {busy ? <Loader2 className="animate-spin" /> : <Play />}
-                {L('运行并插入', 'Run & Insert')}
-              </Button>
-            </div>
-          )}
         </div>
       )}
+      <McpToolForm
+        externalTools={externalTools}
+        active={tab === 'mcp'}
+        busy={busy}
+        onRun={(name, collectArgs) => act(async () => {
+          const result = await bridge.run(scope, name, collectArgs(), recipient)
+          append({ label: name, text: result })
+          onAfterAppend?.()
+        })}
+      />
 
       {hint && <p className="text-[11px] text-status-online-ink">{hint}</p>}
       {error && (

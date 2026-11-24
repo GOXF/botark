@@ -1,5 +1,13 @@
-import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { randomUUID } from 'node:crypto'
+import { chmodSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
+import { chmod, mkdir, rename, unlink, writeFile } from 'node:fs/promises'
 import { dirname } from 'node:path'
+import { setTimeout as delay } from 'node:timers/promises'
+
+function isTransientRenameError(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException).code
+  return code === 'EPERM' || code === 'EBUSY' || code === 'EACCES'
+}
 
 /**
  * Write JSON via a temp file + rename so a crash mid-write cannot leave a
@@ -7,31 +15,52 @@ import { dirname } from 'node:path'
  * overwritten, losing every entry).
  */
 export function writeJsonAtomic(path: string, data: unknown, mode = 0o600): void {
+  const payload = JSON.stringify(data, null, 2)
   mkdirSync(dirname(path), { recursive: true })
-  const tmp = `${path}.${process.pid}.tmp`
-  writeFileSync(tmp, JSON.stringify(data, null, 2), { encoding: 'utf8', mode })
+  const tmp = `${path}.${randomUUID()}.tmp`
   try {
-    chmodSync(tmp, mode)
-  } catch {
-    /* Windows / unsupported fs */
+    writeFileSync(tmp, payload, { encoding: 'utf8', mode, flag: 'wx' })
+    try {
+      chmodSync(tmp, mode)
+    } catch {
+      /* Windows / unsupported fs */
+    }
+    try {
+      renameSync(tmp, path)
+    } catch (error) {
+      if (!isTransientRenameError(error)) throw error
+      renameSync(tmp, path)
+    }
+  } catch (error) {
+    try {
+      unlinkSync(tmp)
+    } catch {
+      /* best effort */
+    }
+    throw error
   }
-  renameWithRetry(tmp, path)
 }
 
-/** Windows antivirus/indexers briefly lock files (EPERM/EBUSY/EACCES). */
-function renameWithRetry(from: string, to: string): void {
-  for (let attempt = 0; ; attempt++) {
-    try {
-      renameSync(from, to)
-      return
-    } catch (err) {
-      const code = (err as NodeJS.ErrnoException).code
-      if (attempt >= 4 || (code !== 'EPERM' && code !== 'EBUSY' && code !== 'EACCES')) throw err
-      const until = Date.now() + 50 * (attempt + 1)
-      while (Date.now() < until) {
-        /* short synchronous back-off; callers are sync */
+/** Retry transient file locks without blocking the main thread. */
+export async function writeJsonAtomicAsync(path: string, data: unknown, mode = 0o600): Promise<void> {
+  const payload = JSON.stringify(data, null, 2)
+  await mkdir(dirname(path), { recursive: true })
+  const tmp = `${path}.${randomUUID()}.tmp`
+  try {
+    await writeFile(tmp, payload, { encoding: 'utf8', mode, flag: 'wx' })
+    await chmod(tmp, mode).catch(() => undefined)
+    for (let attempt = 0; ; attempt++) {
+      try {
+        await rename(tmp, path)
+        return
+      } catch (error) {
+        if (attempt >= 4 || !isTransientRenameError(error)) throw error
+        await delay(50 * (attempt + 1))
       }
     }
+  } catch (error) {
+    await unlink(tmp).catch(() => undefined)
+    throw error
   }
 }
 
@@ -58,7 +87,6 @@ function moveAside(path: string): void {
  * read-modify-write replace every entry.
  */
 export function readJsonFile<T>(path: string, fallback: T, isValid: (raw: unknown) => boolean): T {
-  if (!existsSync(path)) return fallback
   let text: string
   try {
     text = readFileSync(path, 'utf8')

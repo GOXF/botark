@@ -60,6 +60,20 @@ describe('Cue over the official Manus API', () => {
     expect(request).toHaveBeenCalledTimes(1)
   })
 
+  it('deduplicates overlapping pages and bounds cursor cycles with one deadline', async () => {
+    const echo = { id: 'echo', type: 'user_message', user_message: { content: 'Fixture' } }
+    request
+      .mockResolvedValueOnce(Response.json({ ok: true, next_cursor: 'a', messages: [echo] }))
+      .mockResolvedValueOnce(Response.json({ ok: true, next_cursor: 'b', messages: [echo] }))
+      .mockResolvedValueOnce(Response.json({ ok: true, next_cursor: 'a', messages: [] }))
+    const result = await runCueOpenApi({
+      accountId: 'cue-fixture', op: 'watchUntilReply', sessionId: 'test-task', expectedUserText: 'Fixture'
+    }, 'fixture-key')
+    expect(result).toEqual({ ok: true, data: { done: false } })
+    expect(request.mock.calls.map(([, url]) => url.searchParams.get('cursor'))).toEqual([null, 'a', 'b'])
+    expect(new Set(request.mock.calls.map(([, , init]) => init.signal)).size).toBe(1)
+  })
+
   it('sends only Authorization Bearer when asWebToken is true (no x-manus-api-key header conflict)', async () => {
     request.mockResolvedValueOnce(
       Response.json({

@@ -1,13 +1,28 @@
 import { describe, expect, it } from 'vitest'
 import {
   allocateToolPrefix,
+  MAX_MCP_CONFIG_BYTES,
   parseHermesYamlMcpServers,
   parseMcpConfigText,
+  readMcpConfigFile,
   sanitizeToolPrefix,
   stripJsonCommentsAndBom
 } from './configParser'
 
 describe('configParser', () => {
+  it('bounds files before decoding and applies the same byte limit to pasted config', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'mcp-config-'))
+    const path = join(dir, 'mcp.json')
+    try {
+      await writeFile(path, '{"mcpServers":{}}')
+      expect(await readMcpConfigFile(path)).toBe('{"mcpServers":{}}')
+      await truncate(path, MAX_MCP_CONFIG_BYTES + 1)
+      await expect(readMcpConfigFile(path)).rejects.toThrow('2 MiB')
+      expect(() => parseMcpConfigText('你'.repeat(700_000))).toThrow('2 MiB')
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
   it('strips UTF-8 BOM, JSONC comments, and trailing commas without corrupting URLs', () => {
     const raw = `\uFEFF{
       // line comment
@@ -168,3 +183,6 @@ mcp_servers:
     expect(parsed[0]?.name).toBe('context7')
   })
 })
+import { mkdtemp, rm, truncate, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'

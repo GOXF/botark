@@ -14,13 +14,13 @@
 import { randomBytes } from 'node:crypto'
 import { resolve } from 'node:path'
 import { app, shell } from 'electron'
-import { decodeJwtClaims, persistCueTokens } from './cueAuth'
+import { decodeJwtClaims, getCueCredentialRevision, persistCueTokens } from './cueAuth'
 
 export const CUE_DESKTOP_SCHEME = 'cuedev'
 const CUE_WEB = 'https://cue.im'
 const PENDING_TTL_MS = 30 * 60 * 1000
 
-type Pending = { accountId: string; expiresAt: number }
+type Pending = { accountId: string; expiresAt: number; claimed?: boolean }
 const pending = new Map<string, Pending>()
 
 export type CueHandoffSignedIn = {
@@ -64,18 +64,25 @@ export function parseCueDesktopCallback(
 
 /** Remember a pending browser login and return its one-time nonce. */
 export function issueCueLoginNonce(accountId: string, now = Date.now()): string {
+  revokeCueLoginNonce(accountId)
   for (const [key, value] of pending) {
-    if (value.expiresAt <= now || value.accountId === accountId) pending.delete(key)
+    if (value.expiresAt <= now) pending.delete(key)
   }
   const nonce = randomBytes(16).toString('hex')
   pending.set(nonce, { accountId, expiresAt: now + PENDING_TTL_MS })
   return nonce
 }
 
+export function revokeCueLoginNonce(accountId: string): void {
+  for (const [nonce, entry] of pending) {
+    if (accountId === '*' || entry.accountId === accountId) pending.delete(nonce)
+  }
+}
+
 /** Consume a nonce once; returns the account it was issued for, or null if unknown/expired. */
 export function consumeCueLoginNonce(nonce: string, now = Date.now()): string | null {
   const entry = pending.get(nonce)
-  if (!entry) return null
+  if (!entry || entry.claimed) return null
   pending.delete(nonce)
   return entry.expiresAt > now ? entry.accountId : null
 }
@@ -85,23 +92,30 @@ export function findCueCallbackArg(argv: readonly string[] | undefined): string 
 }
 
 function ensureProtocolRegistered(): void {
+  const message = '无法注册 Cue 浏览器登录回调，请在 BotArk 登录窗口中完成登录'
   try {
     if (app.isDefaultProtocolClient?.(CUE_DESKTOP_SCHEME)) return
-    if (process.defaultApp && process.argv.length >= 2 && process.argv[1]) {
-      app.setAsDefaultProtocolClient(CUE_DESKTOP_SCHEME, process.execPath, [resolve(process.argv[1])])
-    } else {
-      app.setAsDefaultProtocolClient(CUE_DESKTOP_SCHEME)
-    }
-  } catch (err) {
-    console.warn('[cue] could not register desktop callback scheme', err instanceof Error ? err.message : err)
+    const registered = process.defaultApp && process.argv[1]
+      ? app.setAsDefaultProtocolClient(CUE_DESKTOP_SCHEME, process.execPath, [resolve(process.argv[1])])
+      : app.setAsDefaultProtocolClient(CUE_DESKTOP_SCHEME)
+    if (registered) return
+  } catch (cause) {
+    throw new Error(message, { cause })
   }
+  throw new Error(message)
 }
 
 /** Open cue.im in the user's default browser; the session comes back through `cuedev://`. */
 export async function startCueBrowserLogin(accountId: string): Promise<void> {
+  revokeCueLoginNonce(accountId)
   ensureProtocolRegistered()
   const nonce = issueCueLoginNonce(accountId)
-  await shell.openExternal(buildCueBrowserLoginUrl(nonce))
+  try {
+    await shell.openExternal(buildCueBrowserLoginUrl(nonce))
+  } catch (error) {
+    pending.delete(nonce)
+    throw error
+  }
 }
 
 let signedInListener: ((event: CueHandoffSignedIn) => void) | undefined
@@ -114,32 +128,44 @@ export function onCueHandoffSignedIn(listener: (event: CueHandoffSignedIn) => vo
 export async function handleCueDesktopCallbackUrl(raw: string): Promise<boolean> {
   const parsed = parseCueDesktopCallback(raw)
   if (!parsed) return false
-  const accountId = consumeCueLoginNonce(parsed.nonce)
-  if (!accountId) {
+  const attempt = pending.get(parsed.nonce)
+  if (!attempt || attempt.claimed || attempt.expiresAt <= Date.now()) {
     console.warn('[cue] ignored a desktop callback with an unknown or expired login request')
     return false
   }
+  attempt.claimed = true
+  const { accountId } = attempt
+  const revision = getCueCredentialRevision(accountId)
+  const stillPending = () => pending.get(parsed.nonce) === attempt && attempt.expiresAt > Date.now()
   const claims = decodeJwtClaims(parsed.token)
-  const auth = await persistCueTokens(accountId, {
-    accessToken: parsed.token,
-    cookieHeader: `cue_session_id=${parsed.token}`,
-    cookieNames: ['cue_session_id'],
-    cookies: [
-      { name: 'cue_session_id', value: parsed.token, domain: '.cue.im', path: '/' },
-      { name: 'session_id', value: parsed.token, domain: '.manus.im', path: '/' }
-    ],
-    handle: claims.handle,
-    displayName: claims.displayName,
-    accountSlot: claims.handle,
-    expiresAtMs: claims.expiresAtMs,
-    authKind: 'session'
-  })
-  signedInListener?.({
-    accountId,
-    signedIn: true,
-    handle: auth.handle,
-    displayName: auth.displayName,
-    accountSlot: auth.accountSlot
-  })
-  return true
+  try {
+    const auth = await persistCueTokens(accountId, {
+      accessToken: parsed.token,
+      cookieHeader: `cue_session_id=${parsed.token}`,
+      cookieNames: ['cue_session_id'],
+      cookies: [
+        { name: 'cue_session_id', value: parsed.token, domain: '.cue.im', path: '/' },
+        { name: 'session_id', value: parsed.token, domain: '.manus.im', path: '/' }
+      ],
+      handle: claims.handle,
+      displayName: claims.displayName,
+      accountSlot: claims.handle,
+      expiresAtMs: claims.expiresAtMs,
+      authKind: 'session'
+    }, { shouldSave: () => stillPending() && revision === getCueCredentialRevision(accountId) })
+    if (!stillPending()) return false
+    signedInListener?.({
+      accountId,
+      signedIn: true,
+      handle: auth.handle,
+      displayName: auth.displayName,
+      accountSlot: auth.accountSlot
+    })
+    return true
+  } catch (error) {
+    if (stillPending() && revision === getCueCredentialRevision(accountId)) throw error
+    return false
+  } finally {
+    pending.delete(parsed.nonce)
+  }
 }

@@ -1,9 +1,9 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { EmptyLine, Section } from '@/components/info/Section'
 import { Button } from '@/components/ui/Button'
 import { RefreshButton } from '@/components/muse/RefreshButton'
 import { getBridge } from '@/lib/bridge'
-import { cleanSidebarError } from '@/lib/sidebarCompat'
+import { cleanSidebarError, isOnlineAccountStatus } from '@/lib/sidebarCompat'
 import { useBotStore } from '@/store/botStore'
 import { t } from '@/lib/i18n'
 
@@ -85,108 +85,103 @@ function asHits(raw: unknown, fallbackTitle = 'MEMORY'): MemoryHit[] {
 
 const DEFAULT_MEMORY_URIS = ['memory://MEMORY.md', 'memory://USER.md'] as const
 
+type MemoryResult = { hits: MemoryHit[]; unavailable: boolean }
+const memoryReads = new Map<string, Promise<MemoryResult>>()
+
+function loadMemory(accountId: string, query: string, fresh: boolean): Promise<MemoryResult> {
+  const key = JSON.stringify([accountId, query])
+  const existing = memoryReads.get(key)
+  if (existing && !fresh) return existing
+  const request = readMemory(accountId, query).finally(() => {
+    if (memoryReads.get(key) === request) memoryReads.delete(key)
+  })
+  memoryReads.set(key, request)
+  return request
+}
+
+async function readMemory(accountId: string, query: string): Promise<MemoryResult> {
+  const muse = getBridge()?.muse
+  if (!muse?.rpc) return { hits: [], unavailable: true }
+  if (query) {
+    const raw = await muse.rpc({ accountId, method: 'memory.search', params: { query, limit: 20 } })
+    return { hits: asHits(raw), unavailable: false }
+  }
+  const docs = await Promise.allSettled(DEFAULT_MEMORY_URIS.map((memory_uri) =>
+    muse.rpc({ accountId, method: 'memory.get', params: { memory_uri } })
+  ))
+  let anySucceeded = docs.some((doc) => doc.status === 'fulfilled')
+  const hits = docs.flatMap((doc, index) => doc.status === 'fulfilled'
+    ? asHits(doc.value, DEFAULT_MEMORY_URIS[index]!.replace(/^memory:\/\//, '').replace(/\.md$/, '')) : [])
+  if (!hits.length) {
+    try {
+      hits.push(...asHits(await muse.rpc({ accountId, method: 'memory.search', params: { query: '*', limit: 20 } })))
+      anySucceeded = true
+    } catch {
+      /* Try the workspace files. */
+    }
+  }
+  for (const path of ['MEMORY.md', 'workspace/MEMORY.md']) {
+    if (hits.length) break
+    try {
+      hits.push(...asHits(await muse.rpc({ accountId, method: 'fs.read', params: { path } })))
+      anySucceeded = true
+    } catch {
+      /* Try the next path. */
+    }
+  }
+  return { hits, unavailable: !anySucceeded }
+}
+
 export function MemorySection({ accountId }: { accountId: string }) {
+  return <AccountMemorySection key={accountId} accountId={accountId} />
+}
+
+function AccountMemorySection({ accountId }: { accountId: string }) {
   const [query, setQuery] = useState('')
   const [hits, setHits] = useState<MemoryHit[]>([])
   const [loading, setLoading] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string>()
   const [unavailable, setUnavailable] = useState(false)
-  const status = useBotStore((s) => s.accounts[accountId]?.status)
+  const connected = useBotStore((s) => isOnlineAccountStatus(s.accounts[accountId]?.status))
+  const submittedQuery = useRef('')
+  const request = useRef(0)
+  const mounted = useRef(false)
 
-  const runSearch = useCallback(
-    async (q: string) => {
-      const muse = getBridge()?.muse
-      if (!muse?.rpc) {
-        setUnavailable(true)
-        return
-      }
-      setLoading(true)
-      setError(undefined)
-      setUnavailable(false)
-      try {
-        const trimmedQuery = q.trim()
-        if (trimmedQuery) {
-          const raw = await muse.rpc({
-            accountId,
-            method: 'memory.search',
-            params: { query: trimmedQuery, limit: 20 }
-          })
-          setHits(asHits(raw))
-          return
-        }
+  useLayoutEffect(() => {
+    mounted.current = true
+    return () => { mounted.current = false }
+  }, [])
 
-        // Initial overview without search query: `memory.get` requires `memory_uri`.
-        // Probe canonical memory URIs first, then fall back to `memory.search` / `fs.read`.
-        const collected: MemoryHit[] = []
-        let anySucceeded = false
-
-        for (const uri of DEFAULT_MEMORY_URIS) {
-          try {
-            const doc = await muse.rpc({
-              accountId,
-              method: 'memory.get',
-              params: { memory_uri: uri }
-            })
-            anySucceeded = true
-            collected.push(...asHits(doc, uri.replace(/^memory:\/\//, '').replace(/\.md$/i, '')))
-          } catch {
-            /* try next source */
-          }
-        }
-
-        if (collected.length === 0) {
-          try {
-            const searched = await muse.rpc({
-              accountId,
-              method: 'memory.search',
-              params: { query: '*', limit: 20 }
-            })
-            anySucceeded = true
-            collected.push(...asHits(searched))
-          } catch {
-            /* fallback to workspace MEMORY.md */
-          }
-        }
-
-        if (collected.length === 0) {
-          for (const path of ['MEMORY.md', 'workspace/MEMORY.md']) {
-            try {
-              const fileDoc = await muse.rpc({
-                accountId,
-                method: 'fs.read',
-                params: { path }
-              })
-              anySucceeded = true
-              const parsed = asHits(fileDoc, 'MEMORY')
-              if (parsed.length > 0) {
-                collected.push(...parsed)
-                break
-              }
-            } catch {
-              /* ignore */
-            }
-          }
-        }
-
-        setHits(collected)
-        if (!anySucceeded && collected.length === 0) {
-          setUnavailable(true)
-        }
-      } catch (err) {
-        setHits([])
-        setError(cleanSidebarError(err))
-        setUnavailable(true)
-      } finally {
-        setLoading(false)
-      }
-    },
-    [accountId]
-  )
+  const runSearch = useCallback(async (q: string, fresh = false) => {
+    if (!mounted.current) return
+    const query = q.trim()
+    submittedQuery.current = query
+    const version = ++request.current
+    const current = () => mounted.current && request.current === version
+    setLoading(true)
+    setError(undefined)
+    setUnavailable(false)
+    try {
+      const result = await loadMemory(accountId, query, fresh)
+      if (!current()) return
+      setHits(result.hits)
+      setUnavailable(result.unavailable)
+    } catch (err) {
+      if (!current()) return
+      setHits([])
+      setError(cleanSidebarError(err))
+      setUnavailable(true)
+    } finally {
+      if (current()) setLoading(false)
+    }
+  }, [accountId])
 
   useEffect(() => {
-    if (status === 'online' || status === 'busy' || status === 'attention') void runSearch('')
-  }, [runSearch, status])
+    if (connected) void runSearch(submittedQuery.current)
+    else setLoading(false)
+    return () => { request.current++ }
+  }, [connected, runSearch])
 
   const consolidate = async () => {
     const muse = getBridge()?.muse
@@ -195,11 +190,11 @@ export function MemorySection({ accountId }: { accountId: string }) {
     setError(undefined)
     try {
       await muse.rpc({ accountId, method: 'memory.consolidate', params: {} })
-      await runSearch(query)
+      if (mounted.current) await runSearch(submittedQuery.current, true)
     } catch (err) {
-      setError(cleanSidebarError(err))
+      if (mounted.current) setError(cleanSidebarError(err))
     } finally {
-      setBusy(false)
+      if (mounted.current) setBusy(false)
     }
   }
 

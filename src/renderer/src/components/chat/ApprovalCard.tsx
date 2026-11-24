@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { memo, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { ChevronDown } from 'lucide-react'
 import { adapterRegistry } from '@adapters/registry'
 import type { MuseApproval, MuseApprovalOption } from '@adapters/types'
@@ -170,30 +170,58 @@ function Card({
 }
 
 /** Pending Muse or Grok Bot permission requests for the bot's active account, shown above the composer. */
-export function ChatApprovals({
-  accountId,
-  platformId = 'meta-muse',
-  agentId
-}: {
+interface ChatApprovalsProps {
   accountId: string
   platformId?: 'meta-muse' | 'grok'
   agentId?: string
-}) {
-  const status = useBotStore((s) => s.accounts[accountId]?.status)
+}
+
+export const ChatApprovals = memo(function ChatApprovals({ accountId, platformId = 'meta-muse', agentId }: ChatApprovalsProps) {
+  return <AccountApprovals key={JSON.stringify([accountId, platformId])} accountId={accountId} platformId={platformId} agentId={agentId} />
+})
+
+function AccountApprovals({ accountId, platformId, agentId }: ChatApprovalsProps & { platformId: NonNullable<ChatApprovalsProps['platformId']> }) {
+  const active = useBotStore((s) => {
+    const account = s.accounts[accountId]
+    return account?.platformId === platformId && account.status !== 'offline'
+  })
   const [pending, setPending] = useState<MuseApproval[]>([])
   const [busyId, setBusyId] = useState<string>()
   const [error, setError] = useState<string>()
+  const currentPending = useRef<MuseApproval[]>([])
+  const deciding = useRef(false)
+  const mounted = useRef(false)
+
+  useLayoutEffect(() => {
+    mounted.current = true
+    return () => { mounted.current = false }
+  }, [])
 
   useEffect(() => {
     const adapter = adapterRegistry.get(platformId)
     if (!adapter) return
+    let live = true
+    let revision = 0
+    const publish = (list: MuseApproval[]) => {
+      if (!live) return
+      currentPending.current = list
+      setPending(list)
+    }
+    if (!active) {
+      publish([])
+      return
+    }
     const unsub = adapter.subscribe((event) => {
-      if (event.type === 'approvals' && event.accountId === accountId) setPending(event.pending)
+      if (event.type === 'approvals' && event.accountId === accountId) {
+        revision += 1
+        publish(event.pending)
+      }
     })
-    const active = Boolean(status && status !== 'offline')
     const pull = () => {
-      if (!active) return
-      void adapter.listApprovals?.(accountId).then(setPending).catch(() => {})
+      const request = ++revision
+      void adapter.listApprovals?.(accountId).then((list) => {
+        if (request === revision) publish(list)
+      }).catch(() => {})
     }
     pull()
 
@@ -203,7 +231,7 @@ export function ChatApprovals({
     const onVisibility = () => {
       if (typeof document !== 'undefined' && !document.hidden) pull()
     }
-    if (platformId === 'meta-muse' && active) {
+    if (platformId === 'meta-muse') {
       timer = setInterval(() => {
         if (typeof document !== 'undefined' && document.hidden) return
         pull()
@@ -213,13 +241,14 @@ export function ChatApprovals({
       }
     }
     return () => {
+      live = false
       unsub()
       if (timer) clearInterval(timer)
       if (typeof document !== 'undefined') {
         document.removeEventListener('visibilitychange', onVisibility)
       }
     }
-  }, [accountId, platformId, status])
+  }, [accountId, platformId, active])
 
   const visiblePending =
     platformId === 'grok' && agentId
@@ -232,10 +261,13 @@ export function ChatApprovals({
         })
       : pending
 
-  if (!visiblePending.length) return null
+  if (!active || !visiblePending.length) return null
   const decide = async (id: string, option: MuseApprovalOption) => {
     const adapter = adapterRegistry.get(platformId)
-    if (!adapter?.decideApproval) return
+    const account = useBotStore.getState().accounts[accountId]
+    if (!mounted.current || deciding.current || !adapter?.decideApproval || account?.platformId !== platformId ||
+        account.status === 'offline' || !currentPending.current.some((approval) => approval.id === id)) return
+    deciding.current = true
     setBusyId(id)
     setError(undefined)
     try {
@@ -244,15 +276,16 @@ export function ChatApprovals({
         opensUrl: option.opensUrl
       })
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
+      if (mounted.current) setError(err instanceof Error ? err.message : String(err))
     } finally {
-      setBusyId(undefined)
+      deciding.current = false
+      if (mounted.current) setBusyId(undefined)
     }
   }
   return (
     <div className="px-4" data-chat-approvals>
       {visiblePending.map((a) => (
-        <Card key={a.id} approval={a} busy={busyId === a.id} onDecide={(opt) => void decide(a.id, opt)} />
+        <Card key={a.id} approval={a} busy={busyId !== undefined} onDecide={(opt) => void decide(a.id, opt)} />
       ))}
       {error && <p className="mx-auto mb-2 max-w-[720px] text-[12px] text-status-error">{error}</p>}
     </div>
