@@ -964,7 +964,8 @@ export class HarkConversationSyncState {
           const prevTools = existing.toolCalls ?? []
           const extraArts = extractHarkArtifactsFromRaw(val)
           const nextArts = mergeHarkArtifacts(existing.artifacts, extraArts)
-          if (dispatchId && !prevTools.some((t) => t.dispatchId === dispatchId)) {
+          // GOXF: Hark's web app never shows the model's private "Thinking" step; skip it here too.
+          if (dispatchId && !/^thinking$/i.test(name) && !prevTools.some((t) => t.dispatchId === dispatchId)) {
             this.messages.set(id, {
               ...existing,
               ...(nextArts ? { artifacts: nextArts } : {}),
@@ -1063,7 +1064,6 @@ export class HarkConversationSyncState {
       this.narration ||
       this.activeActivity ||
       streaming?.narration ||
-      streaming?.thought ||
       harkRunningToolLine(streaming) ||
       backgroundLine ||
       ''
@@ -1481,6 +1481,7 @@ function normalizeSyncMessage(id: string, raw: Record<string, unknown>): HarkCha
     if (!tc || typeof tc !== 'object') continue
     const dispatchId = String(tc['dispatchId'] ?? tc['dispatch_id'] ?? '')
     const name = String(tc['toolName'] ?? tc['tool_name'] ?? tc['type'] ?? 'tool')
+    if (/^thinking$/i.test(name)) continue
     const status = String(tc['status'] ?? 'completed')
     const input = (tc['input'] ?? {}) as Record<string, unknown>
     const progressMeta = ((tc['progress'] as Record<string, unknown> | undefined)?.['metadata'] ?? {}) as Record<

@@ -368,7 +368,6 @@ async function runHarkRpc(req: HarkRpcRequest): Promise<HarkRpcResponse> {
           syncState.narration?.trim() ||
           syncState.activeActivity?.trim() ||
           msg?.narration?.trim() ||
-          msg?.thought?.trim() ||
           harkRunningToolLine(msg) ||
           syncState.liveStatus().text ||
           ''

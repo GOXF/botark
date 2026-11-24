@@ -534,7 +534,8 @@ function harkHistory(data: unknown, botId: string, accountId: string): ChatMessa
       .filter(
         (m) =>
           (m.content && m.content.trim()) ||
-          m.toolCalls?.length || m.narration || m.thought ||
+          // GOXF: the model's private "thought" is never shown (Hark's web app hides it too).
+          m.toolCalls?.length || m.narration ||
           (m.media && m.media.length > 0) ||
           (m.richWidgets && m.richWidgets.length > 0)
       )
@@ -562,13 +563,13 @@ function harkHistory(data: unknown, botId: string, accountId: string): ChatMessa
                       : 'completed',
                 summary: tc.url || m.narration || undefined
               }))
-            : m.narration || m.thought
+            : m.narration
               ? [
                   {
                     id: `hark_thought_${m.id}`,
-                    name: m.narration ? 'Agent Activity' : 'Thinking',
+                    name: 'Agent Activity',
                     status: 'completed',
-                    summary: (m.narration || m.thought || '').slice(0, 140)
+                    summary: m.narration.slice(0, 140)
                   }
                 ]
               : undefined
