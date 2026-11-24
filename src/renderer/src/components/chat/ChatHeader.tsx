@@ -176,7 +176,8 @@ export function ChatHeader({ bot, accounts: _accounts, compact = false, extra, m
       />
       <span className="flex min-w-0 flex-col items-start">
         <h1 className="max-w-full min-w-0 truncate text-[14px] leading-[18px] font-medium text-ink">{bot.name}</h1>
-        {status !== 'online' && (
+        {/* Running shows on the avatar; only problems get a line here. */}
+        {status !== 'online' && status !== 'busy' && (
           <span className="-mt-0.5 max-w-full truncate text-[10.5px] leading-[13px] text-ink-muted" data-capsule-status>
             {STATUS_LABEL[status]}
           </span>
