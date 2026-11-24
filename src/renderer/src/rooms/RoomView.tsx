@@ -66,6 +66,7 @@ import {
   type RoomReference
 } from './model'
 import { RoomAvatarCluster } from './RoomAvatarCluster'
+import { BotRow } from '@/components/sidebar/BotList'
 import { exportRoomMarkdownFile } from './RoomInspectorPanel'
 import { applyDropOnRoom, isRoomDropDrag, showRoomDndNotice, useRoomDndNotice } from './roomDnd'
 import {
@@ -161,6 +162,35 @@ function openSidebarRoom(id: string) {
   selectBot(id)
 }
 
+/** GOXF: a group shows one avatar like a conversation row: the first member, plus a member-count badge. */
+function RoomLeadAvatar({ room, speaking }: { room: CollabRoom; speaking: boolean }) {
+  const lead = room.members[0]
+  const bot = useBotStore((s) => (lead ? s.bots.find((b) => b.id === lead.botId) : undefined))
+  return (
+    <span className="relative inline-flex shrink-0">
+      <BotAvatar
+        emoji={bot?.emoji ?? '🤖'}
+        seed={bot?.id ?? lead?.botId ?? room.id}
+        avatar={bot?.avatar}
+        avatarShape={bot?.avatarShape}
+        avatarColor={bot?.avatarColor}
+        platformId={lead?.platform}
+        isWorking={speaking}
+        size="md"
+        ringClassName="ring-canvas"
+      />
+      {room.members.length > 1 && (
+        <span
+          aria-label={`${room.members.length} 位成员`}
+          className="absolute -right-1 -bottom-0.5 grid h-4 min-w-4 place-items-center rounded-full bg-ink/55 px-1 text-[10px] leading-none font-semibold text-canvas tabular-nums ring-2 ring-canvas"
+        >
+          {room.members.length}
+        </span>
+      )}
+    </span>
+  )
+}
+
 const RoomSidebarItem = memo(function RoomSidebarItem({
   room,
   compact = false
@@ -173,6 +203,7 @@ const RoomSidebarItem = memo(function RoomSidebarItem({
   const speaker = useRooms((s) => s.speakers[room.id])
   const [renaming, setRenaming] = useState(false)
   const [menuOpen, setMenuOpen] = useState(false)
+  const [expanded, setExpanded] = useState(false)
   const rowRef = useRef<HTMLButtonElement>(null)
   const renameInputRef = useRef<HTMLInputElement>(null)
   const drop = useRoomDropTarget(room.id)
@@ -216,6 +247,18 @@ const RoomSidebarItem = memo(function RoomSidebarItem({
           />
         </div>
       ) : (
+        <div className="flex items-center">
+        {!compact && (
+          <button
+            type="button"
+            aria-label={expanded ? '收起成员会话' : '展开成员会话'}
+            aria-expanded={expanded}
+            onClick={() => setExpanded((v) => !v)}
+            className="press-icon grid size-5 shrink-0 place-items-center rounded-md text-ink-muted transition-colors hover:bg-hover hover:text-ink"
+          >
+            <ChevronRight aria-hidden className={cn('size-3.5 transition-transform duration-150', expanded && 'rotate-90')} />
+          </button>
+        )}
         <button
           ref={rowRef}
           type="button"
@@ -228,17 +271,12 @@ const RoomSidebarItem = memo(function RoomSidebarItem({
             'no-drag text-ink transition-colors focus-visible:outline-offset-[-2px]',
             compact
               ? 'press-icon relative grid size-11 place-items-center rounded-2xl'
-              : 'press flex w-full items-center gap-2.5 rounded-xl px-2 py-1.5 text-left',
+              : 'press flex min-w-0 flex-1 items-center gap-2.5 rounded-xl px-1.5 py-1.5 text-left',
             selected ? 'bg-active' : 'hover:bg-hover',
             selected && compact && 'ring-1 ring-line-strong'
           )}
         >
-          <RoomAvatarCluster
-            members={compact ? room.members.slice(0, 2) : room.members}
-            speakingName={speaker}
-            size="xs"
-            ringClassName="ring-canvas"
-          />
+          <RoomLeadAvatar room={room} speaking={Boolean(speaker)} />
           {compact ? (
             <>
               {room.pinned && <Pin aria-hidden className="absolute top-0.5 left-0.5 size-3 text-ink-muted" />}
@@ -275,6 +313,13 @@ const RoomSidebarItem = memo(function RoomSidebarItem({
             </span>
           )}
         </button>
+        </div>
+      )}
+
+      {expanded && !compact && !renaming && (
+        <div className="mt-0.5 mb-1 ml-[18px] flex flex-col gap-0.5 border-l border-ink/[0.08] pl-1.5">
+          {room.members.map((m) => <RoomMemberRow key={m.botId} botId={m.botId} />)}
+        </div>
       )}
 
       {!renaming && (
@@ -356,6 +401,12 @@ const RoomSidebarItem = memo(function RoomSidebarItem({
   )
 })
 
+function RoomMemberRow({ botId }: { botId: string }) {
+  const bot = useBotStore((s) => s.bots.find((b) => b.id === botId))
+  if (!bot) return null
+  return <BotRow bot={bot} layout="expanded" />
+}
+
 export function PinnedRoomsList({ compact = false }: { compact?: boolean }) {
   const t = useT()
   const rooms = useRooms(useShallow((s) => s.rooms.filter((room) => room.pinned === true)))
@@ -374,7 +425,7 @@ export function PinnedRoomsList({ compact = false }: { compact?: boolean }) {
   )
 }
 
-export function RoomList({ compact = false }: { compact?: boolean }) {
+export function RoomList({ compact = false, fill = false }: { compact?: boolean; fill?: boolean }) {
   const rooms = useRooms(useShallow((s) => s.rooms.filter((room) => room.pinned !== true)))
   const creating = useBotStore((s) => s.selectedBotId === NEW_ROOM_ID && !s.settingsOpen)
   const [collapsed, setCollapsed] = useState(false)
@@ -384,7 +435,10 @@ export function RoomList({ compact = false }: { compact?: boolean }) {
     return (
       <section
         aria-label="群聊"
-        className="no-drag mt-1 flex max-h-[45%] w-full shrink-0 flex-col items-center gap-1.5 border-t border-ink/[0.06] pt-2"
+        className={cn(
+          'no-drag mt-1 flex w-full flex-col items-center gap-1.5 border-t border-ink/[0.06] pt-2',
+          fill ? 'min-h-0 flex-1' : 'max-h-[45%] shrink-0'
+        )}
       >
         <button
           type="button"
@@ -412,7 +466,13 @@ export function RoomList({ compact = false }: { compact?: boolean }) {
   }
 
   return (
-    <section aria-label="群聊" className="no-drag mt-1 shrink-0 border-t border-ink/[0.06] pt-1.5">
+    <section
+      aria-label="群聊"
+      className={cn(
+        'no-drag mt-1 border-t border-ink/[0.06] pt-1.5',
+        fill ? 'flex min-h-0 flex-1 flex-col' : 'shrink-0'
+      )}
+    >
       <div className="group/rsec flex h-7 items-center gap-0.5 px-0.5">
         <button
           type="button"
@@ -450,7 +510,7 @@ export function RoomList({ compact = false }: { compact?: boolean }) {
       </div>
 
       {!collapsed && rooms.length > 0 && (
-        <div className="mt-0.5 flex max-h-48 flex-col gap-0.5 overflow-y-auto">
+        <div className={cn('mt-0.5 flex flex-col gap-0.5 overflow-y-auto', fill ? 'min-h-0 flex-1' : 'max-h-48')}>
           {items}
         </div>
       )}

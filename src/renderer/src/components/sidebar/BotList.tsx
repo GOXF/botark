@@ -125,7 +125,7 @@ function SectionHeader({
   )
 }
 
-const BotRow = memo(function BotRow({ bot, layout }: { bot: Bot; layout: 'collapsed' | 'pinned' | 'expanded' }) {
+export const BotRow = memo(function BotRow({ bot, layout }: { bot: Bot; layout: 'collapsed' | 'pinned' | 'expanded' }) {
   const status = useBotStore((s) => getBotStatus(bot, s.accounts))
   const typing = useBotStore((s) => s.typing[bot.id] === true)
   const activity = useBotStore((s) => s.activity[bot.activeAccountId])
