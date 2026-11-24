@@ -200,3 +200,4 @@ git clone <GOXF/botark> && cd botark && git checkout fix/hark-login-sync && npm 
 - 12:55 `87f6453` 登录卡原生填写：HarkAskView.login {scope,label,fields}（harkAsks.loginSpec；卡片/密钥/token 仍去网页；无 scope/domain 时也去网页）；HarkAskCard 表单 账号+密码(眼睛) → POST /secrets {type:'login',scope,label,conversationId,fields} → 取 id/secretId → POST /messages/tool-response value=JSON {secretId}。BotArk 不存密码。
 - 13:05 `c358114` v10 开工完成：HarkBrowserCard 重写，放到对话末尾（MessageList 之后、需要你卡之前），实时/网址/时间、截图点开全屏、当前步骤胶囊、计划（=旁白记录，Hark 流里没有计划步骤）、全屏/收起/关闭、等你时「需要采取行动」；全屏（portal, Esc）带计划、截图记录(最多 24 张)回看、保存截图、在网页里接管。测试 462 过。等真机反馈。
 - 13:20 `b21f73a` 更新卡：机器人回复中点「回复完更新」=排队自动装；手动检查更新清除 × 掉的卡。用户当时因 Hark 回复中按钮灰 + 卡被 × 而没更新到 c358114。
+- 13:35 `d419223` 更新提示：查到新版一律「发现新版本」，手动检查弹 toast；能否马上装用橙字 note 另起一行（用户要求两者分开提示）。
