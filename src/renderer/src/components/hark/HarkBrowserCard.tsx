@@ -11,6 +11,11 @@ interface Step { text: string; at: number }
 interface Shot { src: string; at: number; step?: string }
 
 const ACTIVE = /^(active|running|pending|started|waiting_for_input)$/i
+const FAILED = /fail|error|cancel|abort|timeout/i
+
+function endedLabel(status: string): string {
+  return FAILED.test(status) ? '浏览器任务失败' : /complete|done|success|finish/i.test(status) ? '浏览器任务已完成' : `已结束（${status}）`
+}
 const MAX_SHOTS = 24
 
 function clock(at: number): string {
@@ -63,7 +68,9 @@ export function HarkBrowserCard({ accountId, sessionId, attention = false }: { a
   const waiting = attention || /^waiting/i.test(panel?.status ?? '')
   const active = ACTIVE.test(panel?.status ?? '')
   const hidden = !panel || (closed !== '' && closed === panel.label && !waiting)
+  const ended = !!panel && !active && !waiting
   useEffect(() => { if (waiting) setMini(false) }, [waiting])
+  useEffect(() => { if (ended) setMini(true) }, [ended])
 
   // Keep the screenshot fresh while the browser works or waits (5 s), and while the full view is open.
   useEffect(() => {
@@ -110,10 +117,12 @@ export function HarkBrowserCard({ accountId, sessionId, attention = false }: { a
     return () => window.removeEventListener('keydown', onKey)
   }, [full, closeFull])
 
-  if (!hark || hidden || !panel) return null
+  // An ended browser with nothing to show is noise.
+  if (!hark || hidden || !panel || (ended && !image && !key && !url)) return null
 
-  const stepText = step || (waiting ? '等你处理' : active ? '正在用浏览器' : panel.status)
-  const done = !active && !waiting
+  const done = ended
+  const failed = done && FAILED.test(panel.status)
+  const stepText = done ? endedLabel(panel.status) : step || (waiting ? '等你处理' : '正在用浏览器')
   const shown = viewing ?? (image ? { src: image, at: shotAt } : null)
   const save = () => {
     if (!shown) return
@@ -126,7 +135,7 @@ export function HarkBrowserCard({ accountId, sessionId, attention = false }: { a
   const StepPill = ({ dark = false }: { dark?: boolean }) => (
     <div className={cn('flex min-w-0 items-center gap-2 rounded-full px-3 py-1.5 text-[12px]',
       dark ? 'bg-white text-ink' : 'bg-sunken text-ink')}>
-      {done ? <Check className="size-3.5 shrink-0 text-status-online" /> : <Loader2 className="size-3.5 shrink-0 animate-spin text-accent-600" />}
+      {failed ? <X className="size-3.5 shrink-0 text-status-error" /> : done ? <Check className="size-3.5 shrink-0 text-status-online" /> : <Loader2 className="size-3.5 shrink-0 animate-spin text-accent-600" />}
       <span className="truncate">{stepText}</span>
     </div>
   )
@@ -153,11 +162,13 @@ export function HarkBrowserCard({ accountId, sessionId, attention = false }: { a
 
   return (
     <>
-      <section className={cn('mx-5 mb-2 w-[min(640px,calc(100%-2.5rem))] shrink-0 rounded-2xl border bg-surface text-[12px] shadow-sm',
+      {/* Same column as MessageList (max-w 860, px-8) and indented past the bot avatar (w-7 + gap-2.5). */}
+      <div className="mx-auto mb-2 w-full max-w-[860px] shrink-0 px-8">
+      <section className={cn('ml-[38px] max-w-[600px] rounded-2xl border bg-surface text-[12px] shadow-sm',
         waiting ? 'border-status-attention' : 'border-line')}>
         {mini ? (
           <button type="button" onClick={() => setMini(false)} className="flex w-full items-center gap-2 px-3 py-2 text-ink-secondary">
-            <span className={cn('size-2 shrink-0 rounded-full', active || waiting ? 'bg-status-online' : 'bg-ink-muted')} />
+            <span className={cn('size-2 shrink-0 rounded-full', active || waiting ? 'bg-status-online' : failed ? 'bg-status-error' : 'bg-ink-muted')} />
             <span className="shrink-0">远程浏览器</span>
             <span className="truncate text-ink">{stepText}</span>
             <ChevronUp className="ml-auto size-4 shrink-0" />
@@ -193,6 +204,7 @@ export function HarkBrowserCard({ accountId, sessionId, attention = false }: { a
           )}
         </>)}
       </section>
+      </div>
 
       {full && createPortal(
         <div role="dialog" aria-modal="true" aria-label="远程浏览器全屏" className="fixed inset-0 z-[100] flex flex-col bg-[#0f1320] text-[12px] text-zinc-200">
