@@ -191,3 +191,4 @@ git clone <GOXF/botark> && cd botark && git checkout fix/hark-login-sync && npm 
 - 输入框待发送图片缩略图可点开 ImageLightbox 预览（已发出的图原本就能点）。
 - 11:15 追加：回合结束后 Hark 仍在等后台任务（官网「正在等待构建完成」），原生不显示。liveStatus 对最后一条回复里仍 running 的工具 / 活动面板也判忙并出文字；narration_*/activity_* 改名操作兼容；便携版写 BotArk-Data/hark-frames.log（1 MB 轮转）记录帧字段。若仍不显示，让用户发 hark-frames.log。
 - 11:25 追加：状态行/侧栏/气泡不再用 thought（官网不显示的英文内部思考，如 Let me find the logs…）。官网旁白「正在查询数据库记录。」字段仍未对上，等用户发 hark-frames.log。
+- 11:30 根因（hark-frames.log）：narration 是对象 {line, lineKey, live, visible, working, answered, since, messageId}，旧代码只认 label/text，所以一直为空。已改 harkActivityLabel 读 line、answered/working:false 视为结束，working:true 判忙；消息级 narration 同样按对象读。
