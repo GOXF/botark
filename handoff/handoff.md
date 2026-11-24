@@ -210,3 +210,10 @@ git clone <GOXF/botark> && cd botark && git checkout fix/hark-login-sync && npm 
 - 15:10 网上反馈调研已发（t3code #27874/#6746/PR#40923，Orca #8377/#25461，Reddit/HN）。结论：细看≤4 格、更多用看板；侧栏顺序固定；状态醒目+后台通知；切换不丢会话/滚动；格内不嵌标签；可弹出独立窗口。v12 待补：侧栏固定顺序、弹出窗口、后台通知。仍等「开工」。
 - 14:53 用户认可人性化做法 7 条 + v12 补项，但分屏改为 Orca 式自由切分（不设 4 格上限）：拖到边缘切分、Ctrl+\ 右分、Ctrl+Shift+\ 下分、可嵌套、分隔条可拖。我建议加最小格宽（约 360px）防止字太小。待用户选：先重画 v12-2 会话页 mock（约 20 分钟）还是直接「开工」（估算由 4h 增至约 5.5h）。
 - 15:00 用户定：最小格宽 360px；先出效果图。v13（work/mock/v13.py → v13-1-free-split.png 右栏收起三列嵌套、v13-2-drag-split.png 拖到边缘切分+360px 拒绝提示）已发，顶栏「布局 1/2/2×2」换成 向右分/向下分/均分。等「开工」（约 5.5h）。
+
+## 2026-11-24 15:15 v12/v13 开工（分支 goxf/v12-workspace，草稿 PR → goxf/portable）
+- 用户 15:00「开工」；15:10 要求进行中的工作也进 PR/Issue，方便额度不够时交接。PAT 无 PR 权限（403），PR 和 Issue 用浏览器（GitHub 已存登录）创建。
+- 已完成（fd6b66e）：lib/paneTree.ts(+test) 二叉切分树、最小 360×240、ratio 边界、均分、拖放区；store/paneStore.ts（view/startView/tree/focus/stash 最大化/scroll，持久化 botark-panes-v1）；components/workspace/{PaneGrid,WorkspaceTopBar,BoardView}.tsx；services/workspaceSync.ts（聚焦格↔selectedBotId、删 bot 清格、离屏回复/完成/需要你 系统通知、Hark ask 计数）；ChatArea 加 botId/focused；MessageList 滚动位置还原；Ctrl+\ / Ctrl+Shift+\；设置「启动时打开」；Sidebar 按页过滤；harkWork 可见=所有格。
+- 限制：一个格 = 一个 bot（同一 Hark 账号的两个项目不能同时开两格，因为消息按 bot 存）。
+- 待做：侧栏 Hark 项目挂在账号下、格号角标；真机测试；合并到 goxf/portable 出测试包。
+- 下一版（Issue）：格内标签页、弹出窗口、手机分屏、任务流水线（基于管理员调度）、群组之间交接（定稿交给另一个群）。
