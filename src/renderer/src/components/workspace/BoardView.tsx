@@ -12,6 +12,9 @@ import { useRooms } from '@/rooms/roomStore'
 import { useHarkWork } from '@/services/harkWork'
 import { asksForAccount, useHarkAskCounts } from '@/services/workspaceSync'
 import { useBotStore } from '@/store/botStore'
+import { SegmentedControl } from '@/components/ui/SegmentedControl'
+import { PipelineView } from '@/pipeline/PipelineView'
+import { usePipeline, type BoardMode } from '@/pipeline/pipelineStore'
 
 interface Card {
   key: string
@@ -46,6 +49,26 @@ function useMinuteTick(): void {
  * opens it (a bot on the 会话 page, a group on 协作).
  */
 export function BoardView() {
+  const mode = usePipeline((s) => s.mode)
+  const toggle = (
+    <SegmentedControl<BoardMode>
+      aria-label="看板视图"
+      size="xs"
+      value={mode}
+      onValueChange={(v) => usePipeline.setState({ mode: v })}
+      options={[{ value: 'status', label: '状态' }, { value: 'pipeline', label: '流水线' }]}
+    />
+  )
+  if (mode === 'pipeline') return <PipelineView toggle={toggle} />
+  return (
+    <div className="flex min-h-0 flex-1 flex-col">
+      <div className="flex h-12 shrink-0 items-center px-4">{toggle}</div>
+      <StatusBoard />
+    </div>
+  )
+}
+
+function StatusBoard() {
   useMinuteTick()
   const { bots, accounts, typing, activity, messages } = useBotStore(
     useShallow((s) => ({ bots: s.bots, accounts: s.accounts, typing: s.typing, activity: s.activity, messages: s.messages }))
@@ -106,7 +129,7 @@ export function BoardView() {
   }
 
   return (
-    <div className="flex min-h-0 flex-1 gap-3 overflow-x-auto px-4 pt-3 pb-4">
+    <div className="flex min-h-0 flex-1 gap-3 overflow-x-auto px-4 pb-4">
       {BOARD_COLUMNS.map((col) => {
         const list = cards.filter((c) => c.column === col.id).sort((a, b) => b.time - a.time)
         return (

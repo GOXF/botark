@@ -251,3 +251,11 @@ git clone <GOXF/botark> && cd botark && git checkout fix/hark-login-sync && npm 
 - e78e1b1：默认打开「会话」（旧存档的看板自动迁移）。
 - 131d132：合入上游 PR #50（6be4cba，Hark 工作区网页门户 + cloudflared 隧道 + 写入审批 + 相对路径提示；Grok rendered_card_kinds 部分不取，v0.14.1 #54 已修）。511 测试过。待真机：cloudflared.exe 放 BotArk-Data\bin、开门户/写入审批弹窗、Windows 路径、Hark 成员实跑、Grok 发送。
 - 盘点第 4 项（Hark 验证码卡）其实 11-23 已做，只待真机。
+
+## 2026-11-24 16:50 任务流水线（Issue #5，分支 goxf/feat-pipeline，未合并）
+- 看板顶部加「状态 / 流水线」切换（存 botark-pipeline-v1）；状态视图内容不变，只多一行切换。
+- 代码：src/renderer/src/pipeline/{model.ts 纯状态转换+关卡, pipelineStore.ts 持久化+派发, PipelineView.tsx, pipeline.test.ts}；BoardView.tsx 只加切换外壳。rooms 代码未改，只调用现有 submitBrief。
+- 流程：新任务→需求；开了管理员调度时自动把「只拆分、写 执行者：名字 + 编号步骤、以 [FINAL] 回复」发进管理员调度群，解析出建议执行者和步骤→分配（确认分配 / 改给…；没开管理员就「去分配」手选）。执行者=单个 Bot（sendMessage 发到它的会话）或群组（submitBrief，群里 [FINAL] 自动推到 Review）。Bot 需手点「开发完成，提交 Review」（取它最新回复当产出）。新任务可选评审组，进 Review 时把需求+产出发给评审组，其 [FINAL] 显示在关卡上。Review / 人工确认：通过 / 打回（一句话原因，回开发第 N+1 轮，原因发给执行者）。上线列：确认上线对话框，可填 http(s) 上线地址（确认后浏览器打开），留空只标记。不跑命令、不打 tag。
+- 同一个群的多条 brief 排队（submitBrief 会中断群里正在跑的回合）。
+- 未做：命令型上线钩子（需新增主进程执行任意命令的 IPC，安全面大，故意没做）；真实「步骤 3/5·改了 N 个文件」（Bot 没有这类数据，只显示当前活动/群里第几轮）；Bot 开发完成自动识别；构建结果回写卡片；卡片编辑。
+- 验证：typecheck 过，vitest 517/517；网页版假数据截图：六列、关卡、打回输入、上线对话框、新任务、只看要我处理的、切回状态 都正常。未在 Windows/Electron 真机跑。
