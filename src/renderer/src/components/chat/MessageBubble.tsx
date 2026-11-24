@@ -2070,15 +2070,15 @@ export const MessageBubble = memo(function MessageBubble({
         <QuoteTag
           {...(jumpId ? { type: 'button' as const, onClick: () => jumpToMessage(jumpId), title: '跳到原消息' } : {})}
           className={cn(
-            'mb-1 flex max-w-[72%] items-center gap-1.5 rounded-xl border border-line bg-sunken/45 px-2.5 py-1 text-left text-[11.5px] text-ink-secondary',
+            'mb-1 flex max-w-[72%] items-start gap-1.5 rounded-xl border border-line bg-sunken/45 px-2.5 py-1 text-left text-[11.5px] leading-[1.5] text-ink-secondary',
             mine && 'self-end'
           )}
         >
-          <CornerDownRight className="size-3 shrink-0 text-accent-600" aria-hidden />
+          <CornerDownRight className="mt-[3px] size-3 shrink-0 text-accent-600" aria-hidden />
           {message.replyThumb && (
             <img src={message.replyThumb} alt="" onError={(e) => (e.currentTarget.hidden = true)} className="size-8 shrink-0 rounded-md object-cover" />
           )}
-          <span className="truncate">{message.replyQuote}</span>
+          <span className="min-w-0 whitespace-pre-wrap break-words">{message.replyQuote}</span>
         </QuoteTag>
       )}
 
