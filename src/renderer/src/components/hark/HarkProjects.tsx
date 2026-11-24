@@ -1,10 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import * as DropdownMenu from '@radix-ui/react-dropdown-menu'
 import {
   Archive,
   ArchiveRestore,
-  Check,
-  ChevronDown,
   ExternalLink,
   Loader2,
   Plus,
@@ -21,10 +18,8 @@ import {
 } from '@shared/harkProjects'
 import type { HarkRpcRequest } from '@shared/ipc'
 import { HARK_DRAFT_SESSION } from '@shared/harkProjects'
-import { ArkProjectStackSvg } from '@/components/ui/ArkGlyphs'
 import { Button } from '@/components/ui/Button'
 import { IconButton } from '@/components/ui/IconButton'
-import { MENU_SURFACE } from '@/components/ui/Menu'
 import { getBridge } from '@/lib/bridge'
 import { cn } from '@/lib/cn'
 import { useOverlayLock } from '@/lib/overlay'
@@ -32,7 +27,6 @@ import { useBotStore } from '@/store/botStore'
 import type { HarkProjectWork } from '@/lib/harkWork'
 import { noteHarkRun, useHarkWork } from '@/services/harkWork'
 import { useConversationTitles } from '@/services/workspaceSync'
-import { openConversationTab } from '@/components/workspace/conversationDnd'
 
 async function rpc(request: HarkRpcRequest) {
   const result = await getBridge()?.hark.rpc(request)
@@ -317,108 +311,11 @@ export function HarkProjects({
 
   if (!connected) return null
 
-  const activeProject = projects.find((p) => p.id === bot.activeSessionId)
   const visibleProjects = projects.filter((p) => !p.archived || p.id === bot.activeSessionId)
   const archivedProjects = projects.filter((p) => p.archived && p.id !== bot.activeSessionId)
 
-  if (compact) {
-    return (
-      <div className="no-drag flex min-w-0 items-center gap-1.5">
-        <DropdownMenu.Root
-          open={menuOpen}
-          onOpenChange={setMenuOpen}
-        >
-          <DropdownMenu.Trigger
-            type="button"
-            disabled={busy}
-            aria-label="切换 Hark 项目"
-            className={cn(
-              'group press inline-flex h-8 max-w-52 min-w-0 items-center gap-1.5 rounded-full px-3 text-[12.5px] font-medium text-ink outline-none select-none',
-              'border-[0.5px] border-line-strong bg-main shadow-soft hover:bg-surface data-[state=open]:bg-surface',
-              'disabled:pointer-events-none disabled:opacity-45'
-            )}
-          >
-            {busy ? (
-              <Loader2 className="size-3.5 shrink-0 animate-spin text-accent-600" />
-            ) : (
-              <ArkProjectStackSvg className="size-3.5 shrink-0 text-accent-600" />
-            )}
-            <span className="truncate">{activeProject?.title ?? (bot.activeSessionId === HARK_DRAFT_SESSION ? '新项目' : '当前项目')}</span>
-            <ChevronDown
-              aria-hidden
-              className="size-3.5 shrink-0 text-ink-muted transition-transform duration-200 ease-spring-tap group-data-[state=open]:rotate-180"
-            />
-          </DropdownMenu.Trigger>
-
-          <DropdownMenu.Portal>
-            <DropdownMenu.Content
-              align="start"
-              sideOffset={8}
-              collisionPadding={12}
-              className={cn(
-                'no-drag z-50 flex w-72 flex-col overflow-hidden origin-(--radix-dropdown-menu-content-transform-origin)',
-                MENU_SURFACE,
-                'data-[side=bottom]:animate-pop-drop data-[side=top]:animate-pop-lift data-[state=closed]:animate-pop-out'
-              )}
-            >
-              <div className="flex items-center justify-between px-2.5 pt-1 pb-1.5">
-                <span className="text-[11px] font-semibold tracking-tight text-ink-muted">
-                  Hark 项目工作空间 ({visibleProjects.length})
-                </span>
-                <Button size="sm" variant="secondary" disabled={busy} onClick={() => void createProject()}>
-                  <Plus />
-                  新建项目
-                </Button>
-              </div>
-
-              <div className="flex max-h-64 flex-col gap-0.5 overflow-y-auto py-0.5">
-                {visibleProjects.map((p) => {
-                  const isCurrent = p.id === bot.activeSessionId
-                  return (
-                    <DropdownMenu.Item
-                      key={p.id}
-                      onSelect={() => void select(p.id)}
-                      title="中键：在新标签打开"
-                      onMouseDown={(e) => { if (e.button === 1) e.preventDefault() }}
-                      onAuxClick={(e) => {
-                        if (e.button !== 1) return
-                        e.preventDefault()
-                        setMenuOpen(false)
-                        openConversationTab(botId, p.id, p.title)
-                      }}
-                      className={cn(
-                        'flex min-h-[32px] cursor-default items-center gap-2 rounded-lg px-2.5 py-1.5 text-[12.5px] text-ink outline-none select-none',
-                        'transition-colors duration-100 data-[highlighted]:bg-hover',
-                        isCurrent && 'bg-accent-50/70 font-medium'
-                      )}
-                    >
-                      <WorkDot work={work?.[p.id]} current={isCurrent} />
-                      <span className="min-w-0 flex-1 truncate">{p.title}</span>
-                      <WorkLabel work={work?.[p.id]} />
-                      {p.main && DEFAULT_TAG}
-                      <Check
-                        aria-hidden
-                        className={cn(
-                          'size-3.5 shrink-0 text-accent-600',
-                          isCurrent ? 'opacity-100' : 'opacity-0'
-                        )}
-                      />
-                    </DropdownMenu.Item>
-                  )
-                })}
-              </div>
-            </DropdownMenu.Content>
-          </DropdownMenu.Portal>
-        </DropdownMenu.Root>
-
-        {error && (
-          <span role="alert" className="max-w-44 truncate text-[11.5px] text-status-error">
-            {error}
-          </span>
-        )}
-      </div>
-    )
-  }
+  // GOXF: the header copy only runs the live feed above; the picker lives in the right panel.
+  if (compact) return null
 
   return (
     <div className="flex flex-col gap-2 text-[12px]">

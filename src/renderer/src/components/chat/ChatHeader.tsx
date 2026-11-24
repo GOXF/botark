@@ -13,7 +13,8 @@ import { cn } from '@/lib/cn'
 import { getBotStatus } from '@/lib/selectors'
 import { shortcutLabel } from '@/lib/shortcuts'
 import { useBotStore } from '@/store/botStore'
-import { usePanes, type WorkspaceView } from '@/store/paneStore'
+import { usePanes } from '@/store/paneStore'
+import { VIEW_TRACK, ViewTab } from '@/components/workspace/ViewTab'
 import { adapterRegistry } from '@adapters/registry'
 import type { Bot } from '@/types'
 import { t } from '@/lib/i18n'
@@ -26,21 +27,6 @@ interface ChatHeaderProps {
   /** GOXF v22: single plain pane — the top bar folds into this header (`leading` = split tools). */
   merged?: boolean
   leading?: ReactNode
-}
-
-function ViewTab({ view, label }: { view: WorkspaceView; label: string }) {
-  const setView = usePanes((s) => s.setView)
-  return (
-    <button
-      type="button"
-      role="tab"
-      aria-selected={false}
-      onClick={() => setView(view)}
-      className="no-drag press h-10 shrink-0 rounded-full px-3.5 text-[13px] font-medium text-ink-muted hover:text-ink"
-    >
-      {label}
-    </button>
-  )
 }
 
 interface AgentOption {
@@ -91,6 +77,7 @@ export const ChatHeader = memo(function ChatHeader({ bot, compact = false, extra
   const webSessionOpen = useBotStore((s) => s.webSessionOpen)
   const toggleWebSession = useBotStore((s) => s.toggleWebSession)
   const togglePinBot = useBotStore((s) => s.togglePinBot)
+  const setView = usePanes((s) => s.setView)
   const startNewMuseSession = useBotStore((s) => s.startNewMuseSession)
   const startNewHermesSession = useBotStore((s) => s.startNewHermesSession)
   const startNewAntigravitySession = useBotStore((s) => s.startNewAntigravitySession)
@@ -205,10 +192,10 @@ export const ChatHeader = memo(function ChatHeader({ bot, compact = false, extra
       </div>
 
       {merged ? (
-        <div role="tablist" aria-label="页面" className="no-drag flex max-w-[50%] min-w-0 items-center rounded-full bg-hover p-0.5">
-          <ViewTab view="board" label="看板" />
+        <div role="tablist" aria-label="页面" className={cn(VIEW_TRACK, 'max-w-[50%]')}>
+          <ViewTab label="看板" selected={false} onClick={() => setView('board')} />
           {capsuleEl}
-          <ViewTab view="collab" label="协作" />
+          <ViewTab label="协作" selected={false} onClick={() => setView('collab')} />
         </div>
       ) : (
         capsuleEl

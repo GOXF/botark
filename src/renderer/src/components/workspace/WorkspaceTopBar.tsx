@@ -1,5 +1,4 @@
 import { Columns2, Rows2, Equal } from 'lucide-react'
-import { SegmentedControl } from '@/components/ui/SegmentedControl'
 import { cn } from '@/lib/cn'
 import { activeTab, leaves, type SplitSide } from '@/lib/paneTree'
 import { shortcutLabel } from '@/lib/shortcuts'
@@ -7,6 +6,7 @@ import { useBotStore } from '@/store/botStore'
 import { usePanes, type WorkspaceView } from '@/store/paneStore'
 import { MULTI_CONVERSATION } from '@/services/workspaceSync'
 import { canSplitFocused, paneArea } from './PaneGrid'
+import { VIEW_TRACK, ViewTab } from './ViewTab'
 
 const VIEWS: ReadonlyArray<{ value: WorkspaceView; label: string }> = [
   { value: 'board', label: '看板' },
@@ -102,18 +102,19 @@ export function WorkspaceTopBar() {
   if (merged) return null
 
   return (
-    <div className="drag-region relative flex h-[46px] shrink-0 items-center gap-2 border-b border-line px-3">
-      <div className="absolute left-1/2 -translate-x-1/2">
-        <SegmentedControl
-          aria-label="页面"
-          size="sm"
-          value={settingsOpen ? ('' as WorkspaceView) : view}
-          onValueChange={(v) => {
-            if (settingsOpen) setSettingsOpen(false)
-            setView(v)
-          }}
-          options={VIEWS}
-        />
+    <div className="drag-region relative flex h-[52px] shrink-0 items-center gap-2 border-b border-line px-3">
+      <div role="tablist" aria-label="页面" className={cn(VIEW_TRACK, 'absolute left-1/2 -translate-x-1/2')}>
+        {VIEWS.map((v) => (
+          <ViewTab
+            key={v.value}
+            label={v.label}
+            selected={!settingsOpen && view === v.value}
+            onClick={() => {
+              if (settingsOpen) setSettingsOpen(false)
+              setView(v.value)
+            }}
+          />
+        ))}
       </div>
       {view === 'sessions' && !settingsOpen && (
         <div className="ml-auto">
