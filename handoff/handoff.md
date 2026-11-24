@@ -228,3 +228,11 @@ git clone <GOXF/botark> && cd botark && git checkout fix/hark-login-sync && npm 
 3. 已知：src/main/mcp/hub.test.ts 全量跑偶发 3 个超时，单跑 7/7 通过（负载问题，非本次改动）。
 4. 本地看界面：npx vite build -c vite.web.config.mts → 起静态服务 → playwright 打开 ?e2e=1，用 window.__bothub.store 灌假数据。
 5. 推送：只推 origin 的 goxf/*；作者 GOXF <785937070@qq.com>；PR/Issue 用网页（PAT 无权限）。
+
+## 2026-11-24 15:45 分支 goxf/feat-pane-tabs（Issue #2 格内标签页 + Issue #7 同一 bot 多对话分格）
+- 格模型：叶子 = tabs[] + active；标签 = botId + 可选 conversationId（Hark 项目 / Muse·Hermes·Antigravity 会话）。旧 v13 布局（botId 叶子）自动升级（readPaneNode）。
+- 标签条：分屏时或格内 ≥2 个标签时显示；点击切换、×/中键关闭、拖到别的格中间=并入、拖到边缘=切分；格内最后一个标签关掉则格关闭。
+- 新开标签：侧栏 Ctrl/⌘+点击；侧栏拖到格中间（原「替换这一格」改为「加为标签」）；右栏会话列表（Muse/Hermes/Antigravity）中键或拖到格边缘；Hark 项目下拉中键。
+- 聚焦标签决定 bot 当前对话（switchConversation）；在聚焦格切对话会把标签钉到新对话。非当前对话的标签显示只读镜像（ConversationMirror），Hark 实时（observeProject 改为按 subscription 并存），其他平台打开时读一次历史；点一下该格即切过去可发送。
+- 不支持多对话（退回只按 bot）：Grok（会话绑定 agent，无会话列表）、Cue、Dot；群聊在「协作」页，不进会话格。
+- 未真机/未网页目测（沙箱缺 chromium 依赖 libatk）。

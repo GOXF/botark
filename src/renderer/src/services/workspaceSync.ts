@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import { getBridge } from '@/lib/bridge'
-import { findLeaf } from '@/lib/paneTree'
+import { HARK_DRAFT_SESSION } from '@shared/harkProjects'
+import { activeTab, findLeaf, leafBot } from '@/lib/paneTree'
 import { useRooms } from '@/rooms/roomStore'
 import { useBotStore } from '@/store/botStore'
 import { usePanes, visibleBotIds } from '@/store/paneStore'
@@ -16,6 +17,12 @@ import { useHarkWork } from './harkWork'
  *   notification goes out when a conversation that is not on screen
  *   finishes or asks for you.
  */
+
+/** conversationId → title, for tab labels (filled by the Hark project menu and by opening a conversation). */
+export const useConversationTitles = create<Record<string, string>>(() => ({}))
+
+/** GOXF Issue #7: platforms whose bot holds several conversations (bot.activeSessionId + a switch). */
+export const MULTI_CONVERSATION: ReadonlySet<string> = new Set(['hark', 'meta-muse', 'hermes', 'antigravity'])
 
 /** accountId → conversationId → pending asks. */
 export const useHarkAskCounts = create<Record<string, Record<string, number>>>(() => ({}))
@@ -58,7 +65,8 @@ export function startWorkspaceSync(): () => void {
   {
     const { selectedBotId, bots } = useBotStore.getState()
     const { tree, focusedId } = usePanes.getState()
-    if (selectedBotId && bots.some((b) => b.id === selectedBotId) && !findLeaf(tree, focusedId)?.botId) {
+    const focusedLeaf = findLeaf(tree, focusedId)
+    if (selectedBotId && bots.some((b) => b.id === selectedBotId) && !(focusedLeaf && leafBot(focusedLeaf))) {
       usePanes.getState().place(selectedBotId)
     }
   }
@@ -85,11 +93,58 @@ export function startWorkspaceSync(): () => void {
     usePanes.subscribe((s, prev) => {
       if (s.focusedId === prev.focusedId && s.tree === prev.tree && s.view === prev.view) return
       if (s.view !== 'sessions') return
-      const botId = findLeaf(s.tree, s.focusedId)?.botId
+      const l = findLeaf(s.tree, s.focusedId)
+      const botId = l ? leafBot(l) : null
       const store = useBotStore.getState()
       if (botId && store.selectedBotId !== botId && store.bots.some((b) => b.id === botId)) store.selectBot(botId)
     })
   )
+
+  // Issue #7: a tab can hold one conversation while another pane holds another conversation of
+  // the same bot. The bot's store state follows the focused tab: focusing a tab pinned to
+  // conversation S switches the bot to S; switching conversations in the focused tab pins it.
+  const focusedTab = () => {
+    const { tree, focusedId, view } = usePanes.getState()
+    const l = view === 'sessions' ? findLeaf(tree, focusedId) : undefined
+    return l ? { leafId: l.id, tab: activeTab(l) } : undefined
+  }
+  const syncTabConversation = (fromFocus: boolean) => {
+    const f = focusedTab()
+    const t = f?.tab
+    if (!f || !t) return
+    const bot = useBotStore.getState().bots.find((b) => b.id === t.botId)
+    if (!bot || !MULTI_CONVERSATION.has(bot.platformId)) return
+    const active = bot.activeSessionId && bot.activeSessionId !== HARK_DRAFT_SESSION ? bot.activeSessionId : undefined
+    if (fromFocus && t.conversationId && t.conversationId !== bot.activeSessionId) {
+      void useBotStore.getState().switchConversation(bot.id, t.conversationId).catch(() => {})
+    } else if (active && t.conversationId !== active) {
+      usePanes.getState().setTabConversation(f.leafId, t.id, active)
+    }
+  }
+  let lastFocusKey = ''
+  stops.push(
+    usePanes.subscribe(() => {
+      const f = focusedTab()
+      const key = f?.tab ? `${f.leafId}/${f.tab.id}` : ''
+      if (key === lastFocusKey) return
+      lastFocusKey = key
+      syncTabConversation(true)
+    })
+  )
+  stops.push(
+    useBotStore.subscribe((s, prev) => {
+      if (s.bots === prev.bots) return
+      const t = focusedTab()?.tab
+      if (!t) return
+      const now = s.bots.find((b) => b.id === t.botId)
+      const was = prev.bots.find((b) => b.id === t.botId)
+      if (!now || !MULTI_CONVERSATION.has(now.platformId)) return
+      // Bot just loaded: restore the tab's conversation. Conversation switched: pin the tab to it.
+      if (!was) syncTabConversation(true)
+      else if (now.activeSessionId !== was.activeSessionId) syncTabConversation(false)
+    })
+  )
+  syncTabConversation(true)
 
   // Deleted bots leave empty panes.
   stops.push(

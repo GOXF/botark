@@ -31,6 +31,8 @@ import { useOverlayLock } from '@/lib/overlay'
 import { useBotStore } from '@/store/botStore'
 import type { HarkProjectWork } from '@/lib/harkWork'
 import { noteHarkRun, useHarkWork } from '@/services/harkWork'
+import { useConversationTitles } from '@/services/workspaceSync'
+import { openConversationTab } from '@/components/workspace/conversationDnd'
 
 async function rpc(request: HarkRpcRequest) {
   const result = await getBridge()?.hark.rpc(request)
@@ -179,6 +181,12 @@ export function HarkProjects({
   }, [accountId, connected, revision])
 
   const projects = mergePendingHarkProjects(serverProjects, pending, Date.now())
+
+  // GOXF Issue #7: pane tabs label Hark tabs by project title.
+  useEffect(() => {
+    if (!serverProjects.length) return
+    useConversationTitles.setState(Object.fromEntries(serverProjects.map((p) => [p.id, p.title])))
+  }, [serverProjects])
 
   useEffect(() => {
     const hark = getBridge()?.hark
@@ -370,6 +378,14 @@ export function HarkProjects({
                     <DropdownMenu.Item
                       key={p.id}
                       onSelect={() => void select(p.id)}
+                      title="中键：在新标签打开"
+                      onMouseDown={(e) => { if (e.button === 1) e.preventDefault() }}
+                      onAuxClick={(e) => {
+                        if (e.button !== 1) return
+                        e.preventDefault()
+                        setMenuOpen(false)
+                        openConversationTab(botId, p.id, p.title)
+                      }}
                       className={cn(
                         'flex min-h-[32px] cursor-default items-center gap-2 rounded-lg px-2.5 py-1.5 text-[12.5px] text-ink outline-none select-none',
                         'transition-colors duration-100 data-[highlighted]:bg-hover',

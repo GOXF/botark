@@ -6,6 +6,7 @@ import { cn } from '@/lib/cn'
 import {
   PANE_MIN_H,
   PANE_MIN_W,
+  activeTab,
   dropZone,
   layoutRects,
   leaves,
@@ -14,12 +15,17 @@ import {
   ratioBounds,
   splitResult,
   type PaneHandle,
+  type PaneLeaf,
   type Rect,
   type SplitSide
 } from '@/lib/paneTree'
 import { BOT_DRAG_MIME } from '@/rooms/roomDnd'
 import { useBotStore } from '@/store/botStore'
 import { usePanes } from '@/store/paneStore'
+import { MULTI_CONVERSATION, useConversationTitles } from '@/services/workspaceSync'
+import { ConversationMirror } from './ConversationMirror'
+import { CONVERSATION_DRAG_MIME, readConversationDrag } from './conversationDnd'
+import { PANE_TAB_MIME, PaneTabs, readTabDrag } from './PaneTabs'
 
 interface DropHint {
   leafId: string
@@ -29,7 +35,7 @@ interface DropHint {
 }
 
 const ZONE_LABEL: Record<SplitSide | 'center', string> = {
-  center: '替换这一格',
+  center: '加为这一格的标签',
   left: '放到左边 · 向左分',
   right: '放到右边 · 向右分',
   top: '放到上面 · 向上分',
@@ -47,7 +53,8 @@ function zoneRect(zone: SplitSide | 'center'): string {
 }
 
 function hasBotDrag(e: DragEvent): boolean {
-  return Array.from(e.dataTransfer.types).includes(BOT_DRAG_MIME)
+  const types = Array.from(e.dataTransfer.types)
+  return types.includes(BOT_DRAG_MIME) || types.includes(PANE_TAB_MIME) || types.includes(CONVERSATION_DRAG_MIME)
 }
 
 /** Shared by the toolbar and the shortcuts: can the focused pane be split that way? */
@@ -108,9 +115,8 @@ function Divider({ handle }: { handle: PaneHandle }) {
   )
 }
 
-function Pane({ id, botId, rect, multi, focused, hint, box }: {
-  id: string
-  botId: string | null
+function Pane({ leaf, rect, multi, focused, hint, box }: {
+  leaf: PaneLeaf
   rect: Rect
   multi: boolean
   focused: boolean
@@ -121,10 +127,21 @@ function Pane({ id, botId, rect, multi, focused, hint, box }: {
   const close = usePanes((s) => s.close)
   const toggleMaximize = usePanes((s) => s.toggleMaximize)
   const maximized = usePanes((s) => s.stash !== null)
-  const replace = usePanes((s) => s.replace)
+  const addTab = usePanes((s) => s.addTab)
+  const moveTab = usePanes((s) => s.moveTab)
   const split = usePanes((s) => s.split)
   const [localHint, setLocalHint] = useState<DropHint | null>(null)
   const shown = localHint ?? hint
+  const id = leaf.id
+  const tab = activeTab(leaf)
+  const botId = tab?.botId ?? null
+  const bot = useBotStore((s) => (botId ? s.bots.find((b) => b.id === botId) : undefined))
+  // Issue #7: this tab holds a conversation the bot is not on (another pane or tab has it).
+  const mirrorSession =
+    bot && MULTI_CONVERSATION.has(bot.platformId) && tab?.conversationId && tab.conversationId !== bot.activeSessionId
+      ? tab.conversationId
+      : undefined
+  const showTabs = multi || leaf.tabs.length > 1
 
   const controls = (
     <span className="no-drag flex items-center gap-0.5 border-l border-line pl-1">
@@ -151,6 +168,16 @@ function Pane({ id, botId, rect, multi, focused, hint, box }: {
     </span>
   )
 
+  const restore = (
+    <button
+      type="button"
+      onClick={() => toggleMaximize(id)}
+      className="no-drag flex h-7 shrink-0 items-center gap-1 rounded-full bg-hover px-2.5 text-[12px] text-ink-secondary hover:text-ink"
+    >
+      <Minimize2 className="size-3.5" /> 还原分屏
+    </button>
+  )
+
   const evaluate = (e: DragEvent): DropHint => {
     const el = e.currentTarget.getBoundingClientRect()
     const zone = dropZone({ x: el.left, y: el.top, w: el.width, h: el.height }, e.clientX, e.clientY)
@@ -175,13 +202,20 @@ function Pane({ id, botId, rect, multi, focused, hint, box }: {
         if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setLocalHint(null)
       }}
       onDrop={(e) => {
-        const dropped = e.dataTransfer.getData(BOT_DRAG_MIME)
+        const movedTab = readTabDrag(e.dataTransfer.getData(PANE_TAB_MIME))
+        const conv = readConversationDrag(e.dataTransfer.getData(CONVERSATION_DRAG_MIME))
+        const dropped = conv?.botId ?? e.dataTransfer.getData(BOT_DRAG_MIME)
         const h = evaluate(e)
         setLocalHint(null)
-        if (!dropped || !h.ok) return
+        if (!h.ok || (!movedTab && !dropped)) return
         e.preventDefault()
-        if (h.zone === 'center') replace(id, dropped)
-        else split(id, h.zone, dropped)
+        if (movedTab) {
+          moveTab(movedTab.leafId, movedTab.tabId, id, h.zone)
+          return
+        }
+        if (conv) useConversationTitles.setState({ [conv.conversationId]: conv.title })
+        if (h.zone === 'center') addTab(id, dropped, conv?.conversationId)
+        else split(id, h.zone, dropped, conv?.conversationId)
         useBotStore.getState().selectBot(dropped)
       }}
       aria-label="会话格"
@@ -191,18 +225,14 @@ function Pane({ id, botId, rect, multi, focused, hint, box }: {
         multi && (focused ? 'border-accent-600 ring-1 ring-accent-600' : 'border-line')
       )}
     >
-      {multi && !botId && <div className="no-drag absolute top-2 right-2 z-20">{controls}</div>}
-      {!multi && maximized && (
-        <button
-          type="button"
-          onClick={() => toggleMaximize(id)}
-          className="no-drag absolute top-2 right-2 z-20 flex h-7 items-center gap-1 rounded-full bg-hover px-2.5 text-[12px] text-ink-secondary hover:text-ink"
-        >
-          <Minimize2 className="size-3.5" /> 还原分屏
-        </button>
-      )}
-      <ErrorBoundary surface="会话格" resetKey={botId ?? id}>
-        <ChatArea botId={botId} focused={focused} compact={multi} headerExtra={multi ? controls : undefined} />
+      {showTabs && <PaneTabs leaf={leaf} extra={multi ? controls : maximized ? restore : undefined} />}
+      {!multi && maximized && !showTabs && <div className="no-drag absolute top-2 right-2 z-20">{restore}</div>}
+      <ErrorBoundary surface="会话格" resetKey={tab ? `${tab.id}:${mirrorSession ?? ''}` : id}>
+        {bot && mirrorSession ? (
+          <ConversationMirror bot={bot} conversationId={mirrorSession} />
+        ) : (
+          <ChatArea botId={botId} focused={focused} compact={multi} />
+        )}
       </ErrorBoundary>
       {shown && (
         <div className="pointer-events-none absolute inset-0 z-30">
@@ -283,8 +313,7 @@ export function PaneGrid() {
             rects[l.id] ? (
               <Pane
                 key={l.id}
-                id={l.id}
-                botId={l.botId}
+                leaf={l}
                 rect={rects[l.id]!}
                 multi={multi}
                 focused={l.id === focusedId}

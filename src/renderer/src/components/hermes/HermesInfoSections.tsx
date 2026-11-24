@@ -28,6 +28,7 @@ import { cn } from '@/lib/cn'
 import { cleanSidebarError } from '@/lib/sidebarCompat'
 import { t } from '@/lib/i18n'
 import { useBotStore } from '@/store/botStore'
+import { conversationRowProps } from '@/components/workspace/conversationDnd'
 
 const HERMES_CUSTOM_MODELS_KEY = 'bothub.hermes.customModels.v1'
 
@@ -321,6 +322,7 @@ export function HermesSessionsSection({
               >
                 <button
                   type="button"
+                  {...conversationRowProps(botId, s.id, s.title || s.preview || undefined)}
                   onClick={() => void switchHermesSession(botId, s.id)}
                   className="min-w-0 flex-1 text-left"
                 >

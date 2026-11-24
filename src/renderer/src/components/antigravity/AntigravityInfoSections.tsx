@@ -27,6 +27,7 @@ import { cn } from '@/lib/cn'
 import { cleanSidebarError } from '@/lib/sidebarCompat'
 import { t } from '@/lib/i18n'
 import { useBotStore } from '@/store/botStore'
+import { conversationRowProps } from '@/components/workspace/conversationDnd'
 
 function agyBridge() {
   return typeof window !== 'undefined' ? window.electron?.antigravity : undefined
@@ -271,6 +272,7 @@ export function AntigravityConversationsSection({
               >
                 <button
                   type="button"
+                  {...conversationRowProps(botId, conv.conversationId, conv.title)}
                   onClick={() => void switchAntigravitySession(botId, conv.conversationId)}
                   className="flex min-w-0 flex-1 items-center gap-2 text-left"
                 >

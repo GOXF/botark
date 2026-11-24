@@ -3,17 +3,26 @@ import { createJSONStorage, persist } from 'zustand/middleware'
 import { createSafeStorage } from './delivery'
 import {
   closeLeaf,
+  closeTab,
   equalize,
+  findBot,
   findLeaf,
-  isPaneNode,
+  findTab,
   leaf,
-  leafOfBot,
+  leafBot,
   leaves,
+  moveTab,
+  openTab,
   paneId,
   pruneBots,
-  setLeafBot,
+  readPaneNode,
+  replaceLeaf,
+  selectTab,
   setRatio,
+  setTabConversation,
+  showInLeaf,
   splitLeaf,
+  tab,
   type PaneNode,
   type SplitSide
 } from '@/lib/paneTree'
@@ -34,10 +43,16 @@ interface PaneState {
   setView: (view: WorkspaceView) => void
   setStartView: (view: WorkspaceView | 'last') => void
   focus: (leafId: string) => void
-  /** Put a bot on screen: focus its pane if it has one, else load it into the focused pane. */
+  /** Put a bot on screen: focus its tab if it has one, else swap it into the focused pane's active tab. */
   place: (botId: string) => void
-  replace: (leafId: string, botId: string) => void
-  split: (leafId: string, side: SplitSide, botId?: string | null) => string
+  /** Open a bot (or one of its conversations) as a new tab; an identical tab elsewhere moves here. */
+  addTab: (leafId: string, botId: string, conversationId?: string) => void
+  selectTab: (leafId: string, tabId: string) => void
+  closeTab: (leafId: string, tabId: string) => void
+  moveTab: (fromLeafId: string, tabId: string, toLeafId: string, zone: SplitSide | 'center') => void
+  /** Pin a tab to a conversation (undefined = follow the bot). */
+  setTabConversation: (leafId: string, tabId: string, conversationId: string | undefined) => void
+  split: (leafId: string, side: SplitSide, botId?: string | null, conversationId?: string) => string
   close: (leafId: string) => void
   resize: (splitId: string, ratio: number) => void
   equalizeAll: () => void
@@ -67,30 +82,47 @@ export const usePanes = create<PaneState>()(
       },
       place: (botId) => {
         const { tree, focusedId } = get()
-        const own = leafOfBot(tree, botId)
+        const own = findBot(tree, botId)
         if (own) {
-          if (own.id !== focusedId) set({ focusedId: own.id })
+          const next = selectTab(tree, own.leaf.id, own.tab.id)
+          if (next !== tree || own.leaf.id !== focusedId) set({ tree: next, focusedId: own.leaf.id })
           return
         }
         const target = findLeaf(tree, focusedId) ?? leaves(tree)[0]!
-        set({ tree: setLeafBot(tree, target.id, botId), focusedId: target.id })
+        set({ tree: showInLeaf(tree, target.id, botId), focusedId: target.id })
       },
-      replace: (leafId, botId) => {
+      addTab: (leafId, botId, conversationId) => {
         let tree = get().tree
-        const own = leafOfBot(tree, botId)
-        if (own && own.id !== leafId) tree = closeLeaf(tree, own.id)
-        set({ tree: setLeafBot(tree, leafId, botId), focusedId: leafId })
+        const own = findTab(tree, botId, conversationId)
+        if (own && own.leaf.id !== leafId) tree = closeTab(tree, own.leaf.id, own.tab.id)
+        if (!findLeaf(tree, leafId)) return
+        set({ tree: openTab(tree, leafId, own?.tab ?? tab(botId, conversationId)), focusedId: leafId, stash: null })
       },
-      split: (leafId, side, botId = null) => {
+      selectTab: (leafId, tabId) => set({ tree: selectTab(get().tree, leafId, tabId), focusedId: leafId }),
+      closeTab: (leafId, tabId) => {
+        const { focusedId } = get()
+        const next = closeTab(get().tree, leafId, tabId)
+        const ids = leaves(next).map((l) => l.id)
+        set({ tree: next, focusedId: ids.includes(focusedId) ? focusedId : ids[0]! })
+      },
+      moveTab: (fromLeafId, tabId, toLeafId, zone) => {
+        const { tree, leafId } = moveTab(get().tree, fromLeafId, tabId, toLeafId, zone)
+        if (tree !== get().tree) set({ tree, focusedId: leafId, stash: null })
+      },
+      setTabConversation: (leafId, tabId, conversationId) => {
+        const next = setTabConversation(get().tree, leafId, tabId, conversationId)
+        if (next !== get().tree) set({ tree: next })
+      },
+      split: (leafId, side, botId = null, conversationId) => {
         let tree = get().tree
         if (botId) {
-          const own = leafOfBot(tree, botId)
-          if (own?.id === leafId) return leafId
-          if (own) tree = closeLeaf(tree, own.id)
+          const own = findTab(tree, botId, conversationId)
+          if (own?.leaf.id === leafId && own.leaf.tabs.length === 1) return leafId
+          if (own) tree = closeTab(tree, own.leaf.id, own.tab.id)
         }
         if (!findLeaf(tree, leafId)) return get().focusedId
         const id = paneId()
-        set({ tree: splitLeaf(tree, leafId, side, botId, id), focusedId: id, stash: null })
+        set({ tree: splitLeaf(tree, leafId, side, botId ? tab(botId, conversationId) : null, id), focusedId: id, stash: null })
         return id
       },
       close: (leafId) => {
@@ -104,15 +136,9 @@ export const usePanes = create<PaneState>()(
       toggleMaximize: (leafId) => {
         const { tree, stash, focusedId } = get()
         if (stash) {
-          // Keep whatever the maximized pane switched to.
+          // Keep whatever the maximized pane switched to (its tabs come back with it).
           const current = findLeaf(tree, focusedId)
-          let restored = stash.tree
-          const back = findLeaf(restored, stash.focusedId)
-          if (current?.botId && back && back.botId !== current.botId) {
-            const dup = leafOfBot(restored, current.botId)
-            if (dup) restored = setLeafBot(restored, dup.id, null)
-            restored = setLeafBot(restored, back.id, current.botId)
-          }
+          const restored = current ? replaceLeaf(stash.tree, stash.focusedId, current) : stash.tree
           set({ tree: restored, focusedId: stash.focusedId, stash: null })
           return
         }
@@ -150,7 +176,7 @@ export const usePanes = create<PaneState>()(
       }),
       merge: (persisted, current) => {
         const p = (persisted ?? {}) as Partial<PaneState>
-        const tree = isPaneNode(p.tree) ? p.tree : current.tree
+        const tree = readPaneNode(p.tree) ?? current.tree
         const ids = leaves(tree).map((l) => l.id)
         const startView = p.startView ?? current.startView
         const view = startView === 'last' ? (p.view ?? current.view) : startView
@@ -175,5 +201,5 @@ export function paneCount(): number {
 export function visibleBotIds(): Set<string> {
   const { view, tree } = usePanes.getState()
   if (view !== 'sessions') return new Set()
-  return new Set(leaves(tree).flatMap((l) => (l.botId ? [l.botId] : [])))
+  return new Set(leaves(tree).flatMap((l) => leafBot(l) ?? []))
 }

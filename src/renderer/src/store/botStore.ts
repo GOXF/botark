@@ -177,6 +177,10 @@ export interface BotHubState {
   startNewHermesSession: (botId: string) => Promise<boolean>
   switchAntigravitySession: (botId: string, sessionId: string) => Promise<void>
   startNewAntigravitySession: (botId: string) => void
+  /** GOXF Issue #7: read one conversation of a multi-conversation bot without switching to it. */
+  loadConversation: (botId: string, conversationId: string) => Promise<ChatMessage[] | undefined>
+  /** GOXF Issue #7: make a conversation the bot's active one, whatever the platform. */
+  switchConversation: (botId: string, conversationId: string) => Promise<void>
 
   // Bot details
   updateNotes: (botId: string, notes: string) => void
@@ -509,7 +513,7 @@ export async function cancelPlatformTurn(bot: Bot) {
   }
 }
 
-function harkHistory(data: unknown, botId: string, accountId: string): ChatMessage[] {
+export function harkHistory(data: unknown, botId: string, accountId: string): ChatMessage[] {
   const d = data as {
     conversationId?: string
     messages?: Array<{
@@ -924,6 +928,94 @@ export const useBotStore = create<BotHubState>()(
     })) return true
     const list = state.messages[bot.id] ?? []
     return hasUnsettledDelivery(list) || list.some((m) => streamedReplies.has(m.id))
+  }
+
+  /** One conversation's history through the platform's own history call (undefined: unavailable). */
+  const fetchSessionMessages = async (bot: Bot, sessionId: string): Promise<ChatMessage[] | undefined> => {
+    const botId = bot.id
+    const bridge = electronBridge()
+    if (bot.platformId === 'meta-muse') {
+      if (!bridge?.muse?.loadSessionHistory) return undefined
+      const rows = await bridge.muse.loadSessionHistory(bot.activeAccountId, sessionId)
+      return rows.map((r) => ({
+        id: r.id,
+        botId,
+        accountId: bot.activeAccountId,
+        role: r.role,
+        text: r.text,
+        createdAt: r.createdAt,
+        delivery: r.role === 'user' ? 'sent' : undefined,
+        widgets: r.widgets,
+        richWidgets: r.richWidgets,
+        tools: r.tools,
+        media: r.media
+      }))
+    }
+    if (bot.platformId === 'hermes') {
+      if (!bridge?.hermes?.rpc) return undefined
+      const res = await bridge.hermes.rpc({
+        accountId: bot.activeAccountId,
+        op: 'getSessionMessages',
+        sessionId
+      })
+      if (!res.ok || !Array.isArray(res.data)) return undefined
+      const rows = res.data as Array<{
+        id: string
+        role: 'user' | 'assistant'
+        text: string
+        createdAt: number
+        tools?: import('@/types').ChatToolCall[]
+        media?: import('@/types').ChatMediaPart[]
+      }>
+      return rows.map((r) => ({
+        id: r.id,
+        botId,
+        accountId: bot.activeAccountId,
+        role: r.role === 'user' ? 'user' : 'bot',
+        text: r.text,
+        createdAt: r.createdAt,
+        delivery: r.role === 'user' ? 'sent' : undefined,
+        ...(r.tools?.length ? { tools: r.tools } : {}),
+        ...(r.media?.length ? { media: r.media } : {})
+      }))
+    }
+    if (bot.platformId === 'antigravity') {
+      if (!bridge?.antigravity?.rpc) return undefined
+      const res = await bridge.antigravity.rpc({
+        accountId: bot.activeAccountId,
+        action: 'getConversation',
+        conversationId: sessionId
+      })
+      if (!res.ok || !res.data || typeof res.data !== 'object') return undefined
+      const rows = (
+        res.data as {
+          messages?: Array<{
+            id: string
+            role: 'user' | 'assistant'
+            text: string
+            createdAt: number
+            tools?: import('@/types').ChatToolCall[]
+          }>
+        }
+      ).messages
+      if (!Array.isArray(rows)) return undefined
+      return rows.map((r) => ({
+        id: r.id,
+        botId,
+        accountId: bot.activeAccountId,
+        role: r.role === 'user' ? 'user' : 'bot',
+        text: r.text,
+        createdAt: r.createdAt,
+        delivery: r.role === 'user' ? 'sent' : undefined,
+        ...(r.tools?.length ? { tools: r.tools } : {})
+      }))
+    }
+    if (bot.platformId === 'hark') {
+      if (sessionId === HARK_DRAFT_SESSION) return []
+      const result = await bridge?.hark.rpc({ accountId: bot.activeAccountId, op: 'conversationSnapshot', conversationId: sessionId })
+      return result?.ok ? harkHistory(result.data, botId, bot.activeAccountId) : undefined
+    }
+    return undefined
   }
 
   /** Fetch the full current conversation again through the platform's existing history path. */
@@ -1768,23 +1860,9 @@ export const useBotStore = create<BotHubState>()(
       if (!bot || bot.platformId !== 'meta-muse') return
       const selection = markSessionSelection(botId)
       patchBot(botId, () => ({ activeSessionId: sessionId }))
-      const bridge = electronBridge()
-      if (!bridge?.muse?.loadSessionHistory) return
-      const rows = await bridge.muse.loadSessionHistory(bot.activeAccountId, sessionId)
+      const hydrated = await fetchSessionMessages(bot, sessionId)
       if (getBotForSessionSelection(bot, selection)?.activeSessionId !== sessionId) return
-      const hydrated: ChatMessage[] = rows.map((r) => ({
-        id: r.id,
-        botId,
-        accountId: bot.activeAccountId,
-        role: r.role,
-        text: r.text,
-        createdAt: r.createdAt,
-        delivery: r.role === 'user' ? 'sent' : undefined,
-        widgets: r.widgets,
-        richWidgets: r.richWidgets,
-        tools: r.tools,
-        media: r.media
-      }))
+      if (!hydrated) return
       set((s) => ({
         messages: { ...s.messages, [botId]: hydrated },
         accounts: applyAccountLive(s.accounts, bot.activeAccountId, 'online', ['offline', 'error'])
@@ -1847,34 +1925,9 @@ export const useBotStore = create<BotHubState>()(
       const selection = markSessionSelection(botId)
       setHermesSessionError(botId)
       patchBot(botId, () => ({ activeSessionId: sessionId }))
-      const bridge = electronBridge()
-      if (!bridge?.hermes?.rpc) return
-      const res = await bridge.hermes.rpc({
-        accountId: bot.activeAccountId,
-        op: 'getSessionMessages',
-        sessionId
-      })
+      const hydrated = await fetchSessionMessages(bot, sessionId)
       if (getBotForSessionSelection(bot, selection)?.activeSessionId !== sessionId) return
-      if (!res.ok || !Array.isArray(res.data)) return
-      const rows = res.data as Array<{
-        id: string
-        role: 'user' | 'assistant'
-        text: string
-        createdAt: number
-        tools?: import('@/types').ChatToolCall[]
-        media?: import('@/types').ChatMediaPart[]
-      }>
-      const hydrated: ChatMessage[] = rows.map((r) => ({
-        id: r.id,
-        botId,
-        accountId: bot.activeAccountId,
-        role: r.role === 'user' ? 'user' : 'bot',
-        text: r.text,
-        createdAt: r.createdAt,
-        delivery: r.role === 'user' ? 'sent' : undefined,
-        ...(r.tools?.length ? { tools: r.tools } : {}),
-        ...(r.media?.length ? { media: r.media } : {})
-      }))
+      if (!hydrated) return
       set((s) => ({
         messages: { ...s.messages, [botId]: hydrated },
         accounts: applyAccountLive(s.accounts, bot.activeAccountId, 'online', ['offline', 'error'])
@@ -1916,37 +1969,9 @@ export const useBotStore = create<BotHubState>()(
       if (!bot || bot.platformId !== 'antigravity') return
       const selection = markSessionSelection(botId)
       patchBot(botId, () => ({ activeSessionId: sessionId }))
-      const bridge = electronBridge()
-      if (!bridge?.antigravity?.rpc) return
-      const res = await bridge.antigravity.rpc({
-        accountId: bot.activeAccountId,
-        action: 'getConversation',
-        conversationId: sessionId
-      })
+      const hydrated = await fetchSessionMessages(bot, sessionId)
       if (getBotForSessionSelection(bot, selection)?.activeSessionId !== sessionId) return
-      if (!res.ok || !res.data || typeof res.data !== 'object') return
-      const rows = (
-        res.data as {
-          messages?: Array<{
-            id: string
-            role: 'user' | 'assistant'
-            text: string
-            createdAt: number
-            tools?: import('@/types').ChatToolCall[]
-          }>
-        }
-      ).messages
-      if (!Array.isArray(rows)) return
-      const hydrated: ChatMessage[] = rows.map((r) => ({
-        id: r.id,
-        botId,
-        accountId: bot.activeAccountId,
-        role: r.role === 'user' ? 'user' : 'bot',
-        text: r.text,
-        createdAt: r.createdAt,
-        delivery: r.role === 'user' ? 'sent' : undefined,
-        ...(r.tools?.length ? { tools: r.tools } : {})
-      }))
+      if (!hydrated) return
       set((s) => ({
         messages: { ...s.messages, [botId]: hydrated },
         accounts: applyAccountLive(s.accounts, bot.activeAccountId, 'online', ['offline', 'error'])
@@ -1958,6 +1983,20 @@ export const useBotStore = create<BotHubState>()(
       if (!bot || bot.platformId !== 'antigravity') return
       markSessionSelection(botId)
       setFreshSession(botId, undefined)
+    },
+
+    loadConversation: async (botId, conversationId) => {
+      const bot = get().bots.find((b) => b.id === botId)
+      return bot ? fetchSessionMessages(bot, conversationId) : undefined
+    },
+
+    switchConversation: async (botId, conversationId) => {
+      const bot = get().bots.find((b) => b.id === botId)
+      if (!bot) return
+      if (bot.platformId === 'meta-muse') return get().switchMuseSession(botId, conversationId)
+      if (bot.platformId === 'hermes') return get().switchHermesSession(botId, conversationId)
+      if (bot.platformId === 'antigravity') return get().switchAntigravitySession(botId, conversationId)
+      if (bot.platformId === 'hark') return get().switchHarkSession(botId, conversationId)
     },
 
     updateNotes: (botId, notes) => patchBot(botId, () => ({ notes })),

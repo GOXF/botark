@@ -128,11 +128,13 @@ function historyView(messages: HarkChatMessage[]) {
   }))
 }
 
-const visibleProjects = new Map<number, { subscription: string; accountId: string; stop: () => void }>()
+// GOXF Issue #7: keyed per subscription, so split panes can watch several projects at once.
+const visibleProjects = new Map<string, { subscription: string; accountId: string; stop: () => void }>()
 
 function observeProject(event: IpcMainInvokeEvent, req: Extract<HarkRpcRequest, { op: 'observeProject' }>) {
   const sender = event.sender
-  visibleProjects.get(sender.id)?.stop()
+  const key = `${sender.id}:${req.subscription}`
+  visibleProjects.get(key)?.stop()
   const controller = new AbortController()
   const signal = controller.signal
   let timer: ReturnType<typeof setTimeout> | undefined
@@ -142,11 +144,10 @@ function observeProject(event: IpcMainInvokeEvent, req: Extract<HarkRpcRequest, 
     clearTimeout(timer)
     sender.off('destroyed', stop)
     sender.off('did-navigate', stop)
-    visibleProjects.delete(senderId)
+    visibleProjects.delete(key)
   }
   const unregister = registerHarkViewStop(req.accountId, stop)
-  const senderId = sender.id
-  visibleProjects.set(senderId, { accountId: req.accountId, subscription: req.subscription, stop })
+  visibleProjects.set(key, { accountId: req.accountId, subscription: req.subscription, stop })
   sender.once('destroyed', stop)
   sender.once('did-navigate', stop)
   const update = (messages: HarkChatMessage[], panels: HarkActivityPanel[], live: { busy: boolean; text: string } | undefined, asks: HarkPendingAsk[]) => {
@@ -613,8 +614,7 @@ export function registerHarkIpc(): void {
       return { ok: true, data: null }
     }
     if (req.op === 'leaveProject') {
-      const active = visibleProjects.get(event.sender.id)
-      if (active?.subscription === req.subscription) active.stop()
+      visibleProjects.get(`${event.sender.id}:${req.subscription}`)?.stop()
       return { ok: true, data: null }
     }
     return runHarkRpc(req)

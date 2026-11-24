@@ -8,6 +8,7 @@ import { getBridge } from "@/lib/bridge"
 import { cn } from "@/lib/cn"
 import { cleanSidebarError, isOnlineAccountStatus } from "@/lib/sidebarCompat"
 import { useBotStore } from "@/store/botStore"
+import { conversationRowProps } from '@/components/workspace/conversationDnd'
 
 function formatTime(ms: number | null): string {
   if (ms == null || ms <= 0) return "—"
@@ -231,6 +232,7 @@ export function SessionsSection({ accountId }: { accountId: string }) {
             return (
               <li
                 key={item.id}
+                {...(bot && !renaming ? conversationRowProps(bot.id, item.id, item.title) : {})}
                 className={cn(
                   "rounded-lg border p-2.5 transition-colors",
                   isActive

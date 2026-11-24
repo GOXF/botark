@@ -1,4 +1,4 @@
-import { memo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
+import { memo, useRef, useState, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from 'react'
 import type { ConnectionStatus } from '@adapters/types'
 import { FolderInput, Pin, PinOff, Palette, MoreHorizontal, Pencil, Trash2 } from 'lucide-react'
 import { BotAvatar } from '@/components/ui/Avatar'
@@ -10,7 +10,7 @@ import { cn } from '@/lib/cn'
 import { useShallow } from 'zustand/react/shallow'
 import { useBotStore } from '@/store/botStore'
 import { usePanes } from '@/store/paneStore'
-import { leaves } from '@/lib/paneTree'
+import { leafBot, leaves } from '@/lib/paneTree'
 import { accountWork } from '@/lib/harkWork'
 import { useHarkWork } from '@/services/harkWork'
 import type { Bot, BotActivity, ChatMessage } from '@/types'
@@ -116,7 +116,7 @@ export const BotListItem = memo(function BotListItem({
   const paneNo = usePanes((s) => {
     if (s.view !== 'sessions') return 0
     const all = leaves(s.tree)
-    return all.length > 1 ? all.findIndex((l) => l.botId === bot.id) + 1 : 0
+    return all.length > 1 ? all.findIndex((l) => leafBot(l) === bot.id) + 1 : 0
   })
   const timeLabel = !isWorking && last?.createdAt ? formatShortTime(last.createdAt) : ''
   // Only a bot created a moment ago rises into the list; startup stays still.
@@ -137,8 +137,13 @@ export const BotListItem = memo(function BotListItem({
     setGaze(null)
   }
 
-  const handleSelect = () => {
+  const handleSelect = (e: ReactMouseEvent) => {
     setPokeSignal((n) => n + 1)
+    // GOXF Issue #2: Ctrl/⌘-click opens the session as a new tab in the focused pane.
+    if (e.ctrlKey || e.metaKey) {
+      const panes = usePanes.getState()
+      panes.addTab(panes.focusedId, bot.id)
+    }
     onSelect(bot.id)
   }
 

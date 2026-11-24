@@ -1,7 +1,10 @@
 /**
  * GOXF v13: Orca-style free split for the 会话 page.
  * A binary tree: every split holds two children side by side ('row') or
- * stacked ('col'); `ratio` is the first child's share. Leaves hold one bot.
+ * stacked ('col'); `ratio` is the first child's share. Leaves hold tabs
+ * (Issue #2); a tab is a bot plus, where the platform has several, the
+ * conversation shown (Issue #7), so two panes can show two conversations of
+ * one bot.
  * Pure functions only, so the store and tests share them.
  */
 
@@ -9,7 +12,9 @@ export const PANE_MIN_W = 360
 export const PANE_MIN_H = 240
 export const PANE_GAP = 8
 
-export type PaneLeaf = { type: 'leaf'; id: string; botId: string | null }
+/** `conversationId` (Hark project, Muse/Hermes session…) unset = follows the bot's active conversation. */
+export type PaneTab = { id: string; botId: string; conversationId?: string }
+export type PaneLeaf = { type: 'leaf'; id: string; tabs: PaneTab[]; active: string | null }
 export type PaneSplit = { type: 'split'; id: string; dir: 'row' | 'col'; ratio: number; a: PaneNode; b: PaneNode }
 export type PaneNode = PaneLeaf | PaneSplit
 export type SplitSide = 'left' | 'right' | 'top' | 'bottom'
@@ -20,8 +25,22 @@ export function paneId(prefix = 'p'): string {
   return `${prefix}_${Date.now().toString(36)}_${seq}`
 }
 
-export function leaf(botId: string | null = null, id = paneId()): PaneLeaf {
-  return { type: 'leaf', id, botId }
+export function tab(botId: string, conversationId?: string, id = paneId('t')): PaneTab {
+  return conversationId ? { id, botId, conversationId } : { id, botId }
+}
+
+export function leaf(content: string | PaneTab | null = null, id = paneId()): PaneLeaf {
+  const t = typeof content === 'string' ? tab(content) : content
+  return { type: 'leaf', id, tabs: t ? [t] : [], active: t?.id ?? null }
+}
+
+export function activeTab(l: PaneLeaf): PaneTab | undefined {
+  return l.tabs.find((t) => t.id === l.active)
+}
+
+/** The bot on screen in a pane (its active tab). */
+export function leafBot(l: PaneLeaf): string | null {
+  return activeTab(l)?.botId ?? null
 }
 
 export function leaves(node: PaneNode): PaneLeaf[] {
@@ -32,8 +51,28 @@ export function findLeaf(node: PaneNode, id: string): PaneLeaf | undefined {
   return leaves(node).find((l) => l.id === id)
 }
 
-export function leafOfBot(node: PaneNode, botId: string): PaneLeaf | undefined {
-  return leaves(node).find((l) => l.botId === botId)
+export interface TabHit { leaf: PaneLeaf; tab: PaneTab }
+
+/** Any tab of this bot, on-screen ones first. */
+export function findBot(node: PaneNode, botId: string): TabHit | undefined {
+  let hit: TabHit | undefined
+  for (const l of leaves(node)) {
+    for (const t of l.tabs) {
+      if (t.botId !== botId) continue
+      if (t.id === l.active) return { leaf: l, tab: t }
+      hit ??= { leaf: l, tab: t }
+    }
+  }
+  return hit
+}
+
+/** The tab showing exactly this bot + project (unset project matches only unset). */
+export function findTab(node: PaneNode, botId: string, conversationId?: string): TabHit | undefined {
+  for (const l of leaves(node)) {
+    const t = l.tabs.find((x) => x.botId === botId && x.conversationId === conversationId)
+    if (t) return { leaf: l, tab: t }
+  }
+  return undefined
 }
 
 function map(node: PaneNode, fn: (n: PaneNode) => PaneNode): PaneNode {
@@ -44,8 +83,86 @@ function map(node: PaneNode, fn: (n: PaneNode) => PaneNode): PaneNode {
   return a === next.a && b === next.b ? next : { ...next, a, b }
 }
 
-export function setLeafBot(node: PaneNode, id: string, botId: string | null): PaneNode {
-  return map(node, (n) => (n.type === 'leaf' && n.id === id ? { ...n, botId } : n))
+function mapLeaf(node: PaneNode, id: string, fn: (l: PaneLeaf) => PaneLeaf): PaneNode {
+  return map(node, (n) => (n.type === 'leaf' && n.id === id ? fn(n) : n))
+}
+
+export function replaceLeaf(node: PaneNode, id: string, next: PaneLeaf): PaneNode {
+  return mapLeaf(node, id, () => ({ ...next, id }))
+}
+
+/** Show a bot in a pane by swapping its active tab (sidebar click); an empty pane gets a tab. */
+export function showInLeaf(node: PaneNode, id: string, botId: string, conversationId?: string): PaneNode {
+  return mapLeaf(node, id, (l) => {
+    const same = l.tabs.find((t) => t.botId === botId && (conversationId === undefined || t.conversationId === conversationId))
+    if (same) return { ...l, active: same.id }
+    const fresh = tab(botId, conversationId)
+    const at = l.tabs.findIndex((t) => t.id === l.active)
+    if (at < 0) return { ...l, tabs: [...l.tabs, fresh], active: fresh.id }
+    return { ...l, tabs: l.tabs.map((t, i) => (i === at ? fresh : t)), active: fresh.id }
+  })
+}
+
+/** Add a tab right after the active one and show it; an identical tab in the pane is just shown. */
+export function openTab(node: PaneNode, id: string, t: PaneTab): PaneNode {
+  return mapLeaf(node, id, (l) => {
+    const same = l.tabs.find((x) => x.id === t.id || (x.botId === t.botId && x.conversationId === t.conversationId))
+    if (same) return { ...l, active: same.id }
+    const at = l.tabs.findIndex((x) => x.id === l.active)
+    const tabs = [...l.tabs]
+    tabs.splice(at < 0 ? tabs.length : at + 1, 0, t)
+    return { ...l, tabs, active: t.id }
+  })
+}
+
+export function selectTab(node: PaneNode, id: string, tabId: string): PaneNode {
+  return mapLeaf(node, id, (l) => (l.active !== tabId && l.tabs.some((t) => t.id === tabId) ? { ...l, active: tabId } : l))
+}
+
+export function setTabConversation(node: PaneNode, id: string, tabId: string, conversationId: string | undefined): PaneNode {
+  return mapLeaf(node, id, (l) => ({
+    ...l,
+    tabs: l.tabs.map((t) => (t.id === tabId && t.conversationId !== conversationId ? tab(t.botId, conversationId, t.id) : t))
+  }))
+}
+
+function withoutTabs(l: PaneLeaf, drop: (t: PaneTab) => boolean): PaneLeaf {
+  const tabs = l.tabs.filter((t) => !drop(t))
+  if (tabs.length === l.tabs.length) return l
+  if (tabs.some((t) => t.id === l.active)) return { ...l, tabs }
+  // The active tab went: show its right neighbour, else the left one.
+  const at = l.tabs.findIndex((t) => t.id === l.active)
+  const next = l.tabs.slice(at + 1).find((t) => !drop(t)) ?? [...l.tabs.slice(0, Math.max(at, 0))].reverse().find((t) => !drop(t))
+  return { ...l, tabs, active: next?.id ?? null }
+}
+
+/** Close a tab; a pane left with no tabs closes too, unless it is the last one. */
+export function closeTab(node: PaneNode, id: string, tabId: string): PaneNode {
+  const next = mapLeaf(node, id, (l) => withoutTabs(l, (t) => t.id === tabId))
+  const l = findLeaf(next, id)
+  return l && l.tabs.length === 0 && leaves(next).length > 1 ? closeLeaf(next, id) : next
+}
+
+/**
+ * Drag a tab to another pane's middle (joins its tabs) or to an edge (splits
+ * there). A pane emptied by the move closes. Returns the leaf now showing it.
+ */
+export function moveTab(
+  node: PaneNode, fromId: string, tabId: string, toId: string, zone: SplitSide | 'center', newId = paneId()
+): { tree: PaneNode; leafId: string } {
+  const from = findLeaf(node, fromId)
+  const moving = from?.tabs.find((t) => t.id === tabId)
+  if (!from || !moving || !findLeaf(node, toId)) return { tree: node, leafId: fromId }
+  if (fromId === toId && (zone === 'center' || from.tabs.length === 1)) return { tree: node, leafId: fromId }
+  let tree = mapLeaf(node, fromId, (l) => withoutTabs(l, (t) => t.id === tabId))
+  let leafId = toId
+  if (zone === 'center') tree = openTab(tree, toId, moving)
+  else {
+    tree = splitLeaf(tree, toId, zone, moving, newId)
+    leafId = newId
+  }
+  if (findLeaf(tree, fromId)?.tabs.length === 0) tree = closeLeaf(tree, fromId)
+  return { tree, leafId }
 }
 
 /** Smallest box a subtree can be drawn in without a leaf going under the minimum. */
@@ -88,9 +205,9 @@ export function splitResult(node: PaneNode, box: Rect, leafId: string, side: Spl
   return { ok: size >= min, size, min }
 }
 
-/** Split `leafId`; the new leaf (holding `botId`) goes on `side`. */
-export function splitLeaf(node: PaneNode, leafId: string, side: SplitSide, botId: string | null, newId = paneId()): PaneNode {
-  const fresh = leaf(botId, newId)
+/** Split `leafId`; the new leaf (holding `content`) goes on `side`. */
+export function splitLeaf(node: PaneNode, leafId: string, side: SplitSide, content: string | PaneTab | null, newId = paneId()): PaneNode {
+  const fresh = leaf(content, newId)
   return map(node, (n) => {
     if (n.type !== 'leaf' || n.id !== leafId) return n
     const dir = side === 'left' || side === 'right' ? 'row' : 'col'
@@ -101,7 +218,7 @@ export function splitLeaf(node: PaneNode, leafId: string, side: SplitSide, botId
 
 /** Remove a leaf; its sibling takes the parent's place. The last leaf only empties. */
 export function closeLeaf(node: PaneNode, leafId: string): PaneNode {
-  if (node.type === 'leaf') return node.id === leafId ? { ...node, botId: null } : node
+  if (node.type === 'leaf') return node.id === leafId ? { ...node, tabs: [], active: null } : node
   if (node.a.type === 'leaf' && node.a.id === leafId) return node.b
   if (node.b.type === 'leaf' && node.b.id === leafId) return node.a
   const a = closeLeaf(node.a, leafId)
@@ -138,19 +255,35 @@ export function equalize(node: PaneNode): PaneNode {
   return { ...node, a, b, ratio: ca / (ca + cb) }
 }
 
-/** Drop bots that no longer exist (deleted in the sidebar). */
+/** Drop tabs of bots that no longer exist (deleted in the sidebar); panes stay. */
 export function pruneBots(node: PaneNode, alive: (botId: string) => boolean): PaneNode {
-  return map(node, (n) => (n.type === 'leaf' && n.botId && !alive(n.botId) ? { ...n, botId: null } : n))
+  return map(node, (n) => (n.type === 'leaf' ? withoutTabs(n, (t) => !alive(t.botId)) : n))
 }
 
-export function isPaneNode(v: unknown): v is PaneNode {
-  if (!v || typeof v !== 'object') return false
+function readTab(v: unknown): PaneTab | null {
+  if (!v || typeof v !== 'object') return null
+  const t = v as Record<string, unknown>
+  if (typeof t.id !== 'string' || typeof t.botId !== 'string') return null
+  return tab(t.botId, typeof t.conversationId === 'string' && t.conversationId ? t.conversationId : undefined, t.id)
+}
+
+/** Validate a saved layout; v13 leaves (`botId`, no tabs) become one-tab leaves. */
+export function readPaneNode(v: unknown): PaneNode | null {
+  if (!v || typeof v !== 'object') return null
   const n = v as Record<string, unknown>
-  if (n.type === 'leaf') return typeof n.id === 'string' && (n.botId === null || typeof n.botId === 'string')
-  return (
-    n.type === 'split' && typeof n.id === 'string' && (n.dir === 'row' || n.dir === 'col') &&
-    typeof n.ratio === 'number' && isPaneNode(n.a) && isPaneNode(n.b)
-  )
+  if (typeof n.id !== 'string') return null
+  if (n.type === 'leaf') {
+    if (!Array.isArray(n.tabs)) return n.botId === null || typeof n.botId === 'string' ? leaf(n.botId as string | null, n.id) : null
+    const tabs = n.tabs.map(readTab)
+    if (tabs.some((t) => !t)) return null
+    const list = tabs as PaneTab[]
+    const active = list.some((t) => t.id === n.active) ? (n.active as string) : (list[0]?.id ?? null)
+    return { type: 'leaf', id: n.id, tabs: list, active }
+  }
+  if (n.type !== 'split' || (n.dir !== 'row' && n.dir !== 'col') || typeof n.ratio !== 'number') return null
+  const a = readPaneNode(n.a)
+  const b = readPaneNode(n.b)
+  return a && b ? { type: 'split', id: n.id, dir: n.dir, ratio: n.ratio, a, b } : null
 }
 
 export interface PaneHandle { split: PaneSplit; box: Rect; gap: Rect }
