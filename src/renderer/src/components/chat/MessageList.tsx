@@ -1,4 +1,3 @@
-import { usePanes } from '@/store/paneStore'
 import { Fragment, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { ArrowDown } from 'lucide-react'
 import { BotAvatar } from '@/components/ui/Avatar'
@@ -37,29 +36,42 @@ export function MessageList({ bot, messages, accounts, typing, onRetry }: Messag
   const scrollRef = useRef<HTMLDivElement>(null)
   const stickToBottom = useRef(true)
   const lastBotId = useRef<string | null>(null)
-  const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const accountNames = new Map(accounts.map((a) => [a.id, a.displayName]))
   const showAccount = bot.accountIds.length > 1
   const lastMessage = messages[messages.length - 1]
 
   // Jump to the bottom when switching bots; follow new messages when pinned.
+  // GOXF: coming back to a conversation always lands on the newest message (user asked 2026-11-24);
+  // the list keeps pinned while late content (history, cards, pictures) grows its height.
+  const switchedAt = useRef(0)
   useLayoutEffect(() => {
     const el = scrollRef.current
     if (!el) return
-    const switched = lastBotId.current !== bot.id
-    lastBotId.current = bot.id
-    // GOXF v13: come back to where the reader left this conversation (layout change, restart).
-    const saved = switched ? usePanes.getState().scroll[bot.id] : null
-    if (typeof saved === 'number' && saved < el.scrollHeight - el.clientHeight - STICKY_THRESHOLD_PX) {
-      el.scrollTop = saved
-      stickToBottom.current = false
-      return
+    const key = `${bot.id}:${bot.activeSessionId ?? ''}`
+    const switched = lastBotId.current !== key
+    lastBotId.current = key
+    if (switched) {
+      switchedAt.current = Date.now()
+      stickToBottom.current = true
     }
     if (switched || stickToBottom.current || lastMessage?.role === 'user') {
-      el.scrollTo({ top: el.scrollHeight, behavior: switched ? 'instant' : 'smooth' })
+      el.scrollTo({ top: el.scrollHeight, behavior: 'instant' })
+      stickToBottom.current = true
     }
-  }, [bot.id, messages.length, lastMessage?.role, lastMessage?.text, typing])
+  }, [bot.id, bot.activeSessionId, messages.length, lastMessage?.role, lastMessage?.text, typing])
+
+  const listRef = useRef<HTMLOListElement>(null)
+  useEffect(() => {
+    const el = scrollRef.current
+    const list = listRef.current
+    if (!el || !list || typeof ResizeObserver === 'undefined') return
+    const ro = new ResizeObserver(() => {
+      if (stickToBottom.current) el.scrollTop = el.scrollHeight
+    })
+    ro.observe(list)
+    return () => ro.disconnect()
+  }, [])
 
   // Scrolled up: offer a way back down, and count replies that arrive meanwhile.
   const [away, setAway] = useState(false)
@@ -89,17 +101,15 @@ export function MessageList({ bot, messages, accounts, typing, onRetry }: Messag
       onScroll={(event) => {
         const el = event.currentTarget
         const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < STICKY_THRESHOLD_PX
+        // Right after a switch the scroll events come from layout, not the reader.
+        if (!atBottom && Date.now() - switchedAt.current < 800) return
         stickToBottom.current = atBottom
         setAway(!atBottom)
-        const top = atBottom ? null : el.scrollTop
-        const id = bot.id
-        if (saveTimer.current) clearTimeout(saveTimer.current)
-        saveTimer.current = setTimeout(() => usePanes.getState().saveScroll(id, top), 250)
         if (atBottom) setUnseen(0)
       }}
       className="min-h-0 flex-1 overflow-y-auto"
     >
-      <ol className="mx-auto flex max-w-[860px] flex-col px-8 py-6" aria-label={`Conversation with ${bot.name}`}>
+      <ol ref={listRef} className="mx-auto flex max-w-[860px] flex-col px-8 py-6" aria-label={`Conversation with ${bot.name}`}>
         {messages.map((message, index) => {
           const prev = messages[index - 1]
           const next = messages[index + 1]

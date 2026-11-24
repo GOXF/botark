@@ -267,3 +267,4 @@ git clone <GOXF/botark> && cd botark && git checkout fix/hark-login-sync && npm 
 - 代码：rooms/handoff.ts(+handoff.test.ts 4 测)、rooms/HandoffViews.tsx；RoomView/RoomInspectorPanel/roomStore/model 只做增量改动（方便和 goxf/feat-pipeline 合并）。
 - 「重新生成」= 用该定稿之前最后一条需求（含交来的引用）重新派发，会在群里再出现一次需求。
 - 已知：右栏 4 个标签后「工作区/Slack」字被截断；链上组被删显示「已删除的群组」。网页版 playwright 假数据目测通过（选择框、交出、对方卡片、查看原消息跳回、右栏链）。未在 Windows/Electron 真机跑，未用真 bot 跑自动开工。
+- 17:50 修：引用回复在气泡里重复显示（服务端文本带「> 引用」→拆回引用条，lib/quoteText.ts）；发送后短暂两条（本地消息已被服务端副本替换却仍保留，现跳过）；切回会话跳到上面（去掉滚动还原，切回总是到最新，ResizeObserver 在图片/卡片晚加载时保持贴底）。

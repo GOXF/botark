@@ -14,6 +14,7 @@ import { keepActivity } from './goxfActivity'
 import { canReloadHistory, hasUnsettledDelivery, trimMessages, TRIM_IDLE_AFTER_MS } from './messageTrim'
 import { usePrefsStore } from './prefsStore'
 import { clearNoReplyFlag, createSafeStorage, sanitizePersisted, SEND_HARD_TIMEOUT_MS, SendTimeoutError, toPersistedMessages, withTimeout, deliveryAfterError, createInFlightSet, hasLostAttachments, ATTACHMENTS_LOST_TEXT, deferWrites } from './delivery'
+import { comparableText, splitLeadingQuote } from '../lib/quoteText'
 
 let warnedStorage = false
 const workspaceStorage = deferWrites(createJSONStorage<Partial<BotHubState>>(() =>
@@ -361,7 +362,7 @@ function sentTwin(existing: ChatMessage[], h: ChatMessage): ChatMessage | undefi
   if (h.role !== 'user') return undefined
   return existing.find((m) =>
     m.role === 'user' && m.id.startsWith('msg_') &&
-    m.text.trim() === h.text.trim() && Math.abs(h.createdAt - m.createdAt) < 120_000)
+    comparableText(m.text) === comparableText(h.text) && Math.abs(h.createdAt - m.createdAt) < 120_000)
 }
 
 function mergeHydratedMessages(existing: ChatMessage[], hydrated: ChatMessage[]): ChatMessage[] {
@@ -374,9 +375,12 @@ function mergeHydratedMessages(existing: ChatMessage[], hydrated: ChatMessage[])
     )
   const hydratedById = new Map(hydrated.map((m) => [m.id, m]))
   const existingById = new Map(normalizedExisting.map((m) => [m.id, m]))
+  // GOXF: local messages whose server copy already arrived; showing both is the brief double bubble.
+  const twinned = new Set<string>()
   const mergedHydrated = hydrated.map((h) => {
     const local = existingById.get(h.id) ?? sentTwin(normalizedExisting, h)
     if (!local) return h
+    if (local.id !== h.id) twinned.add(local.id)
     // The server copy of a message just sent: keep the pictures it was sent with.
     if (local.id !== h.id) return local.attachments?.length && !h.attachments?.length ? { ...h, attachments: local.attachments } : h
     const media = prevMediaMerge(local.media, h.media)
@@ -387,7 +391,7 @@ function mergeHydratedMessages(existing: ChatMessage[], hydrated: ChatMessage[])
   const earliestHydratedTs = hydrated[0]?.createdAt ?? 0
 
   for (const localMsg of normalizedExisting) {
-    if (hydratedById.has(localMsg.id)) continue
+    if (hydratedById.has(localMsg.id) || twinned.has(localMsg.id)) continue
     // If this was a local user message (`msg_...`) that now exists in `hydrated` from the server, skip the duplicate
     if (
       localMsg.role === 'user' &&
@@ -396,7 +400,7 @@ function mergeHydratedMessages(existing: ChatMessage[], hydrated: ChatMessage[])
       hydrated.some(
         (h) =>
           h.role === 'user' &&
-          h.text.trim() === localMsg.text.trim() &&
+          comparableText(h.text) === comparableText(localMsg.text) &&
           Math.abs(h.createdAt - localMsg.createdAt) < 120_000
       )
     ) {
@@ -548,6 +552,8 @@ export function harkHistory(data: unknown, botId: string, accountId: string): Ch
         const target = m.replyToId ? byId.get(m.replyToId) : undefined
         // Answering the message right above is the obvious case: quoting it is noise.
         const quoted = m.replyQuote && !(target && shown[i - 1]?.id === target.id)
+        // GOXF: our own quote replies carry "> quote" in the text; show it once, as the chip.
+        const split = isUser ? splitLeadingQuote(m.content?.trim() || '') : { body: m.content?.trim() || '' }
         const ts =
           typeof m.createdAt === 'number'
             ? m.createdAt
@@ -582,7 +588,7 @@ export function harkHistory(data: unknown, botId: string, accountId: string): Ch
           botId,
           accountId,
           role: isUser ? 'user' : 'bot',
-          text: m.content?.trim() || '',
+          text: split.body,
           createdAt: ts,
           delivery: isUser ? 'sent' : undefined,
           richWidgets: m.richWidgets,
@@ -590,7 +596,9 @@ export function harkHistory(data: unknown, botId: string, accountId: string): Ch
           ...(m.media && m.media.length > 0 ? { media: m.media } : {}),
           ...(quoted
             ? { replyQuote: m.replyQuote, ...(target ? { replyToId: uiId(target) } : {}), ...(m.replyThumb ? { replyThumb: m.replyThumb } : {}) }
-            : {})
+            : split.quote
+              ? { replyQuote: split.quote }
+              : {})
         }
       })
 }
