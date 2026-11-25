@@ -1097,7 +1097,7 @@ export function parseMediaParts(payload: Record<string, unknown>): MuseMediaPart
     ) {
       return
     }
-    const mime = str(c['mime_type'] || c['mimeType'] || c['media_type'] || c['content_type']) || undefined
+    const mime = str(c['mime_type'] || c['mimeType'] || c['media_type'] || c['content_type'] || c['mime']) || undefined
     const name = str(c['filename'] || c['file_name'] || c['name'] || c['label'] || c['title']) || undefined
     const imageId = str(c['image_id'] || c['imageId']) || undefined
 
@@ -1146,6 +1146,9 @@ export function parseMediaParts(payload: Record<string, unknown>): MuseMediaPart
     } else if (directPath && (isImageHint(directPath, sourceMime, typ) || str(c['file_type']) === 'image')) {
       // Untyped attachment/image object carrying an image path/URL (e.g. inside images[] or attachments[])
       push('image', directPath, { imageId, mimeType: sourceMime, name })
+    } else if (directPath && sourceMime) {
+      // A file presentation's data.file ({ mime: 'application/pdf', path: 'sandbox://workspace/…' }).
+      push('file', directPath, { mimeType: sourceMime })
     }
 
     // Parse JSON-encoded tool_result content strings (e.g. {"path":"workspace/out.png"})
@@ -1794,7 +1797,8 @@ export async function streamChat(
         if (targetId) {
           ensureBubble(targetId)
           applyMedia(targetId, p)
-          if (!texts.get(targetId)) {
+          // A file card carries its own name; its display_text is only that label.
+          if (!texts.get(targetId) && !parseMediaParts(p).length) {
             const t = assistantTextFromPayload(p)
             if (t) texts.set(targetId, t)
           }

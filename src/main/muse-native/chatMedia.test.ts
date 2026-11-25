@@ -272,3 +272,28 @@ describe('captureLine', () => {
     expect(parsed.payload.frame.length).toBeLessThan(300)
   })
 })
+
+describe('parseMediaParts file presentation', () => {
+  it('reads a PDF from a delta.presentation payload (kind file, data.file.mime)', () => {
+    const parts = parseMediaParts({
+      kind: 'file',
+      display_text: 'short-guide',
+      data: {
+        file: {
+          label: 'short-guide',
+          mime: 'application/pdf',
+          path: 'sandbox://workspace/your_files/short-guide/short-guide.pdf',
+          variants: { original: 'https://vm.example/media/raw/workspace/your_files/short-guide/short-guide.pdf' }
+        }
+      }
+    })
+    expect(parts).toEqual([
+      expect.objectContaining({
+        kind: 'file',
+        path: 'workspace/your_files/short-guide/short-guide.pdf',
+        name: 'short-guide.pdf',
+        mimeType: 'application/pdf'
+      })
+    ])
+  })
+})
