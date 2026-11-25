@@ -27,12 +27,14 @@ import { ErrorBoundary } from '@/components/ui/ErrorBoundary'
 export default function App() {
   const settingsOpen = useBotStore((s) => s.settingsOpen)
   const selectedBotId = useBotStore((s) => s.selectedBotId)
-  const activeRoom = useRooms((s) => s.rooms.find((r) => r.id === selectedBotId))
+  const selectedRoom = useRooms((s) => s.rooms.find((r) => r.id === selectedBotId))
   const view = usePanes((s) => s.view)
   const firstRoomId = useRooms((s) => s.rooms[0]?.id)
-  const roomSelected = selectedBotId === 'room-create' || Boolean(activeRoom)
+  const roomSelected = selectedBotId === 'room-create' || Boolean(selectedRoom)
   // 协作 shows the selected group chat, else the first one, else the new-group form.
   const collabRoomId = roomSelected && selectedBotId ? selectedBotId : firstRoomId ?? 'room-create'
+  // The group on screen (also when a member's row is selected), so its details panel can open.
+  const activeRoom = useRooms((s) => s.rooms.find((r) => r.id === collabRoomId))
   // Details slide open next to a selected bot or active collaboration room (and not while in Settings).
   const infoOpen = useBotStore(
     (s) =>
