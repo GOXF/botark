@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Loader2, X } from 'lucide-react'
 import { useShallow } from 'zustand/react/shallow'
 import { BotAvatar } from '@/components/ui/Avatar'
@@ -58,6 +58,8 @@ function useMinuteTick(): void {
 export function BoardView() {
   const scope = usePanes((s) => s.scope)
   const mode = usePipeline((s) => s.mode)
+  const harkBot = useBotStore((s) => (scope === 'sessions' ? s.bots.find((b) => b.id === s.selectedBotId && b.platformId === 'hark') : undefined))
+  if (harkBot) return <HarkTaskBoard key={harkBot.id} botId={harkBot.id} />
   if (scope === 'sessions') return <StatusBoard scope="sessions" />
   const toggle = (
     <SegmentedControl<BoardMode>
@@ -283,8 +285,201 @@ const TASK_DOT: Record<HarkTask['state'], string> = { working: 'bg-status-busy',
 const TASK_WORD: Record<HarkTask['state'], string> = { working: '进行中', open: '待处理', done: '已完成' }
 const KIND_WORD: Record<HarkSubtask['kind'], string> = { browser: '浏览器', subagent: '子代理', other: '工具' }
 
+type PickedProject = NonNullable<Card['project']> & { title: string }
+interface TaskCard extends HarkTask { conversationId: string; column: BoardColumn }
+const DAY = 24 * 60 * 60 * 1000
+
+/**
+ * v8 任务 for one Hark bot: one card per request across every project of the
+ * account, its project as a tag and its subtasks inline. Projects with nothing
+ * on the board sit only in the chip row above the columns.
+ */
+function HarkTaskBoard({ botId }: { botId: string }) {
+  useMinuteTick()
+  const bot = useBotStore((s) => s.bots.find((b) => b.id === botId))
+  const titles = useConversationTitles()
+  const projectIds = useProjectTitles(true)
+  const work = useHarkWork()
+  const asks = useHarkAskCounts()
+  const [snaps, setSnaps] = useState<Record<string, HarkTask[]>>({})
+  const snapsRef = useRef(snaps)
+  snapsRef.current = snaps
+  const [filter, setFilter] = useState<string>()
+  const [picked, setPicked] = useState<PickedProject & { taskId?: string }>()
+  const [olderOpen, setOlderOpen] = useState(false)
+  const accountId = bot?.activeAccountId ?? ''
+  const ids = [...new Set([...(projectIds[accountId] ?? []), ...Object.keys(work.projects[accountId] ?? {})])]
+  const idsKey = ids.join(',')
+  const busyKey = ids.filter((id) => work.projects[accountId]?.[id]?.working || (asks[accountId]?.[id] ?? 0) > 0).join(',')
+
+  // Every project once a minute; the busy ones (and any with live tasks) every 8 s.
+  useEffect(() => {
+    if (!accountId) return
+    let live = true
+    const load = (cid: string) =>
+      void getBridge()?.hark.rpc({ accountId, op: 'conversationSnapshot', conversationId: cid }).then((res) => {
+        if (live && res?.ok) setSnaps((prev) => ({ ...prev, [cid]: deriveTasks(res.data as HarkSnapshotLike) }))
+      }).catch(() => undefined)
+    const all = idsKey ? idsKey.split(',') : []
+    all.forEach(load)
+    const fast = setInterval(() => {
+      const prev = snapsRef.current
+      new Set([...(busyKey ? busyKey.split(',') : []), ...all.filter((id) => prev[id]?.some((t) => t.state !== 'done'))]).forEach(load)
+    }, 8000)
+    const slow = setInterval(() => all.forEach(load), 60_000)
+    return () => {
+      live = false
+      clearInterval(fast)
+      clearInterval(slow)
+    }
+  }, [accountId, idsKey, busyKey])
+
+  const pick = (cid: string, taskId?: string) =>
+    bot && setPicked({ botId: bot.id, botName: bot.name, accountId, conversationId: cid, working: Boolean(work.projects[accountId]?.[cid]?.working), title: titles[cid] || '项目', taskId })
+
+  // Entering 任务 opens the project you were looking at.
+  const activeId = bot?.activeSessionId
+  useEffect(() => {
+    if (activeId && ids.includes(activeId)) pick(activeId)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeId, idsKey.length > 0])
+
+  const now = Date.now()
+  const cards: TaskCard[] = []
+  for (const cid of ids) {
+    for (const t of snaps[cid] ?? []) {
+      const waiting = t.subtasks.some((st) => st.status === 'waiting')
+      const column: BoardColumn = waiting || t.state === 'open' ? 'wait' : t.state === 'working' ? 'run' : 'done'
+      cards.push({ ...t, conversationId: cid, column })
+    }
+  }
+  const counts = new Map<string, number>()
+  for (const c of cards) if (c.column !== 'done' || now - (c.createdAt ?? 0) < DAY) counts.set(c.conversationId, (counts.get(c.conversationId) ?? 0) + 1)
+  const shown = cards.filter((c) => !filter || c.conversationId === filter)
+  const chip = (id: string | undefined, label: string, n: number, dot?: string) => (
+    <button
+      key={id ?? 'all'}
+      type="button"
+      onClick={() => setFilter(id)}
+      className={cn(
+        'press inline-flex h-7 max-w-[200px] shrink-0 items-center gap-1.5 rounded-full border px-3 text-[12px]',
+        filter === id ? 'border-ink bg-ink text-main' : 'border-line bg-main hover:bg-hover',
+        filter !== id && (n ? 'text-ink' : 'text-ink-muted')
+      )}
+    >
+      {dot && <span className={cn('size-1.5 shrink-0 rounded-full', dot)} />}
+      <span className="truncate">{label}</span>
+      {n > 0 && <span className={filter === id ? 'text-main/70' : 'text-ink-muted'}>{n}</span>}
+    </button>
+  )
+
+  return (
+    <div className="flex min-h-0 flex-1 pt-3">
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+        <div className="flex shrink-0 items-center gap-2 overflow-x-auto px-4 pb-3">
+          <span className="shrink-0 text-[12px] text-ink-muted">项目</span>
+          {chip(undefined, '全部', [...counts.values()].reduce((a, b) => a + b, 0))}
+          {ids.map((cid) => {
+            const pw = work.projects[accountId]?.[cid]
+            const dot = (asks[accountId]?.[cid] ?? 0) > 0 ? 'bg-status-attention' : pw?.working ? 'bg-status-busy' : counts.get(cid) ? 'bg-status-online' : 'bg-ink-faint'
+            return chip(cid, titles[cid] || '项目', counts.get(cid) ?? 0, dot)
+          })}
+        </div>
+        <div className="flex min-h-0 min-w-0 flex-1 gap-3 overflow-x-auto px-4 pb-4">
+          {BOARD_COLUMNS.filter((col) => col.id !== 'idle').map((col) => {
+            const all = shown.filter((c) => c.column === col.id).sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0))
+            const list = col.id === 'done' && !olderOpen ? all.filter((c) => now - (c.createdAt ?? 0) < DAY) : all
+            const older = all.length - list.length
+            return (
+              <section key={col.id} aria-label={col.label} className="flex min-w-[220px] flex-1 flex-col rounded-[14px] bg-canvas/60">
+                <header className="flex h-10 shrink-0 items-center gap-2 px-3">
+                  <span className={cn('size-2 rounded-full', COLUMN_STYLE[col.id].dot)} />
+                  <h3 className={cn('text-[13px] font-semibold', COLUMN_STYLE[col.id].head)}>{col.label}</h3>
+                  <span className="text-[12px] text-ink-muted">{list.length}</span>
+                </header>
+                <ol className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto px-2 pb-2">
+                  {list.map((t) => (
+                    <li key={`${t.conversationId}:${t.id}`}>
+                      <TaskCardView task={t} title={titles[t.conversationId] || '项目'} selected={picked?.taskId === t.id} onClick={() => pick(t.conversationId, t.id)} />
+                    </li>
+                  ))}
+                  {list.length === 0 && <li className="px-2 py-6 text-center text-[12px] text-ink-faint">没有</li>}
+                  {older > 0 && (
+                    <li>
+                      <button type="button" onClick={() => setOlderOpen(true)} className="press px-2 py-1 text-[11.5px] text-accent-600">
+                        更早的 {older} 条 · 展开
+                      </button>
+                    </li>
+                  )}
+                </ol>
+              </section>
+            )
+          })}
+        </div>
+      </div>
+      {picked && <ProjectDetail key={picked.conversationId} project={picked} highlight={picked.taskId} onClose={() => setPicked(undefined)} />}
+    </div>
+  )
+}
+
+function TaskCardView({ task, title, selected, onClick }: { task: TaskCard; title: string; selected: boolean; onClick: () => void }) {
+  const [open, setOpen] = useState(false)
+  const subs = open ? task.subtasks : task.subtasks.slice(0, 3)
+  const running = task.subtasks.filter((s) => s.status === 'running' || s.status === 'waiting').length
+  const done = task.subtasks.filter((s) => s.status === 'done').length
+  return (
+    <div
+      role="button"
+      tabIndex={0}
+      onClick={onClick}
+      onKeyDown={(e) => e.key === 'Enter' && onClick()}
+      className={cn(
+        'press flex w-full cursor-pointer flex-col gap-1.5 rounded-[12px] border bg-main p-3 text-left shadow-soft transition-colors hover:border-line-strong',
+        selected ? 'border-accent-600 ring-1 ring-accent-600' : task.column === 'wait' ? 'border-status-attention/50' : 'border-line'
+      )}
+    >
+      <span className="line-clamp-2 text-[13px] leading-[19px] text-ink" title={task.title}>{task.title}</span>
+      <span className="flex min-w-0 items-center gap-2">
+        <span className="max-w-[70%] truncate rounded-full bg-hover px-2 text-[11px] text-ink-muted">{title}</span>
+        <span className="shrink-0 text-[11px] text-ink-muted">{formatShortTime(task.createdAt)}</span>
+      </span>
+      {task.subtasks.length > 0 && (
+        <>
+          <span className={cn('text-[11px]', running ? 'text-status-busy-ink' : 'text-ink-muted')}>
+            子任务 {done}/{task.subtasks.length} 已完成{running ? ` · ${running} 运行中` : ''}
+          </span>
+          <ul className="flex flex-col gap-1 border-l border-line pl-2.5">
+            {subs.map((st) => (
+              <li key={st.id} className="flex items-start gap-2 text-[11.5px] leading-[16px]">
+                <span className={cn('mt-[5px] size-1.5 shrink-0 rounded-full', SUBTASK_DOT[st.status])} />
+                <span className="min-w-0 flex-1 truncate text-ink" title={st.title}>
+                  <span className="text-ink-muted">{KIND_WORD[st.kind]} · </span>
+                  {st.title}
+                </span>
+                <span className="shrink-0 text-ink-muted">{SUBTASK_WORD[st.status]}</span>
+              </li>
+            ))}
+          </ul>
+          {task.subtasks.length > 3 && !open && (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation()
+                setOpen(true)
+              }}
+              className="w-fit text-[11px] text-accent-600"
+            >
+              还有 {task.subtasks.length - 3} 个 · 展开
+            </button>
+          )}
+        </>
+      )}
+    </div>
+  )
+}
+
 /** v25: right-side detail for one Hark project: what it runs at once, refreshed while open. */
-function ProjectDetail({ project, onClose }: { project: NonNullable<Card['project']> & { title: string }; onClose: () => void }) {
+function ProjectDetail({ project, highlight, onClose }: { project: PickedProject; highlight?: string; onClose: () => void }) {
   useMinuteTick()
   const [tasks, setTasks] = useState<HarkTask[]>()
   const [status, setStatus] = useState('')
@@ -312,6 +507,13 @@ function ProjectDetail({ project, onClose }: { project: NonNullable<Card['projec
     }
   }, [project.accountId, project.conversationId])
   const running = tasks?.filter((t) => t.state === 'working').length ?? 0
+  // Bring the picked task into view once, not on every 6 s refresh.
+  const scrolledTo = useRef<string>(undefined)
+  const scrollOnce = (el: HTMLLIElement | null) => {
+    if (!el || scrolledTo.current === highlight) return
+    scrolledTo.current = highlight
+    el.scrollIntoView({ block: 'nearest' })
+  }
   return (
     <aside aria-label="项目详情" className="flex w-[340px] shrink-0 flex-col border-l border-line bg-main">
       <header className="flex items-start gap-2 px-4 pt-3 pb-2">
@@ -336,7 +538,11 @@ function ProjectDetail({ project, onClose }: { project: NonNullable<Card['projec
         {tasks?.length === 0 && <p className="px-1 text-[12px] text-ink-muted">还没有任务</p>}
         <ol className="flex flex-col gap-1.5">
           {tasks?.map((t) => (
-            <li key={t.id} className="flex flex-col gap-1 rounded-[10px] bg-canvas/60 px-3 py-2">
+            <li
+              key={t.id}
+              ref={t.id === highlight ? scrollOnce : undefined}
+              className={cn('flex flex-col gap-1 rounded-[10px] bg-canvas/60 px-3 py-2', t.id === highlight && 'ring-2 ring-accent-600')}
+            >
               <span className="flex items-start gap-2.5">
                 <span className={cn('mt-[7px] size-2 shrink-0 rounded-full', TASK_DOT[t.state])} />
                 <span className="flex min-w-0 flex-1 flex-col">
