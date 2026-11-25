@@ -1,4 +1,4 @@
-import { Columns2, Rows2, Equal } from 'lucide-react'
+import { Columns2, Rows2, Equal, MessageCircle } from 'lucide-react'
 import { cn } from '@/lib/cn'
 import { activeTab, leaves, type SplitSide } from '@/lib/paneTree'
 import { shortcutLabel } from '@/lib/shortcuts'
@@ -17,8 +17,10 @@ function ChatTab({ selected, onClick }: { selected: boolean; onClick: () => void
   const room = useRooms((r) => r.rooms.find((x) => x.id === useBotStore.getState().selectedBotId))
   // 会话/协作 follow the sidebar; 任务 (all) names whatever is selected.
   const scope = usePanes((s) => (s.scope === 'all' ? (room ? 'collab' : 'sessions') : s.scope))
+  // GOXF v26: with several panes each pane's capsule names its bot, so this tab just says 会话.
+  const split = usePanes((s) => s.view === 'sessions' && leaves(s.tree).length > 1)
   const fallback = scope === 'collab' ? '协作' : '会话'
-  const name = scope === 'collab' ? room?.title : bot?.name
+  const name = split ? undefined : scope === 'collab' ? room?.title : bot?.name
   return (
     <button
       type="button"
@@ -29,10 +31,11 @@ function ChatTab({ selected, onClick }: { selected: boolean; onClick: () => void
       className={cn(
         'no-drag press flex h-10 max-w-[260px] min-w-0 shrink items-center gap-2 rounded-full pr-3.5 pl-2 font-medium',
         selected ? 'border-[0.5px] border-line-strong bg-main text-[14px] text-ink shadow-float' : 'text-[13px] text-ink-muted hover:text-ink',
-        !name && 'px-3.5'
+        !name && !split && 'px-3.5', split && 'pl-3'
       )}
     >
-      {scope === 'sessions' && bot && (
+      {split && <MessageCircle aria-hidden className="-mr-0.5 size-4 shrink-0" />}
+      {!split && scope === 'sessions' && bot && (
         <BotAvatar
           emoji={bot.emoji}
           seed={bot.id}
@@ -44,7 +47,7 @@ function ChatTab({ selected, onClick }: { selected: boolean; onClick: () => void
           ringClassName="ring-main"
         />
       )}
-      {scope === 'collab' && room && <RoomAvatarCluster members={room.members} size="xs" />}
+      {!split && scope === 'collab' && room && <RoomAvatarCluster members={room.members} size="xs" />}
       <span className="min-w-0 truncate">{name ?? fallback}</span>
     </button>
   )

@@ -24,7 +24,8 @@ interface ChatHeaderProps {
   /** GOXF v13: a pane in a split keeps only "new conversation"; the pane's own buttons go in `extra`. */
   compact?: boolean
   extra?: ReactNode
-  /** GOXF v22: single plain pane — the top bar folds into this header (`leading` = split tools). */
+  /** GOXF v22: single plain pane — the top bar folds into this header (`leading` = split tools).
+   *  GOXF v26: in a split pane `leading` is the pane's tabs, on the same row as the capsule. */
   merged?: boolean
   leading?: ReactNode
 }
@@ -169,9 +170,9 @@ export const ChatHeader = memo(function ChatHeader({ bot, compact = false, extra
 
   return (
     <>
-    <PaneHeader className="gap-3 pr-3">
+    <PaneHeader className={cn('gap-3 pr-3', compact && 'border-b border-line pl-2')}>
       <div className={cn('flex min-w-0 flex-1 items-center gap-2', merged && '@container')}>
-        {merged && leading}
+        {leading}
         {merged && leading && <span aria-hidden className="mx-1 h-5 w-px shrink-0 bg-line" />}
         {bot.platformId === 'hark' && <HarkProjects key={bot.activeAccountId} botId={bot.id} compact />}
       </div>

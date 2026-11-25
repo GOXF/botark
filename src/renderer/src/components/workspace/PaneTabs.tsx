@@ -5,6 +5,7 @@ import type { PaneLeaf, PaneTab } from '@/lib/paneTree'
 import { useConversationTitles } from '@/services/workspaceSync'
 import { useBotStore } from '@/store/botStore'
 import { usePanes } from '@/store/paneStore'
+import { BotAvatar } from '@/components/ui/Avatar'
 
 /** Drag payload of a pane tab: `${leafId}\n${tabId}`. */
 export const PANE_TAB_MIME = 'application/x-botark-pane-tab'
@@ -14,15 +15,19 @@ export function readTabDrag(data: string): { leafId: string; tabId: string } | n
   return leafId && tabId ? { leafId, tabId } : null
 }
 
-function TabLabel({ tab }: { tab: PaneTab }) {
+/** GOXF v26: the pane's capsule names the bot, so a tab names its project; a tab of another bot gets its avatar. */
+function TabLabel({ tab, otherBot }: { tab: PaneTab; otherBot: boolean }) {
   const bot = useBotStore((s) => s.bots.find((b) => b.id === tab.botId))
   const typing = useBotStore((s) => s.typing[tab.botId] === true)
   const title = useConversationTitles((s) => (tab.conversationId ? s[tab.conversationId] : undefined))
   return (
     <>
       {typing && <span aria-hidden className="size-1.5 shrink-0 animate-pulse rounded-full bg-status-busy" />}
-      <span className="truncate">{bot?.name ?? '会话'}</span>
-      {title && <span className="truncate font-normal text-ink-muted">· {title}</span>}
+      {otherBot && bot && (
+        <BotAvatar emoji={bot.emoji} seed={bot.id} avatar={bot.avatar} avatarShape={bot.avatarShape}
+          avatarColor={bot.avatarColor} platformId={bot.platformId} size="xs" />
+      )}
+      <span className="truncate" title={title ? `${bot?.name ?? '会话'} · ${title}` : undefined}>{title ?? bot?.name ?? '会话'}</span>
     </>
   )
 }
@@ -31,12 +36,17 @@ function TabLabel({ tab }: { tab: PaneTab }) {
  * GOXF Issue #2: tabs at the top of a split pane. Click switches, × closes,
  * drag a tab to another pane's middle (joins it) or edge (splits there).
  */
-export function PaneTabs({ leaf, extra }: { leaf: PaneLeaf; extra?: ReactNode }) {
+export function PaneTabs({ leaf, extra, inline = false, tall = false }: { leaf: PaneLeaf; extra?: ReactNode; inline?: boolean; tall?: boolean }) {
   const selectTab = usePanes((s) => s.selectTab)
   const closeTab = usePanes((s) => s.closeTab)
+  const activeBot = leaf.tabs.find((t) => t.id === leaf.active)?.botId
 
   return (
-    <div role="tablist" aria-label="会话标签" className="no-drag flex h-9 shrink-0 items-center gap-1 border-b border-line px-1.5">
+    <div
+      role="tablist"
+      aria-label="会话标签"
+      className={cn('no-drag flex min-w-0 items-center gap-1', inline ? 'flex-1' : cn(tall ? 'h-[52px] pr-3 pl-2' : 'h-9 px-1.5', 'shrink-0 border-b border-line'))}
+    >
       <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto">
         {leaf.tabs.map((tab) => {
           const active = tab.id === leaf.active
@@ -66,7 +76,7 @@ export function PaneTabs({ leaf, extra }: { leaf: PaneLeaf; extra?: ReactNode })
                 active ? 'bg-hover text-ink' : 'text-ink-secondary hover:bg-hover hover:text-ink'
               )}
             >
-              <TabLabel tab={tab} />
+              <TabLabel tab={tab} otherBot={tab.botId !== activeBot} />
               <button
                 type="button"
                 title="关闭标签"

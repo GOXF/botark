@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { MessageList } from '@/components/chat/MessageList'
 import { PaneHeader } from '@/components/layout/PaneHeader'
 import { BotAvatar } from '@/components/ui/Avatar'
+import { cn } from '@/lib/cn'
 import { getBridge } from '@/lib/bridge'
 import { getBotAccounts } from '@/lib/selectors'
 import { useConversationTitles } from '@/services/workspaceSync'
@@ -15,7 +16,7 @@ import type { Bot, ChatMessage } from '@/types'
  * history call; Hark projects also stay live. Clicking into the pane makes it
  * the bot's active conversation again, with the composer.
  */
-export function ConversationMirror({ bot, conversationId }: { bot: Bot; conversationId: string }) {
+export function ConversationMirror({ bot, conversationId, leading, extra }: { bot: Bot; conversationId: string; leading?: ReactNode; extra?: ReactNode }) {
   const accountId = bot.activeAccountId
   const accountMap = useBotStore((s) => s.accounts)
   const accounts = useMemo(() => getBotAccounts(bot, accountMap), [bot, accountMap])
@@ -54,7 +55,9 @@ export function ConversationMirror({ bot, conversationId }: { bot: Bot; conversa
 
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-      <PaneHeader className="gap-2 px-3">
+      <PaneHeader className={cn('gap-2 px-3', leading && 'border-b border-line pl-2')}>
+        {leading && <div className="flex min-w-0 flex-1 items-center">{leading}</div>}
+        <span className={cn('flex min-w-0 items-center gap-2', leading && 'shrink-0 rounded-full border-[0.5px] border-line-strong px-2 py-1 pr-3 shadow-float')}>
         <BotAvatar
           emoji={bot.emoji}
           seed={bot.id}
@@ -65,7 +68,12 @@ export function ConversationMirror({ bot, conversationId }: { bot: Bot; conversa
           size="sm"
         />
         <span className="min-w-0 truncate text-[13.5px] font-medium text-ink">{bot.name}</span>
-        <span className="min-w-0 flex-1 truncate text-[12.5px] text-ink-muted">{title ?? '对话'}</span>
+        </span>
+        {leading ? (
+          <div className="flex min-w-0 flex-1 items-center justify-end">{extra}</div>
+        ) : (
+          <span className="min-w-0 flex-1 truncate text-[12.5px] text-ink-muted">{title ?? '对话'}</span>
+        )}
       </PaneHeader>
       {error && messages.length === 0 ? (
         <p role="alert" className="mx-6 my-4 text-[13px] text-status-error">{error}</p>

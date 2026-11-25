@@ -195,6 +195,9 @@ function Pane({ leaf, rect, multi, focused, hint, box }: {
     </button>
   )
 
+  const rowTabs = showTabs && bot ? <PaneTabs leaf={leaf} inline /> : undefined
+  const rowExtra = showTabs && bot ? (multi ? controls : maximized ? restore : undefined) : undefined
+
   const evaluate = (e: DragEvent): DropHint => {
     const el = e.currentTarget.getBoundingClientRect()
     const zone = dropZone({ x: el.left, y: el.top, w: el.width, h: el.height }, e.clientX, e.clientY)
@@ -242,25 +245,26 @@ function Pane({ leaf, rect, multi, focused, hint, box }: {
         multi && (focused ? 'border-accent-600 ring-1 ring-accent-600' : 'border-line')
       )}
     >
-      {showTabs && <PaneTabs leaf={leaf} extra={multi ? controls : maximized ? restore : undefined} />}
+      {/* GOXF v26: with a bot in the pane, tabs · capsule · controls share one row (the chat header). */}
+      {showTabs && !bot && <PaneTabs leaf={leaf} tall={multi} extra={multi ? controls : maximized ? restore : undefined} />}
       {!multi && !showTabs && maximized && <div className="no-drag absolute top-2 right-2 z-20">{restore}</div>}
       <ErrorBoundary surface="会话格" resetKey={tab ? `${tab.id}:${mirrorSession ?? ''}` : id}>
         {bot && mirrorSession ? (
-          <ConversationMirror bot={bot} conversationId={mirrorSession} />
+          <ConversationMirror bot={bot} conversationId={mirrorSession} leading={rowTabs} extra={rowExtra} />
         ) : (
           <ChatArea
             botId={botId}
             focused={focused}
             compact={multi}
             merged={merged}
-            headerLeading={merged ? <SplitTools fold /> : undefined}
+            headerLeading={merged ? <SplitTools fold /> : rowTabs}
             // Single pane without a tab strip: the pop-out button sits in the chat header's own icon row.
             headerExtra={
-              !showTabs && !maximized && botId && getBridge()?.goxfPopout ? (
+              rowExtra ?? (!showTabs && !maximized && botId && getBridge()?.goxfPopout ? (
                 <IconButton label="弹出到独立窗口" onClick={() => void getBridge()?.goxfPopout?.open(botId)}>
                   <SquareArrowOutUpRight />
                 </IconButton>
-              ) : undefined
+              ) : undefined)
             }
           />
         )}
