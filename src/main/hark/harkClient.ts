@@ -1969,6 +1969,15 @@ export async function watchHarkConversationSync(
 
   const watchToken = activeHarkWatches.add(accountId, () => ac.abort(), targetId, conversationId)
 
+  // GOXF: the timeout is for silence, not for a long turn. While Hark is visibly
+  // working (a status line, a tool running) the wait restarts, up to the tail cap.
+  const waitCap = Date.now() + HARK_TAIL_CAP_MS
+  const keepAlive = setInterval(() => {
+    if (tailing || signal.aborted || Date.now() > waitCap || !harkTurnBusy(syncState, afterIds)) return
+    clearTimeout(timer)
+    timer = setTimeout(() => timeout.abort(), opts.timeoutMs ?? 90_000)
+  }, 5_000)
+
   const hasPayloadOrActivity = (m?: HarkChatMessage): m is HarkChatMessage =>
     Boolean(
       m &&
@@ -2082,6 +2091,7 @@ export async function watchHarkConversationSync(
     } finally {
       clearTimeout(timer)
       clearInterval(tick)
+      clearInterval(keepAlive)
       ac.abort()
       if (result.reply) activeHarkWatches.markTaken(accountId, result.reply.id)
       activeHarkWatches.remove(accountId, watchToken)
