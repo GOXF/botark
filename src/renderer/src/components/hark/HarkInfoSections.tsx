@@ -670,8 +670,8 @@ export function HarkScheduledTasksSection({ accountId }: { accountId: string }) 
             {tasks.map((task) => (
               <li key={task.id} className="rounded-lg border border-line bg-surface p-2.5">
                 <div className="flex items-center justify-between gap-2">
-                  <span className="truncate font-medium text-ink">{task.title}</span>
-                  <span className="rounded-full bg-hover px-2 py-0.5 text-[10px] text-ink-secondary">
+                  <span className="min-w-0 truncate font-medium text-ink">{task.title}</span>
+                  <span className="shrink-0 whitespace-nowrap rounded-full bg-hover px-2 py-0.5 text-[10px] text-ink-secondary">
                     {task.paused ? t('Paused') : t('Active')}
                   </span>
                 </div>

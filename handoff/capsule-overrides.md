@@ -80,3 +80,7 @@
 | `rooms/RoomView.tsx:443` | rounded-2xl | rounded-full |
 | `rooms/WorkspaceTools.tsx:449` | rounded-lg | rounded-full |
 | `rooms/WorkspaceTools.tsx:653` | rounded-lg | rounded-full |
+## 非胶囊但改过的上游点
+| 位置 | 原来 | 现在 |
+|---|---|---|
+| components/hark/HarkInfoSections.tsx 定时任务状态标签（~674） | 标题 truncate、标签无 shrink-0 | 标题 min-w-0 truncate；标签 shrink-0 whitespace-nowrap（长标题时标签折行成圆饼） |
