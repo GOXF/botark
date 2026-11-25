@@ -9,8 +9,8 @@ import { join } from 'node:path'
 import { PORTABLE_DATA_DIR } from '../goxfPortable'
 
 const MAX_BYTES = 4 * 1024 * 1024
-const TASK_KEYS = ['requests', 'threads', 'activeWork', 'log', 'windows'] as const
-const TASK_OPS = /request|work|thread|tool|panel|window|entry_add|log/i
+const TASK_KEYS = ['requests', 'threads', 'activeWork', 'activeActivity', 'log', 'windows'] as const
+const TASK_OPS = /request|work|activity|helper|thread|tool|panel|window|entry_add|log/i
 const INTERESTING = /narrat|activit|status|wait|progress|thinking|line|label/i
 
 function write(text: string): void {
