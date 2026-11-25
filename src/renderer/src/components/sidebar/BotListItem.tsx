@@ -237,7 +237,7 @@ export const BotListItem = memo(function BotListItem({
             >
               {bot.name}
             </span>
-            {asleep && !typing && (
+            {asleep && !typing && !live && work.working === 0 && (
               <span
                 className="mr-auto shrink-0 self-center rounded-full bg-ink/[0.06] px-1.5 text-[10.5px] leading-4 text-ink-faint"
                 title={t('Idle for 10+ minutes; history unloaded to save memory. Opens normally.')}
