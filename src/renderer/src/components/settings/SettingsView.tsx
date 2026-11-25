@@ -60,6 +60,7 @@ import { MobileSyncSettingsPanel } from '@/components/mobile-sync/MobileSyncSett
 import { McpSettingsSection } from '@/components/settings/McpSettingsSection'
 import { NEW_ROOM_ID } from '@/rooms/RoomView'
 import { stopRoom, useRooms } from '@/rooms/roomStore'
+import { HarkSessionLine } from '@/components/info/HarkSessionLine'
 import { autoAssignProxyPool, useBotStore } from '@/store/botStore'
 import { usePrefsStore, type Locale, type ThemePref } from '@/store/prefsStore'
 import type { Bot } from '@/types'
@@ -2119,6 +2120,7 @@ export function SettingsView() {
                           </span>
                           <span className="mt-0.5 max-w-full truncate text-[11px] text-ink-muted">{acc.handle || acc.id}</span>
                           <StatusBadge status={acc.status} className="mt-2" />
+                          <HarkSessionLine accountId={acc.id} className="mt-1.5 text-center" />
                           <div className="mt-3 flex w-full items-center gap-1.5 border-t border-line pt-3">
                             {live ? (
                               ownerBot && (
@@ -2132,7 +2134,7 @@ export function SettingsView() {
                               </Button>
                             )}
                             <Button size="sm" variant="secondary" disabled={acc.pending} onClick={() => void connectAccount(acc.id)}>
-                              刷新会话
+                              {acc.pending ? '刷新中…' : '刷新会话'}
                             </Button>
                             <div className="ml-auto flex items-center gap-1">
                               {live && (

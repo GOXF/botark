@@ -922,6 +922,15 @@ export const HARK_CHANNELS = {
 } as const
 
 export type HarkMainEvent =
+  /** Result of the main process's periodic session renewal. */
+  | {
+      type: 'sessionCheck'
+      accountId: string
+      result: 'ok' | 'expired' | 'failed'
+      at: number
+      expiresAt?: number
+      message?: string
+    }
   | {
       type: 'projectHistory'
       accountId: string
@@ -984,6 +993,8 @@ export interface HarkAuthStatus {
   handle?: string
   displayName?: string
   hasProxy?: boolean
+  /** When the session expires (ms), from get-session or the session cookie. */
+  expiresAt?: number
 }
 
 export type HarkRpcRequest =

@@ -5,6 +5,7 @@ import {
   getProfile,
   HarkApiError,
   preparedSessionForAccount,
+  sessionForAccount,
   type HarkAuthSession
 } from './harkClient'
 
@@ -58,4 +59,13 @@ export async function logHarkSessionDebug(accountId: string): Promise<void> {
   console.info(`[hark] startup ${accountId}: get-session=${getSession} profile=${profile} cookies=${JSON.stringify(
     cookies.map((c) => ({ name: c.name, domain: c.domain, session: c.session, expirationDate: c.expirationDate }))
   )}`)
+}
+
+/** When the account's session expires (ms): get-session's expiresAt, else the .hark.com session cookie. */
+export async function harkSessionExpiresAt(accountId: string, session: HarkAuthSession): Promise<number | undefined> {
+  const fromApi = Date.parse(session?.session?.expiresAt ?? '')
+  if (Number.isFinite(fromApi)) return fromApi
+  const cookies = await sessionForAccount(accountId).cookies.get({ name: '__Secure-hark.session_token' }).catch(() => [])
+  const exp = cookies.find((c) => c.domain === '.hark.com')?.expirationDate
+  return exp ? Math.round(exp * 1000) : undefined
 }

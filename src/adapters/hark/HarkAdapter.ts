@@ -5,6 +5,7 @@ import { harkProjectId } from '@shared/harkProjects'
 import { getBotHubBridge } from '../meta-muse/electronBridge'
 import { HARK_DRAFT_SESSION } from '@shared/harkProjects'
 import { harkRpc, type HarkRequest } from './harkRequests'
+import { recordHarkSessionCheck } from './sessionCheck'
 import {
   AdapterError,
   type AdapterEvent,
@@ -109,6 +110,14 @@ export class HarkAdapter implements PlatformAdapter {
       }
       return
     }
+    if (event.type === 'sessionCheck') {
+      recordHarkSessionCheck(event.accountId, event.result === 'failed'
+        ? { result: 'failed', at: event.at, message: event.message, background: true }
+        : event.result === 'ok'
+          ? { result: 'ok', at: event.at, expiresAt: event.expiresAt }
+          : { result: 'expired', at: event.at })
+      return
+    }
     if (event.type !== 'login') return
     if (event.signedIn) {
       this.emit({
@@ -197,17 +206,21 @@ export class HarkAdapter implements PlatformAdapter {
       this.setStatus(accountId, 'offline', '需要 Electron')
       return 'offline'
     }
+    recordHarkSessionCheck(accountId, { result: 'checking', at: Date.now() })
     try {
       const status = await bridge.authStatus(accountId)
       if (!status.signedIn) {
+        recordHarkSessionCheck(accountId, { result: 'expired', at: Date.now() })
         this.setStatus(accountId, 'offline', '未登录 Hark')
         return 'offline'
       }
+      recordHarkSessionCheck(accountId, { result: 'ok', at: Date.now(), expiresAt: status.expiresAt })
       this.upsert(accountId, { displayName: status.displayName, handle: status.handle })
       this.setStatus(accountId, 'online')
       return 'online'
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error)
+      recordHarkSessionCheck(accountId, { result: 'failed', at: Date.now(), message: detail })
       this.setStatus(accountId, 'error', detail)
       return 'error'
     }

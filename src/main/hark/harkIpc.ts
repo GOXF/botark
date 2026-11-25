@@ -51,7 +51,7 @@ import { logHarkFrame } from './harkFrameLog'
 import { cancelHarkLogin, completeHarkCredentialImport, onHarkLoginEvent, openHarkLoginWindow } from './harkLogin'
 import { loadAccountProxyUrl } from '../muse/accountProxy'
 import { guessMediaMimeFromName } from '../mediaMime'
-import { logHarkSessionDebug, probeHarkSession } from './harkSession'
+import { harkSessionExpiresAt, logHarkSessionDebug, probeHarkSession } from './harkSession'
 import { harkWebViewUrlAfterSignIn } from './harkWebView'
 import { reloadAccountWebViews } from '../webViewIpc'
 import { harkCreateProjectBody, harkProjectId } from '@shared/harkProjects'
@@ -219,8 +219,18 @@ setInterval(() => {
 
 async function recheck(accountId: string): Promise<void> {
   const before = knownAccounts.get(accountId)
-  const st = await statusFor(accountId).catch(() => null)
-  if (!st || st.signedIn === before) return
+  let st: HarkAuthStatus
+  try {
+    st = await statusFor(accountId)
+  } catch (error) {
+    broadcast({ type: 'sessionCheck', accountId, result: 'failed', at: Date.now(),
+      message: error instanceof Error ? error.message : String(error) })
+    return
+  }
+  broadcast(st.signedIn
+    ? { type: 'sessionCheck', accountId, result: 'ok', at: Date.now(), expiresAt: st.expiresAt }
+    : { type: 'sessionCheck', accountId, result: 'expired', at: Date.now() })
+  if (st.signedIn === before) return
   broadcast(st.signedIn
     ? { type: 'login', accountId, signedIn: true as const, handle: st.handle, displayName: st.displayName }
     : { type: 'login', accountId, signedIn: false as const })
@@ -239,7 +249,8 @@ async function statusFor(accountId: string): Promise<HarkAuthStatus> {
     if ('signedIn' in probe) return { accountId, signedIn: false, hasProxy }
     // Signed in from inside the embedded page: move it off the login page.
     if (wasSignedIn === false) reloadAccountWebViews(accountId, harkWebViewUrlAfterSignIn)
-    return { accountId, signedIn: true, handle: probe.handle, displayName: probe.displayName, hasProxy }
+    const expiresAt = await harkSessionExpiresAt(accountId, probe.session)
+    return { accountId, signedIn: true, handle: probe.handle, displayName: probe.displayName, hasProxy, expiresAt }
   })
 }
 

@@ -7,6 +7,7 @@ import {
   MoreHorizontal,
   Pencil,
   Plug,
+  RotateCw,
   Unplug,
   UserMinus,
   UserRoundCheck
@@ -14,6 +15,7 @@ import {
 import type { PlatformId } from '@adapters/types'
 import { AccountAvatar } from '@/components/ui/Avatar'
 import { InlineEdit } from '@/components/ui/InlineEdit'
+import { HarkSessionLine } from './HarkSessionLine'
 import { Menu, MenuContent, MenuItem, MenuSeparator, MenuTrigger } from '@/components/ui/Menu'
 import { STATUS_LABEL } from '@/components/ui/Status'
 import { cn } from '@/lib/cn'
@@ -128,7 +130,9 @@ export function AccountList({ bot, accounts }: AccountListProps) {
                 </span>
                 <span className="min-w-0 flex-1">
                   <span className="block truncate text-[13px] leading-[18px] text-ink">{name}</span>
-                  {showError && (
+                  {account.platformId === 'hark' ? (
+                    <HarkSessionLine accountId={account.id} />
+                  ) : showError && (
                     <span className="block truncate text-[12px] leading-4 text-status-error">
                       {account.statusDetail}
                     </span>
@@ -183,7 +187,22 @@ export function AccountList({ bot, accounts }: AccountListProps) {
                   <MenuItem onSelect={() => setEditingId(account.id)}>
                     <Pencil aria-hidden /> {t('Rename')}
                   </MenuItem>
-                  {connected ? (
+                  {account.platformId === 'hark' ? (
+                    <>
+                      {connected ? (
+                        <MenuItem onSelect={() => void disconnectAccount(account.id)}>
+                          <Unplug aria-hidden /> {t('Disconnect')}
+                        </MenuItem>
+                      ) : (
+                        <MenuItem onSelect={() => triggerPlatformLogin(account)}>
+                          <LogIn aria-hidden /> {loginLabel}
+                        </MenuItem>
+                      )}
+                      <MenuItem disabled={account.pending} onSelect={() => void connectAccount(account.id)}>
+                        <RotateCw aria-hidden /> {account.pending ? '刷新中…' : '刷新会话'}
+                      </MenuItem>
+                    </>
+                  ) : connected ? (
                     <MenuItem onSelect={() => void disconnectAccount(account.id)}>
                       <Unplug aria-hidden /> {t('Disconnect')}
                     </MenuItem>
