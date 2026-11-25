@@ -203,7 +203,7 @@ const RoomSidebarItem = memo(function RoomSidebarItem({
   const speaker = useRooms((s) => s.speakers[room.id])
   const [renaming, setRenaming] = useState(false)
   const [menuOpen, setMenuOpen] = useState(false)
-  const [expanded, setExpanded] = useState(false)
+  const [expanded, setExpanded] = useState(true)
   const rowRef = useRef<HTMLButtonElement>(null)
   const renameInputRef = useRef<HTMLInputElement>(null)
   const drop = useRoomDropTarget(room.id)
@@ -833,7 +833,7 @@ function HighlightMentions({
 }
 
 function ToolExecutionCard({ message }: { message: RoomMessage }) {
-  const [expanded, setExpanded] = useState(false)
+  const [expanded, setExpanded] = useState(true)
   const lines = message.text.split('\n')
   const summary = lines[0]?.trim().slice(0, 72) || 'workspace'
 
