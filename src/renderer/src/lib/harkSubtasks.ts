@@ -14,11 +14,13 @@ export interface HarkSubtask {
 
 interface SnapPanel { dispatchId?: string; kind?: string; status?: string; title?: string; url?: string; command?: string }
 interface SnapTool { dispatchId?: string; name?: string; status?: string; url?: string; command?: string; detail?: string }
-interface SnapMessage { createdAt?: string | number | null; toolCalls?: SnapTool[] }
+interface SnapMessage { id?: string; role?: string; content?: string; createdAt?: string | number | null; triggeredBy?: string; toolCalls?: SnapTool[] }
 export interface HarkSnapshotLike {
   panels?: SnapPanel[]
   messages?: SnapMessage[]
   asks?: Array<{ dispatchId?: string; status?: string }>
+  requests?: Record<string, { state?: string; title?: string; doneTitle?: string; boundTo?: string }>
+  activeWork?: Array<{ dispatchId?: string; messageId?: string; state?: string }>
 }
 
 export function subtaskStatus(raw: string | undefined): HarkSubtask['status'] {
@@ -75,4 +77,73 @@ export function deriveSubtasks(snap: HarkSnapshotLike | null | undefined): HarkS
     if (t && subtaskStatus(a.status) !== 'done') t.status = 'waiting'
   }
   return [...out.values()].sort((a, b) => ORDER[a.status] - ORDER[b.status] || (b.startedAt ?? 0) - (a.startedAt ?? 0))
+}
+
+/** One task = one request Hark took up (a user message), with the work its replies dispatched. */
+export interface HarkTask {
+  id: string
+  title: string
+  state: 'working' | 'open' | 'done'
+  createdAt?: number
+  subtasks: HarkSubtask[]
+}
+
+/**
+ * Group a project's work the way Hark does: `requests` keyed by the user message,
+ * a follow-up `boundTo` another request folds into it, each reply names its
+ * request in `triggeredBy`, and `activeWork` lists the dispatches still running.
+ */
+export function deriveTasks(snap: HarkSnapshotLike | null | undefined): HarkTask[] {
+  const requests = snap?.requests ?? {}
+  const root = (id: string): string => {
+    let cur = id
+    for (let i = 0; i < 20; i++) {
+      const next = requests[cur]?.boundTo
+      if (!next || next === cur || !requests[next]) break
+      cur = next
+    }
+    return cur
+  }
+  const subtasks = new Map(deriveSubtasks(snap).map((t) => [t.id, t]))
+  const live = new Set((snap?.activeWork ?? []).filter((w) => !/complete|done|fail|cancel/i.test(w.state ?? '')).map((w) => w.dispatchId))
+  for (const id of live) {
+    const t = id ? subtasks.get(id) : undefined
+    if (t && t.status === 'done') t.status = 'running'
+  }
+  const tasks = new Map<string, HarkTask>()
+  const task = (id: string): HarkTask => {
+    let t = tasks.get(id)
+    if (!t) {
+      const r = requests[id] ?? {}
+      const state = /complete|done|answer|closed/i.test(r.state ?? '') ? 'done' : /work/i.test(r.state ?? '') ? 'working' : 'open'
+      t = { id, title: (state === 'done' && r.doneTitle) || r.title || '', state, subtasks: [] }
+      tasks.set(id, t)
+    }
+    return t
+  }
+  for (const id of Object.keys(requests)) if (root(id) === id) task(id)
+  for (const m of snap?.messages ?? []) {
+    if (m.id && /^user$/i.test(m.role ?? '') && requests[m.id]) {
+      const t = task(root(m.id))
+      if (t.id === m.id) {
+        t.createdAt = toTime(m.createdAt)
+        if (!t.title) t.title = (m.content ?? '').replace(/\s+/g, ' ').trim().slice(0, 60)
+      }
+      continue
+    }
+    if (!m.triggeredBy) continue
+    const t = task(root(m.triggeredBy))
+    for (const tc of m.toolCalls ?? []) {
+      const st = tc.dispatchId ? subtasks.get(tc.dispatchId) : undefined
+      if (st && !t.subtasks.includes(st)) t.subtasks.push(st)
+    }
+  }
+  const out = [...tasks.values()].filter((t) => t.title || t.subtasks.length)
+  for (const t of out) {
+    t.subtasks.sort((a, b) => ORDER[a.status] - ORDER[b.status] || (a.startedAt ?? 0) - (b.startedAt ?? 0))
+    if (t.state !== 'done' && t.subtasks.some((s) => s.status === 'running' || s.status === 'waiting')) t.state = 'working'
+    if (!t.title) t.title = '未命名任务'
+  }
+  const rank = { working: 0, open: 1, done: 2 } as const
+  return out.sort((a, b) => rank[a.state] - rank[b.state] || (b.createdAt ?? 0) - (a.createdAt ?? 0))
 }

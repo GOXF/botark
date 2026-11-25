@@ -524,7 +524,9 @@ export async function fetchConversationSnapshotSummary(
     asks: syncState.extractAsks(),
     artifacts: syncState.extractArtifacts(),
     activeActivity: syncState.activeActivity,
-    narration: syncState.narration
+    narration: syncState.narration,
+    requests: Object.fromEntries(syncState.requests),
+    activeWork: Array.isArray(syncState.activeWork) ? syncState.activeWork : []
   }
 }
 
@@ -811,6 +813,8 @@ export type HarkChatMessage = {
   createdAt?: string | number | null
   /** The message this reply answers: its id, and/or a quoted copy Hark embedded. */
   replyTo?: { id?: string; text?: string }
+  /** GOXF: the user message (= Hark request id) this reply was made for. */
+  triggeredBy?: string
   toolCalls?: Array<{
     dispatchId: string
     name: string
@@ -879,6 +883,8 @@ export interface HarkConversationSnapshotSummary {
   }>
   activeActivity?: string | null
   narration?: string | null
+  requests?: Record<string, Record<string, unknown>>
+  activeWork?: unknown[]
 }
 
 /**
@@ -895,6 +901,8 @@ export class HarkConversationSyncState {
   activeActivity: string | null = null
   /** GOXF: Hark's `activeWork` (background work after the reply, e.g. 「Running network path checks」). */
   activeWork: unknown = null
+  /** GOXF: Hark's own task list: one entry per user message it took up (`requests`, `request_update`). */
+  readonly requests = new Map<string, Record<string, unknown>>()
   narration: string | null = null
   /** GOXF: Hark's narration says `working: true` while a turn runs, even before it has a line. */
   narrationWorking = false
@@ -928,6 +936,12 @@ export class HarkConversationSyncState {
       // Joining mid-run: the snapshot carries the same shapes the patches do (string or {label/type}).
       this.activeActivity = harkActivityLabel(data['activeActivity'])
       this.activeWork = data['activeWork'] ?? null
+      this.requests.clear()
+      if (data['requests'] && typeof data['requests'] === 'object') {
+        for (const [rid, rval] of Object.entries(data['requests'] as Record<string, unknown>)) {
+          if (rval && typeof rval === 'object') this.requests.set(rid, rval as Record<string, unknown>)
+        }
+      }
       this.narration = harkActivityLabel(data['narration'])
       this.narrationWorking = harkNarrationWorking(data['narration'], false)
 
@@ -1176,6 +1190,11 @@ export class HarkConversationSyncState {
       } else if (op === 'active_activity_set') {
         this.activeActivity = harkActivityLabel(p['value'])
         activityChanged = true
+      } else if (op === 'request_update' || op === 'request_add') {
+        const id = String(p['id'] ?? '')
+        const val = (p['value'] ?? p['fields'] ?? {}) as Record<string, unknown>
+        if (id) this.requests.set(id, { ...(this.requests.get(id) ?? {}), ...val })
+        activityChanged = true
       } else if (/active_?work/i.test(op)) {
         this.activeWork = /clear|remove|delete/i.test(op) ? null : (p['value'] ?? p['fields'] ?? null)
         activityChanged = true
@@ -1214,7 +1233,7 @@ export class HarkConversationSyncState {
       ''
     ).trim()
     const work = harkHasWork(this.activeWork)
-    const line = text || (work ? harkActivityLabel(this.activeWork) || '后台任务进行中…' : '')
+    const line = text || (work ? harkWorkLine(this.activeWork) : '')
     return { busy: Boolean(line || streaming || this.narrationWorking), text: line.slice(0, 120) }
   }
 
@@ -1639,6 +1658,7 @@ export function normalizeSyncMessage(id: string, raw: Record<string, unknown>): 
     console.log('[hark] message keys:', Object.keys(raw).sort().join(','))
   }
   const replyTo = harkReplyRef(raw)
+  const triggeredBy = typeof raw['triggeredByMessageId'] === 'string' ? raw['triggeredByMessageId'] : undefined
   const rawContent =
     (typeof raw['content'] === 'string' && raw['content']) ||
     (typeof raw['text'] === 'string' && raw['text']) ||
@@ -1727,6 +1747,7 @@ export function normalizeSyncMessage(id: string, raw: Record<string, unknown>): 
       | number
       | null,
     ...(replyTo ? { replyTo } : {}),
+    ...(triggeredBy ? { triggeredBy } : {}),
     ...(toolCalls.length ? { toolCalls } : {}),
     ...(actions.length ? { actions } : {}),
     ...(artifacts.length ? { artifacts } : {}),
@@ -1779,6 +1800,14 @@ export function harkNarrationWorking(v: unknown, fallback: boolean): boolean {
 }
 
 /** Hark sends activity / narration as a plain string or as `{ line | label | text | type }`. */
+/** GOXF: activeWork is [{ dispatchId, messageId, site?, state: 'working', expiresAt }]. */
+export function harkWorkLine(v: unknown): string {
+  const list = (Array.isArray(v) ? v : [v]).filter(harkHasWork) as Array<Record<string, unknown>>
+  const site = list.map((w) => w?.['site']).find((x) => typeof x === 'string' && x)
+  if (list.length > 1) return `后台 ${list.length} 个任务进行中${site ? `（含 ${site}）` : ''}`
+  return site ? `正在打开 ${site}` : '后台任务进行中…'
+}
+
 /** GOXF: Hark's activeWork counts only when it holds something (null / {} / [] = idle). */
 export function harkHasWork(v: unknown): boolean {
   if (v == null || v === false || v === '') return false

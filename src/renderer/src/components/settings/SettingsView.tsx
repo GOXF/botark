@@ -2930,7 +2930,7 @@ function StartViewPicker() {
       value={startView}
       onValueChange={setStartView}
       options={[
-        { value: 'board', label: '看板' },
+        { value: 'board', label: '任务' },
         { value: 'sessions', label: '会话' },
         { value: 'collab', label: '协作' },
         { value: 'last', label: '上次的页面' }

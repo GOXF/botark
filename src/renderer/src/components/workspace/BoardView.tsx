@@ -14,7 +14,7 @@ import { asksForAccount, useConversationTitles, useHarkAskCounts } from '@/servi
 import { usePanes } from '@/store/paneStore'
 import { getBridge } from '@/lib/bridge'
 import { harkProjects } from '@shared/harkProjects'
-import { deriveSubtasks, type HarkSnapshotLike, type HarkSubtask } from '@/lib/harkSubtasks'
+import { deriveTasks, type HarkSnapshotLike, type HarkSubtask, type HarkTask } from '@/lib/harkSubtasks'
 import { openConversationTab } from './conversationDnd'
 import { useBotStore } from '@/store/botStore'
 import { SegmentedControl } from '@/components/ui/SegmentedControl'
@@ -266,12 +266,14 @@ const SUBTASK_DOT: Record<HarkSubtask['status'], string> = {
   done: 'bg-status-online'
 }
 const SUBTASK_WORD: Record<HarkSubtask['status'], string> = { waiting: '等你确认', running: '运行中', failed: '失败', done: '已完成' }
+const TASK_DOT: Record<HarkTask['state'], string> = { working: 'bg-status-busy', open: 'bg-status-attention', done: 'bg-status-online' }
+const TASK_WORD: Record<HarkTask['state'], string> = { working: '进行中', open: '待处理', done: '已完成' }
 const KIND_WORD: Record<HarkSubtask['kind'], string> = { browser: '浏览器', subagent: '子代理', other: '工具' }
 
 /** v25: right-side detail for one Hark project: what it runs at once, refreshed while open. */
 function ProjectDetail({ project, onClose }: { project: NonNullable<Card['project']> & { title: string }; onClose: () => void }) {
   useMinuteTick()
-  const [subtasks, setSubtasks] = useState<HarkSubtask[]>()
+  const [tasks, setTasks] = useState<HarkTask[]>()
   const [status, setStatus] = useState('')
   const [error, setError] = useState('')
   useEffect(() => {
@@ -285,7 +287,7 @@ function ProjectDetail({ project, onClose }: { project: NonNullable<Card['projec
       }
       const data = res.data as HarkSnapshotLike & { activeActivity?: { text?: string } | string | null; narration?: string }
       setError('')
-      setSubtasks(deriveSubtasks(data))
+      setTasks(deriveTasks(data))
       const act = typeof data.activeActivity === 'string' ? data.activeActivity : data.activeActivity?.text
       setStatus(act || data.narration || '')
     }
@@ -296,7 +298,7 @@ function ProjectDetail({ project, onClose }: { project: NonNullable<Card['projec
       clearInterval(id)
     }
   }, [project.accountId, project.conversationId])
-  const running = subtasks?.filter((t) => t.status === 'running' || t.status === 'waiting').length ?? 0
+  const running = tasks?.filter((t) => t.state === 'working').length ?? 0
   return (
     <aside aria-label="项目详情" className="flex w-[340px] shrink-0 flex-col border-l border-line bg-main">
       <header className="flex items-start gap-2 px-4 pt-3 pb-2">
@@ -314,25 +316,38 @@ function ProjectDetail({ project, onClose }: { project: NonNullable<Card['projec
       </p>
       <div className="mt-3 flex min-h-0 flex-1 flex-col overflow-y-auto px-3 pb-3">
         <h4 className="px-1 pb-1.5 text-[12.5px] font-medium text-ink">
-          并发子任务 <span className="text-ink-muted">{running}</span>
+          任务 <span className="text-ink-muted">{running} 个进行中</span>
         </h4>
         {error && <p className="px-1 text-[12px] text-status-error">{error}</p>}
-        {!subtasks && !error && <p className="px-1 text-[12px] text-ink-muted">读取中…</p>}
-        {subtasks?.length === 0 && <p className="px-1 text-[12px] text-ink-muted">没有子任务，Hark 正在主对话里直接处理</p>}
+        {!tasks && !error && <p className="px-1 text-[12px] text-ink-muted">读取中…</p>}
+        {tasks?.length === 0 && <p className="px-1 text-[12px] text-ink-muted">还没有任务</p>}
         <ol className="flex flex-col gap-1.5">
-          {subtasks?.map((t) => (
-            <li key={t.id} className="flex items-start gap-2.5 rounded-[10px] bg-canvas/60 px-3 py-2">
-              <span className={cn('mt-[7px] size-2 shrink-0 rounded-full', SUBTASK_DOT[t.status])} />
-              <span className="flex min-w-0 flex-1 flex-col">
-                <span className="flex items-center gap-2 text-[11px] text-ink-muted">
-                  <span className="flex-1">{KIND_WORD[t.kind]}</span>
-                  <span>
-                    {SUBTASK_WORD[t.status]}
-                    {t.startedAt ? ` · ${formatShortTime(t.startedAt)}` : ''}
+          {tasks?.map((t) => (
+            <li key={t.id} className="flex flex-col gap-1 rounded-[10px] bg-canvas/60 px-3 py-2">
+              <span className="flex items-start gap-2.5">
+                <span className={cn('mt-[7px] size-2 shrink-0 rounded-full', TASK_DOT[t.state])} />
+                <span className="flex min-w-0 flex-1 flex-col">
+                  <span className="line-clamp-2 text-[12.5px] leading-[18px] font-medium text-ink" title={t.title}>{t.title}</span>
+                  <span className="text-[11px] text-ink-muted">
+                    {TASK_WORD[t.state]}
+                    {t.createdAt ? ` · ${formatShortTime(t.createdAt)}` : ''}
                   </span>
                 </span>
-                <span className="line-clamp-2 text-[12.5px] leading-[18px] text-ink" title={t.title}>{t.title}</span>
               </span>
+              {t.subtasks.length > 0 && (
+                <ul className="ml-[18px] flex flex-col gap-1 border-l border-line pl-2.5">
+                  {t.subtasks.map((st) => (
+                    <li key={st.id} className="flex items-start gap-2 text-[11.5px] leading-[16px]">
+                      <span className={cn('mt-[5px] size-1.5 shrink-0 rounded-full', SUBTASK_DOT[st.status])} />
+                      <span className="min-w-0 flex-1 truncate text-ink" title={st.title}>
+                        <span className="text-ink-muted">{KIND_WORD[st.kind]} · </span>
+                        {st.title}
+                      </span>
+                      <span className="shrink-0 text-ink-muted">{SUBTASK_WORD[st.status]}</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
             </li>
           ))}
         </ol>

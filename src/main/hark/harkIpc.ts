@@ -301,7 +301,9 @@ async function runHarkRpc(req: HarkRequest, signal?: AbortSignal): Promise<HarkR
             asks: snap?.asks ?? [],
             artifacts: snap?.artifacts ?? [],
             activeActivity: snap?.activeActivity ?? null,
-            narration: snap?.narration ?? null
+            narration: snap?.narration ?? null,
+            requests: snap?.requests ?? {},
+            activeWork: snap?.activeWork ?? []
           }
         }
       }
