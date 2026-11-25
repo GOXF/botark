@@ -18,7 +18,8 @@ import {
   Undo2,
   Square,
   Trash2,
-  X
+  X,
+  CheckCheck
 } from 'lucide-react'
 import { useShallow } from 'zustand/react/shallow'
 import { MarkdownText } from '@/components/chat/MarkdownText'
@@ -1054,12 +1055,24 @@ const RoomMessageRow = memo(function RoomMessageRow({
               <Undo2 className="size-3" aria-hidden /> 撤回
             </button>
           )}
-          {message.failures?.map((f) => (
-            <span key={f.botId} className="inline-flex items-center gap-1.5 px-1 text-[11.5px] text-status-attention-ink">
-              <AlertCircle className="size-3" aria-hidden />
-              {message.failures!.length > 1 || f.error !== NO_REPLY_ERROR ? `@${f.name}：${f.error}` : f.error}
-            </span>
-          ))}
+          {message.failures?.map((raw) => {
+            const f = { ...raw, delivered: raw.delivered ?? (raw.error === NO_REPLY_ERROR || /送达|已收到/.test(raw.error)) }
+            // GOXF: say plainly whether it got there; a delivered message never reads as undelivered.
+            const state = f.delivered ? (f.error === NO_REPLY_ERROR ? NO_REPLY_ERROR : `已送达，但没有回复（${f.error}）`) : `未送达：${f.error}`
+            return (
+              <span
+                key={f.botId}
+                title={f.error}
+                className={cn(
+                  'inline-flex items-center gap-1.5 px-1 text-[11.5px]',
+                  f.delivered ? 'text-ink-muted' : 'text-status-attention-ink'
+                )}
+              >
+                {f.delivered ? <CheckCheck className="size-3" aria-hidden /> : <AlertCircle className="size-3" aria-hidden />}
+                {message.failures!.length > 1 ? `@${f.name}：${state}` : state}
+              </span>
+            )
+          })}
           {Boolean(message.failures?.length) && (
             <button
               type="button"

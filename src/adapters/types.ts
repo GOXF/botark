@@ -71,6 +71,13 @@ export interface OutgoingMessage {
    * to, when the send created it (a Hark draft project becoming a real one).
    */
   onAccepted?: (sessionId?: string) => void
+  /**
+   * GOXF: how long to wait in silence for the reply once the platform took the
+   * message. Group turns wait longer: a Hark turn that runs tools or browsers
+   * often goes quiet for minutes, and giving up early showed a delivered
+   * message as unanswered.
+   */
+  replyTimeoutMs?: number
   /** Optional abort signal (e.g. Collaboration Room Stop) to cancel waiting for the turn. */
   signal?: AbortSignal
 }

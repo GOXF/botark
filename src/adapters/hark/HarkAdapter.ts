@@ -316,7 +316,7 @@ export class HarkAdapter implements PlatformAdapter {
         timezone: timeZone,
         afterMessageIds: sent?.responseMessageId ? undefined : afterIds,
         requestId: createId('hark_watch'),
-        timeoutMs: 90_000
+        timeoutMs: message.replyTimeoutMs ?? 90_000
       }, message.signal)) as {
         outcome?: 'completed' | 'timed-out' | 'cancelled' | 'failed'
         error?: string

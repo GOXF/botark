@@ -530,15 +530,48 @@ it('continues queued participants after a failed turn without retrying the faile
   fixture('auto', async (msg) => {
     calls.push(msg.accountId)
     if (msg.accountId === 'Muse') throw new Error('transport timeout')
-    expect(msg.text).toContain('Muse 本轮未取得回复')
+    expect(msg.text).toContain('Muse 本轮未送达')
     return '@Muse retry'
   })
   await submitBrief('room', '@Muse @Dot review')
   expect(calls).toEqual(['Muse', 'Dot'])
   // GOXF: the failure sits on the human message (with 再发一次), not as a red room error.
   const brief = useRooms.getState().rooms[0]!.messages[0]!
-  expect(brief.failures).toEqual([{ botId: 'Muse', name: 'Muse', error: 'transport timeout' }])
+  expect(brief.failures).toEqual([expect.objectContaining({ botId: 'Muse', name: 'Muse', error: 'transport timeout', delivered: false })])
   expect(useRooms.getState().errors.room).toBeUndefined()
+})
+
+it('says a delivered but unanswered turn was delivered, and posts the reply when it arrives late', async () => {
+  vi.useFakeTimers()
+  try {
+    const room: CollabRoom = { id: 'room', title: 'Review', brief: '', members, mode: 'manual', limit: 8, messages: [] }
+    useRooms.setState({ rooms: [room], speakers: {}, errors: {}, slackDestinations: {} })
+    useBotStore.setState({ bots: members.map((m) => ({
+      id: m.botId, name: m.name, platformId: m.platform,
+      accountIds: [m.accountId], activeAccountId: m.accountId, selectedAgentId: (m as { agentId?: string }).agentId
+    } as Bot)) })
+    const listeners = new Set<(msg: IncomingMessage) => void>()
+    let turn = ''
+    vi.spyOn(adapterRegistry, 'get').mockReturnValue({ getStatus: () => 'online',
+      onMessage: (listener: (msg: IncomingMessage) => void) => { listeners.add(listener); return () => listeners.delete(listener) },
+      sendMessage: async (m: OutgoingMessage): Promise<SendReceipt> => {
+        turn = m.conversationId
+        m.onAccepted?.()
+        return { messageId: 'receipt', acceptedAt: 1 }
+      }
+    } as unknown as PlatformAdapter)
+    await submitBrief('room', '@Muse review')
+    let state = useRooms.getState().rooms[0]!
+    expect(state.messages[0]!.failures).toEqual([expect.objectContaining({ botId: 'Muse', delivered: true })])
+    expect(state.messages.at(-1)?.text).toBe('Muse 已收到消息，本轮还没有回复。')
+    for (const listener of listeners) listener({ id: 'late', accountId: 'Muse', conversationId: turn, text: 'late answer', createdAt: 2 } as IncomingMessage)
+    vi.advanceTimersByTime(3_000)
+    state = useRooms.getState().rooms[0]!
+    expect(state.messages[0]!.failures).toEqual([])
+    expect(state.messages.map((m) => m.text)).toEqual(['@Muse review', 'late answer'])
+  } finally {
+    vi.useRealTimers()
+  }
 })
 
 it('recall takes the newest human message out and keeps member cursors on the next message', async () => {
@@ -566,7 +599,7 @@ it('returns a delegated failure to the administrator and records only its accept
   })
   await submitBrief(id, 'Review')
   expect(calls.map((m) => m.accountId)).toEqual(['Muse', 'Dot', 'Muse'])
-  expect(calls[2]?.text).toContain('Dot 本轮未取得回复')
+  expect(calls[2]?.text).toContain('Dot 本轮未送达')
   const room = useRooms.getState().rooms.find((r) => r.id === id)!
   expect(room.messages.at(-1)?.final).toBe(true)
   expect(roomMarkdown(room)).toContain('partial result')

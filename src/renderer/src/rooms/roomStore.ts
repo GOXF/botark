@@ -1,7 +1,7 @@
 import { create } from 'zustand'
 import { persist, type PersistStorage } from 'zustand/middleware'
 import { adapterRegistry } from '@adapters/registry'
-import type { AttachmentMeta, ConnectionStatus, MuseMediaPart, MuseToolCall, SendReceipt } from '@adapters/types'
+import { AdapterError, type AttachmentMeta, type ConnectionStatus, type MuseMediaPart, type MuseToolCall, type SendReceipt } from '@adapters/types'
 import { createId } from '@shared/id'
 import { getBridge } from '@/lib/bridge'
 import { cancelPlatformTurn, useBotStore } from '@/store/botStore'
@@ -628,6 +628,72 @@ export function moveMemberToRoom(
 
 export const NO_REPLY_ERROR = '已送达，但没有收到回复'
 
+/** GOXF: how long a group turn waits in silence for a reply once the member took the message. */
+export const ROOM_REPLY_TIMEOUT_MS = 10 * 60_000
+/** GOXF: after a delivered turn went unanswered, a reply that still turns up is put in the group. */
+const LATE_REPLY_WINDOW_MS = 20 * 60_000
+
+/** GOXF: a turn that failed, and whether the member had already taken the message. */
+export class RoomTurnError extends Error {
+  constructor(message: string, readonly delivered: boolean) {
+    super(message)
+    this.name = 'RoomTurnError'
+  }
+}
+
+/** The line posted in the group when a member did not answer: delivered and silent reads differently from not delivered. */
+export function roomFailureNotice(name: string, delivered: boolean): string {
+  return delivered ? `${name} 已收到消息，本轮还没有回复。` : `${name} 本轮未送达。`
+}
+
+/**
+ * GOXF: a member took the message but the turn gave up waiting. If its reply
+ * still arrives, post it in the group and clear the "no reply" marks, instead
+ * of leaving a delivered message looking undelivered.
+ */
+function watchLateReply(
+  roomId: string,
+  member: RoomMember,
+  adapter: NonNullable<ReturnType<typeof adapterRegistry.get>>,
+  conversationId: string,
+  triggerId: string
+) {
+  const texts = new Map<string, string>()
+  let settle: ReturnType<typeof setTimeout> | undefined
+  const stop = () => {
+    clearTimeout(expire)
+    clearTimeout(settle)
+    unsubscribe()
+  }
+  const post = () => {
+    stop()
+    const text = [...texts.values()].join('\n\n').trim()
+    if (!text) return
+    update(roomId, (r) => {
+      const trigger = r.messages.find((m) => m.id === triggerId)
+      const failure = trigger?.failures?.find((f) => f.botId === member.botId)
+      return {
+        ...r,
+        messages: [
+          ...r.messages
+            .filter((m) => !(failure?.noticeId && m.id === failure.noticeId))
+            .map((m) => m.id === triggerId && m.failures
+              ? { ...m, failures: m.failures.filter((f) => f.botId !== member.botId) }
+              : m),
+          { id: createId('post'), author: member.name, authorBotId: member.botId, text, createdAt: Date.now() }
+        ]
+      }
+    })
+  }
+  const unsubscribe = adapter.onMessage((m) => {
+    if (m.conversationId !== conversationId || m.accountId !== member.accountId || !m.text.trim()) return
+    texts.set(m.id, m.text)
+    clearTimeout(settle)
+    settle = setTimeout(post, 3_000)
+  })
+  const expire = setTimeout(stop, LATE_REPLY_WINDOW_MS)
+}
+
 async function memberReply(room: CollabRoom, member: RoomMember, trigger: RoomMessage, signal: AbortSignal) {
   const adapter = adapterRegistry.get(member.platform)
   const bot = useBotStore
@@ -657,6 +723,7 @@ async function memberReply(room: CollabRoom, member: RoomMember, trigger: RoomMe
   }
   activeAccounts.add(lockKey)
   const conversationId = 'room-turn-' + createId('turn')
+  let accepted = false
   const replies = new Map<string, string>()
   const tools = new Map<string, MuseToolCall>()
   const media: MuseMediaPart[] = []
@@ -758,6 +825,8 @@ async function memberReply(room: CollabRoom, member: RoomMember, trigger: RoomMe
           agentId: member.agentId,
           hermesSessionKey,
           text: prompt,
+          replyTimeoutMs: ROOM_REPLY_TIMEOUT_MS,
+          onAccepted: () => { accepted = true },
           ...(trigger.attachments?.some((file) => file.dataBase64)
             ? { attachments: trigger.attachments.filter((file) => file.dataBase64) }
             : {}),
@@ -765,6 +834,7 @@ async function memberReply(room: CollabRoom, member: RoomMember, trigger: RoomMe
         })
         .then(
           (res) => {
+            accepted = true
             signal.removeEventListener('abort', onAbort)
             resolve(res)
           },
@@ -776,11 +846,20 @@ async function memberReply(room: CollabRoom, member: RoomMember, trigger: RoomMe
     })
     signal.throwIfAborted()
     const text = [...replies.values()].join('\n\n')
-    if (!text && !media.length) throw new Error(NO_REPLY_ERROR)
+    if (!text && !media.length) {
+      watchLateReply(room.id, member, adapter, conversationId, trigger.id)
+      throw new RoomTurnError(NO_REPLY_ERROR, true)
+    }
     return {
       text, sessionId: receipt.sessionId || sessionId, hermesSessionKey,
       tools: [...tools.values()], media
     }
+  } catch (error) {
+    if (signal.aborted || error instanceof RoomTurnError) throw error
+    // An adapter's 'no-reply' means the platform took the message even when onAccepted never fired.
+    const delivered = accepted || (error instanceof AdapterError && error.code === 'no-reply')
+    if (delivered) watchLateReply(room.id, member, adapter, conversationId, trigger.id)
+    throw new RoomTurnError(error instanceof Error ? error.message : String(error), delivered)
   } finally {
     unsubscribe()
     useRooms.setState((s) => ({ liveTools: { ...s.liveTools, [room.id]: undefined } }))
@@ -819,9 +898,12 @@ export function resendRoomMessage(id: string, messageId: string) {
   const index = room?.messages.findIndex((m) => m.id === messageId) ?? -1
   const message = room?.messages[index]
   if (!room || !message) return
-  const names = new Set((message.failures ?? []).map((f) => `${f.name} 本轮未取得回复。`))
+  const noticeIds = new Set((message.failures ?? []).flatMap((f) => f.noticeId ? [f.noticeId] : []))
+  // Older failures carry no noticeId: match their notice by its text.
+  const names = new Set((message.failures ?? []).filter((f) => !f.noticeId).map((f) => `${f.name} 本轮未取得回复。`))
   stopRoom(id)
-  removeMessages(id, (m, i) => m.id === messageId || (i > index && Boolean(m.notice) && names.has(m.text)))
+  removeMessages(id, (m, i) => m.id === messageId ||
+    (i > index && Boolean(m.notice) && (noticeIds.has(m.id) || names.has(m.text))))
   void submitBrief(id, message.text, {
     author: message.author,
     references: message.references ?? [],
@@ -925,9 +1007,14 @@ export async function submitBrief(
         if (isCoordinator) throw error
         failed.add(member.botId)
         const detail = error instanceof Error ? error.message : String(error)
+        const delivered = error instanceof RoomTurnError && error.delivered
+        const notice: RoomMessage = {
+          id: createId('post'), author: 'BotArk', notice: true,
+          text: roomFailureNotice(member.name, delivered), createdAt: Date.now()
+        }
         // GOXF: a human message shows who did not answer under itself, with 再发一次.
         if (isHumanRoomMessage(next.trigger)) {
-          const failure = { botId: member.botId, name: member.name, error: detail }
+          const failure = { botId: member.botId, name: member.name, error: detail, delivered, noticeId: notice.id }
           update(id, (r) => ({
             ...r,
             messages: r.messages.map((m) => m.id === next.trigger.id
@@ -937,12 +1024,8 @@ export async function submitBrief(
         } else {
           setError(id, `@${member.name}：${detail}`)
         }
-        const notice: RoomMessage = {
-          id: createId('post'), author: 'BotArk', notice: true,
-          text: `${member.name} 本轮未取得回复。`, createdAt: Date.now()
-        }
         // A delivered turn was read: move the cursor so the next turn does not resend the same history.
-        const read = detail === NO_REPLY_ERROR && member.sessionId
+        const read = (delivered || detail === NO_REPLY_ERROR) && member.sessionId
         update(id, (r) => ({
           ...r,
           messages: [...r.messages, notice],

@@ -44,7 +44,15 @@ export interface RoomMessage {
   tools?: MuseToolCall[]
   media?: MuseMediaPart[]
   /** GOXF: members that did not answer this human message, with why. */
-  failures?: Array<{ botId: string; name: string; error: string }>
+  failures?: Array<{
+    botId: string
+    name: string
+    error: string
+    /** The platform took the message; only the reply is missing, so this is not "not delivered". */
+    delivered?: boolean
+    /** The 本轮… notice posted for this failure, removed with it. */
+    noticeId?: string
+  }>
 }
 
 export interface CollabRoom {
