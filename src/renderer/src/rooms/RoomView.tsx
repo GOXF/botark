@@ -50,6 +50,7 @@ import {
 import { PlatformGlyph } from '@/components/ui/PlatformGlyph'
 import { SegmentedControl } from '@/components/ui/SegmentedControl'
 import { cn } from '@/lib/cn'
+import { AddRoomMembersDialog } from './AddRoomMembersDialog'
 import { useT } from '@/lib/i18n'
 import { shortcutLabel } from '@/lib/shortcuts'
 import { useBotStore } from '@/store/botStore'
@@ -203,6 +204,7 @@ const RoomSidebarItem = memo(function RoomSidebarItem({
   const speaker = useRooms((s) => s.speakers[room.id])
   const [renaming, setRenaming] = useState(false)
   const [menuOpen, setMenuOpen] = useState(false)
+  const [adding, setAdding] = useState(false)
   const [expanded, setExpanded] = useState(true)
   const rowRef = useRef<HTMLButtonElement>(null)
   const renameInputRef = useRef<HTMLInputElement>(null)
@@ -247,7 +249,7 @@ const RoomSidebarItem = memo(function RoomSidebarItem({
           />
         </div>
       ) : (
-        <div className="flex items-center">
+        <div className="relative flex items-center">
         {!compact && (
           <button
             type="button"
@@ -313,6 +315,43 @@ const RoomSidebarItem = memo(function RoomSidebarItem({
             </span>
           )}
         </button>
+        {!renaming && (
+          <Menu open={menuOpen} onOpenChange={setMenuOpen}>
+            <MenuTrigger
+              aria-label={t('Actions for {name}', { name: room.title })}
+              className={cn(
+                'press-icon absolute grid place-items-center rounded-full text-ink-muted',
+                compact ? 'right-0 bottom-0 size-5 bg-canvas' : 'top-1/2 right-1.5 size-6 -translate-y-1/2',
+                'opacity-0 group-hover/room:opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100',
+                'hover:bg-active hover:text-ink data-[state=open]:bg-active'
+              )}
+            >
+              <MoreHorizontal className="size-3.5" />
+            </MenuTrigger>
+            <MenuContent align="start" side="bottom" className="min-w-40">
+              <MenuItem disabled={Boolean(room.coordinatorId) || room.members.length >= 6} onSelect={() => setAdding(true)}>
+                <Plus aria-hidden /> {room.coordinatorId ? '添加成员（管理员自动同步）' : '添加成员…'}
+              </MenuItem>
+              <MenuItem onSelect={() => togglePinRoom(room.id)}>
+                {room.pinned ? <PinOff aria-hidden /> : <Pin aria-hidden />}
+                {t(room.pinned ? 'Unpin' : 'Pin')}
+              </MenuItem>
+              <MenuItem onSelect={() => setRenaming(true)}>
+                <Pencil aria-hidden /> {t('Rename')}
+              </MenuItem>
+              <MenuItem
+                disabled={room.messages.length === 0}
+                onSelect={() => exportRoomMarkdownFile(room)}
+              >
+                <ArkExportDocSvg /> 导出 Markdown
+              </MenuItem>
+              <MenuSeparator />
+              <MenuItem danger onSelect={() => deleteRoom(room.id)}>
+                <Trash2 aria-hidden /> {t('Delete')}
+              </MenuItem>
+            </MenuContent>
+          </Menu>
+        )}
         </div>
       )}
 
@@ -322,41 +361,8 @@ const RoomSidebarItem = memo(function RoomSidebarItem({
         </div>
       )}
 
-      {!renaming && (
-        <Menu open={menuOpen} onOpenChange={setMenuOpen}>
-          <MenuTrigger
-            aria-label={t('Actions for {name}', { name: room.title })}
-            className={cn(
-              'press-icon absolute grid place-items-center rounded-full text-ink-muted',
-              compact ? 'right-0 bottom-0 size-5 bg-canvas' : 'top-1/2 right-1.5 size-6 -translate-y-1/2',
-              'opacity-0 group-hover/room:opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100',
-              'hover:bg-active hover:text-ink data-[state=open]:bg-active'
-            )}
-          >
-            <MoreHorizontal className="size-3.5" />
-          </MenuTrigger>
-          <MenuContent align="start" side="bottom" className="min-w-40">
-            <MenuItem onSelect={() => togglePinRoom(room.id)}>
-              {room.pinned ? <PinOff aria-hidden /> : <Pin aria-hidden />}
-              {t(room.pinned ? 'Unpin' : 'Pin')}
-            </MenuItem>
-            <MenuItem onSelect={() => setRenaming(true)}>
-              <Pencil aria-hidden /> {t('Rename')}
-            </MenuItem>
-            <MenuItem
-              disabled={room.messages.length === 0}
-              onSelect={() => exportRoomMarkdownFile(room)}
-            >
-              <ArkExportDocSvg /> 导出 Markdown
-            </MenuItem>
-            <MenuSeparator />
-            <MenuItem danger onSelect={() => deleteRoom(room.id)}>
-              <Trash2 aria-hidden /> {t('Delete')}
-            </MenuItem>
-          </MenuContent>
-        </Menu>
-      )}
 
+      <AddRoomMembersDialog roomId={room.id} open={adding} onOpenChange={setAdding} />
       {compact && (
         <Dialog
           open={renaming}

@@ -1536,7 +1536,7 @@ export function SettingsView() {
                               {acc.status === 'offline' ? (
                                 <Button
                                   size="sm"
-                                  variant="primary"
+                                  variant="secondary"
                                   disabled={acc.pending}
                                   onClick={() => void openMuseLogin(acc.id)}
                                 >
@@ -1775,7 +1775,7 @@ export function SettingsView() {
                               )}
                               <Button
                                 size="sm"
-                                variant="primary"
+                                variant="secondary"
                                 disabled={acc.pending}
                                 onClick={() => void openDotLogin(acc.id)}
                               >
@@ -1941,7 +1941,7 @@ export function SettingsView() {
                               <div className="flex shrink-0 items-center gap-1.5">
                                 <Button
                                   size="sm"
-                                  variant="primary"
+                                  variant="secondary"
                                   disabled={acc.pending}
                                   onClick={() => void openGrokLogin(acc.id, false)}
                                 >
@@ -2126,7 +2126,7 @@ export function SettingsView() {
                                 </Button>
                               )
                             ) : (
-                              <Button size="sm" variant="primary" disabled={acc.pending} onClick={() => void openHarkLogin(acc.id)}>
+                              <Button size="sm" variant="secondary" disabled={acc.pending} onClick={() => void openHarkLogin(acc.id)}>
                                 重新登录
                               </Button>
                             )}
@@ -2189,7 +2189,7 @@ export function SettingsView() {
                               )}
                               <Button
                                 size="sm"
-                                variant="primary"
+                                variant="secondary"
                                 disabled={acc.pending}
                                 onClick={() => void openHarkLogin(acc.id)}
                               >
@@ -2905,7 +2905,7 @@ export function SettingsView() {
                                 )}
                                 <Button
                                   size="sm"
-                                  variant="primary"
+                                  variant="secondary"
                                   disabled={acc.pending || busy}
                                   onClick={() => void openCueLogin(acc.id, false)}
                                 >

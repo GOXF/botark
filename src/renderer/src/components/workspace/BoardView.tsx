@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from 'react'
 import { Loader2, X } from 'lucide-react'
 import { useShallow } from 'zustand/react/shallow'
 import { BotAvatar } from '@/components/ui/Avatar'
+import { Button } from '@/components/ui/Button'
+import { IconButton } from '@/components/ui/IconButton'
 import { activityPhrase, formatShortTime, previewText } from '@/components/sidebar/BotListItem'
 import { BOARD_COLUMNS, classifyBot, classifyRoom, type BoardColumn } from '@/lib/boardStatus'
 import { cn } from '@/lib/cn'
@@ -369,7 +371,7 @@ function HarkTaskBoard({ botId }: { botId: string }) {
       onClick={() => setFilter(id)}
       className={cn(
         'press inline-flex h-7 max-w-[200px] shrink-0 items-center gap-1.5 rounded-full border px-3 text-[12px]',
-        filter === id ? 'border-ink bg-ink text-main' : 'border-line bg-main hover:bg-hover',
+        filter === id ? 'border-[0.5px] border-line-strong bg-main font-medium text-ink shadow-float' : 'border-transparent text-ink-muted hover:bg-hover hover:text-ink',
         filter !== id && (n ? 'text-ink' : 'text-ink-muted')
       )}
     >
@@ -524,9 +526,9 @@ export function ProjectDetail({ project, highlight, onClose }: { project: Picked
     <section aria-label="项目详情" className="flex min-h-0 flex-1 flex-col bg-main">
       <header className="flex h-[52px] shrink-0 items-center gap-2 pr-2 pl-4">
         <h3 className="min-w-0 flex-1 truncate text-[15px] font-semibold text-ink">{project.title}</h3>
-        <button type="button" aria-label="关闭" onClick={onClose} className="press grid size-7 place-items-center rounded-full text-ink-muted hover:bg-hover hover:text-ink">
-          <X className="size-4" aria-hidden />
-        </button>
+        <IconButton label="关闭" size="sm" onClick={onClose}>
+          <X aria-hidden />
+        </IconButton>
       </header>
       <div className="flex h-[52px] shrink-0 items-center gap-2 px-4">
         <span className="max-w-[50%] shrink-0 truncate rounded-full bg-hover px-2 text-[11px] text-ink-muted">{project.botName}</span>
@@ -578,16 +580,15 @@ export function ProjectDetail({ project, highlight, onClose }: { project: Picked
         </ol>
       </div>
       <div className="border-t border-line p-3">
-        <button
-          type="button"
+        <Button variant="primary" size="md"
           onClick={() => {
             useBotStore.getState().selectBot(project.botId)
             openConversationTab(project.botId, project.conversationId, project.title)
           }}
-          className="press h-9 w-full rounded-full bg-ink text-[13px] font-medium text-main hover:opacity-90"
+          className="w-full"
         >
           打开这个项目的对话
-        </button>
+        </Button>
       </div>
     </section>
   )

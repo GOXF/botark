@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react'
 import { getPlatform } from '@adapters/platforms'
 import { adapterRegistry } from '@adapters/registry'
-import { ArrowRightLeft, ArrowUpRight, Pencil, RotateCcw, Trash2, UserMinus, X } from 'lucide-react'
+import { ArrowRightLeft, ArrowUpRight, Pencil, Plus, RotateCcw, Trash2, UserMinus, X } from 'lucide-react'
 import { Section } from '@/components/info/Section'
+import { AddRoomMembersDialog } from './AddRoomMembersDialog'
 import { PaneHeader } from '@/components/layout/PaneHeader'
 import {
   ArkExportDocSvg,
@@ -61,6 +62,7 @@ export function RoomInspectorPanel({ room }: { room: CollabRoom }) {
   const [tab, setTab] = useState<RoomTab>('overview')
   const [editing, setEditing] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
+  const [adding, setAdding] = useState(false)
   const [movingBotId, setMovingBotId] = useState<string | null>(null)
   const [targetRoomId, setTargetRoomId] = useState('')
   const [memberFeedback, setMemberFeedback] = useState<{
@@ -170,7 +172,10 @@ export function RoomInspectorPanel({ room }: { room: CollabRoom }) {
                 </div>
               </Section>
 
-              <Section title="成员" count={room.members.length} flush>
+              <Section title="成员" count={room.members.length} flush
+                action={<IconButton size="sm" label={room.coordinatorId ? '管理员调度自动同步 Bot 列表' : room.members.length >= 6 ? '群聊成员已达上限（6 位）' : '添加成员'}
+                  disabled={Boolean(room.coordinatorId) || room.members.length >= 6} onClick={() => setAdding(true)}><Plus aria-hidden /></IconButton>}>
+                <AddRoomMembersDialog roomId={room.id} open={adding} onOpenChange={setAdding} />
                 {memberFeedback && (
                   <p
                     role={memberFeedback.kind === 'error' ? 'alert' : 'status'}
