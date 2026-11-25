@@ -1,4 +1,5 @@
 import {
+  dropShadowedHarkSessionCookies,
   extractHandle,
   getAuthSession,
   getProfile,
@@ -22,6 +23,8 @@ export async function probeHarkSession(
   options?: { reportConnectionErrors?: boolean }
 ): Promise<HarkSessionProbe> {
   let session: HarkAuthSession
+  // A stale app.hark.com token would make get-session (and the web view) read as signed out.
+  await dropShadowedHarkSessionCookies(accountId).catch(() => 0)
   try {
     session = await getAuthSession(accountId)
   } catch (error) {

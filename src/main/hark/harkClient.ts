@@ -334,6 +334,29 @@ export function looksLikeSessionCookie(name: string): boolean {
   return false
 }
 
+const LEGACY_SESSION_NAMES = new Set(['__Secure-hark.session_token', '__Secure-better-auth.session_token'])
+
+/**
+ * Old session cookies scoped to app.hark.com that shadow the current ones on .hark.com.
+ * Same-name cookies are all sent and the older, narrower one goes first, so Hark reads the
+ * stale token, answers get-session with null and the web view bounces back to /login.
+ * Only reported when a .hark.com session token exists to take over.
+ */
+export function shadowedHarkSessionCookies(cookies: Cookie[]): Cookie[] {
+  const hasCurrent = cookies.some((c) => c.name === '__Secure-hark.session_token' && c.domain === '.hark.com')
+  if (!hasCurrent) return []
+  return cookies.filter((c) => LEGACY_SESSION_NAMES.has(c.name) && c.domain?.replace(/^\./, '') === 'app.hark.com')
+}
+
+/** Expire the shadowing app.hark.com session cookies. Returns how many were dropped. */
+export async function dropShadowedHarkSessionCookies(accountId: string): Promise<number> {
+  const ses = sessionForAccount(accountId)
+  const stale = shadowedHarkSessionCookies(await ses.cookies.get({}))
+  for (const cookie of stale) await setHarkCookie(ses, cookie, 1)
+  if (stale.length) await ses.cookies.flushStore().catch(() => undefined)
+  return stale.length
+}
+
 export async function listSessionCookieNames(accountId: string): Promise<string[]> {
   const ses = sessionForAccount(accountId)
   const cookies = await ses.cookies.get({})

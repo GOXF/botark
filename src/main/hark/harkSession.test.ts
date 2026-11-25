@@ -3,7 +3,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 vi.mock('./harkClient', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./harkClient')>()),
   getAuthSession: vi.fn(),
-  getProfile: vi.fn()
+  getProfile: vi.fn(),
+  dropShadowedHarkSessionCookies: vi.fn().mockResolvedValue(0)
 }))
 
 import { getAuthSession, getProfile, HarkApiError } from './harkClient'
@@ -70,5 +71,17 @@ describe('Hark session validation', () => {
       displayName: 'Hark user',
       userId: 'user'
     })
+  })
+})
+
+describe('shadowed Hark session cookies', () => {
+  it('drops app.hark.com session tokens only when a .hark.com token exists', async () => {
+    const { shadowedHarkSessionCookies } = await vi.importActual<typeof import('./harkClient')>('./harkClient')
+    const c = (name: string, domain: string) => ({ name, domain, value: 'x' }) as Electron.Cookie
+    const legacy = [c('__Secure-hark.session_token', '.app.hark.com'), c('__Secure-better-auth.session_token', '.app.hark.com')]
+    expect(shadowedHarkSessionCookies([...legacy, c('cf_clearance', '.hark.com')])).toEqual([])
+    expect(shadowedHarkSessionCookies([
+      ...legacy, c('__Secure-hark.session_token', '.hark.com'), c('hark-windows-browser', 'app.hark.com')
+    ])).toEqual(legacy)
   })
 })

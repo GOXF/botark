@@ -233,9 +233,12 @@ async function statusFor(accountId: string): Promise<HarkAuthStatus> {
   }
   const hasProxy = Boolean(await loadAccountProxyUrl(accountId).catch(() => true))
   return withHarkCredentials(accountId, async () => {
+    const wasSignedIn = knownAccounts.get(accountId)
     const probe = await probeHarkSession(accountId, { reportConnectionErrors: true })
     knownAccounts.set(accountId, !('signedIn' in probe))
     if ('signedIn' in probe) return { accountId, signedIn: false, hasProxy }
+    // Signed in from inside the embedded page: move it off the login page.
+    if (wasSignedIn === false) reloadAccountWebViews(accountId, harkWebViewUrlAfterSignIn)
     return { accountId, signedIn: true, handle: probe.handle, displayName: probe.displayName, hasProxy }
   })
 }
