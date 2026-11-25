@@ -223,7 +223,7 @@ export default function App() {
           sidebar={<Sidebar onAddBot={() => setAddBotOpen(true)} />}
           main={
             <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-              <WorkspaceTopBar />
+              {!settingsOpen && <WorkspaceTopBar />}
               <ErrorBoundary surface={settingsOpen ? '管理控制台' : '对话区'} resetKey={settingsOpen ? 'settings' : `${view}:${view === 'sessions' ? '' : selectedBotId}`}>
                 {settingsOpen ? (
                   <SettingsView />
