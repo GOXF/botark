@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { Check, ChevronUp, Download, ExternalLink, ListChecks, Loader2, Maximize2, Minimize2, Minus, X } from 'lucide-react'
 import { harkRpc } from '@adapters/hark/harkRequests'
-import type { HarkBrowserPreview } from '@shared/harkBrowserPreview'
+import { harkBrowserLive, type HarkBrowserPreview } from '@shared/harkBrowserPreview'
 import { createId } from '@shared/id'
 import { getBridge } from '@/lib/bridge'
 import { cn } from '@/lib/cn'
@@ -14,7 +14,6 @@ import { IconButton } from '@/components/ui/IconButton'
 interface Step { text: string; at: number }
 interface Shot { src: string; at: number; step?: string }
 
-const ACTIVE = /^(active|running|pending|started|waiting_for_input)$/i
 const FAILED = /fail|error|cancel|abort|timeout/i
 
 function endedLabel(status: string): string {
@@ -77,16 +76,17 @@ export function HarkBrowserCard({ accountId, sessionId, attention = false }: { a
   }, [hark, accountId, sessionId, revision])
 
   const waiting = attention || /^waiting/i.test(panel?.status ?? '')
-  const active = ACTIVE.test(panel?.status ?? '')
+  const active = !!panel && harkBrowserLive(panel.status)
   const hidden = !panel || (closed !== '' && closed === panel.label && !waiting)
   const ended = !!panel && !active && !waiting
   useEffect(() => { if (waiting) setMini(false) }, [waiting])
   useEffect(() => { if (ended) setMini(true) }, [ended])
 
-  // Keep the screenshot fresh while the browser works or waits (5 s), and while the full view is open.
+  // Keep the screenshot fresh while the browser works or waits (5 s) or the full view is open;
+  // otherwise still look every 15 s, so a new browser run shows up even when the stream misses it.
   useEffect(() => {
-    if (hidden || !(waiting || active || full)) return
-    const timer = setInterval(() => setRevision((r) => r + 1), 5000)
+    const live = !hidden && (waiting || active || full)
+    const timer = setInterval(() => setRevision((r) => r + 1), live ? 5000 : 15_000)
     return () => clearInterval(timer)
   }, [hidden, waiting, active, full])
 

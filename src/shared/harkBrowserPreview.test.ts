@@ -18,3 +18,12 @@ it('keeps page and live-view addresses as metadata rather than image sources', (
     liveViewUrl: 'https://example.com/live', screenshotUrl: 'https://example.com/frame' }
   expect(currentHarkBrowser([panel])).toMatchObject({ label: panel.url, screenshotUrl: undefined })
 })
+
+it('shows the live browser run, not a finished one or the dispatching tool call', () => {
+  const done = { kind: 'browser', status: 'completed', url: 'https://a.test' }
+  const live = { kind: 'browser', status: 'in_progress', url: 'https://b.test' }
+  const call = { kind: 'browser', status: 'completed', url: 'https://c.test', fromToolCall: true }
+  expect(currentHarkBrowser([done, live, call])?.label).toBe('https://b.test')
+  expect(currentHarkBrowser([done, call])?.label).toBe('https://a.test')
+  expect(currentHarkBrowser([call])?.label).toBe('https://c.test')
+})

@@ -8,7 +8,13 @@ export interface HarkBrowserPreview {
 export const HARK_PREVIEW_MAX_BYTES = 8 * 1024 * 1024
 export const HARK_PREVIEW_TIMEOUT_MS = 12_000
 
+/** A browser run counts as live until its status says it ended (Hark uses running / in_progress / pending / waiting_for_input…). */
+export const HARK_BROWSER_ENDED = /complete|done|success|finish|fail|error|cancel|abort|timeout|stop|ended|closed|expired/i
+export const harkBrowserLive = (status: string): boolean => !HARK_BROWSER_ENDED.test(status)
+
 interface Panel {
+  /** Derived from the dispatching tool call: its status is the call's, not the browser run's. */
+  fromToolCall?: boolean
   kind: string
   status: string
   title?: string
@@ -19,16 +25,11 @@ interface Panel {
 }
 
 export function currentHarkBrowser(panels: Panel[]): HarkBrowserPreview | null {
-  let panel: Panel | undefined
-  for (let index = panels.length - 1; index >= 0; index--) {
-    const candidate = panels[index]!
-    if (!candidate.screenshotKey && !candidate.screenshotUrl && !candidate.liveViewUrl && !/browser|computer/i.test(candidate.kind)) continue
-    panel ??= candidate
-    if (/^(active|running|pending|started|waiting_for_input)$/i.test(candidate.status)) {
-      panel = candidate
-      break
-    }
-  }
+  const browsers = panels.filter((p) => p.screenshotKey || p.screenshotUrl || p.liveViewUrl || /browser|computer/i.test(p.kind))
+  // Hark's own browser panels first; tool-call stand-ins only when it has none.
+  const own = browsers.filter((p) => !p.fromToolCall)
+  const pool = own.length ? own : browsers
+  const panel = pool.findLast((p) => harkBrowserLive(p.status)) ?? pool.at(-1)
   if (!panel) return null
   return {
     label: panel.url || panel.title || panel.kind, status: panel.status,

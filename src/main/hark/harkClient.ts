@@ -878,6 +878,7 @@ export interface HarkActivityPanel {
   screenshotKey?: string
   screenshotUrl?: string
   command?: string
+  fromToolCall?: boolean
 }
 
 export interface HarkPendingAsk {
@@ -1310,7 +1311,8 @@ export class HarkConversationSyncState {
             url: tc.url,
             screenshotKey: tc.screenshotKey,
             screenshotUrl: tc.screenshotUrl,
-            command: tc.command
+            command: tc.command,
+            fromToolCall: true
           })
         }
       }
