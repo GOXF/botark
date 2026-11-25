@@ -82,7 +82,7 @@ function StatusBoard({ scope }: { scope: 'sessions' | 'collab' | 'all' }) {
   useMinuteTick()
   const titles = useConversationTitles()
   const [picked, setPicked] = useState<Card['project'] & { title: string }>()
-  useProjectTitles(scope !== 'collab')
+  const projectIds = useProjectTitles(scope !== 'collab')
   const { bots, accounts, typing, activity, messages } = useBotStore(
     useShallow((s) => ({ bots: s.bots, accounts: s.accounts, typing: s.typing, activity: s.activity, messages: s.messages }))
   )
@@ -98,10 +98,12 @@ function StatusBoard({ scope }: { scope: 'sessions' | 'collab' | 'all' }) {
     if (bot.platformId === 'hark') {
       let shown = 0
       for (const accountId of bot.accountIds) {
-        for (const [conversationId, pw] of Object.entries(work.projects[accountId] ?? {})) {
+        // v26: every project of the account, so idle ones sit in 空闲 instead of vanishing.
+        const ids = new Set([...(projectIds[accountId] ?? []), ...Object.keys(work.projects[accountId] ?? {})])
+        for (const conversationId of ids) {
+          const pw = work.projects[accountId]?.[conversationId] ?? { working: false, since: 0, doneAt: 0 }
           const projectAsks = asks[accountId]?.[conversationId] ?? 0
           const fresh = pw.doneAt > (work.seenAt[accountId] ?? 0)
-          if (!pw.working && !fresh && projectAsks === 0) continue
           shown++
           const column = classifyBot({ typing: false, live: false, harkWorking: pw.working ? 1 : 0, harkDoneAt: fresh ? pw.doneAt : 0, asks: projectAsks, unread: 0 })
           cards.push({
@@ -109,7 +111,7 @@ function StatusBoard({ scope }: { scope: 'sessions' | 'collab' | 'all' }) {
             id: bot.id,
             column,
             title: titles[conversationId] || '项目',
-            step: column === 'wait' ? '有一步要你确认' : pw.working ? '工作中' : '已完成',
+            step: column === 'wait' ? '有一步要你确认' : pw.working ? '工作中' : column === 'done' ? '已完成' : '空闲',
             time: Math.max(pw.since || 0, pw.doneAt || 0),
             room: false,
             project: { botId: bot.id, botName: bot.name, accountId, conversationId, working: pw.working }
@@ -165,6 +167,14 @@ function StatusBoard({ scope }: { scope: 'sessions' | 'collab' | 'all' }) {
       room: true
     })
   }
+
+  // v26: entering a bot's 任务 opens the project you are looking at in the right panel.
+  const current = scope === 'sessions' ? cards.find((c) => c.project && c.project.botId === selectedId && c.project.conversationId === bots.find((b) => b.id === selectedId)?.activeSessionId) : undefined
+  const currentKey = current?.key
+  useEffect(() => {
+    if (current?.project) setPicked({ ...current.project, title: current.title })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentKey])
 
   return (
     <div className={cn('flex min-h-0 flex-1', scope === 'sessions' && 'pt-3')}>
@@ -240,7 +250,8 @@ function StatusBoard({ scope }: { scope: 'sessions' | 'collab' | 'all' }) {
 }
 
 /** v25: fill missing project titles once per Hark account (the project menu fills them only when opened). */
-function useProjectTitles(on: boolean) {
+function useProjectTitles(on: boolean): Record<string, string[]> {
+  const [ids, setIds] = useState<Record<string, string[]>>({})
   const accountIds = useBotStore(useShallow((s) => s.bots.filter((b) => b.platformId === 'hark').flatMap((b) => b.accountIds)))
   const key = accountIds.join(',')
   useEffect(() => {
@@ -251,12 +262,14 @@ function useProjectTitles(on: boolean) {
         if (!live || !res?.ok) return
         const rows = harkProjects(res.data)
         useConversationTitles.setState(Object.fromEntries(rows.map((p) => [p.id, p.title])))
+        setIds((prev) => ({ ...prev, [accountId]: rows.filter((p) => !p.archived).map((p) => p.id) }))
       }).catch(() => undefined)
     }
     return () => {
       live = false
     }
   }, [on, key])
+  return ids
 }
 
 const SUBTASK_DOT: Record<HarkSubtask['status'], string> = {
