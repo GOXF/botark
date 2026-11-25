@@ -1440,11 +1440,9 @@ function SessionInteractiveCard({
   const revision = refresh?.scope === scope ? refresh.revision : 0
 
   const [loading, setLoading] = useState(false)
-  const [previewFailed, setPreviewFailed] = useState(false)
   useEffect(() => {
     const muse = getBridge()?.muse
     setLoading(false)
-    setPreviewFailed(false)
     const ownPreview = Boolean(previewSrc || (taskId && previewSha256))
     if (isVault || !muse || (!recent && !revision && !ownPreview)) return
     let current = true
@@ -1470,9 +1468,7 @@ function SessionInteractiveCard({
         if (!src && !context && !ownPreview) return previous
         return { scope: previewScope, src, context }
       })
-    })().catch(() => {
-      if (current) setPreviewFailed(true)
-    }).finally(() => { if (current) setLoading(false) })
+    })().catch(() => undefined).finally(() => { if (current) setLoading(false) })
     return () => { current = false }
   }, [accountId, sessionId, activeAccount, previewScope, isVault, taskId, previewSha256, previewSrc, recent, lookupWhileTyping, revision])
 
@@ -1483,7 +1479,9 @@ function SessionInteractiveCard({
   const status = shownPreview?.context?.status ?? widget.status
   const title = shownPreview?.context?.title ?? widget.title
   const isSaved = status === '已登录'
-  const openInApp = () => openWebSessionAt(interactionUrl ?? null)
+  // Muse streams the live view to its web page over an encrypted socket; with no picture, open that page.
+  const webView = !isVault && !image && !loading
+  const openInApp = () => openWebSessionAt(webView ? null : interactionUrl ?? null)
 
   const openPopup = () => {
     const targetUrl = interactionUrl || 'https://muse.ai'
@@ -1540,7 +1538,7 @@ function SessionInteractiveCard({
       {!isVault && (
         image ? <MusePreviewImage key={`${previewScope}:${revision}`} src={image} alt={title} className="mt-2.5" /> : (
           <p role="status" className="mt-2 text-[12px] text-ink-muted">
-            {loading ? '正在加载截图…' : previewFailed ? '截图暂不可用' : '暂无截图'}
+            {loading ? '正在加载截图…' : '实时画面在 Muse 网页里'}
           </p>
         )
       )}
@@ -1557,7 +1555,7 @@ function SessionInteractiveCard({
           onClick={openInApp}
           className="press flex h-8 flex-1 items-center justify-center gap-1.5 rounded-full bg-main px-3 text-[12.5px] font-medium text-ink ring-1 ring-line-strong hover:bg-hover"
         >
-          {widget.actionLabel || (isVault ? '在应用内填写安全卡片' : '在隔离视图中操作')}
+          {webView ? '在 Muse 网页查看画面' : widget.actionLabel || (isVault ? '在应用内填写安全卡片' : '在隔离视图中操作')}
         </button>
         <button
           type="button"
