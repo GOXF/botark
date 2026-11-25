@@ -295,7 +295,7 @@ const RoomSidebarItem = memo(function RoomSidebarItem({
               )}
             </>
           ) : (
-            <span className="min-w-0 flex-1 pr-4">
+            <span className={cn('min-w-0 flex-1 pr-1', 'group-focus-within/room:pr-7 group-hover/room:pr-7', menuOpen && 'pr-7')}>
               <span className="flex items-center gap-1">
                 {room.pinned && <Pin aria-hidden className="size-3 shrink-0 text-ink-muted" />}
                 <span className="truncate text-[13px] leading-[18px] font-medium tracking-tight">
