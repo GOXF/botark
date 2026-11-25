@@ -22,6 +22,9 @@ import { t } from '@/lib/i18n'
 import { isRecalled, recallMessage, refillComposer, stripIgnoreNote, useRecall } from './goxfRecall'
 import { Menu, MenuContent, MenuItem, MenuLabel, MenuSeparator, MenuTrigger } from '@/components/ui/Menu'
 
+/** GOXF: in a narrow message list (split pane / small window) the message actions keep their icons only; titles still say what they do. */
+const NARROW_LABEL = 'hidden @min-[520px]/msgs:inline'
+
 type SessionCardWidget = Extract<ChatRichWidget, { kind: 'session_card' }> & { previewSrc?: string }
 
 interface MessageBubbleProps {
@@ -2425,7 +2428,7 @@ const MessageBubbleBody = memo(function MessageBubbleBody({
       {(isLastInRun || message.delivery === 'failed' || message.delivery === 'no-reply' || !mine) && (
         <div
           className={cn(
-            'mt-1 flex h-5 items-center gap-2 px-1.5 text-[11px] text-ink-muted transition-opacity duration-150',
+            'mt-1 flex h-5 items-center gap-2 px-1.5 text-[11px] whitespace-nowrap text-ink-muted transition-opacity duration-150',
             message.delivery === 'failed' || message.delivery === 'sending' || message.delivery === 'accepted' || message.delivery === 'no-reply'
               ? 'opacity-100'
               : 'opacity-0 group-hover/msg:opacity-100 group-focus-within/msg:opacity-100'
@@ -2443,10 +2446,10 @@ const MessageBubbleBody = memo(function MessageBubbleBody({
                   type="button"
                   onClick={quoteReplyMessage}
                   title="引用回复"
-                  className="inline-flex items-center gap-0.5 rounded-full px-1.5 py-0.5 text-[11px] text-ink-secondary hover:bg-hover hover:text-ink"
+                  className="inline-flex shrink-0 items-center gap-0.5 rounded-full px-1.5 py-0.5 text-[11px] text-ink-secondary hover:bg-hover hover:text-ink"
                 >
                   <ArkHandoffCurveSvg className="size-3" />
-                  <span>引用</span>
+                  <span className={NARROW_LABEL}>引用</span>
                 </button>
               )}
               <DeliveryState message={message} onRetry={onRetry} />
@@ -2458,28 +2461,28 @@ const MessageBubbleBody = memo(function MessageBubbleBody({
                   type="button"
                   onClick={quoteReplyMessage}
                   title="引用此消息回复"
-                  className="inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[11px] text-ink-secondary hover:bg-hover hover:text-ink"
+                  className="inline-flex shrink-0 items-center gap-1 rounded-full px-1.5 py-0.5 text-[11px] text-ink-secondary hover:bg-hover hover:text-ink"
                 >
                   <ArkHandoffCurveSvg className="size-3" />
-                  <span>引用</span>
+                  <span className={NARROW_LABEL}>引用</span>
                 </button>
                 <button
                   type="button"
                   onClick={copyMessageText}
                   title={t('Copy')}
-                  className="inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[11px] text-ink-secondary hover:bg-hover hover:text-ink"
+                  className="inline-flex shrink-0 items-center gap-1 rounded-full px-1.5 py-0.5 text-[11px] text-ink-secondary hover:bg-hover hover:text-ink"
                 >
                   {copiedMsg ? <Check className="size-3 text-status-online" /> : <Copy className="size-3" />}
-                  <span>{copiedMsg ? '已复制' : t('Copy')}</span>
+                  <span className={NARROW_LABEL}>{copiedMsg ? '已复制' : t('Copy')}</span>
                 </button>
                 <button
                   type="button"
                   onClick={() => triggerShareConversation({ botId: message.botId, messageId: message.id })}
                   title="生成共享页面"
-                  className="inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[11px] text-ink-secondary hover:bg-hover hover:text-ink"
+                  className="inline-flex shrink-0 items-center gap-1 rounded-full px-1.5 py-0.5 text-[11px] text-ink-secondary hover:bg-hover hover:text-ink"
                 >
                   <ArkExportDocSvg className="size-3" />
-                  <span>分享</span>
+                  <span className={NARROW_LABEL}>分享</span>
                 </button>
                 <button
                   type="button"
@@ -2492,10 +2495,10 @@ const MessageBubbleBody = memo(function MessageBubbleBody({
                     })
                   }
                   title="在右侧画布展开阅读"
-                  className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] text-ink-secondary hover:bg-hover hover:text-ink"
+                  className="inline-flex shrink-0 items-center gap-1 rounded-full px-2 py-0.5 text-[11px] text-ink-secondary hover:bg-hover hover:text-ink"
                 >
                   <Maximize2 className="size-3" />
-                  <span>右侧阅读</span>
+                  <span className={NARROW_LABEL}>右侧阅读</span>
                 </button>
                 {botMeta?.platformId === 'grok' && botMeta.selectedAgentId && (
                   <div className="ml-0.5 inline-flex items-center gap-0.5">

@@ -47,7 +47,7 @@ export function PaneTabs({ leaf, extra, inline = false, tall = false }: { leaf: 
       aria-label="会话标签"
       className={cn('no-drag flex min-w-0 items-center gap-1', inline ? 'flex-1' : cn(tall ? 'h-[52px] pr-3 pl-2' : 'h-9 px-1.5', 'shrink-0 border-b border-line'))}
     >
-      <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto">
+      <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto [scrollbar-width:none]">
         {leaf.tabs.map((tab) => {
           const active = tab.id === leaf.active
           return (
