@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { usePanes, type WorkspaceView } from '@/store/paneStore'
 import {
   Activity,
+  AppWindow,
   ArrowLeft,
   Download,
   FileUp,
@@ -38,6 +39,7 @@ import { MuseBatchImport } from '@/components/add-bot/MuseBatchImport'
 import { ArkMobileLinkSvg, ArkRelayOrbSvg } from '@/components/ui/ArkGlyphs'
 import { BotAvatar } from '@/components/ui/Avatar'
 import { Button } from '@/components/ui/Button'
+import { IconButton } from '@/components/ui/IconButton'
 import { NumberStepper, SwitchPill } from '@/components/ui/Controls'
 import { Dialog } from '@/components/ui/Dialog'
 import { Menu, MenuContent, MenuItem, MenuSeparator, MenuTrigger } from '@/components/ui/Menu'
@@ -331,6 +333,7 @@ export function SettingsView() {
   const [dotMigrateMemory, setDotMigrateMemory] = useState(true)
 
   const [harkRawInput, setHarkRawInput] = useState('')
+  const [harkImportOpen, setHarkImportOpen] = useState(false)
   const [harkTargetAccountId, setHarkTargetAccountId] = useState<string>('__new__')
 
   // Group management states
@@ -2029,13 +2032,17 @@ export function SettingsView() {
                     </p>
                   </div>
                   <div className="flex flex-wrap gap-2">
+                    <Button variant="secondary" size="sm" onClick={() => setHarkImportOpen((v) => !v)}>
+                      粘贴 Cookie 导入
+                    </Button>
                     <Button variant="primary" size="sm" disabled={busy} onClick={() => void handleQuickAddHarkAccount()}>
                       <Plus className="size-3.5" /> 网页登录新增 Hark 账号
                     </Button>
                   </div>
                 </div>
 
-                {/* Hark Cookie / Token Import Card */}
+                {/* Hark Cookie / Token Import Card — collapsed behind the header button */}
+                {harkImportOpen && (
                 <div className="rounded-2xl border border-line bg-surface p-4 shadow-soft">
                   <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
                     <span className="text-[13px] font-medium text-ink">导入 Hark Session Cookie / Token</span>
@@ -2082,6 +2089,7 @@ export function SettingsView() {
                     </div>
                   </div>
                 </div>
+                )}
 
                 {harkAccounts.length === 0 ? (
                   <div className="flex flex-col items-center justify-center gap-3 rounded-2xl border border-dashed border-line py-10 text-center">
@@ -2090,6 +2098,61 @@ export function SettingsView() {
                       点击上方「网页登录新增 Hark 账号」或在卡片中粘贴 Cookie / Session Token 即可接入。
                     </p>
                   </div>
+                ) : accLayout === 'grid' ? (
+                  <ul className="grid grid-cols-[repeat(auto-fill,minmax(300px,1fr))] gap-3">
+                    {harkAccounts.map((acc) => {
+                      const ownerBot = botsByAccountId.get(acc.id)?.[0]
+                      const live = acc.status === 'online' || acc.status === 'busy'
+                      return (
+                        <li key={acc.id} className="flex flex-col items-center rounded-2xl border border-line bg-surface px-3.5 pt-5 pb-3 shadow-soft">
+                          <BotAvatar
+                            seed={ownerBot?.id ?? acc.id}
+                            avatar={ownerBot?.avatar}
+                            avatarShape={ownerBot?.avatarShape}
+                            avatarColor={ownerBot?.avatarColor}
+                            status={acc.status}
+                            size="md"
+                          />
+                          <span className="mt-2.5 max-w-full truncate text-[14px] font-medium text-ink">
+                            {ownerBot?.name || acc.displayName}
+                          </span>
+                          <span className="mt-0.5 max-w-full truncate text-[11px] text-ink-muted">{acc.handle || acc.id}</span>
+                          <StatusBadge status={acc.status} className="mt-2" />
+                          <div className="mt-3 flex w-full items-center gap-1.5 border-t border-line pt-3">
+                            {live ? (
+                              ownerBot && (
+                                <Button size="sm" variant="secondary" onClick={() => selectBot(ownerBot.id)}>
+                                  进入对话
+                                </Button>
+                              )
+                            ) : (
+                              <Button size="sm" variant="primary" disabled={acc.pending} onClick={() => void openHarkLogin(acc.id)}>
+                                重新登录
+                              </Button>
+                            )}
+                            <Button size="sm" variant="secondary" disabled={acc.pending} onClick={() => void connectAccount(acc.id)}>
+                              刷新会话
+                            </Button>
+                            <div className="ml-auto flex items-center gap-1">
+                              {live && (
+                                <IconButton size="sm" label="登录窗口" disabled={acc.pending} onClick={() => void openHarkLogin(acc.id)}>
+                                  <AppWindow />
+                                </IconButton>
+                              )}
+                              <IconButton size="sm" label="退出登录" disabled={acc.pending} onClick={() => void signOutAccount(acc.id)}>
+                                <LogOut />
+                              </IconButton>
+                              {ownerBot && (
+                                <IconButton size="sm" label="删除" className="text-status-error hover:bg-status-error/10 hover:text-status-error" onClick={() => void removeBot(ownerBot.id)}>
+                                  <Trash2 />
+                                </IconButton>
+                              )}
+                            </div>
+                          </div>
+                        </li>
+                      )
+                    })}
+                  </ul>
                 ) : (
                   <div className="overflow-hidden rounded-2xl border border-line bg-surface shadow-soft">
                     <ul className="goxf-acc-list divide-y divide-line">
