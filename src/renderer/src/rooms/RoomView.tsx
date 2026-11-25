@@ -54,6 +54,8 @@ import { AddRoomMembersDialog } from './AddRoomMembersDialog'
 import { useT } from '@/lib/i18n'
 import { shortcutLabel } from '@/lib/shortcuts'
 import { useBotStore } from '@/store/botStore'
+import { usePanes } from '@/store/paneStore'
+import { VIEW_TRACK, ViewTab } from '@/components/workspace/ViewTab'
 import {
   isHumanRoomMessage,
   mentionStartPattern,
@@ -1287,36 +1289,39 @@ export function RoomView({ id }: { id: string }) {
           )}
         </div>
 
-        {/* Center Grok Floating Capsule (Clean Title Only) */}
-        <button
-          type="button"
-          data-capsule
-          onClick={toggleInfoPanel}
-          aria-expanded={infoOpen}
-          title={`${room.title} · ${room.members.map((m) => m.name).join(' · ')}`}
-          className={cn(
-            'no-drag group press flex h-10 max-w-[min(420px,50%)] min-w-0 items-center gap-2 rounded-full pr-3.5 pl-2',
-            'border-[0.5px] border-line-strong bg-main shadow-float hover:bg-surface'
-          )}
-        >
-          <RoomAvatarCluster
-            members={room.members}
-            speakingName={speaker}
-            size="xs"
-            ringClassName="ring-main"
-          />
-          <h1 className="min-w-0 truncate text-[14px] leading-[18px] font-medium text-ink">
-            {room.title}
-          </h1>
-          <ChevronRight
-            aria-hidden
+        {/* Center capsule · 任务 (one row, like the merged chat header) */}
+        <div role="tablist" aria-label="页面" className={cn(VIEW_TRACK, 'max-w-[50%]')}>
+          <button
+            type="button"
+            data-capsule
+            onClick={toggleInfoPanel}
+            aria-expanded={infoOpen}
+            title={`${room.title} · ${room.members.map((m) => m.name).join(' · ')}`}
             className={cn(
-              '-ml-2 size-4 w-0 shrink-0 -translate-x-1.5 text-ink-muted opacity-0 blur-[3px]',
-              'transition-[width,margin,opacity,filter,translate] duration-[290ms] ease-spring-tap',
-              'group-hover:ml-0 group-hover:w-4 group-hover:translate-x-0 group-hover:opacity-100 group-hover:blur-none'
+              'no-drag group press flex h-10 max-w-[420px] min-w-0 items-center gap-2 rounded-full pr-3.5 pl-2',
+              'border-[0.5px] border-line-strong bg-main shadow-float hover:bg-surface'
             )}
-          />
-        </button>
+          >
+            <RoomAvatarCluster
+              members={room.members}
+              speakingName={speaker}
+              size="xs"
+              ringClassName="ring-main"
+            />
+            <h1 className="min-w-0 truncate text-[14px] leading-[18px] font-medium text-ink">
+              {room.title}
+            </h1>
+            <ChevronRight
+              aria-hidden
+              className={cn(
+                '-ml-2 size-4 w-0 shrink-0 -translate-x-1.5 text-ink-muted opacity-0 blur-[3px]',
+                'transition-[width,margin,opacity,filter,translate] duration-[290ms] ease-spring-tap',
+                'group-hover:ml-0 group-hover:w-4 group-hover:translate-x-0 group-hover:opacity-100 group-hover:blur-none'
+              )}
+            />
+          </button>
+          <ViewTab label="任务" selected={false} onClick={() => usePanes.getState().setView('board')} />
+        </div>
 
         {/* Quiet Icon-Only Right Actions */}
         <div className="no-drag flex min-w-0 flex-1 items-center justify-end gap-1">

@@ -84,13 +84,18 @@ function ToolButton({ icon, label, keys, fold, onClick }: { icon: React.ReactNod
  * split tools and the 看板 · bot · 协作 switch. Mirrors Pane's own conditions.
  */
 export function useMergedHeader(): boolean {
+  const collab = usePanes((p) => p.view === 'collab')
+  const hasRoom = useRooms((r) => r.rooms.length > 0)
   const tab = usePanes((p) => {
     if (p.view !== 'sessions' || p.stash) return null
     const all = leaves(p.tree)
     return all.length === 1 && all[0]!.tabs.length <= 1 ? (activeTab(all[0]!) ?? null) : null
   })
   return useBotStore((b) => {
-    if (b.settingsOpen || !tab) return false
+    if (b.settingsOpen) return false
+    // 协作: RoomView's header carries 任务 unless it shows the new-group form (App's collabRoomId).
+    if (collab) return hasRoom && b.selectedBotId !== 'room-create'
+    if (!tab) return false
     const bot = b.bots.find((x) => x.id === tab.botId)
     if (!bot) return false
     return !(MULTI_CONVERSATION.has(bot.platformId) && tab.conversationId && tab.conversationId !== bot.activeSessionId)
