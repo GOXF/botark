@@ -1,7 +1,9 @@
 import { HarkProjects } from './HarkProjects'
 import { HarkScreenshot } from './HarkScreenshot'
+import { HarkAskCards } from './HarkAskCard'
+import { pendingHarkAsks } from '@shared/harkAsks'
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Download, FileText, Globe, KeyRound, Monitor, ShieldAlert, Terminal } from 'lucide-react'
+import { Download, FileText, Globe, KeyRound, Monitor, Terminal } from 'lucide-react'
 import { EmptyLine, Section } from '@/components/info/Section'
 import { Button } from '@/components/ui/Button'
 import { ConnectorIcon } from '@/components/ui/ConnectorIcon'
@@ -1112,9 +1114,9 @@ function HarkComputerInspector({ accountId, sessionId, connected }: { accountId:
       prompt?: string
       domain?: string
       status: string
+      raw?: Record<string, unknown>
     }>
   >([])
-  const [askInput, setAskInput] = useState<Record<string, string>>({})
   const [snapshotGeneration, setSnapshotGeneration] = useState(0)
   const { lifetime, snapshot } = useHarkSnapshot(accountId, sessionId)
   const refreshGeneration = useRef(0)
@@ -1140,7 +1142,6 @@ function HarkComputerInspector({ accountId, sessionId, connected }: { accountId:
       const nextAsks = Array.isArray(d?.asks) ? d.asks : []
       setPanels(pList)
       setAsks(nextAsks)
-      setAskInput((prev) => Object.fromEntries(nextAsks.flatMap(({ id }) => id in prev ? [[id, prev[id]!]] : [])))
       setSnapshotGeneration(generation)
     } catch (err) {
       if (current()) setError(cleanSidebarError(err))
@@ -1174,13 +1175,6 @@ function HarkComputerInspector({ accountId, sessionId, connected }: { accountId:
 
   const stopTool = (dispatchId: string) =>
     runToolAction(dispatchId, '/messages/stop-tool', { dispatchId }, '已停止该电脑/工具任务')
-
-  const submitToolResponse = (ask: (typeof asks)[number], value: string) => {
-    if (!ask.requestId) return
-    return runToolAction(ask.id, '/messages/tool-response', {
-      requestId: ask.requestId, type: 'user_input', dispatchId: ask.dispatchId, value
-    }, '已提交工具确认响应')
-  }
 
   const activeBrowserPanel = currentHarkBrowser(panels)
   const screenshotGeneration = JSON.stringify([sessionId, conversationId, snapshotGeneration])
@@ -1228,44 +1222,7 @@ function HarkComputerInspector({ accountId, sessionId, connected }: { accountId:
         {error && <p className="text-status-error">{error}</p>}
         {hint && <p className="text-ink-secondary">{hint}</p>}
 
-        {asks.length > 0 && (
-          <div className="flex flex-col gap-1.5">
-            {asks.map((ask) => (
-              <div key={ask.id} className="rounded-xl border border-status-attention/30 bg-status-attention/8 p-2.5">
-                <div className="flex items-center gap-1.5 font-medium text-ink">
-                  <ShieldAlert className="size-4 text-status-attention" />
-                  <span>{ask.prompt || ask.displayHint || 'Hark 请求你的确认'}</span>
-                </div>
-                {ask.domain && <p className="mt-0.5 font-mono text-[11px] text-ink-muted">{ask.domain}</p>}
-                <div className="mt-2 flex gap-1.5">
-                  <TextInput
-                    value={askInput[ask.id] ?? ''}
-                    onChange={(e) => setAskInput((prev) => ({ ...prev, [ask.id]: e.target.value }))}
-                    placeholder="输入回复或直接点击允许…"
-                    aria-label="Tool response"
-                    className="h-7 flex-1 text-[12px]"
-                  />
-                  <Button
-                    size="sm"
-                    variant="primary"
-                    disabled={busyId === ask.id}
-                    onClick={() => void submitToolResponse(ask, askInput[ask.id]?.trim() || 'approved')}
-                  >
-                    允许
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    disabled={busyId === ask.id}
-                    onClick={() => void submitToolResponse(ask, 'denied')}
-                  >
-                    拒绝
-                  </Button>
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
+        {asks.length > 0 && <HarkAskCards accountId={accountId} sessionId={sessionId} asks={pendingHarkAsks(asks)} />}
 
         {panels.length > 0 && (
           <ul className="flex flex-col gap-1.5">

@@ -414,9 +414,9 @@ function HarkTaskBoard({ botId }: { botId: string }) {
                   {list.length === 0 && <li className="px-2 py-6 text-center text-[12px] text-ink-faint">没有</li>}
                   {older > 0 && (
                     <li>
-                      <button type="button" onClick={() => setOlderOpen(true)} className="press px-2 py-1 text-[11.5px] text-accent-600">
+                      <Button variant="ghost" size="sm" onClick={() => setOlderOpen(true)}>
                         更早的 {older} 条 · 展开
-                      </button>
+                      </Button>
                     </li>
                   )}
                 </ol>
@@ -468,16 +468,17 @@ function TaskCardView({ task, title, selected, onClick }: { task: TaskCard; titl
             ))}
           </ul>
           {task.subtasks.length > 3 && !open && (
-            <button
-              type="button"
+            <Button
+              variant="ghost"
+              size="sm"
+              className="w-fit"
               onClick={(e) => {
                 e.stopPropagation()
                 setOpen(true)
               }}
-              className="w-fit text-[11px] text-accent-600"
             >
               还有 {task.subtasks.length - 3} 个 · 展开
-            </button>
+            </Button>
           )}
         </>
       )}

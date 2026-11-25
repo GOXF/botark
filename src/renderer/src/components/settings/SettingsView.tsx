@@ -42,6 +42,7 @@ import { Button } from '@/components/ui/Button'
 import { IconButton } from '@/components/ui/IconButton'
 import { NumberStepper, SwitchPill } from '@/components/ui/Controls'
 import { Dialog } from '@/components/ui/Dialog'
+import { TextInput } from '@/components/ui/Field'
 import { Menu, MenuContent, MenuItem, MenuSeparator, MenuTrigger } from '@/components/ui/Menu'
 import { SegmentedControl } from '@/components/ui/SegmentedControl'
 import { GoxfChannelRow } from '@/components/update/GoxfChannelRow'
@@ -1462,7 +1463,7 @@ export function SettingsView() {
                       <Button variant="secondary" size="sm" onClick={() => setSettingsOpen(true, 'proxy-pool')}>
                         先导入代理池
                       </Button>
-                      <Button variant="primary" size="sm" disabled={busy} onClick={() => setBatchOpen(true)}>
+                      <Button variant="secondary" size="sm" disabled={busy} onClick={() => setBatchOpen(true)}>
                         批量导入 Muse 账号
                       </Button>
                     </div>
@@ -1657,15 +1658,15 @@ export function SettingsView() {
                       className="block w-full resize-none rounded-xl border border-line bg-canvas p-2.5 font-mono text-[12px] leading-5 text-ink outline-none placeholder:text-ink-muted focus:border-accent-600"
                     />
                     <div className="flex flex-wrap items-center gap-2">
-                      <input
+                      <TextInput
                         value={dotRefreshInput}
                         onChange={(e) => setDotRefreshInput(e.target.value)}
                         placeholder="可选：单账号导入时单独填写 refresh_token (rt_...) 用于自动续期"
-                        className="h-8 min-w-0 flex-1 rounded-xl border border-line bg-canvas px-3 font-mono text-[12px] text-ink outline-none placeholder:text-ink-muted focus:border-accent-600"
+                        className="h-8 min-w-0 flex-1 font-mono text-[12px]"
                       />
                       <Button
                         size="sm"
-                        variant="primary"
+                        variant="secondary"
                         disabled={busy || (!dotRawInput.trim() && !dotRefreshInput.trim())}
                         onClick={() => void handleImportDotCredentials()}
                       >
@@ -1876,15 +1877,15 @@ export function SettingsView() {
                       className="block w-full resize-none rounded-xl border border-line bg-canvas p-2.5 font-mono text-[12px] leading-5 text-ink outline-none placeholder:text-ink-muted focus:border-accent-600"
                     />
                     <div className="flex gap-2">
-                      <input
+                      <TextInput
                         value={grokRefreshInput}
                         onChange={(e) => setGrokRefreshInput(e.target.value)}
                         placeholder="可选：填写 Refresh Token 用于自动续期"
-                        className="h-8 min-w-0 flex-1 rounded-xl border border-line bg-canvas px-3 font-mono text-[12px] text-ink outline-none focus:border-accent-600"
+                        className="h-8 min-w-0 flex-1 font-mono text-[12px]"
                       />
                       <Button
                         size="sm"
-                        variant="primary"
+                        variant="secondary"
                         disabled={busy || !grokTokenInput.trim()}
                         onClick={() => void handleImportGrokToken()}
                       >
@@ -2076,7 +2077,7 @@ export function SettingsView() {
                     <div className="flex justify-end">
                       <Button
                         size="sm"
-                        variant="primary"
+                        variant="secondary"
                         disabled={busy || !harkRawInput.trim()}
                         onClick={() => void handleImportHarkCredentials()}
                       >
@@ -2821,7 +2822,7 @@ export function SettingsView() {
                     <div className="flex justify-end">
                       <Button
                         size="sm"
-                        variant="primary"
+                        variant="secondary"
                         disabled={busy || !cueCredentialInput.trim()}
                         onClick={async () => {
                           setBusy(true)

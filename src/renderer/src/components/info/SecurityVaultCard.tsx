@@ -75,7 +75,7 @@ export function InspectorProtocolCard({
             className={cn(
               'press inline-flex h-7 flex-1 items-center justify-center gap-1.5 rounded-full border px-2.5 text-[12px] font-medium',
               webSessionOpen
-                ? 'border-accent bg-accent-50 text-accent-600'
+                ? 'border-accent-600/40 bg-accent-50 text-accent-600'
                 : 'border-line bg-surface text-ink hover:bg-hover'
             )}
           >
@@ -102,7 +102,7 @@ export function InspectorProtocolCard({
             className={cn(
               'press inline-flex h-7 flex-1 items-center justify-center gap-1.5 rounded-full border px-2.5 text-[12px] font-medium',
               activeTab === 'members'
-                ? 'border-accent bg-accent-50 text-accent-600'
+                ? 'border-accent-600/40 bg-accent-50 text-accent-600'
                 : 'border-line bg-surface text-ink hover:bg-hover'
             )}
           >
@@ -129,7 +129,7 @@ export function InspectorProtocolCard({
             className={cn(
               'press inline-flex h-7 flex-1 items-center justify-center gap-1.5 rounded-full border px-2.5 text-[12px] font-medium',
               webSessionOpen
-                ? 'border-accent bg-accent-50 text-accent-600'
+                ? 'border-accent-600/40 bg-accent-50 text-accent-600'
                 : 'border-line bg-surface text-ink hover:bg-hover'
             )}
           >
@@ -147,7 +147,7 @@ export function InspectorProtocolCard({
             className={cn(
               'press inline-flex h-7 flex-1 items-center justify-center gap-1.5 rounded-full border px-2.5 text-[12px] font-medium',
               activeTab === 'memory'
-                ? 'border-accent bg-accent-50 text-accent-600'
+                ? 'border-accent-600/40 bg-accent-50 text-accent-600'
                 : 'border-line bg-surface text-ink hover:bg-hover'
             )}
           >
@@ -160,7 +160,7 @@ export function InspectorProtocolCard({
             className={cn(
               'press inline-flex h-7 flex-1 items-center justify-center gap-1.5 rounded-full border px-2.5 text-[12px] font-medium',
               webSessionOpen
-                ? 'border-accent bg-accent-50 text-accent-600'
+                ? 'border-accent-600/40 bg-accent-50 text-accent-600'
                 : 'border-line bg-surface text-ink hover:bg-hover'
             )}
           >
@@ -190,7 +190,7 @@ export function InspectorProtocolCard({
             className={cn(
               'press inline-flex h-7 flex-1 items-center justify-center gap-1.5 rounded-full border px-2.5 text-[12px] font-medium',
               activeTab === 'computer'
-                ? 'border-accent bg-accent-50 text-accent-600'
+                ? 'border-accent-600/40 bg-accent-50 text-accent-600'
                 : 'border-line bg-surface text-ink hover:bg-hover'
             )}
           >
@@ -216,7 +216,7 @@ export function InspectorProtocolCard({
             className={cn(
               'press inline-flex h-7 flex-1 items-center justify-center gap-1.5 rounded-full border px-2.5 text-[12px] font-medium',
               webSessionOpen
-                ? 'border-accent bg-accent-50 text-accent-600'
+                ? 'border-accent-600/40 bg-accent-50 text-accent-600'
                 : 'border-line bg-surface text-ink hover:bg-hover'
             )}
           >

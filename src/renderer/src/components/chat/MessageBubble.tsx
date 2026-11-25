@@ -1060,7 +1060,7 @@ function RichWidgets({
                       mimeType: 'text/html'
                     })
                   }
-                  className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-medium text-accent-600 hover:bg-hover"
+                  className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium text-accent-600 hover:bg-hover"
                 >
                   <Maximize2 className="size-3" /> 原生打开
                 </button>
@@ -1120,7 +1120,7 @@ function RichWidgets({
                       className={
                         picked
                           ? 'overflow-hidden rounded-lg border-2 border-accent-600 bg-accent-50'
-                          : 'overflow-hidden rounded-lg border border-line bg-surface-muted'
+                          : 'overflow-hidden rounded-lg border border-line bg-sunken'
                       }
                       title={img.path}
                     >
@@ -2494,7 +2494,7 @@ const MessageBubbleBody = memo(function MessageBubbleBody({
                     })
                   }
                   title="在右侧画布展开阅读"
-                  className="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] text-ink-secondary hover:bg-hover hover:text-ink"
+                  className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] text-ink-secondary hover:bg-hover hover:text-ink"
                 >
                   <Maximize2 className="size-3" />
                   <span>右侧阅读</span>
