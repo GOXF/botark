@@ -249,7 +249,7 @@ function FullScreenGuideBody({
           <button
             type="button"
             onClick={() => setPokeSignal((n) => n + 1)}
-            className="press grid size-8 place-items-center rounded-xl bg-surface ring-1 ring-line"
+            className="press grid size-8 place-items-center rounded-full bg-surface ring-1 ring-line"
           >
             <GrokBotMark
               seed={`guide-${step}-${selectedPlatform}`}
@@ -561,7 +561,7 @@ function FullScreenGuideBody({
                           setPokeSignal((n) => n + 1)
                         }}
                         className={cn(
-                          'flex items-center gap-2 rounded-xl border px-3.5 py-2 text-[13.5px] font-medium transition-all',
+                          'flex items-center gap-2 rounded-full border px-3.5 py-2 text-[13.5px] font-medium transition-all',
                           active
                             ? 'border-ink bg-ink text-surface shadow-soft'
                             : 'border-line bg-surface text-ink hover:bg-hover'

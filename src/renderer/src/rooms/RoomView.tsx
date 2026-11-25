@@ -254,7 +254,7 @@ const RoomSidebarItem = memo(function RoomSidebarItem({
             aria-label={expanded ? '收起成员会话' : '展开成员会话'}
             aria-expanded={expanded}
             onClick={() => setExpanded((v) => !v)}
-            className="press-icon grid size-5 shrink-0 place-items-center rounded-md text-ink-muted transition-colors hover:bg-hover hover:text-ink"
+            className="press-icon grid size-5 shrink-0 place-items-center rounded-full text-ink-muted transition-colors hover:bg-hover hover:text-ink"
           >
             <ChevronRight aria-hidden className={cn('size-3.5 transition-transform duration-150', expanded && 'rotate-90')} />
           </button>
@@ -447,7 +447,7 @@ export function RoomList({ compact = false, fill = false }: { compact?: boolean;
           aria-current={creating}
           onClick={() => openSidebarRoom(NEW_ROOM_ID)}
           className={cn(
-            'press-icon grid size-10 shrink-0 place-items-center rounded-2xl transition-colors',
+            'press-icon grid size-10 shrink-0 place-items-center rounded-full transition-colors',
             creating
               ? 'bg-active text-accent-600'
               : 'text-ink-secondary hover:bg-hover hover:text-ink'
@@ -1057,7 +1057,7 @@ const RoomMessageRow = memo(function RoomMessageRow({
             <button
               type="button"
               onClick={copyBody}
-              className="press inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11.5px] text-ink-muted hover:bg-hover hover:text-ink"
+              className="press inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[11.5px] text-ink-muted hover:bg-hover hover:text-ink"
             >
               {copied ? <Check className="size-3 text-status-online" /> : <Copy className="size-3" />}
               {copied ? '已复制' : '复制'}
@@ -1066,7 +1066,7 @@ const RoomMessageRow = memo(function RoomMessageRow({
           <button
             type="button"
             onClick={() => onMentionReply(member?.name ?? message.author)}
-            className="press inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11.5px] text-ink-muted hover:bg-hover hover:text-ink"
+            className="press inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[11.5px] text-ink-muted hover:bg-hover hover:text-ink"
           >
             <ArkMentionLoopSvg className="size-3" />
             追问

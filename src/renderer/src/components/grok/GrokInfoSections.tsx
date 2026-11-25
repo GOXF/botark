@@ -529,7 +529,7 @@ function GrokAgentsAndRoomsInspector({
                       type="button"
                       onClick={() => pinAgentAsSidebarBot(a)}
                       title="作为独立会话固定到左侧栏"
-                      className="rounded px-1.5 py-0.5 text-[10.5px] text-ink-secondary hover:bg-hover hover:text-ink"
+                      className="rounded-full px-1.5 py-0.5 text-[10.5px] text-ink-secondary hover:bg-hover hover:text-ink"
                     >
                       独立栏
                     </button>
@@ -538,7 +538,7 @@ function GrokAgentsAndRoomsInspector({
                         type="button"
                         disabled={busy}
                         onClick={() => void deleteAgent(a.id)}
-                        className="rounded px-1 text-[10.5px] text-ink-muted hover:text-status-error"
+                        className="rounded-full px-1 text-[10.5px] text-ink-muted hover:text-status-error"
                       >
                         删除
                       </button>

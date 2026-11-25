@@ -360,7 +360,7 @@ export function HermesSessionsSection({
                   type="button"
                   title={t('Delete')}
                   onClick={() => void handleDelete(s.id)}
-                  className="shrink-0 rounded p-1 text-ink-muted opacity-0 transition-opacity hover:text-status-error group-hover:opacity-100"
+                  className="shrink-0 rounded-full p-1 text-ink-muted opacity-0 transition-opacity hover:text-status-error group-hover:opacity-100"
                 >
                   <Trash2 className="size-3.5" aria-hidden />
                 </button>

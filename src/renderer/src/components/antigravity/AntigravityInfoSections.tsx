@@ -237,7 +237,7 @@ export function AntigravityConversationsSection({
           <button
             type="button"
             onClick={() => startNewAntigravitySession(botId)}
-            className="press-icon inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] text-ink-secondary hover:bg-hover hover:text-ink"
+            className="press-icon inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[11px] text-ink-secondary hover:bg-hover hover:text-ink"
           >
             <ArkComposeNewSvg className="size-3" />
             新建
@@ -246,7 +246,7 @@ export function AntigravityConversationsSection({
             type="button"
             onClick={() => void refresh()}
             disabled={loading}
-            className="press-icon inline-flex items-center rounded-md p-1 text-ink-muted hover:bg-hover hover:text-ink"
+            className="press-icon inline-flex items-center rounded-full p-1 text-ink-muted hover:bg-hover hover:text-ink"
             aria-label={t('Refresh')}
           >
             <RefreshCw className={cn('size-3', loading && 'animate-spin')} />
@@ -295,7 +295,7 @@ export function AntigravityConversationsSection({
                   onClick={() => void remove(conv.conversationId)}
                   disabled={deletingId === conv.conversationId}
                   aria-label="删除会话"
-                  className="press-icon rounded p-1 text-ink-muted opacity-0 transition-opacity hover:bg-status-error/10 hover:text-status-error group-hover:opacity-100"
+                  className="press-icon rounded-full p-1 text-ink-muted opacity-0 transition-opacity hover:bg-status-error/10 hover:text-status-error group-hover:opacity-100"
                 >
                   {deletingId === conv.conversationId ? (
                     <Loader2 className="size-3 animate-spin" />
@@ -364,7 +364,7 @@ export function AntigravityEnvironmentsSection({ accountId }: { accountId: strin
             type="button"
             onClick={() => void refresh()}
             disabled={loading}
-            className="press-icon inline-flex items-center rounded-md p-1 text-ink-muted hover:bg-hover hover:text-ink"
+            className="press-icon inline-flex items-center rounded-full p-1 text-ink-muted hover:bg-hover hover:text-ink"
           >
             <RefreshCw className={cn('size-3', loading && 'animate-spin')} />
           </button>
@@ -472,7 +472,7 @@ export function AntigravityAgentsSection({ accountId }: { accountId: string }) {
           type="button"
           onClick={() => void refresh()}
           disabled={loading}
-          className="press-icon inline-flex items-center rounded-md p-1 text-ink-muted hover:bg-hover hover:text-ink"
+          className="press-icon inline-flex items-center rounded-full p-1 text-ink-muted hover:bg-hover hover:text-ink"
         >
           <RefreshCw className={cn('size-3', loading && 'animate-spin')} />
         </button>

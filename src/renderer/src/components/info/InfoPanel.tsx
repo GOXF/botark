@@ -185,7 +185,7 @@ function Tabs({
       ref={glide.ref}
       role="tablist"
       aria-label={t('Details panels')}
-      className="relative mx-4 flex rounded-[10px] bg-hover p-0.5"
+      className="relative mx-4 flex rounded-full bg-hover p-0.5"
       onKeyDown={(event) => {
         if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return
         event.preventDefault()
@@ -197,7 +197,7 @@ function Tabs({
       }}
     >
       {glide.thumb && (
-        <span aria-hidden className="absolute top-0.5 bottom-0.5 rounded-lg bg-surface shadow-float" style={glide.thumb} />
+        <span aria-hidden className="absolute top-0.5 bottom-0.5 rounded-full bg-surface shadow-float" style={glide.thumb} />
       )}
       {tabs.map(({ id, label }) => (
         <button
@@ -209,7 +209,7 @@ function Tabs({
           tabIndex={tab === id ? 0 : -1}
           onClick={() => onChange(id)}
           className={cn(
-            'press relative h-[30px] min-w-0 flex-1 rounded-lg px-1 text-[12px] tracking-tight whitespace-nowrap transition-colors',
+            'press relative h-[30px] min-w-0 flex-1 rounded-full px-1 text-[12px] tracking-tight whitespace-nowrap transition-colors',
             tab === id ? 'text-ink' : 'text-ink-secondary hover:text-ink'
           )}
         >

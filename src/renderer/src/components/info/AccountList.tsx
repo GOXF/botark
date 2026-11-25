@@ -143,7 +143,7 @@ export function AccountList({ bot, accounts }: AccountListProps) {
                 type="button"
                 disabled={account.pending}
                 onClick={() => triggerPlatformLogin(account)}
-                className="press absolute bottom-1.5 left-[50px] inline-flex h-5 items-center gap-1 rounded-md px-1 text-[12px] text-accent-600 hover:bg-accent-50 disabled:opacity-60"
+                className="press absolute bottom-1.5 left-[50px] inline-flex h-5 items-center gap-1 rounded-full px-1 text-[12px] text-accent-600 hover:bg-accent-50 disabled:opacity-60"
               >
                 {account.pending && <Loader2 className="size-3 animate-spin" aria-hidden />}
                 {account.pending ? t('Signing in…') : loginLabel}

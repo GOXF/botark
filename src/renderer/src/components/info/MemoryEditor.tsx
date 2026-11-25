@@ -32,7 +32,7 @@ export function MemoryEditor({ bot }: { bot: Bot }) {
                 type="button"
                 aria-label={`Forget “${item.text}”`}
                 onClick={() => removeMemory(bot.id, item.id)}
-                className="press-icon grid size-5 shrink-0 place-items-center rounded text-ink-muted hover:bg-active hover:text-ink"
+                className="press-icon grid size-5 shrink-0 place-items-center rounded-full text-ink-muted hover:bg-active hover:text-ink"
               >
                 <X className="size-3" />
               </button>

@@ -326,7 +326,7 @@ export function Composer({ bot, account, typing = false, onSend, onCancel, onCon
                 type="button"
                 aria-label="取消引用"
                 onClick={() => setReplyTarget(bot.id, null)}
-                className="press-icon grid size-5 shrink-0 place-items-center rounded-md text-ink-muted hover:bg-active hover:text-ink"
+                className="press-icon grid size-5 shrink-0 place-items-center rounded-full text-ink-muted hover:bg-active hover:text-ink"
               >
                 <X className="size-3" />
               </button>
@@ -394,7 +394,7 @@ export function Composer({ bot, account, typing = false, onSend, onCancel, onCon
                       type="button"
                       aria-label={t('Remove {name}', { name: file.name })}
                       onClick={() => draft.remove(file.id)}
-                      className="press-icon grid size-5 shrink-0 place-items-center rounded-md text-ink-muted hover:bg-active hover:text-ink"
+                      className="press-icon grid size-5 shrink-0 place-items-center rounded-full text-ink-muted hover:bg-active hover:text-ink"
                     >
                       <X className="size-3" />
                     </button>

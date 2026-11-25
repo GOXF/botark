@@ -96,7 +96,7 @@ function CodeBlock({ lang, code }: { lang: string; code: string }) {
         <button
           type="button"
           onClick={onCopy}
-          className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] text-ink-secondary hover:bg-hover hover:text-ink"
+          className="inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[11px] text-ink-secondary hover:bg-hover hover:text-ink"
         >
           {copied ? <Check className="size-3 text-status-online" /> : <Copy className="size-3" />}
           {copied ? '已复制' : t('Copy')}
@@ -256,7 +256,7 @@ function renderInline(
                 key={`${keyPrefix}-wimg-${i}`}
                 type="button"
                 onClick={() => onFileLinkClick(cleanPath, label)}
-                className="inline-flex items-center gap-1 rounded-md border border-line bg-accent-50/80 px-2 py-0.5 font-mono text-[12px] font-medium text-accent-600 transition-colors hover:bg-accent-100"
+                className="inline-flex items-center gap-1 rounded-full border border-line bg-accent-50/80 px-2 py-0.5 font-mono text-[12px] font-medium text-accent-600 transition-colors hover:bg-accent-100"
               >
                 🖼️ {label}
               </button>
@@ -297,7 +297,7 @@ function renderInline(
             key={`${keyPrefix}-f-${i}`}
             type="button"
             onClick={() => onFileLinkClick(href.replace(/^\/+/, ''), label)}
-            className="inline-flex items-center gap-1 rounded-md border border-line bg-accent-50/80 px-2 py-0.5 font-mono text-[12px] font-medium text-accent-600 transition-colors hover:bg-accent-100"
+            className="inline-flex items-center gap-1 rounded-full border border-line bg-accent-50/80 px-2 py-0.5 font-mono text-[12px] font-medium text-accent-600 transition-colors hover:bg-accent-100"
           >
             📄 {label}
           </button>
@@ -349,7 +349,7 @@ function renderInline(
             type="button"
             onClick={() => onFileLinkClick(inner.replace(/^\/+/, ''), inner)}
             title="点击原生打开预览"
-            className="rounded bg-sunken px-1.5 py-0.5 font-mono text-[0.9em] text-accent-600 underline decoration-dotted underline-offset-2 hover:bg-hover"
+            className="rounded-full bg-sunken px-1.5 py-0.5 font-mono text-[0.9em] text-accent-600 underline decoration-dotted underline-offset-2 hover:bg-hover"
           >
             {inner}
           </button>

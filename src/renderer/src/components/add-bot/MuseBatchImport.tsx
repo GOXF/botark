@@ -343,7 +343,7 @@ export function MuseBatchImport({ onDone, onBusyChange }: { onDone: () => void; 
           <button
             type="button"
             onClick={() => fileRef.current?.click()}
-            className="ml-auto inline-flex h-7 items-center gap-1 rounded-md px-2 text-ink-secondary hover:bg-hover hover:text-ink"
+            className="ml-auto inline-flex h-7 items-center gap-1 rounded-full px-2 text-ink-secondary hover:bg-hover hover:text-ink"
           >
             <FileUp className="size-3.5" aria-hidden />
             {t('Load .txt')}

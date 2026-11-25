@@ -318,7 +318,7 @@ export function BotList() {
         <button
           type="button"
           onClick={() => addGroup()}
-          className="press inline-flex h-7 items-center gap-1.5 rounded-lg px-2 text-[12px] font-medium text-ink-muted transition-colors hover:bg-hover hover:text-ink-secondary"
+          className="press inline-flex h-7 items-center gap-1.5 rounded-full px-2 text-[12px] font-medium text-ink-muted transition-colors hover:bg-hover hover:text-ink-secondary"
         >
           <Plus className="size-3.5" aria-hidden />
           {t('New section')}
@@ -328,7 +328,7 @@ export function BotList() {
           onClick={() => setConfigureOpen(true)}
           title={t('Configure sections')}
           aria-label={t('Configure sections')}
-          className="press-icon grid size-7 place-items-center rounded-lg text-ink-muted transition-colors hover:bg-hover hover:text-ink-secondary"
+          className="press-icon grid size-7 place-items-center rounded-full text-ink-muted transition-colors hover:bg-hover hover:text-ink-secondary"
         >
           <ArkProjectStackSvg className="size-3.5" />
         </button>

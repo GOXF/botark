@@ -450,7 +450,7 @@ function McpServerFormDialog({
                 type="button"
                 aria-label={L('移除', 'Remove')}
                 onClick={() => setKvRows((prev) => prev.filter((r) => r.id !== row.id))}
-                className="press-icon grid size-7 shrink-0 place-items-center rounded-lg text-ink-muted hover:bg-hover hover:text-status-error"
+                className="press-icon grid size-7 shrink-0 place-items-center rounded-full text-ink-muted hover:bg-hover hover:text-status-error"
               >
                 <Trash2 className="size-3.5" />
               </button>
@@ -654,7 +654,7 @@ function McpToolForm({ externalTools, active, busy, onRun }: {
             type="button"
             onClick={() => setRawJsonMode((v) => !v)}
             title={rawJsonMode ? L('切换表单', 'Form view') : L('切换 JSON', 'JSON view')}
-            className="press-icon grid size-7 shrink-0 place-items-center rounded-lg text-ink-muted hover:bg-hover hover:text-ink"
+            className="press-icon grid size-7 shrink-0 place-items-center rounded-full text-ink-muted hover:bg-hover hover:text-ink"
           >
             <Code2 className="size-3.5" />
           </button>

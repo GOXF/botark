@@ -68,7 +68,7 @@ function DeliveryState({ message, onRetry }: Pick<MessageBubbleProps, 'message' 
             <button
               type="button"
               onClick={() => onRetry(message.id)}
-              className="inline-flex items-center gap-1 rounded px-1 font-medium underline-offset-2 hover:underline"
+              className="inline-flex items-center gap-1 rounded-full px-1 font-medium underline-offset-2 hover:underline"
             >
               <RotateCw className="size-3" aria-hidden /> {t('Retry')}
             </button>
@@ -86,7 +86,7 @@ function DeliveryState({ message, onRetry }: Pick<MessageBubbleProps, 'message' 
               type="button"
               onClick={() => onRetry(message.id)}
               title={t('Sends the same message again')}
-              className="inline-flex items-center gap-1 rounded px-1 font-medium underline-offset-2 hover:underline"
+              className="inline-flex items-center gap-1 rounded-full px-1 font-medium underline-offset-2 hover:underline"
             >
               <RotateCw className="size-3" aria-hidden /> {t('Send again')}
             </button>
@@ -2419,7 +2419,7 @@ const MessageBubbleBody = memo(function MessageBubbleBody({
                   type="button"
                   onClick={quoteReplyMessage}
                   title="引用回复"
-                  className="inline-flex items-center gap-0.5 rounded-md px-1.5 py-0.5 text-[11px] text-ink-secondary hover:bg-hover hover:text-ink"
+                  className="inline-flex items-center gap-0.5 rounded-full px-1.5 py-0.5 text-[11px] text-ink-secondary hover:bg-hover hover:text-ink"
                 >
                   <ArkHandoffCurveSvg className="size-3" />
                   <span>引用</span>
@@ -2434,7 +2434,7 @@ const MessageBubbleBody = memo(function MessageBubbleBody({
                   type="button"
                   onClick={quoteReplyMessage}
                   title="引用此消息回复"
-                  className="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] text-ink-secondary hover:bg-hover hover:text-ink"
+                  className="inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[11px] text-ink-secondary hover:bg-hover hover:text-ink"
                 >
                   <ArkHandoffCurveSvg className="size-3" />
                   <span>引用</span>
@@ -2443,7 +2443,7 @@ const MessageBubbleBody = memo(function MessageBubbleBody({
                   type="button"
                   onClick={copyMessageText}
                   title={t('Copy')}
-                  className="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] text-ink-secondary hover:bg-hover hover:text-ink"
+                  className="inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[11px] text-ink-secondary hover:bg-hover hover:text-ink"
                 >
                   {copiedMsg ? <Check className="size-3 text-status-online" /> : <Copy className="size-3" />}
                   <span>{copiedMsg ? '已复制' : t('Copy')}</span>
@@ -2452,7 +2452,7 @@ const MessageBubbleBody = memo(function MessageBubbleBody({
                   type="button"
                   onClick={() => triggerShareConversation({ botId: message.botId, messageId: message.id })}
                   title="生成共享页面"
-                  className="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] text-ink-secondary hover:bg-hover hover:text-ink"
+                  className="inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[11px] text-ink-secondary hover:bg-hover hover:text-ink"
                 >
                   <ArkExportDocSvg className="size-3" />
                   <span>分享</span>
@@ -2482,7 +2482,7 @@ const MessageBubbleBody = memo(function MessageBubbleBody({
                         onClick={() => reactGrokMessage(emo)}
                         title={`回应 ${emo}`}
                         className={cn(
-                          'rounded px-1 py-0.5 text-[11px] hover:bg-hover',
+                          'rounded-full px-1 py-0.5 text-[11px] hover:bg-hover',
                           reactedEmoji === emo && 'bg-accent-50 ring-1 ring-accent-500/40'
                         )}
                       >

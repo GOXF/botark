@@ -64,7 +64,7 @@ export function InspectorProtocolCard({
           <button
             type="button"
             onClick={() => void startNewMuseSession(bot.id)}
-            className="press inline-flex h-7 flex-1 items-center justify-center gap-1.5 rounded-lg border border-line bg-surface px-2.5 text-[12px] font-medium text-ink hover:bg-hover"
+            className="press inline-flex h-7 flex-1 items-center justify-center gap-1.5 rounded-full border border-line bg-surface px-2.5 text-[12px] font-medium text-ink hover:bg-hover"
           >
             <MessageSquarePlus className="size-3.5 text-ink-secondary" aria-hidden />
             {t('New session')}
@@ -73,7 +73,7 @@ export function InspectorProtocolCard({
             type="button"
             onClick={toggleWebSession}
             className={cn(
-              'press inline-flex h-7 flex-1 items-center justify-center gap-1.5 rounded-lg border px-2.5 text-[12px] font-medium',
+              'press inline-flex h-7 flex-1 items-center justify-center gap-1.5 rounded-full border px-2.5 text-[12px] font-medium',
               webSessionOpen
                 ? 'border-accent bg-accent-50 text-accent-600'
                 : 'border-line bg-surface text-ink hover:bg-hover'
@@ -91,7 +91,7 @@ export function InspectorProtocolCard({
             type="button"
             disabled={busyAction || !bot.activeAccountId || !bot.selectedAgentId}
             onClick={() => void handleFreshGrokChat()}
-            className="press inline-flex h-7 flex-1 items-center justify-center gap-1.5 rounded-lg border border-line bg-surface px-2.5 text-[12px] font-medium text-ink hover:bg-hover disabled:opacity-50"
+            className="press inline-flex h-7 flex-1 items-center justify-center gap-1.5 rounded-full border border-line bg-surface px-2.5 text-[12px] font-medium text-ink hover:bg-hover disabled:opacity-50"
           >
             <MessageSquarePlus className="size-3.5 text-ink-secondary" aria-hidden />
             {t('New conversation')}
@@ -100,7 +100,7 @@ export function InspectorProtocolCard({
             type="button"
             onClick={() => onSelectTab(activeTab === 'members' ? 'overview' : 'members')}
             className={cn(
-              'press inline-flex h-7 flex-1 items-center justify-center gap-1.5 rounded-lg border px-2.5 text-[12px] font-medium',
+              'press inline-flex h-7 flex-1 items-center justify-center gap-1.5 rounded-full border px-2.5 text-[12px] font-medium',
               activeTab === 'members'
                 ? 'border-accent bg-accent-50 text-accent-600'
                 : 'border-line bg-surface text-ink hover:bg-hover'
@@ -118,7 +118,7 @@ export function InspectorProtocolCard({
             type="button"
             disabled={pending || !bot.activeAccountId}
             onClick={() => bot.activeAccountId && void connectAccount(bot.activeAccountId)}
-            className="press inline-flex h-7 flex-1 items-center justify-center gap-1.5 rounded-lg border border-line bg-surface px-2.5 text-[12px] font-medium text-ink hover:bg-hover disabled:opacity-50"
+            className="press inline-flex h-7 flex-1 items-center justify-center gap-1.5 rounded-full border border-line bg-surface px-2.5 text-[12px] font-medium text-ink hover:bg-hover disabled:opacity-50"
           >
             <RefreshCw className={cn('size-3.5 text-ink-secondary', pending && 'animate-spin')} aria-hidden />
             {t('Sync session')}
@@ -127,7 +127,7 @@ export function InspectorProtocolCard({
             type="button"
             onClick={toggleWebSession}
             className={cn(
-              'press inline-flex h-7 flex-1 items-center justify-center gap-1.5 rounded-lg border px-2.5 text-[12px] font-medium',
+              'press inline-flex h-7 flex-1 items-center justify-center gap-1.5 rounded-full border px-2.5 text-[12px] font-medium',
               webSessionOpen
                 ? 'border-accent bg-accent-50 text-accent-600'
                 : 'border-line bg-surface text-ink hover:bg-hover'
@@ -145,7 +145,7 @@ export function InspectorProtocolCard({
             type="button"
             onClick={() => onSelectTab(activeTab === 'memory' ? 'overview' : 'memory')}
             className={cn(
-              'press inline-flex h-7 flex-1 items-center justify-center gap-1.5 rounded-lg border px-2.5 text-[12px] font-medium',
+              'press inline-flex h-7 flex-1 items-center justify-center gap-1.5 rounded-full border px-2.5 text-[12px] font-medium',
               activeTab === 'memory'
                 ? 'border-accent bg-accent-50 text-accent-600'
                 : 'border-line bg-surface text-ink hover:bg-hover'
@@ -158,7 +158,7 @@ export function InspectorProtocolCard({
             type="button"
             onClick={toggleWebSession}
             className={cn(
-              'press inline-flex h-7 flex-1 items-center justify-center gap-1.5 rounded-lg border px-2.5 text-[12px] font-medium',
+              'press inline-flex h-7 flex-1 items-center justify-center gap-1.5 rounded-full border px-2.5 text-[12px] font-medium',
               webSessionOpen
                 ? 'border-accent bg-accent-50 text-accent-600'
                 : 'border-line bg-surface text-ink hover:bg-hover'
@@ -179,7 +179,7 @@ export function InspectorProtocolCard({
               setBusyAction(true)
               void startNewHermesSession(bot.id).finally(() => setBusyAction(false))
             }}
-            className="press inline-flex h-7 flex-1 items-center justify-center gap-1.5 rounded-lg border border-line bg-surface px-2.5 text-[12px] font-medium text-ink hover:bg-hover disabled:opacity-50"
+            className="press inline-flex h-7 flex-1 items-center justify-center gap-1.5 rounded-full border border-line bg-surface px-2.5 text-[12px] font-medium text-ink hover:bg-hover disabled:opacity-50"
           >
             <MessageSquarePlus className="size-3.5 text-ink-secondary" aria-hidden />
             {t('New session')}
@@ -188,7 +188,7 @@ export function InspectorProtocolCard({
             type="button"
             onClick={() => onSelectTab(activeTab === 'computer' ? 'overview' : 'computer')}
             className={cn(
-              'press inline-flex h-7 flex-1 items-center justify-center gap-1.5 rounded-lg border px-2.5 text-[12px] font-medium',
+              'press inline-flex h-7 flex-1 items-center justify-center gap-1.5 rounded-full border px-2.5 text-[12px] font-medium',
               activeTab === 'computer'
                 ? 'border-accent bg-accent-50 text-accent-600'
                 : 'border-line bg-surface text-ink hover:bg-hover'
@@ -205,7 +205,7 @@ export function InspectorProtocolCard({
           <button
             type="button"
             onClick={() => useBotStore.getState().startNewAntigravitySession(bot.id)}
-            className="press inline-flex h-7 flex-1 items-center justify-center gap-1.5 rounded-lg border border-line bg-surface px-2.5 text-[12px] font-medium text-ink hover:bg-hover"
+            className="press inline-flex h-7 flex-1 items-center justify-center gap-1.5 rounded-full border border-line bg-surface px-2.5 text-[12px] font-medium text-ink hover:bg-hover"
           >
             <MessageSquarePlus className="size-3.5 text-ink-secondary" aria-hidden />
             {t('New session')}
@@ -214,7 +214,7 @@ export function InspectorProtocolCard({
             type="button"
             onClick={toggleWebSession}
             className={cn(
-              'press inline-flex h-7 flex-1 items-center justify-center gap-1.5 rounded-lg border px-2.5 text-[12px] font-medium',
+              'press inline-flex h-7 flex-1 items-center justify-center gap-1.5 rounded-full border px-2.5 text-[12px] font-medium',
               webSessionOpen
                 ? 'border-accent bg-accent-50 text-accent-600'
                 : 'border-line bg-surface text-ink hover:bg-hover'

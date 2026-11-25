@@ -1107,7 +1107,7 @@ export function CueAgentContactsSection({
                 <button
                   type="button"
                   onClick={() => void copyValue(row.key, row.value)}
-                  className="shrink-0 rounded p-1 text-ink-muted hover:bg-hover/60 hover:text-ink"
+                  className="shrink-0 rounded-full p-1 text-ink-muted hover:bg-hover/60 hover:text-ink"
                   title="复制"
                 >
                   {copiedKey === row.key ? (

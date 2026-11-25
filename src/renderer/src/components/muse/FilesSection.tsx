@@ -195,7 +195,7 @@ function InlineFilePreview({ accountId, file }: { accountId: string; file: MuseF
             type="button"
             disabled={downloading || !path}
             onClick={() => void downloadFile()}
-            className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-medium text-accent-600 hover:bg-surface"
+            className="inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[11px] font-medium text-accent-600 hover:bg-surface"
           >
             <Download className="size-3" /> {downloading ? t('Downloading…') : t('Download')}
           </button>

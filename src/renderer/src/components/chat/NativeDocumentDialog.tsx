@@ -341,7 +341,7 @@ function ZoomableImagePreview({ src, alt, maxHeightClass }: { src: string; alt: 
         <button
           type="button"
           onClick={() => setZoom((z) => Math.max(0.5, Number((z - 0.25).toFixed(2))))}
-          className="inline-flex items-center gap-0.5 rounded-md bg-hover px-2 py-1 hover:bg-active hover:text-ink"
+          className="inline-flex items-center gap-0.5 rounded-full bg-hover px-2 py-1 hover:bg-active hover:text-ink"
           title="缩小"
         >
           <ZoomOut className="size-3.5" />
@@ -349,7 +349,7 @@ function ZoomableImagePreview({ src, alt, maxHeightClass }: { src: string; alt: 
         <button
           type="button"
           onClick={() => setZoom(1)}
-          className="rounded-md bg-hover px-2 py-1 tabular-nums hover:bg-active hover:text-ink"
+          className="rounded-full bg-hover px-2 py-1 tabular-nums hover:bg-active hover:text-ink"
           title="重置缩放"
         >
           {Math.round(zoom * 100)}%
@@ -357,7 +357,7 @@ function ZoomableImagePreview({ src, alt, maxHeightClass }: { src: string; alt: 
         <button
           type="button"
           onClick={() => setZoom((z) => Math.min(3, Number((z + 0.25).toFixed(2))))}
-          className="inline-flex items-center gap-0.5 rounded-md bg-hover px-2 py-1 hover:bg-active hover:text-ink"
+          className="inline-flex items-center gap-0.5 rounded-full bg-hover px-2 py-1 hover:bg-active hover:text-ink"
           title="放大"
         >
           <ZoomIn className="size-3.5" />
@@ -445,7 +445,7 @@ export function DocumentCanvasPane({
                 type="button"
                 onClick={() => setMode('rendered')}
                 className={cn(
-                  'inline-flex items-center gap-1 rounded-md px-2 py-0.5 font-medium transition-colors',
+                  'inline-flex items-center gap-1 rounded-full px-2 py-0.5 font-medium transition-colors',
                   mode === 'rendered' ? 'bg-surface text-ink shadow-soft' : 'text-ink-secondary hover:text-ink'
                 )}
               >
@@ -455,7 +455,7 @@ export function DocumentCanvasPane({
                 type="button"
                 onClick={() => setMode('source')}
                 className={cn(
-                  'inline-flex items-center gap-1 rounded-md px-2 py-0.5 font-medium transition-colors',
+                  'inline-flex items-center gap-1 rounded-full px-2 py-0.5 font-medium transition-colors',
                   mode === 'source' ? 'bg-surface text-ink shadow-soft' : 'text-ink-secondary hover:text-ink'
                 )}
               >
@@ -612,7 +612,7 @@ function OpenNativeDocumentDialog({ target, onClose }: { target: NativeDocumentT
                 type="button"
                 onClick={() => setMode('rendered')}
                 className={cn(
-                  'inline-flex items-center gap-1 rounded-md px-2.5 py-1 font-medium transition-colors',
+                  'inline-flex items-center gap-1 rounded-full px-2.5 py-1 font-medium transition-colors',
                   mode === 'rendered' ? 'bg-surface text-ink shadow-soft' : 'text-ink-secondary hover:text-ink'
                 )}
               >
@@ -622,7 +622,7 @@ function OpenNativeDocumentDialog({ target, onClose }: { target: NativeDocumentT
                 type="button"
                 onClick={() => setMode('source')}
                 className={cn(
-                  'inline-flex items-center gap-1 rounded-md px-2.5 py-1 font-medium transition-colors',
+                  'inline-flex items-center gap-1 rounded-full px-2.5 py-1 font-medium transition-colors',
                   mode === 'source' ? 'bg-surface text-ink shadow-soft' : 'text-ink-secondary hover:text-ink'
                 )}
               >

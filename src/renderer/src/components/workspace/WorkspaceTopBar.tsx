@@ -69,7 +69,7 @@ function ToolButton({ icon, label, keys, fold, onClick }: { icon: React.ReactNod
       type="button"
       onClick={onClick}
       title={keys ? `${label} (${keys})` : label}
-      className="no-drag press flex h-[28px] items-center gap-1.5 rounded-[9px] bg-hover px-2.5 text-[12px] font-medium text-ink hover:bg-active"
+      className="no-drag press flex h-[28px] items-center gap-1.5 rounded-full bg-hover px-2.5 text-[12px] font-medium text-ink hover:bg-active"
     >
       {icon}
       {/* Folded (merged header): keys go first, then labels, as the left side narrows. */}

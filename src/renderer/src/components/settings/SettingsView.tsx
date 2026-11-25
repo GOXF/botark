@@ -1298,7 +1298,7 @@ export function SettingsView() {
                                       setEditingBotId(bot.id)
                                       setEditingBotName(bot.name)
                                     }}
-                                    className="rounded p-0.5 text-ink-muted hover:bg-hover hover:text-ink"
+                                    className="rounded-full p-0.5 text-ink-muted hover:bg-hover hover:text-ink"
                                     title="重命名 Bot"
                                   >
                                     <Pencil className="size-3" />
@@ -1995,7 +1995,7 @@ export function SettingsView() {
                                     key={b.id}
                                     type="button"
                                     onClick={() => selectBot(b.id)}
-                                    className="inline-flex items-center gap-1.5 rounded-lg border border-line bg-canvas px-2.5 py-1 text-[12px] text-ink transition-colors hover:border-line-strong hover:bg-hover"
+                                    className="inline-flex items-center gap-1.5 rounded-full border border-line bg-canvas px-2.5 py-1 text-[12px] text-ink transition-colors hover:border-line-strong hover:bg-hover"
                                   >
                                     <BotAvatar
                                       seed={b.id}
@@ -2301,7 +2301,7 @@ export function SettingsView() {
                       <button
                         type="button"
                         onClick={() => fileRef.current?.click()}
-                        className="inline-flex h-7 items-center gap-1 rounded-lg border border-line bg-canvas px-2.5 text-[12px] text-ink-secondary hover:bg-hover hover:text-ink"
+                        className="inline-flex h-7 items-center gap-1 rounded-full border border-line bg-canvas px-2.5 text-[12px] text-ink-secondary hover:bg-hover hover:text-ink"
                       >
                         <FileUp className="size-3.5" /> 从 .txt 导入
                       </button>
@@ -2437,7 +2437,7 @@ export function SettingsView() {
                               <button
                                 type="button"
                                 onClick={() => void handleRemovePoolItem(item.id)}
-                                className="rounded p-1 text-ink-muted opacity-0 group-hover:opacity-100 hover:bg-hover hover:text-status-error focus-visible:opacity-100"
+                                className="rounded-full p-1 text-ink-muted opacity-0 group-hover:opacity-100 hover:bg-hover hover:text-status-error focus-visible:opacity-100"
                                 title="移除代理（用它的账号改回跟随系统）"
                                 aria-label="移除代理"
                               >
