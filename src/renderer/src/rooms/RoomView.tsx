@@ -1367,7 +1367,7 @@ export function RoomView({ id }: { id: string }) {
   const canSend = Boolean(pictures && (text.trim() || references.length || pictures.length))
   const submit = () => {
     if (!canSend || !pictures) return
-    void submitBrief(id, text, { references, attachments: pictures })
+    void submitBrief(id, text, { references, attachments: pictures, followUp: true })
     setText('')
     setReferences([])
     draft.clear()

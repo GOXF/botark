@@ -332,12 +332,16 @@ useBotStore.subscribe((state, prev) => {
 })
 
 const pendingTurns = new Map<string, Promise<unknown>>()
-const runs = new Map<string, {
+type RoomRun = {
   controller: AbortController
   finished: Promise<void>
   finish: () => void
   slackDestination?: SlackDestination
-}>()
+  /** The running turn queue and who is answering now, so a follow-up can join this round. */
+  queue?: Array<{ member: RoomMember; trigger: RoomMessage; handoff?: RoomMessage }>
+  speaker?: RoomMember
+}
+const runs = new Map<string, RoomRun>()
 const activeAccounts = new Set<string>()
 const roomById = (id: string) => useRooms.getState().rooms.find((r) => r.id === id)
 
@@ -914,7 +918,7 @@ export function resendRoomMessage(id: string, messageId: string) {
 export async function submitBrief(
   id: string,
   input: string,
-  { author = 'User', messageId = createId('post'), references = [], attachments = [], slackDestination, handoff, start = true }: {
+  { author = 'User', messageId = createId('post'), references = [], attachments = [], slackDestination, handoff, start = true, followUp = false }: {
     author?: string
     messageId?: string
     references?: RoomReference[]
@@ -923,6 +927,8 @@ export async function submitBrief(
     handoff?: RoomMessage['handoff']
     /** false: only post the requirement, nobody starts on it. */
     start?: boolean
+    /** GOXF: typed while a round runs — goes to whoever is answering (or the administrator) next, without interrupting. */
+    followUp?: boolean
   } = {}
 ) {
   reconcileRooms(id)
@@ -939,13 +945,23 @@ export async function submitBrief(
     update(id, (r) => ({ ...r, brief: text, finalId: undefined, messages: [...r.messages, message] }))
     return
   }
+  const live = followUp ? runs.get(id) : undefined
+  // An @ in the follow-up still starts a new round for the named members.
+  const target = live?.queue && (room.members.find((m) => m.botId === room.coordinatorId) ??
+    (mentions(text, room.members).length ? undefined : live.speaker))
+  if (live?.queue && target) {
+    update(id, (r) => ({ ...r, brief: text, finalId: undefined, messages: [...r.messages, message] }))
+    const rest = live.queue.filter(({ member }) => member.botId !== target.botId)
+    live.queue.splice(0, live.queue.length, { member: target, trigger: message }, ...rest)
+    return
+  }
   stopRoom(id)
   setError(id)
   const controller = new AbortController()
   let finish!: () => void
   const finished = new Promise<void>((resolve) => { finish = resolve })
   const destination = slackDestination ?? roomSlackDestination(room)
-  const run = { controller, finished, finish, slackDestination: destination }
+  const run: RoomRun = { controller, finished, finish, slackDestination: destination }
   const signal = controller.signal
   runs.set(id, run)
   try {
@@ -963,6 +979,7 @@ export async function submitBrief(
     }
     const queue: Array<{ member: RoomMember; trigger: RoomMessage; handoff?: RoomMessage }> =
       initial.map((member) => ({ member, trigger: message }))
+    run.queue = queue
     if (room.members.length === 0) {
       setError(id, '群聊没有可对话的成员')
       return
@@ -992,6 +1009,7 @@ export async function submitBrief(
       const member = current.members.find((m) => m.botId === next.member.botId)
       if (!member) continue
       const isCoordinator = member.botId === coordinator?.botId
+      run.speaker = member
       if (next.handoff) recordHandoff(id, next.handoff, member.botId)
       useRooms.setState((s) => ({
         speakers: { ...s.speakers, [id]: member.name },
@@ -1071,7 +1089,8 @@ export async function submitBrief(
         messages: appendPost ? [...r.messages, post] : r.messages,
         members
       }))
-      if (done) break
+      // A follow-up typed during this turn still gets its answer.
+      if (done && !queue.some(({ trigger }) => isHumanRoomMessage(trigger))) break
       if (toolRequest) {
         let resultText: string
         let toolFailed = false
