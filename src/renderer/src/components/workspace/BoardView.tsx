@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Loader2 } from 'lucide-react'
+import { Loader2, X } from 'lucide-react'
 import { useShallow } from 'zustand/react/shallow'
 import { BotAvatar } from '@/components/ui/Avatar'
 import { activityPhrase, formatShortTime, previewText } from '@/components/sidebar/BotListItem'
@@ -10,7 +10,12 @@ import { lastMessage } from '@/lib/selectors'
 import { RoomAvatarCluster } from '@/rooms/RoomAvatarCluster'
 import { useRooms } from '@/rooms/roomStore'
 import { useHarkWork } from '@/services/harkWork'
-import { asksForAccount, useHarkAskCounts } from '@/services/workspaceSync'
+import { asksForAccount, useConversationTitles, useHarkAskCounts } from '@/services/workspaceSync'
+import { usePanes } from '@/store/paneStore'
+import { getBridge } from '@/lib/bridge'
+import { harkProjects } from '@shared/harkProjects'
+import { deriveSubtasks, type HarkSnapshotLike, type HarkSubtask } from '@/lib/harkSubtasks'
+import { openConversationTab } from './conversationDnd'
 import { useBotStore } from '@/store/botStore'
 import { SegmentedControl } from '@/components/ui/SegmentedControl'
 import { PipelineView } from '@/pipeline/PipelineView'
@@ -24,6 +29,8 @@ interface Card {
   step: string
   time: number
   room: boolean
+  /** v25: a Hark project card — its account, conversation, and the bot it belongs to. */
+  project?: { botId: string; botName: string; accountId: string; conversationId: string; working: boolean }
 }
 
 const COLUMN_STYLE: Record<BoardColumn, { dot: string; head: string }> = {
@@ -49,7 +56,9 @@ function useMinuteTick(): void {
  * opens it (a bot on the 会话 page, a group on 协作).
  */
 export function BoardView() {
+  const scope = usePanes((s) => s.scope)
   const mode = usePipeline((s) => s.mode)
+  if (scope === 'sessions') return <StatusBoard scope="sessions" />
   const toggle = (
     <SegmentedControl<BoardMode>
       aria-label="看板视图"
@@ -63,13 +72,16 @@ export function BoardView() {
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="flex h-12 shrink-0 items-center px-4">{toggle}</div>
-      <StatusBoard />
+      <StatusBoard scope="collab" />
     </div>
   )
 }
 
-function StatusBoard() {
+function StatusBoard({ scope }: { scope: 'sessions' | 'collab' }) {
   useMinuteTick()
+  const titles = useConversationTitles()
+  const [picked, setPicked] = useState<Card['project'] & { title: string }>()
+  useProjectTitles(scope === 'sessions')
   const { bots, accounts, typing, activity, messages } = useBotStore(
     useShallow((s) => ({ bots: s.bots, accounts: s.accounts, typing: s.typing, activity: s.activity, messages: s.messages }))
   )
@@ -79,7 +91,31 @@ function StatusBoard() {
   const { rooms, speakers, errors } = useRooms(useShallow((s) => ({ rooms: s.rooms, speakers: s.speakers, errors: s.errors })))
 
   const cards: Card[] = []
-  for (const bot of bots) {
+  for (const bot of scope === 'sessions' ? bots : []) {
+    // v25: a Hark bot shows one card per project with something going on; the bot card only when none.
+    if (bot.platformId === 'hark') {
+      let shown = 0
+      for (const accountId of bot.accountIds) {
+        for (const [conversationId, pw] of Object.entries(work.projects[accountId] ?? {})) {
+          const projectAsks = asks[accountId]?.[conversationId] ?? 0
+          const fresh = pw.doneAt > (work.seenAt[accountId] ?? 0)
+          if (!pw.working && !fresh && projectAsks === 0) continue
+          shown++
+          const column = classifyBot({ typing: false, live: false, harkWorking: pw.working ? 1 : 0, harkDoneAt: fresh ? pw.doneAt : 0, asks: projectAsks, unread: 0 })
+          cards.push({
+            key: `p:${accountId}:${conversationId}`,
+            id: bot.id,
+            column,
+            title: titles[conversationId] || '项目',
+            step: column === 'wait' ? '有一步要你确认' : pw.working ? '工作中' : '已完成',
+            time: Math.max(pw.since || 0, pw.doneAt || 0),
+            room: false,
+            project: { botId: bot.id, botName: bot.name, accountId, conversationId, working: pw.working }
+          })
+        }
+      }
+      if (shown > 0) continue
+    }
     const acc = accounts[bot.activeAccountId]
     const act = activity[bot.activeAccountId]
     const last = lastMessage(messages[bot.id])
@@ -114,7 +150,7 @@ function StatusBoard() {
       room: false
     })
   }
-  for (const room of rooms) {
+  for (const room of scope === 'collab' ? rooms : []) {
     const last = room.messages[room.messages.length - 1]
     const speaking = speakers[room.id]
     cards.push({
@@ -129,7 +165,8 @@ function StatusBoard() {
   }
 
   return (
-    <div className="flex min-h-0 flex-1 gap-3 overflow-x-auto px-4 pb-4">
+    <div className={cn('flex min-h-0 flex-1', scope === 'sessions' && 'pt-3')}>
+    <div className="flex min-h-0 min-w-0 flex-1 gap-3 overflow-x-auto px-4 pb-4">
       {BOARD_COLUMNS.map((col) => {
         const list = cards.filter((c) => c.column === col.id).sort((a, b) => b.time - a.time)
         return (
@@ -147,10 +184,12 @@ function StatusBoard() {
                   <li key={card.key}>
                     <button
                       type="button"
-                      onClick={() => selectBot(card.id)}
+                      onClick={() => (card.project ? setPicked({ ...card.project, title: card.title }) : selectBot(card.id))}
                       className={cn(
                         'press flex w-full flex-col gap-1.5 rounded-[12px] border bg-main p-3 text-left shadow-soft transition-colors hover:border-line-strong',
-                        card.column === 'wait' ? 'border-status-attention/50' : card.column === 'fail' ? 'border-status-error/40' : 'border-line'
+                        card.project && picked?.conversationId === card.project.conversationId
+                          ? 'border-accent-600 ring-1 ring-accent-600'
+                          : card.column === 'wait' ? 'border-status-attention/50' : card.column === 'fail' ? 'border-status-error/40' : 'border-line'
                       )}
                     >
                       <span className="flex min-w-0 items-center gap-2">
@@ -168,6 +207,7 @@ function StatusBoard() {
                           <RoomAvatarCluster members={room.members.slice(0, 3)} size="xs" />
                         ) : null}
                         <span className="min-w-0 flex-1 truncate text-[13px] font-semibold text-ink">{card.title}</span>
+                        {card.project && <span className="max-w-[45%] shrink-0 truncate rounded-full bg-hover px-1.5 text-[10.5px] text-ink-muted">{card.project.botName}</span>}
                         {card.room && <span className="shrink-0 rounded-full bg-hover px-1.5 text-[10.5px] text-ink-muted">群聊</span>}
                         <span className="shrink-0 text-[11px] text-ink-muted">{formatShortTime(card.time || undefined)}</span>
                       </span>
@@ -192,5 +232,121 @@ function StatusBoard() {
         )
       })}
     </div>
+    {picked && <ProjectDetail key={picked.conversationId} project={picked} onClose={() => setPicked(undefined)} />}
+    </div>
+  )
+}
+
+/** v25: fill missing project titles once per Hark account (the project menu fills them only when opened). */
+function useProjectTitles(on: boolean) {
+  const accountIds = useBotStore(useShallow((s) => s.bots.filter((b) => b.platformId === 'hark').flatMap((b) => b.accountIds)))
+  const key = accountIds.join(',')
+  useEffect(() => {
+    if (!on) return
+    let live = true
+    for (const accountId of key ? key.split(',') : []) {
+      void getBridge()?.hark.rpc({ accountId, op: 'listConversations' }).then((res) => {
+        if (!live || !res?.ok) return
+        const rows = harkProjects(res.data)
+        useConversationTitles.setState(Object.fromEntries(rows.map((p) => [p.id, p.title])))
+      }).catch(() => undefined)
+    }
+    return () => {
+      live = false
+    }
+  }, [on, key])
+}
+
+const SUBTASK_DOT: Record<HarkSubtask['status'], string> = {
+  waiting: 'bg-status-attention',
+  running: 'bg-status-busy',
+  failed: 'bg-status-error',
+  done: 'bg-status-online'
+}
+const SUBTASK_WORD: Record<HarkSubtask['status'], string> = { waiting: '等你确认', running: '运行中', failed: '失败', done: '已完成' }
+const KIND_WORD: Record<HarkSubtask['kind'], string> = { browser: '浏览器', subagent: '子代理', other: '工具' }
+
+/** v25: right-side detail for one Hark project: what it runs at once, refreshed while open. */
+function ProjectDetail({ project, onClose }: { project: NonNullable<Card['project']> & { title: string }; onClose: () => void }) {
+  useMinuteTick()
+  const [subtasks, setSubtasks] = useState<HarkSubtask[]>()
+  const [status, setStatus] = useState('')
+  const [error, setError] = useState('')
+  useEffect(() => {
+    let live = true
+    const load = async () => {
+      const res = await getBridge()?.hark.rpc({ accountId: project.accountId, op: 'conversationSnapshot', conversationId: project.conversationId })
+      if (!live) return
+      if (!res?.ok) {
+        setError(res?.message || '读取失败')
+        return
+      }
+      const data = res.data as HarkSnapshotLike & { activeActivity?: { text?: string } | string | null; narration?: string }
+      setError('')
+      setSubtasks(deriveSubtasks(data))
+      const act = typeof data.activeActivity === 'string' ? data.activeActivity : data.activeActivity?.text
+      setStatus(act || data.narration || '')
+    }
+    void load()
+    const id = setInterval(() => void load(), 6000)
+    return () => {
+      live = false
+      clearInterval(id)
+    }
+  }, [project.accountId, project.conversationId])
+  const running = subtasks?.filter((t) => t.status === 'running' || t.status === 'waiting').length ?? 0
+  return (
+    <aside aria-label="项目详情" className="flex w-[340px] shrink-0 flex-col border-l border-line bg-main">
+      <header className="flex items-start gap-2 px-4 pt-3 pb-2">
+        <span className="flex min-w-0 flex-1 flex-col gap-1">
+          <h3 className="truncate text-[15px] font-semibold text-ink">{project.title}</h3>
+          <span className="w-fit max-w-full truncate rounded-full bg-hover px-2 text-[11px] text-ink-muted">{project.botName}</span>
+        </span>
+        <button type="button" aria-label="关闭" onClick={onClose} className="press grid size-7 place-items-center rounded-full text-ink-muted hover:bg-hover hover:text-ink">
+          <X className="size-4" aria-hidden />
+        </button>
+      </header>
+      <p className={cn('px-4 text-[12px]', project.working ? 'text-status-busy-ink' : 'text-ink-muted')}>
+        {project.working ? '进行中' : '已完成'}
+        {status ? ` · ${status}` : ''}
+      </p>
+      <div className="mt-3 flex min-h-0 flex-1 flex-col overflow-y-auto px-3 pb-3">
+        <h4 className="px-1 pb-1.5 text-[12.5px] font-medium text-ink">
+          并发子任务 <span className="text-ink-muted">{running}</span>
+        </h4>
+        {error && <p className="px-1 text-[12px] text-status-error">{error}</p>}
+        {!subtasks && !error && <p className="px-1 text-[12px] text-ink-muted">读取中…</p>}
+        {subtasks?.length === 0 && <p className="px-1 text-[12px] text-ink-muted">没有子任务，Hark 正在主对话里直接处理</p>}
+        <ol className="flex flex-col gap-1.5">
+          {subtasks?.map((t) => (
+            <li key={t.id} className="flex items-start gap-2.5 rounded-[10px] bg-canvas/60 px-3 py-2">
+              <span className={cn('mt-[7px] size-2 shrink-0 rounded-full', SUBTASK_DOT[t.status])} />
+              <span className="flex min-w-0 flex-1 flex-col">
+                <span className="flex items-center gap-2 text-[11px] text-ink-muted">
+                  <span className="flex-1">{KIND_WORD[t.kind]}</span>
+                  <span>
+                    {SUBTASK_WORD[t.status]}
+                    {t.startedAt ? ` · ${formatShortTime(t.startedAt)}` : ''}
+                  </span>
+                </span>
+                <span className="line-clamp-2 text-[12.5px] leading-[18px] text-ink" title={t.title}>{t.title}</span>
+              </span>
+            </li>
+          ))}
+        </ol>
+      </div>
+      <div className="border-t border-line p-3">
+        <button
+          type="button"
+          onClick={() => {
+            useBotStore.getState().selectBot(project.botId)
+            openConversationTab(project.botId, project.conversationId, project.title)
+          }}
+          className="press h-9 w-full rounded-full bg-ink text-[13px] font-medium text-main hover:opacity-90"
+        >
+          打开这个项目的对话
+        </button>
+      </div>
+    </aside>
   )
 }

@@ -16,6 +16,7 @@ import { shortcutLabel } from '@/lib/shortcuts'
 import { useBotStore } from '@/store/botStore'
 import { BotList } from './BotList'
 import { usePanes } from '@/store/paneStore'
+import { SegmentedControl } from '@/components/ui/SegmentedControl'
 
 interface SidebarProps {
   onAddBot: () => void
@@ -31,7 +32,8 @@ function BrandMark() {
 
 export function Sidebar({ onAddBot }: SidebarProps) {
   const openPalette = useBotStore((s) => s.openPalette)
-  const view = usePanes((s) => s.view)
+  const scope = usePanes((s) => s.scope)
+  const setScope = usePanes((s) => s.setScope)
   const sidebarCollapsed = useBotStore((s) => s.sidebarCollapsed)
   const toggleSidebarCollapsed = useBotStore((s) => s.toggleSidebarCollapsed)
   const settingsOpen = useBotStore((s) => s.settingsOpen)
@@ -70,7 +72,7 @@ export function Sidebar({ onAddBot }: SidebarProps) {
       <div className="flex min-h-0 flex-1 flex-col items-center" onKeyDown={typeToSearch}>
         <div className="drag-region h-[42px] w-full shrink-0" />
         <div className="flex min-h-0 w-full flex-1 flex-col items-center px-1.5 pt-1 pb-2">
-          {view === 'collab' ? <><PinnedRoomsList compact /><RoomList compact fill /></> : view === 'board' ? <><PinnedRoomsList compact /><BotList /><RoomList compact /></> : <BotList />}
+          {scope === 'collab' ? <><PinnedRoomsList compact /><RoomList compact fill /></> : <BotList />}
         </div>
         <div className="no-drag flex shrink-0 flex-col items-center gap-1.5 pb-3 pt-1">
           <IconButton
@@ -120,6 +122,15 @@ export function Sidebar({ onAddBot }: SidebarProps) {
           runtimePlatform === 'darwin' && 'pl-[78px]'
         )}
       >
+        <div className="no-drag shrink-0">
+          <SegmentedControl<'sessions' | 'collab'>
+            aria-label="范围"
+            size="xs"
+            value={scope}
+            onValueChange={setScope}
+            options={[{ value: 'sessions', label: '会话' }, { value: 'collab', label: '协作' }]}
+          />
+        </div>
         <div className="no-drag ml-auto flex shrink-0 items-center gap-0.5">
           <IconButton
             round
@@ -139,7 +150,7 @@ export function Sidebar({ onAddBot }: SidebarProps) {
 
       <div className="flex min-h-0 flex-1 flex-col px-2 pt-0.5 pb-2">
         {/* GOXF: 会话 = conversations only; 协作 = groups only (expand a group to see its members' conversations). */}
-        {view === 'collab' ? <><PinnedRoomsList /><RoomList fill /></> : view === 'board' ? <><PinnedRoomsList /><BotList /><RoomList /></> : <BotList />}
+        {scope === 'collab' ? <><PinnedRoomsList /><RoomList fill /></> : <BotList />}
       </div>
 
       <footer className="no-drag flex shrink-0 items-center justify-between gap-1.5 border-t border-ink/[0.06] px-2.5 py-2">
