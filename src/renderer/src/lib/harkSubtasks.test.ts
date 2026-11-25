@@ -55,3 +55,16 @@ describe('deriveTasks', () => {
     ])
   })
 })
+
+describe('deriveTasks helpers', () => {
+  it('a running helpers dispatch shows as one subagent row on its request', async () => {
+    const { deriveTasks } = await import('./harkSubtasks')
+    const [t] = deriveTasks({
+      requests: { u1: { state: 'working', title: '并行跑一次' } },
+      messages: [{ id: 'u1', role: 'user' }, { id: 'a1', role: 'assistant', triggeredBy: 'u1' }],
+      activeWork: [{ dispatchId: 'tu_1', messageId: 'a1', domain: 'helpers', state: 'working' }]
+    })
+    expect(t!.state).toBe('working')
+    expect(t!.subtasks).toEqual([{ id: 'tu_1', kind: 'subagent', title: '子任务进行中', status: 'running' }])
+  })
+})

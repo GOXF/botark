@@ -20,7 +20,7 @@ export interface HarkSnapshotLike {
   messages?: SnapMessage[]
   asks?: Array<{ dispatchId?: string; status?: string }>
   requests?: Record<string, { state?: string; title?: string; doneTitle?: string; boundTo?: string }>
-  activeWork?: Array<{ dispatchId?: string; messageId?: string; state?: string }>
+  activeWork?: Array<{ dispatchId?: string; messageId?: string; state?: string; domain?: string }>
 }
 
 export function subtaskStatus(raw: string | undefined): HarkSubtask['status'] {
@@ -137,6 +137,14 @@ export function deriveTasks(snap: HarkSnapshotLike | null | undefined): HarkTask
       const st = tc.dispatchId ? subtasks.get(tc.dispatchId) : undefined
       if (st && !t.subtasks.includes(st)) t.subtasks.push(st)
     }
+  }
+  // Subagents ("helpers") stream no title or state of their own: Hark shows one
+  // working dispatch while it waits on them, on the reply that started it.
+  const replyTask = new Map((snap?.messages ?? []).flatMap((m) => m.id && m.triggeredBy ? [[m.id, root(m.triggeredBy)] as const] : []))
+  for (const w of snap?.activeWork ?? []) {
+    if (w.domain !== 'helpers' || !w.dispatchId || subtasks.has(w.dispatchId) || /complete|done|fail|cancel/i.test(w.state ?? '')) continue
+    const owner = w.messageId ? replyTask.get(w.messageId) : undefined
+    if (owner) task(owner).subtasks.push({ id: w.dispatchId, kind: 'subagent', title: '子任务进行中', status: 'running' })
   }
   const out = [...tasks.values()].filter((t) => t.title || t.subtasks.length)
   for (const t of out) {
