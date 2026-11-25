@@ -27,7 +27,7 @@ import { useBotStore } from '@/store/botStore'
 import type { HarkProjectWork } from '@/lib/harkWork'
 import { noteHarkRun, useHarkWork } from '@/services/harkWork'
 import { useConversationTitles } from '@/services/workspaceSync'
-import { conversationRowProps } from '@/components/workspace/conversationDnd'
+import { conversationRowProps, openInEmptyPane } from '@/components/workspace/conversationDnd'
 
 async function rpc(request: HarkRpcRequest) {
   const result = await getBridge()?.hark.rpc(request)
@@ -241,6 +241,10 @@ export function HarkProjects({
 
   const select = (id: string) =>
     perform(async () => {
+      if (openInEmptyPane(botId, id, projects.find((p) => p.id === id)?.title)) {
+        setMenuOpen(false)
+        return
+      }
       await useBotStore.getState().switchHarkSession(botId, id)
       setMenuOpen(false)
     })

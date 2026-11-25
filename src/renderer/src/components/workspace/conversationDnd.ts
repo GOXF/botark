@@ -1,5 +1,6 @@
 import type { DragEvent, MouseEvent } from 'react'
 import { useConversationTitles } from '@/services/workspaceSync'
+import { findLeaf, findTab, leaves } from '@/lib/paneTree'
 import { usePanes } from '@/store/paneStore'
 
 /**
@@ -20,6 +21,27 @@ export function openConversationTab(botId: string, conversationId: string, title
   const panes = usePanes.getState()
   if (panes.view !== 'sessions') panes.setView('sessions')
   panes.addTab(panes.focusedId, botId, conversationId)
+}
+
+/**
+ * GOXF: a plain click on a conversation fills an empty split cell (the focused
+ * one first) instead of replacing what the current pane shows. Also focuses a
+ * pane that already shows it. Returns false when there is no such pane.
+ */
+export function openInEmptyPane(botId: string, conversationId: string, title?: string): boolean {
+  const panes = usePanes.getState()
+  if (panes.view !== 'sessions') return false
+  const shown = findTab(panes.tree, botId, conversationId)
+  if (shown) {
+    if (shown.leaf.id !== panes.focusedId) panes.focus(shown.leaf.id)
+    return false
+  }
+  const focused = findLeaf(panes.tree, panes.focusedId)
+  const empty = focused && !focused.tabs.length ? focused : leaves(panes.tree).find((l) => !l.tabs.length)
+  if (!empty) return false
+  if (title) useConversationTitles.setState({ [conversationId]: title })
+  panes.addTab(empty.id, botId, conversationId)
+  return true
 }
 
 export function conversationRowProps(botId: string, conversationId: string, title?: string) {
