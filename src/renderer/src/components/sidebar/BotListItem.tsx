@@ -213,7 +213,14 @@ export const BotListItem = memo(function BotListItem({
         size="md"
         ringClassName="ring-canvas"
       />
-      <span className="min-w-0 flex-1">
+      <span
+        className={cn(
+          'min-w-0 flex-1',
+          // Keep text clear of the ⋯ button; with a badge its slot already does.
+          !(bot.unread > 0 || done) && 'group-focus-within:pr-6 group-hover:pr-6',
+          !(bot.unread > 0 || done) && menuOpen && 'pr-6'
+        )}
+      >
         {renaming ? (
           <InlineEdit
             value={bot.name}
@@ -275,28 +282,28 @@ export const BotListItem = memo(function BotListItem({
             {status === 'offline' ? t('Offline') : t('Idle')}
           </span>
         )}
-        {/* GOXF: a dot under the time for anything new (unread reply or finished task), hard to miss. */}
-        {bot.unread > 0 ? (
-          <UnreadBadge
-            count={bot.unread}
+        </span>
+      </span>
+      {/* GOXF: unread count / done dot sit where ⋯ appears on hover (user 2026-11-25). */}
+      {bot.unread > 0 ? (
+        <UnreadBadge
+          count={bot.unread}
+          className={cn(
+            'transition-opacity duration-100 group-focus-within:opacity-0 group-hover:opacity-0',
+            menuOpen && 'opacity-0'
+          )}
+        />
+      ) : (
+        done && (
+          <StatusDot
+            status="attention"
             className={cn(
               'transition-opacity duration-100 group-focus-within:opacity-0 group-hover:opacity-0',
               menuOpen && 'opacity-0'
             )}
           />
-        ) : (
-          done && (
-            <StatusDot
-              status="attention"
-              className={cn(
-                'transition-opacity duration-100 group-focus-within:opacity-0 group-hover:opacity-0',
-                menuOpen && 'opacity-0'
-              )}
-            />
-          )
-        )}
-        </span>
-      </span>
+        )
+      )}
     </>
   )
 
