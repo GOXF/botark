@@ -79,9 +79,11 @@ export const usePanes = create<PaneState>()(
       focusedId: first.id,
       stash: null,
       scroll: {},
-      setView: (view) => set(view === 'board' ? { view } : { view, scope: view }),
-      // 任务 (all) always shows the task board; 会话/协作 keep the board if it is open.
-      setScope: (scope) => set((s) => (scope === 'all' ? { scope, view: 'board' } : s.view === 'board' ? { scope } : { scope, view: scope })),
+      // The sidebar switch mirrors the page, so 会话/协作 there always leads back off the task board.
+      setView: (view) => set(view === 'board' ? { view, scope: 'all' } : { view, scope: view }),
+      // 任务 (all) shows the task board; 会话 shows the chats, 协作 the group chat (user 2026-11-25:
+      // the sidebar switch is the page switch, it must never leave the task board behind).
+      setScope: (scope) => set(scope === 'all' ? { scope, view: 'board' } : { scope, view: scope }),
       setStartView: (startView) => set({ startView }),
       focus: (leafId) => {
         if (findLeaf(get().tree, leafId)) set({ focusedId: leafId })
