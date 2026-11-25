@@ -1,7 +1,7 @@
 import { create } from 'zustand'
 import { persist, type PersistStorage } from 'zustand/middleware'
 import { adapterRegistry } from '@adapters/registry'
-import type { ConnectionStatus, SendReceipt } from '@adapters/types'
+import type { AttachmentMeta, ConnectionStatus, SendReceipt } from '@adapters/types'
 import { createId } from '@shared/id'
 import { getBridge } from '@/lib/bridge'
 import { cancelPlatformTurn, useBotStore } from '@/store/botStore'
@@ -71,7 +71,8 @@ const roomStorage: PersistStorage<Pick<RoomState, 'rooms'>> = {
     if (!backing) return
     const previous = storedRooms?.backing === backing && storedRooms.name === name ? storedRooms : undefined
     if (previous?.rooms === item.state.rooms && previous.version === item.version) return
-    const value = JSON.stringify(item)
+    // Picture data stays in memory only: localStorage is small, and the member already received it.
+    const value = JSON.stringify(item, (key, v) => (key === 'dataBase64' ? undefined : v))
     storedRooms = { backing, name, value, rooms: item.state.rooms, version: item.version }
     if (value !== previous?.value) safeRoomStorage.setItem(name, value)
   },
@@ -727,6 +728,9 @@ async function memberReply(room: CollabRoom, member: RoomMember, trigger: RoomMe
           agentId: member.agentId,
           hermesSessionKey,
           text: prompt,
+          ...(trigger.attachments?.some((file) => file.dataBase64)
+            ? { attachments: trigger.attachments.filter((file) => file.dataBase64) }
+            : {}),
           signal
         })
         .then(
@@ -754,10 +758,11 @@ async function memberReply(room: CollabRoom, member: RoomMember, trigger: RoomMe
 export async function submitBrief(
   id: string,
   input: string,
-  { author = 'User', messageId = createId('post'), references = [], slackDestination, handoff, start = true }: {
+  { author = 'User', messageId = createId('post'), references = [], attachments = [], slackDestination, handoff, start = true }: {
     author?: string
     messageId?: string
     references?: RoomReference[]
+    attachments?: AttachmentMeta[]
     slackDestination?: SlackDestination
     handoff?: RoomMessage['handoff']
     /** false: only post the requirement, nobody starts on it. */
@@ -766,11 +771,12 @@ export async function submitBrief(
 ) {
   reconcileRooms(id)
   const room = roomById(id)
-  const text = input.trim() || (references.length ? '请查看随附资料。' : '')
+  const text = input.trim() || (attachments.length ? '请看图片。' : references.length ? '请查看随附资料。' : '')
   if (!room || !text) return
   const message: RoomMessage = {
     id: messageId, author, text, createdAt: Date.now(),
     ...(references.length ? { references } : {}),
+    ...(attachments.length ? { attachments } : {}),
     ...(handoff ? { handoff } : {})
   }
   if (!start) {

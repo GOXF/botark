@@ -1,4 +1,4 @@
-import type { PlatformId } from '@adapters/types'
+import type { AttachmentMeta, PlatformId } from '@adapters/types'
 import { createId } from '@shared/id'
 import { isToolRequest } from './toolRequests'
 
@@ -30,6 +30,8 @@ export interface RoomMessage {
   author: string
   text: string
   references?: RoomReference[]
+  /** Pictures pasted with a human message; sent to the member that answers it. Not persisted with their data. */
+  attachments?: AttachmentMeta[]
   authorBotId?: string
   notice?: boolean
   final?: boolean
@@ -227,9 +229,11 @@ export function classifyRoomReply(reply: string, speakerId: string, roster: Room
 }
 
 function messageWithReferences(message: RoomMessage): string {
-  return [message.text, ...(message.references ?? []).map((ref) =>
-    `[Reference: ${ref.label}]\n${ref.text}`
-  )].join('\n\n')
+  return [
+    message.text,
+    ...(message.attachments ?? []).map((file) => `[图片: ${file.name}]`),
+    ...(message.references ?? []).map((ref) => `[Reference: ${ref.label}]\n${ref.text}`)
+  ].join('\n\n')
 }
 
 export function isHumanRoomMessage(message: RoomMessage): boolean {

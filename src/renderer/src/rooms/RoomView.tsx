@@ -18,6 +18,9 @@ import {
 } from 'lucide-react'
 import { useShallow } from 'zustand/react/shallow'
 import { MarkdownText } from '@/components/chat/MarkdownText'
+import { AttachmentChips } from '@/components/chat/AttachmentChips'
+import { createAttachmentDraft, type DraftAttachment } from '@/components/chat/attachmentDraft'
+import { ImageLightbox } from '@/components/chat/ImageLightbox'
 import { PaneHeader } from '@/components/layout/PaneHeader'
 import {
   ArkComposeNewSvg,
@@ -872,6 +875,41 @@ function ToolExecutionCard({ message }: { message: RoomMessage }) {
   )
 }
 
+type ImagePreview = { src: string; name: string }
+
+const onlyPictures = (files: FileList) => Array.from(files).filter((file) => file.type.startsWith('image/'))
+
+function saveImage(preview: ImagePreview) {
+  const a = document.createElement('a')
+  a.href = preview.src
+  a.download = preview.name
+  a.click()
+}
+
+/** Pictures on a human room message; after a restart only their names remain. */
+function RoomPictures({ files }: { files: NonNullable<RoomMessage['attachments']> }) {
+  const [preview, setPreview] = useState<ImagePreview | null>(null)
+  return (
+    <div className="flex max-w-[76%] flex-wrap justify-end gap-1.5">
+      {preview && (
+        <ImageLightbox src={preview.src} alt={preview.name} filename={preview.name}
+          onSave={() => saveImage(preview)} onClose={() => setPreview(null)} />
+      )}
+      {files.map((file) => {
+        const src = file.dataBase64 ? `data:${file.mimeType};base64,${file.dataBase64}` : undefined
+        return src ? (
+          <button key={file.id} type="button" title={file.name} onClick={() => setPreview({ src, name: file.name })}
+            className="cursor-zoom-in rounded-xl">
+            <img src={src} alt={file.name} className="max-h-48 max-w-60 rounded-xl object-cover ring-1 ring-line/60" />
+          </button>
+        ) : (
+          <span key={file.id} className="rounded-full bg-hover px-2.5 py-1 text-[12px] text-ink-muted">[图片] {file.name}</span>
+        )
+      })}
+    </div>
+  )
+}
+
 function ReferenceList({ references, onRemove }: {
   references: RoomReference[]
   onRemove?: (index: number) => void
@@ -967,6 +1005,9 @@ const RoomMessageRow = memo(function RoomMessageRow({
         <div className="max-w-[76%] rounded-[20px] bg-bubble-user px-4 py-2.5 text-[14px] leading-[22px] whitespace-pre-wrap break-words text-main">
           <HighlightMentions text={message.text} members={members} invert />
         </div>
+        {message.attachments && message.attachments.length > 0 && (
+          <RoomPictures files={message.attachments} />
+        )}
         {message.references && message.references.length > 0 && (
           <div className="max-w-[76%]">
             <ReferenceList references={message.references} />
@@ -1132,6 +1173,10 @@ export function RoomView({ id }: { id: string }) {
 
   const [text, setText] = useState('')
   const [references, setReferences] = useState<RoomReference[]>([])
+  const [attachments, setAttachments] = useState<DraftAttachment[]>([])
+  const [draft] = useState(() => createAttachmentDraft(setAttachments))
+  const [preview, setPreview] = useState<ImagePreview | null>(null)
+  const [dragging, setDragging] = useState(false)
   const [multiline, setMultiline] = useState(false)
   const [mentionCursor, setMentionCursor] = useState(0)
   const transcriptRef = useRef<HTMLDivElement>(null)
@@ -1221,12 +1266,14 @@ export function RoomView({ id }: { id: string }) {
         )
       : []
 
-  const canSend = Boolean(text.trim() || references.length)
+  const pictures = draft.forSend()
+  const canSend = Boolean(pictures && (text.trim() || references.length || pictures.length))
   const submit = () => {
-    if (!canSend) return
-    void submitBrief(id, text, { references })
+    if (!canSend || !pictures) return
+    void submitBrief(id, text, { references, attachments: pictures })
     setText('')
     setReferences([])
+    draft.clear()
     setMentionCursor(0)
   }
 
@@ -1489,13 +1536,34 @@ export function RoomView({ id }: { id: string }) {
             </div>
           )}
 
+          {preview && (
+            <ImageLightbox src={preview.src} alt={preview.name} filename={preview.name}
+              onSave={() => saveImage(preview)} onClose={() => setPreview(null)} />
+          )}
           <div
+            onDragOver={(e) => {
+              if (e.dataTransfer.types.includes('Files')) {
+                e.preventDefault()
+                e.stopPropagation()
+                setDragging(true)
+              }
+            }}
+            onDragLeave={() => setDragging(false)}
+            onDrop={(e) => {
+              if (!onlyPictures(e.dataTransfer.files).length) return
+              e.preventDefault()
+              e.stopPropagation()
+              setDragging(false)
+              void draft.add(onlyPictures(e.dataTransfer.files))
+            }}
             className={cn(
               'border border-line-strong bg-surface p-[7px] shadow-card transition-[border-color,box-shadow,border-radius] duration-200',
-              multiline ? 'rounded-[18px]' : 'rounded-[22px]',
-              'focus-within:border-ink/20'
+              multiline || attachments.length > 0 ? 'rounded-[18px]' : 'rounded-[22px]',
+              'focus-within:border-ink/20',
+              dragging && 'border-accent-600 ring-4 ring-accent-100'
             )}
           >
+            <AttachmentChips attachments={attachments} onRemove={(fileId) => draft.remove(fileId)} onPreview={setPreview} />
             {references.length > 0 && (
               <ReferenceList references={references} onRemove={(index) =>
                 setReferences((prev) => prev.filter((_, i) => i !== index))
@@ -1535,6 +1603,12 @@ export function RoomView({ id }: { id: string }) {
                   setMentionCursor(0)
                 }}
                 onKeyDown={onKeyDown}
+                onPaste={(e) => {
+                  if (onlyPictures(e.clipboardData.files).length > 0) {
+                    e.preventDefault()
+                    void draft.add(onlyPictures(e.clipboardData.files))
+                  }
+                }}
                 placeholder={
                   !room.coordinatorId && room.mode === 'manual'
                     ? '当前为手动 @ 模式，输入 @ 成员名点名回复…'

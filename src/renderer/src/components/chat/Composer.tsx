@@ -1,11 +1,10 @@
 import { WorkspaceTools } from '@/rooms/WorkspaceTools'
 import { useEffect, useRef, useState, type DragEvent, type KeyboardEvent } from 'react'
 import type { AttachmentMeta } from '@adapters/types'
-import { ArrowUp, CornerDownRight, FileText, Film, Loader2, LogIn, Music, Plus, PlugZap, Square, X } from 'lucide-react'
+import { ArrowUp, CornerDownRight, Loader2, LogIn, Plus, PlugZap, Square, X } from 'lucide-react'
 import { Button } from '@/components/ui/Button'
 import { IconButton } from '@/components/ui/IconButton'
 import { cn } from '@/lib/cn'
-import { formatBytes } from '@/lib/format'
 import { useBotStore } from '@/store/botStore'
 import type { Bot, BotAccount } from '@/types'
 import { t } from '@/lib/i18n'
@@ -13,6 +12,7 @@ import type { DraftAttachment } from './attachmentDraft'
 import { composerDraft } from './goxfComposerDrafts'
 import { clearIgnoreNote, useRecall, withIgnoreNote } from './goxfRecall'
 import { ImageLightbox } from './ImageLightbox'
+import { AttachmentChips } from './AttachmentChips'
 
 interface ComposerProps {
   bot: Bot
@@ -332,77 +332,7 @@ export function Composer({ bot, account, typing = false, onSend, onCancel, onCon
               </button>
             </div>
           )}
-          {attachments.length > 0 && (
-            <ul className="flex flex-wrap gap-1.5 px-1 pt-0.5 pb-1.5" aria-label={t('Attachments')}>
-              {attachments.map(({ file, status }) => {
-                const image = file.mimeType.startsWith('image/')
-                const isImg = image && status === 'ready'
-                const isVideo = file.mimeType.startsWith('video/')
-                const isAudio = file.mimeType.startsWith('audio/')
-                const invalid = status !== 'ready' && status !== 'reading'
-                const detail = {
-                  reading: t('Reading attachment…'),
-                  ready: formatBytes(file.size),
-                  'too-large': t('File exceeds {limit} MB', { limit: image ? 20 : 50 }),
-                  empty: t('Empty file'),
-                  'read-failed': t('Could not read file')
-                }[status]
-                return (
-                  <li
-                    key={file.id}
-                    className={cn(
-                      'flex animate-mark-pop items-center gap-2 rounded-xl border border-line/70 bg-hover/80 py-1 pr-1.5 pl-1.5 text-[12px]',
-                      invalid && 'border-status-error/40 bg-status-error/5'
-                    )}
-                  >
-                    {isImg ? (
-                      <button
-                        type="button"
-                        title={t('Click to preview')}
-                        onClick={() => setPreview({ src: `data:${file.mimeType};base64,${file.dataBase64}`, name: file.name })}
-                        className="shrink-0 cursor-zoom-in rounded-lg"
-                      >
-                        <img
-                          src={`data:${file.mimeType};base64,${file.dataBase64}`}
-                          alt={file.name}
-                          className="size-8 rounded-lg object-cover ring-1 ring-line/60"
-                        />
-                      </button>
-                    ) : (
-                      <span className="grid size-7 shrink-0 place-items-center rounded-lg bg-surface text-accent-600">
-                        {status === 'reading' ? (
-                          <Loader2 className="size-3.5 animate-spin" aria-hidden />
-                        ) : isVideo ? (
-                          <Film className="size-3.5" aria-hidden />
-                        ) : isAudio ? (
-                          <Music className="size-3.5" aria-hidden />
-                        ) : (
-                          <FileText className="size-3.5 text-ink-secondary" aria-hidden />
-                        )}
-                      </span>
-                    )}
-                    <div className="min-w-0">
-                      <span className="block max-w-40 truncate font-medium text-ink">{file.name}</span>
-                      <span
-                        className={cn('block text-[11px] tabular-nums', invalid ? 'text-status-error' : 'text-ink-muted')}
-                        aria-live="polite"
-                      >
-                        {detail}
-                      </span>
-                    </div>
-                    <button
-                      type="button"
-                      aria-label={t('Remove {name}', { name: file.name })}
-                      onClick={() => draft.remove(file.id)}
-                      className="press-icon grid size-5 shrink-0 place-items-center rounded-full text-ink-muted hover:bg-active hover:text-ink"
-                    >
-                      <X className="size-3" />
-                    </button>
-                  </li>
-                )
-              })}
-            </ul>
-          )}
+          <AttachmentChips attachments={attachments} onRemove={(id) => draft.remove(id)} onPreview={setPreview} />
 
           <div className="flex items-end gap-1">
             <input
