@@ -80,7 +80,9 @@ export const usePanes = create<PaneState>()(
       stash: null,
       scroll: {},
       // The sidebar switch mirrors the page, so 会话/协作 there always leads back off the task board.
-      setView: (view) => set(view === 'board' ? { view, scope: 'all' } : { view, scope: view }),
+      // The top 任务 keeps the scope: next to a conversation or group it shows only that one's tasks
+      // (user 2026-11-25); the sidebar 任务 (setScope('all')) is the one that shows everything.
+      setView: (view) => set(view === 'board' ? { view } : { view, scope: view }),
       // 任务 (all) shows the task board; 会话 shows the chats, 协作 the group chat (user 2026-11-25:
       // the sidebar switch is the page switch, it must never leave the task board behind).
       setScope: (scope) => set(scope === 'all' ? { scope, view: 'board' } : { scope, view: scope }),

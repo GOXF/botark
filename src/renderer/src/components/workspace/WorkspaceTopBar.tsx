@@ -140,11 +140,16 @@ export function WorkspaceTopBar() {
   const settingsOpen = useBotStore((s) => s.settingsOpen)
   const setSettingsOpen = useBotStore((s) => s.setSettingsOpen)
   const merged = useMergedHeader()
+  const everything = usePanes((s) => s.scope === 'all')
   if (merged) return null
 
   return (
     <div className="drag-region relative flex h-[52px] shrink-0 items-center gap-2 border-b border-line px-3">
       <div role="tablist" aria-label="页面" className={cn(VIEW_TRACK, 'absolute left-1/2 -translate-x-1/2')}>
+        {everything && view === 'board' && !settingsOpen ? (
+          <ViewTab label="全部任务" selected onClick={() => undefined} />
+        ) : (
+        <>
         <ChatTab
           selected={!settingsOpen && view !== 'board'}
           onClick={() => {
@@ -162,6 +167,8 @@ export function WorkspaceTopBar() {
             setView('board')
           }}
         />
+        </>
+        )}
       </div>
       {view === 'sessions' && !settingsOpen && (
         <div className="ml-auto">

@@ -54,18 +54,29 @@ function useMinuteTick(): void {
 }
 
 /**
- * GOXF v12 看板: every conversation and group chat, sorted into five columns
- * by what it needs. A card says who, what it is doing now, and when; a click
- * opens it (a bot on the 会话 page, a group on 协作).
+ * GOXF 任务 (user 2026-11-25): the sidebar 任务 shows every task of every
+ * conversation and group chat; the top 任务 next to a conversation or group
+ * shows only that one's (a group: the group and its members). One card per
+ * Hark request with its subtasks; a non-Hark bot or a group is one card.
  */
 export function BoardView() {
   const scope = usePanes((s) => s.scope)
   const mode = usePipeline((s) => s.mode)
   const clearPicked = useBoardDetail((s) => s.setPicked)
   useEffect(() => () => clearPicked(undefined), [clearPicked])
-  const harkBot = useBotStore((s) => (scope === 'sessions' ? s.bots.find((b) => b.id === s.selectedBotId && b.platformId === 'hark') : undefined))
-  if (harkBot) return <HarkTaskBoard key={harkBot.id} botId={harkBot.id} />
-  if (scope === 'sessions') return <StatusBoard scope="sessions" />
+  const selectedId = useBotStore((s) => s.selectedBotId)
+  const botIds = useBotStore(useShallow((s) => s.bots.map((b) => b.id)))
+  const roomKeys = useRooms(useShallow((s) => s.rooms.map((r) => `${r.id}|${r.members.map((m) => m.botId).join(',')}`)))
+  const rooms = roomKeys.map((k) => ({ id: k.split('|')[0]!, members: k.slice(k.indexOf('|') + 1) }))
+  const room = rooms.find((r) => r.id === selectedId)
+  let target: { bots: string[]; rooms: string[]; key: string }
+  if (scope === 'all') target = { bots: botIds, rooms: rooms.map((r) => r.id), key: 'all' }
+  else if (scope === 'collab' && room)
+    target = { bots: room.members.split(',').filter((id) => botIds.includes(id)), rooms: [room.id], key: `r:${room.id}` }
+  else target = { bots: selectedId && botIds.includes(selectedId) ? [selectedId] : [], rooms: [], key: `b:${selectedId}` }
+  const board = <TaskBoard key={target.key} botIds={target.bots} roomIds={target.rooms} single={scope !== 'all'} />
+  // 状态/流水线 stays on the boards that hold group chats.
+  if (scope === 'sessions' || (scope === 'collab' && !room)) return board
   const toggle = (
     <SegmentedControl<BoardMode>
       aria-label="任务视图"
@@ -79,54 +90,22 @@ export function BoardView() {
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="flex h-12 shrink-0 items-center px-4">{toggle}</div>
-      <StatusBoard scope={scope} />
+      {board}
     </div>
   )
 }
 
-/** v25: 任务 in the sidebar (all) shows everything; the top 任务 tab shows the selected bot's or group's. */
-function StatusBoard({ scope }: { scope: 'sessions' | 'collab' | 'all' }) {
-  useMinuteTick()
-  const titles = useConversationTitles()
-  const { picked, setPicked } = useBoardDetail()
-  const projectIds = useProjectTitles(scope !== 'collab')
+/** A non-Hark bot, a Hark bot with no projects yet, or a group chat: one card each. */
+function usePlainCards(botIds: string[], roomIds: string[], harkWithProjects: Set<string>): Card[] {
   const { bots, accounts, typing, activity, messages } = useBotStore(
     useShallow((s) => ({ bots: s.bots, accounts: s.accounts, typing: s.typing, activity: s.activity, messages: s.messages }))
   )
-  const selectBot = useBotStore((s) => s.selectBot)
   const work = useHarkWork()
   const asks = useHarkAskCounts()
   const { rooms, speakers, errors } = useRooms(useShallow((s) => ({ rooms: s.rooms, speakers: s.speakers, errors: s.errors })))
-
   const cards: Card[] = []
-  const selectedId = useBotStore((s) => s.selectedBotId)
-  for (const bot of scope === 'collab' ? [] : scope === 'sessions' ? bots.filter((b) => b.id === selectedId) : bots) {
-    // v25: a Hark bot shows one card per project with something going on; the bot card only when none.
-    if (bot.platformId === 'hark') {
-      let shown = 0
-      for (const accountId of bot.accountIds) {
-        // v26: every project of the account, so idle ones sit in 空闲 instead of vanishing.
-        const ids = new Set([...(projectIds[accountId] ?? []), ...Object.keys(work.projects[accountId] ?? {})])
-        for (const conversationId of ids) {
-          const pw = work.projects[accountId]?.[conversationId] ?? { working: false, since: 0, doneAt: 0 }
-          const projectAsks = asks[accountId]?.[conversationId] ?? 0
-          const fresh = pw.doneAt > (work.seenAt[accountId] ?? 0)
-          shown++
-          const column = classifyBot({ typing: false, live: false, harkWorking: pw.working ? 1 : 0, harkDoneAt: fresh ? pw.doneAt : 0, asks: projectAsks, unread: 0 })
-          cards.push({
-            key: `p:${accountId}:${conversationId}`,
-            id: bot.id,
-            column,
-            title: titles[conversationId] || '项目',
-            step: column === 'wait' ? '有一步要你确认' : pw.working ? '工作中' : column === 'done' ? '已完成' : '空闲',
-            time: Math.max(pw.since || 0, pw.doneAt || 0),
-            room: false,
-            project: { botId: bot.id, botName: bot.name, accountId, conversationId, working: pw.working }
-          })
-        }
-      }
-      if (shown > 0) continue
-    }
+  for (const bot of bots) {
+    if (!botIds.includes(bot.id) || harkWithProjects.has(bot.id)) continue
     const acc = accounts[bot.activeAccountId]
     const act = activity[bot.activeAccountId]
     const last = lastMessage(messages[bot.id])
@@ -148,20 +127,11 @@ function StatusBoard({ scope }: { scope: 'sessions' | 'collab' | 'all' }) {
         ? '有一步要你确认'
         : column === 'fail' && acc?.status === 'error'
           ? acc.statusDetail || '连接出错'
-          : w.working > 0 && !typing[bot.id]
-            ? `${w.working} 个项目工作中`
-            : previewText(last, typing[bot.id] === true, act) || (acc?.status === 'offline' ? '离线' : '还没有消息')
-    cards.push({
-      key: `b:${bot.id}`,
-      id: bot.id,
-      column,
-      title: bot.name,
-      step,
-      time: Math.max(last?.createdAt ?? 0, w.doneAt || 0),
-      room: false
-    })
+          : previewText(last, typing[bot.id] === true, act) || (acc?.status === 'offline' ? '离线' : '还没有消息')
+    cards.push({ key: `b:${bot.id}`, id: bot.id, column, title: bot.name, step, time: Math.max(last?.createdAt ?? 0, w.doneAt || 0), room: false })
   }
-  for (const room of scope === 'sessions' ? [] : scope === 'collab' ? rooms.filter((r) => r.id === selectedId) : rooms) {
+  for (const room of rooms) {
+    if (!roomIds.includes(room.id)) continue
     const last = room.messages[room.messages.length - 1]
     const speaking = speakers[room.id]
     cards.push({
@@ -174,84 +144,42 @@ function StatusBoard({ scope }: { scope: 'sessions' | 'collab' | 'all' }) {
       room: true
     })
   }
+  return cards
+}
 
-  // v26: entering a bot's 任务 opens the project you are looking at in the right panel.
-  const current = scope === 'sessions' ? cards.find((c) => c.project && c.project.botId === selectedId && c.project.conversationId === bots.find((b) => b.id === selectedId)?.activeSessionId) : undefined
-  const currentKey = current?.key
-  useEffect(() => {
-    if (current?.project) setPicked({ ...current.project, title: current.title })
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentKey])
-
+function PlainCardView({ card }: { card: Card }) {
+  const bot = useBotStore((s) => (card.room ? undefined : s.bots.find((b) => b.id === card.id)))
+  const room = useRooms((s) => (card.room ? s.rooms.find((r) => r.id === card.id) : undefined))
+  const open = () => {
+    useBotStore.getState().selectBot(card.id)
+    usePanes.getState().setView(card.room ? 'collab' : 'sessions')
+  }
   return (
-    <div className={cn('flex min-h-0 flex-1', scope === 'sessions' && 'pt-3')}>
-    <div className="flex min-h-0 min-w-0 flex-1 gap-3 overflow-x-auto px-4 pb-4">
-      {BOARD_COLUMNS.map((col) => {
-        const list = cards.filter((c) => c.column === col.id).sort((a, b) => b.time - a.time)
-        return (
-          <section key={col.id} aria-label={col.label} className="flex min-w-[220px] flex-1 flex-col rounded-[14px] bg-canvas/60">
-            <header className="flex h-10 shrink-0 items-center gap-2 px-3">
-              <span className={cn('size-2 rounded-full', COLUMN_STYLE[col.id].dot)} />
-              <h3 className={cn('text-[13px] font-semibold', COLUMN_STYLE[col.id].head)}>{col.label}</h3>
-              <span className="text-[12px] text-ink-muted">{list.length}</span>
-            </header>
-            <ol className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto px-2 pb-2">
-              {list.map((card) => {
-                const bot = card.room ? undefined : bots.find((b) => b.id === card.id)
-                const room = card.room ? rooms.find((r) => r.id === card.id) : undefined
-                return (
-                  <li key={card.key}>
-                    <button
-                      type="button"
-                      onClick={() => (card.project ? setPicked({ ...card.project, title: card.title }) : selectBot(card.id))}
-                      className={cn(
-                        'press flex w-full flex-col gap-1.5 rounded-[12px] border bg-main p-3 text-left shadow-soft transition-colors hover:border-line-strong',
-                        card.project && picked?.conversationId === card.project.conversationId
-                          ? 'border-accent-600 ring-1 ring-accent-600'
-                          : card.column === 'wait' ? 'border-status-attention/50' : card.column === 'fail' ? 'border-status-error/40' : 'border-line'
-                      )}
-                    >
-                      <span className="flex min-w-0 items-center gap-2">
-                        {bot ? (
-                          <BotAvatar
-                            emoji={bot.emoji}
-                            seed={bot.id}
-                            avatar={bot.avatar}
-                            avatarShape={bot.avatarShape}
-                            avatarColor={bot.avatarColor}
-                            platformId={bot.platformId}
-                            size="xs"
-                          />
-                        ) : room ? (
-                          <RoomAvatarCluster members={room.members.slice(0, 3)} size="xs" />
-                        ) : null}
-                        <span className="min-w-0 flex-1 truncate text-[13px] font-semibold text-ink">{card.title}</span>
-                        {card.project && <span className="max-w-[45%] shrink-0 truncate rounded-full bg-hover px-1.5 text-[10.5px] text-ink-muted">{card.project.botName}</span>}
-                        {card.room && <span className="shrink-0 rounded-full bg-hover px-1.5 text-[10.5px] text-ink-muted">群聊</span>}
-                        <span className="shrink-0 text-[11px] text-ink-muted">{formatShortTime(card.time || undefined)}</span>
-                      </span>
-                      <span className="flex min-w-0 items-start gap-1.5">
-                        {card.column === 'run' && <Loader2 aria-hidden className="mt-[3px] size-3 shrink-0 animate-spin text-status-busy" />}
-                        <span
-                          className={cn(
-                            'line-clamp-2 text-[12.5px] leading-[18px]',
-                            card.column === 'wait' ? 'font-medium text-status-attention-ink' : 'text-ink-secondary'
-                          )}
-                        >
-                          {card.step}
-                        </span>
-                      </span>
-                    </button>
-                  </li>
-                )
-              })}
-              {list.length === 0 && <li className="px-2 py-6 text-center text-[12px] text-ink-faint">没有</li>}
-            </ol>
-          </section>
-        )
-      })}
-    </div>
-    </div>
+    <button
+      type="button"
+      onClick={open}
+      className={cn(
+        'press flex w-full flex-col gap-1.5 rounded-[12px] border bg-main p-3 text-left shadow-soft transition-colors hover:border-line-strong',
+        card.column === 'wait' ? 'border-status-attention/50' : card.column === 'fail' ? 'border-status-error/40' : 'border-line'
+      )}
+    >
+      <span className="flex min-w-0 items-center gap-2">
+        {bot ? (
+          <BotAvatar emoji={bot.emoji} seed={bot.id} avatar={bot.avatar} avatarShape={bot.avatarShape} avatarColor={bot.avatarColor} platformId={bot.platformId} size="xs" />
+        ) : room ? (
+          <RoomAvatarCluster members={room.members.slice(0, 3)} size="xs" />
+        ) : null}
+        <span className="min-w-0 flex-1 truncate text-[13px] font-semibold text-ink">{card.title}</span>
+        {card.room && <span className="shrink-0 rounded-full bg-hover px-1.5 text-[10.5px] text-ink-muted">群聊</span>}
+        <span className="shrink-0 text-[11px] text-ink-muted">{formatShortTime(card.time || undefined)}</span>
+      </span>
+      <span className="flex min-w-0 items-start gap-1.5">
+        {card.column === 'run' && <Loader2 aria-hidden className="mt-[3px] size-3 shrink-0 animate-spin text-status-busy" />}
+        <span className={cn('line-clamp-2 text-[12.5px] leading-[18px]', card.column === 'wait' ? 'font-medium text-status-attention-ink' : 'text-ink-secondary')}>
+          {card.step}
+        </span>
+      </span>
+    </button>
   )
 }
 
@@ -290,80 +218,110 @@ const TASK_WORD: Record<HarkTask['state'], string> = { working: '进行中', ope
 const KIND_WORD: Record<HarkSubtask['kind'], string> = { browser: '浏览器', subagent: '子代理', other: '工具' }
 
 type PickedProject = NonNullable<Card['project']> & { title: string; taskId?: string }
-interface TaskCard extends HarkTask { conversationId: string; column: BoardColumn }
+interface TaskCard extends HarkTask { conversationId: string; column: BoardColumn; projectKey: string; botId: string }
 const DAY = 24 * 60 * 60 * 1000
 
 /**
- * v8 任务 for one Hark bot: one card per request across every project of the
- * account, its project as a tag and its subtasks inline. Projects with nothing
- * on the board sit only in the chip row above the columns.
+ * 任务 columns for a set of conversations: one card per Hark request across
+ * every project of each Hark bot (project tag, subtasks inline), plus one card
+ * per non-Hark bot or group with something going on. Idle ones sit only in the
+ * chip row. `single`: one bot or group, so the chips are its projects and the
+ * project you were looking at opens on the right.
  */
-function HarkTaskBoard({ botId }: { botId: string }) {
+function TaskBoard({ botIds, roomIds, single }: { botIds: string[]; roomIds: string[]; single: boolean }) {
   useMinuteTick()
-  const bot = useBotStore((s) => s.bots.find((b) => b.id === botId))
   const titles = useConversationTitles()
   const projectIds = useProjectTitles(true)
   const work = useHarkWork()
   const asks = useHarkAskCounts()
+  const botsAll = useBotStore((s) => s.bots)
+  const roomsAll = useRooms((s) => s.rooms)
+  const hark = botsAll
+    .filter((b) => b.platformId === 'hark' && botIds.includes(b.id))
+    .map((b) => ({ id: b.id, name: b.name, accountId: b.activeAccountId, session: b.activeSessionId }))
   const [snaps, setSnaps] = useState<Record<string, HarkTask[]>>({})
   const snapsRef = useRef(snaps)
   snapsRef.current = snaps
   const [filter, setFilter] = useState<string>()
   const { picked, setPicked } = useBoardDetail()
   const [olderOpen, setOlderOpen] = useState(false)
-  const accountId = bot?.activeAccountId ?? ''
-  const ids = [...new Set([...(projectIds[accountId] ?? []), ...Object.keys(work.projects[accountId] ?? {})])]
-  const idsKey = ids.join(',')
+  // Every project of every Hark bot here, as `${botId}|${accountId}|${conversationId}`.
+  const projects = hark.flatMap((b) =>
+    [...new Set([...(projectIds[b.accountId] ?? []), ...Object.keys(work.projects[b.accountId] ?? {})])].map((cid) => ({ bot: b, cid, key: `${b.id}|${b.accountId}|${cid}` }))
+  )
+  const keys = projects.map((p) => p.key).join(',')
+  const busyKey = projects.filter((p) => work.projects[p.bot.accountId]?.[p.cid]?.working || (asks[p.bot.accountId]?.[p.cid] ?? 0) > 0).map((p) => p.key).join(',')
   const mounted = useRef(true)
   useEffect(() => {
     mounted.current = true
     return () => { mounted.current = false }
   }, [])
-  const busyKey = ids.filter((id) => work.projects[accountId]?.[id]?.working || (asks[accountId]?.[id] ?? 0) > 0).join(',')
 
   // Every project once a minute; the busy ones (and any with live tasks) every 8 s.
   useEffect(() => {
-    if (!accountId) return
-    const load = (cid: string) =>
-      void getBridge()?.hark.rpc({ accountId, op: 'conversationSnapshot', conversationId: cid }).then((res) => {
+    const load = (key: string) => {
+      const [, accountId, cid] = key.split('|')
+      void getBridge()?.hark.rpc({ accountId: accountId!, op: 'conversationSnapshot', conversationId: cid! }).then((res) => {
         // A re-run (a project turned busy) must not drop answers still in flight: that left the board empty.
-        if (mounted.current && res?.ok) setSnaps((prev) => ({ ...prev, [cid]: deriveTasks(res.data as HarkSnapshotLike) }))
+        if (mounted.current && res?.ok) setSnaps((prev) => ({ ...prev, [key]: deriveTasks(res.data as HarkSnapshotLike) }))
       }).catch(() => undefined)
-    const all = idsKey ? idsKey.split(',') : []
+    }
+    const all = keys ? keys.split(',') : []
     all.forEach(load)
     const fast = setInterval(() => {
       const prev = snapsRef.current
-      new Set([...(busyKey ? busyKey.split(',') : []), ...all.filter((id) => prev[id]?.some((t) => t.state !== 'done'))]).forEach(load)
+      new Set([...(busyKey ? busyKey.split(',') : []), ...all.filter((k) => prev[k]?.some((t) => t.state !== 'done'))]).forEach(load)
     }, 8000)
     const slow = setInterval(() => all.forEach(load), 60_000)
     return () => {
       clearInterval(fast)
       clearInterval(slow)
     }
-  }, [accountId, idsKey, busyKey])
+  }, [keys, busyKey])
 
-  const pick = (cid: string, taskId?: string) =>
-    bot && setPicked({ botId: bot.id, botName: bot.name, accountId, conversationId: cid, working: Boolean(work.projects[accountId]?.[cid]?.working), title: titles[cid] || '项目', taskId })
+  const pick = (p: (typeof projects)[number], taskId?: string) =>
+    setPicked({ botId: p.bot.id, botName: p.bot.name, accountId: p.bot.accountId, conversationId: p.cid, working: Boolean(work.projects[p.bot.accountId]?.[p.cid]?.working), title: titles[p.cid] || '项目', taskId })
 
-  // Entering 任务 opens the project you were looking at.
-  const activeId = bot?.activeSessionId
+  // Entering one bot's 任务 opens the project you were looking at.
+  const current = single && hark.length === 1 ? projects.find((p) => p.cid === hark[0]!.session) : undefined
   useEffect(() => {
-    if (activeId && ids.includes(activeId)) pick(activeId)
+    if (current) pick(current)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeId, idsKey.length > 0])
+  }, [current?.key])
+
+  const withProjects = new Set(projects.map((p) => p.bot.id))
+  const plain = usePlainCards(botIds, roomIds, withProjects)
 
   const now = Date.now()
   const cards: TaskCard[] = []
-  for (const cid of ids) {
-    for (const t of snaps[cid] ?? []) {
+  for (const p of projects) {
+    for (const t of snaps[p.key] ?? []) {
       const waiting = t.subtasks.some((st) => st.status === 'waiting')
       const column: BoardColumn = waiting || t.state === 'open' ? 'wait' : t.state === 'working' ? 'run' : 'done'
-      cards.push({ ...t, conversationId: cid, column })
+      cards.push({ ...t, conversationId: p.cid, column, projectKey: p.key, botId: p.bot.id })
     }
   }
+  const live = (c: TaskCard) => c.column !== 'done' || now - (c.createdAt ?? 0) < DAY
+  // Chips: one bot → its projects; several → each bot and group.
+  const byProject = single && hark.length === 1 && roomIds.length === 0
+  const chipOf = (c: TaskCard) => (byProject ? c.projectKey : c.botId)
   const counts = new Map<string, number>()
-  for (const c of cards) if (c.column !== 'done' || now - (c.createdAt ?? 0) < DAY) counts.set(c.conversationId, (counts.get(c.conversationId) ?? 0) + 1)
-  const shown = cards.filter((c) => !filter || c.conversationId === filter)
+  for (const c of cards) if (live(c)) counts.set(chipOf(c), (counts.get(chipOf(c)) ?? 0) + 1)
+  for (const c of plain) if (c.column !== 'idle') counts.set(c.id, (counts.get(c.id) ?? 0) + 1)
+  const chips: Array<{ id: string; label: string; dot: string }> = byProject
+    ? projects.map((p) => {
+        const pw = work.projects[p.bot.accountId]?.[p.cid]
+        const dot = (asks[p.bot.accountId]?.[p.cid] ?? 0) > 0 ? 'bg-status-attention' : pw?.working ? 'bg-status-busy' : counts.get(p.key) ? 'bg-status-online' : 'bg-ink-faint'
+        return { id: p.key, label: titles[p.cid] || '项目', dot }
+      })
+    : [
+        ...roomIds.map((id) => ({ id, label: roomsAll.find((r) => r.id === id)?.title ?? '群聊' })),
+        ...botIds.map((id) => ({ id, label: botsAll.find((b) => b.id === id)?.name ?? '会话' }))
+      ]
+        .map((c) => ({ ...c, dot: counts.get(c.id) ? 'bg-status-busy' : 'bg-ink-faint' }))
+        .sort((a, b) => (counts.get(b.id) ?? 0) - (counts.get(a.id) ?? 0))
+  const shownTasks = cards.filter((c) => !filter || chipOf(c) === filter)
+  const shownPlain = plain.filter((c) => c.column !== 'idle' && (!filter || c.id === filter))
   const chip = (id: string | undefined, label: string, n: number, dot?: string) => (
     <button
       key={id ?? 'all'}
@@ -377,41 +335,59 @@ function HarkTaskBoard({ botId }: { botId: string }) {
     >
       {dot && <span className={cn('size-1.5 shrink-0 rounded-full', dot)} />}
       <span className="truncate">{label}</span>
-      {n > 0 && <span className={filter === id ? 'text-main/70' : 'text-ink-muted'}>{n}</span>}
+      {n > 0 && <span className="text-ink-muted">{n}</span>}
     </button>
   )
+  const tagOf = (t: TaskCard) => {
+    const project = titles[t.conversationId] || '项目'
+    if (byProject) return project
+    const name = botsAll.find((b) => b.id === t.botId)?.name
+    return name ? `${name} · ${project}` : project
+  }
 
   return (
     <div className="flex min-h-0 flex-1 pt-3">
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-        <div className="flex shrink-0 items-center gap-2 overflow-x-auto px-4 pb-3">
-          <span className="shrink-0 text-[12px] text-ink-muted">项目</span>
-          {chip(undefined, '全部', [...counts.values()].reduce((a, b) => a + b, 0))}
-          {ids.map((cid) => {
-            const pw = work.projects[accountId]?.[cid]
-            const dot = (asks[accountId]?.[cid] ?? 0) > 0 ? 'bg-status-attention' : pw?.working ? 'bg-status-busy' : counts.get(cid) ? 'bg-status-online' : 'bg-ink-faint'
-            return chip(cid, titles[cid] || '项目', counts.get(cid) ?? 0, dot)
-          })}
-        </div>
+        {chips.length > 1 && (
+          <div className="flex shrink-0 items-center gap-2 overflow-x-auto px-4 pb-3">
+            <span className="shrink-0 text-[12px] text-ink-muted">{byProject ? '项目' : '来自'}</span>
+            {chip(undefined, '全部', [...counts.values()].reduce((a, b) => a + b, 0))}
+            {chips.map((c) => chip(c.id, c.label, counts.get(c.id) ?? 0, c.dot))}
+          </div>
+        )}
         <div className="flex min-h-0 min-w-0 flex-1 gap-3 overflow-x-auto px-4 pb-4">
           {BOARD_COLUMNS.filter((col) => col.id !== 'idle').map((col) => {
-            const all = shown.filter((c) => c.column === col.id).sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0))
+            const all = shownTasks.filter((c) => c.column === col.id).sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0))
             const list = col.id === 'done' && !olderOpen ? all.filter((c) => now - (c.createdAt ?? 0) < DAY) : all
             const older = all.length - list.length
+            const plainHere = shownPlain.filter((c) => c.column === col.id).sort((a, b) => b.time - a.time)
             return (
               <section key={col.id} aria-label={col.label} className="flex min-w-[220px] flex-1 flex-col rounded-[14px] bg-canvas/60">
                 <header className="flex h-10 shrink-0 items-center gap-2 px-3">
                   <span className={cn('size-2 rounded-full', COLUMN_STYLE[col.id].dot)} />
                   <h3 className={cn('text-[13px] font-semibold', COLUMN_STYLE[col.id].head)}>{col.label}</h3>
-                  <span className="text-[12px] text-ink-muted">{list.length}</span>
+                  <span className="text-[12px] text-ink-muted">{list.length + plainHere.length}</span>
                 </header>
                 <ol className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto px-2 pb-2">
                   {list.map((t) => (
-                    <li key={`${t.conversationId}:${t.id}`}>
-                      <TaskCardView task={t} title={titles[t.conversationId] || '项目'} selected={picked?.taskId === t.id} onClick={() => pick(t.conversationId, t.id)} />
+                    <li key={`${t.projectKey}:${t.id}`}>
+                      <TaskCardView
+                        task={t}
+                        title={tagOf(t)}
+                        selected={picked?.taskId === t.id && picked?.conversationId === t.conversationId}
+                        onClick={() => {
+                          const p = projects.find((x) => x.key === t.projectKey)
+                          if (p) pick(p, t.id)
+                        }}
+                      />
                     </li>
                   ))}
-                  {list.length === 0 && <li className="px-2 py-6 text-center text-[12px] text-ink-faint">没有</li>}
+                  {plainHere.map((c) => (
+                    <li key={c.key}>
+                      <PlainCardView card={c} />
+                    </li>
+                  ))}
+                  {list.length + plainHere.length === 0 && <li className="px-2 py-6 text-center text-[12px] text-ink-faint">没有</li>}
                   {older > 0 && (
                     <li>
                       <Button variant="ghost" size="sm" onClick={() => setOlderOpen(true)}>
