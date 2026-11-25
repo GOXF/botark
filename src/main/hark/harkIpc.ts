@@ -95,8 +95,11 @@ function mapHarkMedia(msg: HarkChatMessage): MuseMediaPartView[] | undefined {
 }
 
 function mapHarkRichWidgets(msg: HarkChatMessage): MuseRichWidgetView[] | undefined {
-  if (!msg.actions || msg.actions.length === 0) return undefined
+  const out: MuseRichWidgetView[] = []
+  if (msg.links?.length) out.push({ kind: 'link_cards', widgetId: `hark_links_${msg.id}`, links: msg.links })
+  if (!msg.actions || msg.actions.length === 0) return out.length ? out : undefined
   return [
+    ...out,
     {
       kind: 'text_with_button',
       widgetId: `hark_act_${msg.id}`,
@@ -378,7 +381,7 @@ async function runHarkRpc(req: HarkRequest, signal?: AbortSignal): Promise<HarkR
           syncState.liveStatus().text ||
           ''
         const hasPayload = (m: HarkChatMessage) =>
-          Boolean(m.content.trim() || m.toolCalls?.length || m.artifacts?.length || m.actions?.length)
+          Boolean(m.content.trim() || m.toolCalls?.length || m.artifacts?.length || m.actions?.length || m.links?.length)
         // Turn messages as last shown (by object: sync state replaces a message on change).
         const shown = new Map<string, HarkChatMessage>()
         // The tail showed Hark as busy, so it must close the turn (done + idle) when it ends.

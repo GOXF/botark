@@ -837,6 +837,8 @@ export type HarkChatMessage = {
     mimeType?: string
     sizeBytes?: number
   }>
+  /** A `links` presentation block: pages to open, shown as link cards (not files). */
+  links?: Array<{ url: string; name?: string; label?: string; imageUrl?: string }>
 }
 
 export interface HarkActivityPanel {
@@ -1033,10 +1035,14 @@ export class HarkConversationSyncState {
         const existing = this.messages.get(id)
         if (existing) {
           const patched = normalizeSyncMessage(id, fields)
-          const nextContent =
+          const links = patched.links ?? existing.links
+          let nextContent =
             (typeof fields['content'] === 'string' && fields['content']) ||
             (typeof fields['text'] === 'string' && fields['text']) ||
             (fields['presentation'] ? patched.content : undefined)
+          // A links block shows as cards; its bare-URL text never becomes a bubble.
+          const dropUrlText = Boolean(links?.length && onlyUrls(nextContent ?? existing.content, links))
+          if (dropUrlText) nextContent = undefined
           const terminalJob = harkJobOutcome(fields['jobStatus'])
           const nextStreaming =
             typeof fields['isStreaming'] === 'boolean'
@@ -1046,9 +1052,12 @@ export class HarkConversationSyncState {
                 : existing.isStreaming
           const updated: HarkChatMessage = {
             ...existing,
-            ...(nextContent !== undefined && (nextContent || !existing.content)
-              ? { content: nextContent }
-              : {}),
+            ...(dropUrlText
+              ? { content: '' }
+              : nextContent !== undefined && (nextContent || !existing.content)
+                ? { content: nextContent }
+                : {}),
+            ...(links?.length ? { links } : {}),
             ...(nextStreaming !== undefined ? { isStreaming: nextStreaming } : {}),
             ...(typeof fields['jobStatus'] === 'string' ? { jobStatus: fields['jobStatus'] } : {}),
             ...(typeof fields['error'] === 'string' ? { error: fields['error'] } : {}),
@@ -1300,6 +1309,44 @@ export class HarkConversationSyncState {
   }
 }
 
+/** Link cards from a `links` presentation block (`{ kind: 'links', links: [{ url, name, label, image_url }] }`). */
+export function harkPresentationLinks(presRaw: unknown): NonNullable<HarkChatMessage['links']> {
+  if (!presRaw || typeof presRaw !== 'object') return []
+  const pres = presRaw as Record<string, unknown>
+  if (String(pres['kind'] ?? '').toLowerCase() !== 'links') return []
+  const block = pres['links']
+  const items = Array.isArray(block)
+    ? block
+    : block && typeof block === 'object' && Array.isArray((block as Record<string, unknown>)['items'])
+      ? ((block as Record<string, unknown>)['items'] as unknown[])
+      : []
+  const str = (o: Record<string, unknown>, ...keys: string[]) => {
+    for (const k of keys) if (typeof o[k] === 'string' && (o[k] as string).trim()) return (o[k] as string).trim()
+    return undefined
+  }
+  const out: NonNullable<HarkChatMessage['links']> = []
+  for (const item of items) {
+    if (!item || typeof item !== 'object') continue
+    const o = item as Record<string, unknown>
+    const url = str(o, 'url', 'href')
+    if (!url || !/^https?:\/\//i.test(url)) continue
+    out.push({
+      url,
+      name: str(o, 'name', 'title'),
+      label: str(o, 'label', 'role'),
+      imageUrl: str(o, 'image_url', 'imageUrl', 'image')
+    })
+  }
+  return out
+}
+
+/** True when `text` is nothing but these URLs (Hark's plain-text fallback for a links block). */
+function onlyUrls(text: string, links: Array<{ url: string }>): boolean {
+  let rest = text
+  for (const l of links) rest = rest.split(l.url).join(' ')
+  return rest.replace(/[\s\-*•·,，、]+/g, '') === ''
+}
+
 function formatPresentationMarkdown(presRaw: unknown): string {
   if (!presRaw || typeof presRaw !== 'object') return ''
   const pres = presRaw as Record<string, unknown>
@@ -1520,7 +1567,7 @@ function extractHarkArtifactsFromRaw(raw: Record<string, unknown>): HarkArtifact
     const p = pres as Record<string, unknown>
     const kind = String(p['kind'] ?? '').toLowerCase()
     const isMediaKind = /^(image|images|image_stack|gallery|video|audio|media|file|artifact)$/i.test(kind)
-    const nested = p[kind] ?? (isMediaKind ? p : undefined)
+    const nested = isMediaKind ? (p[kind] ?? p) : undefined
     if (nested && typeof nested === 'object') {
       const defMime =
         kind.includes('image') || kind === 'gallery'
@@ -1576,7 +1623,7 @@ export function harkReplySnippet(text: string, media?: Array<{ kind: string; nam
 
 let loggedMessageKeys = false
 
-function normalizeSyncMessage(id: string, raw: Record<string, unknown>): HarkChatMessage {
+export function normalizeSyncMessage(id: string, raw: Record<string, unknown>): HarkChatMessage {
   const role = String(raw['role'] ?? raw['author'] ?? 'assistant')
   // Patches carry no role, so this logs the first full assistant message (lets the user confirm the reply key).
   if (!loggedMessageKeys && (raw['role'] ?? raw['author']) && !/^user$/i.test(role)) {
@@ -1589,8 +1636,12 @@ function normalizeSyncMessage(id: string, raw: Record<string, unknown>): HarkCha
     (typeof raw['text'] === 'string' && raw['text']) ||
     (typeof raw['message'] === 'string' && raw['message']) ||
     ''
-  const presMarkdown = formatPresentationMarkdown(raw['presentation'])
-  const content = rawContent.trim() ? rawContent : presMarkdown || rawContent
+  const presLinks = harkPresentationLinks(raw['presentation'])
+  const presMarkdown = presLinks.length ? '' : formatPresentationMarkdown(raw['presentation'])
+  // A links block's text is just its URLs: the cards show them, so drop the bare-URL bubble.
+  const content = presLinks.length && onlyUrls(rawContent, presLinks)
+    ? ''
+    : rawContent.trim() ? rawContent : presMarkdown || rawContent
 
   const actionsRaw = Array.isArray(raw['actions']) ? (raw['actions'] as Record<string, unknown>[]) : []
   const actions = actionsRaw
@@ -1670,7 +1721,8 @@ function normalizeSyncMessage(id: string, raw: Record<string, unknown>): HarkCha
     ...(replyTo ? { replyTo } : {}),
     ...(toolCalls.length ? { toolCalls } : {}),
     ...(actions.length ? { actions } : {}),
-    ...(artifacts.length ? { artifacts } : {})
+    ...(artifacts.length ? { artifacts } : {}),
+    ...(presLinks.length ? { links: presLinks } : {})
   }
 }
 

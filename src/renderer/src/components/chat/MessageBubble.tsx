@@ -896,6 +896,45 @@ function RichWidgets({
             </li>
           )
         }
+        if (w.kind === 'link_cards') {
+          return (
+            <li key={w.widgetId} className="flex flex-col gap-1.5">
+              {w.links.map((l, i) => {
+                let host = l.url
+                try {
+                  host = new URL(l.url).hostname.replace(/^www\./, '')
+                } catch {
+                  /* keep the raw url */
+                }
+                return (
+                  <a
+                    key={`${l.url}-${i}`}
+                    href={l.url}
+                    target="_blank"
+                    rel="noreferrer"
+                    title={l.url}
+                    className="press flex items-center gap-2.5 rounded-xl border border-line bg-surface px-3 py-2 shadow-soft transition-colors hover:bg-hover"
+                  >
+                    {l.imageUrl ? (
+                      <img src={l.imageUrl} alt="" className="size-9 shrink-0 rounded-lg object-cover" />
+                    ) : (
+                      <span className="grid size-9 shrink-0 place-items-center rounded-lg bg-accent-50 text-accent-600">
+                        <Globe className="size-4" aria-hidden />
+                      </span>
+                    )}
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-[13px] font-medium text-ink">{l.name || host}</span>
+                      <span className="block truncate text-caption text-ink-muted">
+                        {[host, l.label].filter(Boolean).join(' · ')}
+                      </span>
+                    </span>
+                    <ExternalLink className="size-3.5 shrink-0 text-ink-muted" aria-hidden />
+                  </a>
+                )
+              })}
+            </li>
+          )
+        }
         if (w.kind === 'shopping_cart') {
           return (
             <li key={w.widgetId} className="rounded-xl border border-line bg-surface p-2.5 shadow-soft">

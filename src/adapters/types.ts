@@ -165,6 +165,11 @@ export type MuseRichWidget =
         longitude?: number
       }>
     }
+  | {
+      kind: 'link_cards'
+      widgetId: string
+      links: Array<{ url: string; name?: string; label?: string; imageUrl?: string }>
+    }
   | { kind: 'html'; widgetId: string; html: string; downloadable?: boolean }
   | { kind: 'slides'; widgetId: string; label: string; path?: string; slug: string }
   | {
