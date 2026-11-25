@@ -13,7 +13,8 @@ import {
   submitBrief,
   togglePinRoom,
   updateRoomConfig,
-  useRooms
+  useRooms,
+  recallRoomMessage
 } from './roomStore'
 
 const members = ['Muse', 'Dot'].map((name) => ({ name, botId: name, platform: 'dot' as const, accountId: name, cursor: 0 }))
@@ -534,7 +535,26 @@ it('continues queued participants after a failed turn without retrying the faile
   })
   await submitBrief('room', '@Muse @Dot review')
   expect(calls).toEqual(['Muse', 'Dot'])
-  expect(useRooms.getState().errors.room).toContain('transport timeout')
+  // GOXF: the failure sits on the human message (with 再发一次), not as a red room error.
+  const brief = useRooms.getState().rooms[0]!.messages[0]!
+  expect(brief.failures).toEqual([{ botId: 'Muse', name: 'Muse', error: 'transport timeout' }])
+  expect(useRooms.getState().errors.room).toBeUndefined()
+})
+
+it('recall takes the newest human message out and keeps member cursors on the next message', async () => {
+  fixture('manual', async () => 'ok')
+  await submitBrief('room', '@Muse first')
+  const before = useRooms.getState().rooms[0]!
+  const cursor = before.members.find((m) => m.botId === 'Muse')!.cursor
+  await submitBrief('room', 'second', { start: false })
+  const second = useRooms.getState().rooms[0]!.messages.at(-1)!
+  expect(recallRoomMessage('room', second.id)?.text).toBe('second')
+  const after = useRooms.getState().rooms[0]!
+  expect(after.messages.some((m) => m.id === second.id)).toBe(false)
+  expect(after.members.find((m) => m.botId === 'Muse')!.cursor).toBe(cursor)
+  // Removing the first brief shifts a cursor that was past it.
+  recallRoomMessage('room', after.messages[0]!.id)
+  expect(useRooms.getState().rooms[0]!.members.find((m) => m.botId === 'Muse')!.cursor).toBe(Math.max(0, cursor - 1))
 })
 
 it('returns a delegated failure to the administrator and records only its accepted final', async () => {

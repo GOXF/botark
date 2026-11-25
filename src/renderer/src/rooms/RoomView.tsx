@@ -9,15 +9,21 @@ import {
   Copy,
   MoreHorizontal,
   Pencil,
+  AlertCircle,
   Pin,
   PinOff,
   Plus,
+  Quote,
+  RotateCw,
+  Undo2,
   Square,
   Trash2,
   X
 } from 'lucide-react'
 import { useShallow } from 'zustand/react/shallow'
 import { MarkdownText } from '@/components/chat/MarkdownText'
+import { MediaParts, ToolChips } from '@/components/chat/MessageBubble'
+import { formatClock } from '@/lib/format'
 import { AttachmentChips } from '@/components/chat/AttachmentChips'
 import { createAttachmentDraft, type DraftAttachment } from '@/components/chat/attachmentDraft'
 import { ImageLightbox } from '@/components/chat/ImageLightbox'
@@ -78,7 +84,10 @@ import { applyDropOnRoom, isRoomDropDrag, showRoomDndNotice, useRoomDndNotice } 
 import {
   addRoom,
   deleteRoom,
+  NO_REPLY_ERROR,
+  recallRoomMessage,
   renameRoom,
+  resendRoomMessage,
   roomSlackDestination,
   stopRoom,
   submitBrief,
@@ -964,11 +973,23 @@ function FinalActions({ roomId, message, copied, onCopy }: {
   )
 }
 
+/** GOXF 引用: the message goes into the composer as quoted material. */
+function quoteRoomMessage(roomId: string, message: RoomMessage) {
+  const text = stripFinalPrefix(message.text).trim() || (message.media ?? []).map((part) => part.name ?? part.path).join('\n')
+  const excerpt = text.replace(/\s+/g, ' ').slice(0, 40)
+  window.dispatchEvent(new CustomEvent('botark:room-append-draft', {
+    detail: { roomId, reference: { label: `引用 ${message.author}：${excerpt}${text.length > 40 ? '…' : ''}`, text } }
+  }))
+}
+
+const metaButton = 'press inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[11.5px] text-ink-muted hover:bg-hover hover:text-ink'
+
 const RoomMessageRow = memo(function RoomMessageRow({
   roomId,
   members,
   message,
   finalDeliverable,
+  recallable,
   onMentionReply,
   onExport
 }: {
@@ -976,6 +997,8 @@ const RoomMessageRow = memo(function RoomMessageRow({
   members: RoomMember[]
   message: RoomMessage
   finalDeliverable: boolean
+  /** The newest human message: it can still be taken back. */
+  recallable: boolean
   onMentionReply: (memberName: string) => void
   onExport: (messageId: string) => void
 }) {
@@ -1013,6 +1036,41 @@ const RoomMessageRow = memo(function RoomMessageRow({
             <ReferenceList references={message.references} />
           </div>
         )}
+        <div className="flex flex-wrap items-center justify-end gap-1 px-1">
+          {message.createdAt && <span className="px-1 text-[11.5px] text-ink-muted tabular-nums">{formatClock(message.createdAt)}</span>}
+          <button type="button" onClick={() => quoteRoomMessage(roomId, message)} className={metaButton}>
+            <Quote className="size-3" aria-hidden /> 引用
+          </button>
+          {recallable && !fromSlack && (
+            <button
+              type="button"
+              title="停掉这一轮，原文回到输入框"
+              onClick={() => {
+                const taken = recallRoomMessage(roomId, message.id)
+                if (taken) window.dispatchEvent(new CustomEvent('botark:room-restore-draft', { detail: { roomId, message: taken } }))
+              }}
+              className={metaButton}
+            >
+              <Undo2 className="size-3" aria-hidden /> 撤回
+            </button>
+          )}
+          {message.failures?.map((f) => (
+            <span key={f.botId} className="inline-flex items-center gap-1.5 px-1 text-[11.5px] text-status-attention-ink">
+              <AlertCircle className="size-3" aria-hidden />
+              {message.failures!.length > 1 || f.error !== NO_REPLY_ERROR ? `@${f.name}：${f.error}` : f.error}
+            </span>
+          ))}
+          {Boolean(message.failures?.length) && (
+            <button
+              type="button"
+              title="把这条消息再发一次"
+              onClick={() => resendRoomMessage(roomId, message.id)}
+              className="inline-flex items-center gap-1 rounded-full px-1 text-[11.5px] font-medium text-status-attention-ink underline-offset-2 hover:underline"
+            >
+              <RotateCw className="size-3" aria-hidden /> 再发一次
+            </button>
+          )}
+        </div>
       </div>
     )
   }
@@ -1095,9 +1153,15 @@ const RoomMessageRow = memo(function RoomMessageRow({
           )}
         </div>
 
+        {message.tools && message.tools.length > 0 && <ToolChips tools={message.tools} />}
         {cleanText && (
           <div className="rounded-2xl bg-bubble px-4 py-3 text-[14px] leading-[22px] text-ink">
             <MarkdownText text={cleanText} />
+          </div>
+        )}
+        {message.media && message.media.length > 0 && (
+          <div className="mt-1.5">
+            <MediaParts parts={message.media} accountId={member?.accountId} />
           </div>
         )}
 
@@ -1112,6 +1176,9 @@ const RoomMessageRow = memo(function RoomMessageRow({
               {copied ? '已复制' : '复制'}
             </button>
           )}
+          <button type="button" onClick={() => quoteRoomMessage(roomId, message)} className={metaButton}>
+            <Quote className="size-3" aria-hidden /> 引用
+          </button>
           <button
             type="button"
             onClick={() => onMentionReply(member?.name ?? message.author)}
@@ -1136,6 +1203,7 @@ const RoomTranscript = memo(function RoomTranscript({
   onMentionReply: (name: string) => void
   onExport: (messageId: string) => void
 }) {
+  const lastHumanId = messages.findLast((m) => isHumanRoomMessage(m) && !m.handoff)?.id
   return messages.map((message) => (
     // data-room-message: a handed-over requirement scrolls to its message.
     <div key={message.id} data-room-message={message.id}>
@@ -1144,6 +1212,7 @@ const RoomTranscript = memo(function RoomTranscript({
         members={members}
         message={message}
         finalDeliverable={message.final === true || message.id === finalId}
+        recallable={message.id === lastHumanId}
         onMentionReply={onMentionReply}
         onExport={onExport}
       />
@@ -1162,6 +1231,7 @@ export function RoomView({ id }: { id: string }) {
   const t = useT()
   const room = useRooms((s) => s.rooms.find((r) => r.id === id))
   const speaker = useRooms((s) => s.speakers[id])
+  const liveTools = useRooms((s) => s.liveTools[id])
   const progress = useRooms((s) => s.turnProgress[id])
   const error = useRooms((s) => s.errors[id])
   const audience = useRooms((s) => s.externalAudiences[id])
@@ -1213,7 +1283,21 @@ export function RoomView({ id }: { id: string }) {
       })
     }
     window.addEventListener('botark:room-append-draft', onAppend)
-    return () => window.removeEventListener('botark:room-append-draft', onAppend)
+    const onRestore = (event: Event) => {
+      const detail = (event as CustomEvent<{ roomId: string; message: RoomMessage }>).detail
+      if (!detail || detail.roomId !== id) return
+      setText(detail.message.text)
+      setReferences(detail.message.references ?? [])
+      requestAnimationFrame(() => {
+        resize()
+        textareaRef.current?.focus()
+      })
+    }
+    window.addEventListener('botark:room-restore-draft', onRestore)
+    return () => {
+      window.removeEventListener('botark:room-append-draft', onAppend)
+      window.removeEventListener('botark:room-restore-draft', onRestore)
+    }
   }, [id, resize])
 
   const insertMention = useCallback((memberName: string) => {
@@ -1473,6 +1557,8 @@ export function RoomView({ id }: { id: string }) {
                   isWorking
                   size="sm"
                 />
+                <div className="min-w-0 flex-1">
+                {liveTools && liveTools.length > 0 && <ToolChips tools={liveTools} />}
                 <div className="inline-flex items-center gap-2.5 rounded-2xl bg-bubble px-4 py-2.5">
                   <span className="text-[13px] shimmer-text">@{speaker} 正在回复…</span>
                   <button
@@ -1482,6 +1568,7 @@ export function RoomView({ id }: { id: string }) {
                   >
                     停止
                   </button>
+                </div>
                 </div>
               </div>
             )}

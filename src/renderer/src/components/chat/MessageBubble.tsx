@@ -100,7 +100,7 @@ function DeliveryState({ message, onRetry }: Pick<MessageBubbleProps, 'message' 
   }
 }
 
-function ToolChips({ tools }: { tools: ChatToolCall[] }) {
+export function ToolChips({ tools }: { tools: ChatToolCall[] }) {
   if (!tools.length) return null
   return (
     <ul className="mb-1.5 flex max-w-[78%] flex-col gap-1" aria-label={t('Tools')}>
@@ -666,7 +666,7 @@ function WorkspaceAV({
   )
 }
 
-function MediaParts({
+export function MediaParts({
   parts,
   accountId,
   onOpenDoc,

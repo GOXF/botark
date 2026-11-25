@@ -1,7 +1,7 @@
 import { create } from 'zustand'
 import { persist, type PersistStorage } from 'zustand/middleware'
 import { adapterRegistry } from '@adapters/registry'
-import type { AttachmentMeta, ConnectionStatus, SendReceipt } from '@adapters/types'
+import type { AttachmentMeta, ConnectionStatus, MuseMediaPart, MuseToolCall, SendReceipt } from '@adapters/types'
 import { createId } from '@shared/id'
 import { getBridge } from '@/lib/bridge'
 import { cancelPlatformTurn, useBotStore } from '@/store/botStore'
@@ -11,6 +11,7 @@ import {
   assistantTurnPrompt,
   classifyRoomReply,
   freshRoomSession,
+  isHumanRoomMessage,
   mentions,
   refusesRoomFrame,
   normalizeMentionName,
@@ -40,6 +41,8 @@ interface RoomState {
   rooms: CollabRoom[]
   speakers: Record<string, string | undefined>
   turnProgress: Record<string, RoomTurnProgress | undefined>
+  /** GOXF: tool calls of the reply being written right now, per room. */
+  liveTools: Record<string, MuseToolCall[] | undefined>
   errors: Record<string, string | undefined>
 }
 
@@ -72,7 +75,10 @@ const roomStorage: PersistStorage<Pick<RoomState, 'rooms'>> = {
     const previous = storedRooms?.backing === backing && storedRooms.name === name ? storedRooms : undefined
     if (previous?.rooms === item.state.rooms && previous.version === item.version) return
     // Picture data stays in memory only: localStorage is small, and the member already received it.
-    const value = JSON.stringify(item, (key, v) => (key === 'dataBase64' ? undefined : v))
+    const value = JSON.stringify(item, (key, v) =>
+      key === 'dataBase64' ? undefined
+        : key === 'media' && Array.isArray(v) ? v.filter((part: MuseMediaPart) => !part.path?.startsWith('data:'))
+          : v)
     storedRooms = { backing, name, value, rooms: item.state.rooms, version: item.version }
     if (value !== previous?.value) safeRoomStorage.setItem(name, value)
   },
@@ -88,6 +94,7 @@ export const useRooms = create<RoomState>()(
       rooms: [],
       speakers: {},
       turnProgress: {},
+      liveTools: {},
       errors: {},
       slackDestinations: {},
       externalAudiences: {}
@@ -364,7 +371,8 @@ export function stopRoom(id: string) {
   run?.finish()
   useRooms.setState((s) => ({
     speakers: { ...s.speakers, [id]: undefined },
-    turnProgress: { ...s.turnProgress, [id]: undefined }
+    turnProgress: { ...s.turnProgress, [id]: undefined },
+    liveTools: { ...s.liveTools, [id]: undefined }
   }))
 }
 
@@ -618,6 +626,8 @@ export function moveMemberToRoom(
   return { ok: true }
 }
 
+export const NO_REPLY_ERROR = '已送达，但没有收到回复'
+
 async function memberReply(room: CollabRoom, member: RoomMember, trigger: RoomMessage, signal: AbortSignal) {
   const adapter = adapterRegistry.get(member.platform)
   const bot = useBotStore
@@ -648,10 +658,30 @@ async function memberReply(room: CollabRoom, member: RoomMember, trigger: RoomMe
   activeAccounts.add(lockKey)
   const conversationId = 'room-turn-' + createId('turn')
   const replies = new Map<string, string>()
-  const unsubscribe = adapter.onMessage((m) => {
-    if (m.conversationId === conversationId && m.accountId === member.accountId && m.text.trim())
-      replies.set(m.id, m.text)
+  const tools = new Map<string, MuseToolCall>()
+  const media: MuseMediaPart[] = []
+  const addTools = (list?: MuseToolCall[]) => {
+    if (!list?.length) return
+    for (const tool of list) tools.set(tool.id, tool)
+    useRooms.setState((s) => ({ liveTools: { ...s.liveTools, [room.id]: [...tools.values()] } }))
+  }
+  const stopMessages = adapter.onMessage((m) => {
+    if (m.conversationId !== conversationId || m.accountId !== member.accountId) return
+    if (m.text.trim()) replies.set(m.id, m.text)
+    addTools(m.tools)
+    for (const part of m.media ?? []) if (!media.some((x) => x.path === part.path)) media.push(part)
   })
+  // Running tools arrive on the live deltas.
+  const stopDeltas = typeof adapter.subscribe === 'function'
+    ? adapter.subscribe((event) => {
+      if (event.type === 'message_delta' && event.conversationId === conversationId && event.accountId === member.accountId)
+        addTools(event.tools)
+    })
+    : undefined
+  const unsubscribe = () => {
+    stopMessages()
+    stopDeltas?.()
+  }
   let sessionId = member.sessionId
   const hermesSessionKey = member.platform === 'hermes'
     ? member.hermesSessionKey || `${room.id}-${member.botId}` : undefined
@@ -746,13 +776,57 @@ async function memberReply(room: CollabRoom, member: RoomMember, trigger: RoomMe
     })
     signal.throwIfAborted()
     const text = [...replies.values()].join('\n\n')
-    if (!text) throw new Error(`@${member.name} 没有返回文字回复`)
-    return { text, sessionId: receipt.sessionId || sessionId, hermesSessionKey }
+    if (!text && !media.length) throw new Error(NO_REPLY_ERROR)
+    return {
+      text, sessionId: receipt.sessionId || sessionId, hermesSessionKey,
+      tools: [...tools.values()], media
+    }
   } finally {
     unsubscribe()
+    useRooms.setState((s) => ({ liveTools: { ...s.liveTools, [room.id]: undefined } }))
     activeAccounts.delete(lockKey)
     signal.removeEventListener('abort', cancel)
   }
+}
+
+/** GOXF: drop messages and keep each member's read cursor on the same next message. */
+function removeMessages(id: string, drop: (message: RoomMessage, index: number) => boolean) {
+  update(id, (r) => {
+    const gone = r.messages.map(drop)
+    const shift = (cursor: number) => cursor - gone.slice(0, cursor).filter(Boolean).length
+    return {
+      ...r,
+      messages: r.messages.filter((_, i) => !gone[i]),
+      members: r.members.map((m) => (m.cursor ? { ...m, cursor: shift(m.cursor) } : m)),
+      finalId: r.finalId && r.messages.some((m, i) => gone[i] && m.id === r.finalId) ? undefined : r.finalId
+    }
+  })
+}
+
+/** GOXF 撤回: stop the round, take the message out, and give its text back to the composer. */
+export function recallRoomMessage(id: string, messageId: string): RoomMessage | undefined {
+  const message = roomById(id)?.messages.find((m) => m.id === messageId)
+  if (!message || !isHumanRoomMessage(message)) return undefined
+  stopRoom(id)
+  setError(id)
+  removeMessages(id, (m) => m.id === messageId)
+  return message
+}
+
+/** GOXF 再发一次: post the same message again; the failed copy and its "no reply" notices go away. */
+export function resendRoomMessage(id: string, messageId: string) {
+  const room = roomById(id)
+  const index = room?.messages.findIndex((m) => m.id === messageId) ?? -1
+  const message = room?.messages[index]
+  if (!room || !message) return
+  const names = new Set((message.failures ?? []).map((f) => `${f.name} 本轮未取得回复。`))
+  stopRoom(id)
+  removeMessages(id, (m, i) => m.id === messageId || (i > index && Boolean(m.notice) && names.has(m.text)))
+  void submitBrief(id, message.text, {
+    author: message.author,
+    references: message.references ?? [],
+    attachments: message.attachments ?? []
+  })
 }
 
 export async function submitBrief(
@@ -850,7 +924,19 @@ export async function submitBrief(
         signal.throwIfAborted()
         if (isCoordinator) throw error
         failed.add(member.botId)
-        setError(id, `@${member.name}：${error instanceof Error ? error.message : String(error)}`)
+        const detail = error instanceof Error ? error.message : String(error)
+        // GOXF: a human message shows who did not answer under itself, with 再发一次.
+        if (isHumanRoomMessage(next.trigger)) {
+          const failure = { botId: member.botId, name: member.name, error: detail }
+          update(id, (r) => ({
+            ...r,
+            messages: r.messages.map((m) => m.id === next.trigger.id
+              ? { ...m, failures: [...(m.failures ?? []).filter((f) => f.botId !== member.botId), failure] }
+              : m)
+          }))
+        } else {
+          setError(id, `@${member.name}：${detail}`)
+        }
         const notice: RoomMessage = {
           id: createId('post'), author: 'BotArk', notice: true,
           text: `${member.name} 本轮未取得回复。`, createdAt: Date.now()
@@ -877,9 +963,11 @@ export async function submitBrief(
         ...(done ? { final: true } : {}),
         ...(toolRequest ? { localOnly: true } : {}),
         text: classified.text,
+        ...(reply.tools.length ? { tools: reply.tools } : {}),
+        ...(reply.media.length ? { media: reply.media } : {}),
         createdAt: Date.now()
       }
-      const appendPost = Boolean(post.text || targets.length)
+      const appendPost = Boolean(post.text || targets.length || reply.media.length)
       const cursor = reply.sessionId || reply.hermesSessionKey ? latest.messages.length + Number(appendPost) : 0
       const storedMember = currentMembers.get(member.botId)
       const members = storedMember && (storedMember.cursor !== cursor || storedMember.sessionId !== reply.sessionId ||
@@ -958,7 +1046,8 @@ export async function submitBrief(
       runs.delete(id)
       useRooms.setState((s) => ({
         speakers: { ...s.speakers, [id]: undefined },
-        turnProgress: { ...s.turnProgress, [id]: undefined }
+        turnProgress: { ...s.turnProgress, [id]: undefined },
+        liveTools: { ...s.liveTools, [id]: undefined }
       }))
     }
     finish()

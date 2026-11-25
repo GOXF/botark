@@ -1,4 +1,4 @@
-import type { AttachmentMeta, PlatformId } from '@adapters/types'
+import type { AttachmentMeta, MuseMediaPart, MuseToolCall, PlatformId } from '@adapters/types'
 import { createId } from '@shared/id'
 import { isToolRequest } from './toolRequests'
 
@@ -40,6 +40,11 @@ export interface RoomMessage {
   createdAt?: number
   /** Requirement handed over from another group's [FINAL]; points back to it. */
   handoff?: { roomId: string; messageId: string }
+  /** GOXF: what the member's reply carried besides text (tool calls, files, pictures). */
+  tools?: MuseToolCall[]
+  media?: MuseMediaPart[]
+  /** GOXF: members that did not answer this human message, with why. */
+  failures?: Array<{ botId: string; name: string; error: string }>
 }
 
 export interface CollabRoom {
