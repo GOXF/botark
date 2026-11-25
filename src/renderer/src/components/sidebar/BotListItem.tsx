@@ -119,6 +119,7 @@ export const BotListItem = memo(function BotListItem({
     return all.length > 1 ? all.findIndex((l) => leafBot(l) === bot.id) + 1 : 0
   })
   const timeLabel = !isWorking && last?.createdAt ? formatShortTime(last.createdAt) : ''
+  const side = paneNo > 0 || Boolean(timeLabel) || bot.unread > 0 || done
   // Only a bot created a moment ago rises into the list; startup stays still.
   const [fresh] = useState(() => Date.now() - bot.createdAt < 3000)
 
@@ -217,8 +218,8 @@ export const BotListItem = memo(function BotListItem({
         className={cn(
           'min-w-0 flex-1',
           // Keep text clear of the ⋯ button; with a badge its slot already does.
-          !(bot.unread > 0 || done) && 'group-focus-within:pr-6 group-hover:pr-6',
-          !(bot.unread > 0 || done) && menuOpen && 'pr-6'
+          !side && 'group-focus-within:pr-6 group-hover:pr-6',
+          !side && menuOpen && 'pr-6'
         )}
       >
         {renaming ? (
@@ -252,19 +253,6 @@ export const BotListItem = memo(function BotListItem({
                 {t('Asleep')}
               </span>
             )}
-            {paneNo > 0 && (
-              <span
-                title={`在第 ${paneNo} 格`}
-                className="shrink-0 rounded-[4px] bg-accent-600/12 px-1 text-[10px] leading-4 font-semibold text-accent-700 tabular-nums"
-              >
-                {paneNo}
-              </span>
-            )}
-            {timeLabel && (
-              <span className="shrink-0 text-[11px] leading-4 text-ink-faint tabular-nums group-hover:opacity-0">
-                {timeLabel}
-              </span>
-            )}
           </span>
         )}
         <span className="flex items-center gap-1.5">
@@ -284,25 +272,33 @@ export const BotListItem = memo(function BotListItem({
         )}
         </span>
       </span>
-      {/* GOXF: unread count / done dot sit where ⋯ appears on hover (user 2026-11-25). */}
-      {bot.unread > 0 ? (
-        <UnreadBadge
-          count={bot.unread}
+      {/* GOXF v15 (user 2026-11-25): right column = 格N · time on top, unread badge below,
+          all swapped for ⋯ on hover. */}
+      {side && (
+        <span
           className={cn(
-            'transition-opacity duration-100 group-focus-within:opacity-0 group-hover:opacity-0',
+            'flex min-w-6 shrink-0 flex-col items-end gap-1 self-stretch justify-center transition-opacity duration-100',
+            'group-focus-within:opacity-0 group-hover:opacity-0',
             menuOpen && 'opacity-0'
           )}
-        />
-      ) : (
-        done && (
-          <StatusDot
-            status="attention"
-            className={cn(
-              'transition-opacity duration-100 group-focus-within:opacity-0 group-hover:opacity-0',
-              menuOpen && 'opacity-0'
-            )}
-          />
-        )
+        >
+          {(paneNo > 0 || timeLabel) && (
+            <span className="text-[11px] leading-4 whitespace-nowrap text-ink-faint tabular-nums">
+              {paneNo > 0 && (
+                <span title={`在第 ${paneNo} 格`} className="font-medium text-accent-700">
+                  格{paneNo}
+                  {timeLabel && ' · '}
+                </span>
+              )}
+              {timeLabel}
+            </span>
+          )}
+          {bot.unread > 0 ? (
+            <UnreadBadge count={bot.unread} />
+          ) : (
+            done && <StatusDot status="attention" />
+          )}
+        </span>
       )}
     </>
   )
