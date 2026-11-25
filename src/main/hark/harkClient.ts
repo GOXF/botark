@@ -893,6 +893,8 @@ export class HarkConversationSyncState {
   private readonly panelsByWindow = new Map<string, Map<string | symbol, Record<string, unknown>>>()
   historyRevision = 0
   activeActivity: string | null = null
+  /** GOXF: Hark's `activeWork` (background work after the reply, e.g. 「Running network path checks」). */
+  activeWork: unknown = null
   narration: string | null = null
   /** GOXF: Hark's narration says `working: true` while a turn runs, even before it has a line. */
   narrationWorking = false
@@ -925,6 +927,7 @@ export class HarkConversationSyncState {
       this.order.length = 0
       // Joining mid-run: the snapshot carries the same shapes the patches do (string or {label/type}).
       this.activeActivity = harkActivityLabel(data['activeActivity'])
+      this.activeWork = data['activeWork'] ?? null
       this.narration = harkActivityLabel(data['narration'])
       this.narrationWorking = harkNarrationWorking(data['narration'], false)
 
@@ -1173,6 +1176,9 @@ export class HarkConversationSyncState {
       } else if (op === 'active_activity_set') {
         this.activeActivity = harkActivityLabel(p['value'])
         activityChanged = true
+      } else if (/active_?work/i.test(op)) {
+        this.activeWork = /clear|remove|delete/i.test(op) ? null : (p['value'] ?? p['fields'] ?? null)
+        activityChanged = true
       } else if (/narration/i.test(op)) {
         // GOXF: tolerate renamed ops (narration_set / narration_clear …).
         this.narration = /clear|remove|delete/i.test(op) ? null : harkActivityLabel(p['value'] ?? p['text'])
@@ -1207,7 +1213,9 @@ export class HarkConversationSyncState {
       backgroundLine ||
       ''
     ).trim()
-    return { busy: Boolean(text || streaming || this.narrationWorking), text: text.slice(0, 120) }
+    const work = harkHasWork(this.activeWork)
+    const line = text || (work ? harkActivityLabel(this.activeWork) || '后台任务进行中…' : '')
+    return { busy: Boolean(line || streaming || this.narrationWorking), text: line.slice(0, 120) }
   }
 
   private activePanelLine(): string {
@@ -1771,6 +1779,19 @@ export function harkNarrationWorking(v: unknown, fallback: boolean): boolean {
 }
 
 /** Hark sends activity / narration as a plain string or as `{ line | label | text | type }`. */
+/** GOXF: Hark's activeWork counts only when it holds something (null / {} / [] = idle). */
+export function harkHasWork(v: unknown): boolean {
+  if (v == null || v === false || v === '') return false
+  if (Array.isArray(v)) return v.some(harkHasWork)
+  if (typeof v === 'object') {
+    const o = v as Record<string, unknown>
+    if (typeof o['status'] === 'string' && /complete|done|finish|fail|cancel|idle/i.test(o['status'])) return false
+    if (o['working'] === false || o['active'] === false) return false
+    return Object.values(o).some(harkHasWork)
+  }
+  return true
+}
+
 export function harkActivityLabel(v: unknown): string | null {
   if (typeof v === 'string') {
     if (/^\s*[[{]/.test(v)) {

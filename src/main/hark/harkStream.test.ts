@@ -173,3 +173,14 @@ it('does not invalidate project history for narration-only frames', () => {
   expect(state.historyRevision).toBe(before)
   expect(state.activeActivity).toBe('Working')
 })
+
+it('stays busy while Hark reports activeWork after the reply, and goes idle when it clears', async () => {
+  const { HarkConversationSyncState } = await import('./harkClient')
+  const state = new HarkConversationSyncState()
+  state.applyFrame(JSON.stringify({ type: 'snapshot', data: { messages: [{ id: 'a1', role: 'assistant', content: '好了', isStreaming: false }], activeWork: {} } }))
+  expect(state.liveStatus().busy).toBe(false)
+  state.applyFrame(JSON.stringify({ type: 'patches', data: [{ op: 'active_work_set', value: { label: 'Running network path checks' } }] }))
+  expect(state.liveStatus()).toEqual({ busy: true, text: 'Running network path checks' })
+  state.applyFrame(JSON.stringify({ type: 'patches', data: [{ op: 'active_work_set', value: null }] }))
+  expect(state.liveStatus().busy).toBe(false)
+})
