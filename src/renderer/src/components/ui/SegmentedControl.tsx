@@ -18,7 +18,7 @@ export interface SegmentedControlProps<T extends string = string> {
   'aria-label'?: string
   className?: string
   fullWidth?: boolean
-  /** GOXF: fully round capsule (default), matching the top ViewTab. */
+  /** GOXF: fully round capsule, matching the top ViewTab. */
   pill?: boolean
 }
 
@@ -39,7 +39,7 @@ export function SegmentedControl<T extends string = string>({
   'aria-label': ariaLabel,
   className,
   fullWidth = false,
-  pill = true
+  pill = false
 }: SegmentedControlProps<T>) {
   const glide = useGlide<HTMLDivElement>(`${value}:${options.length}`, { axis: 'x' })
 
