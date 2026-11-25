@@ -128,6 +128,9 @@ export function startWorkspaceSync(): () => void {
       void useBotStore.getState().switchConversation(bot.id, t.conversationId).catch(() => {})
     } else if (active && t.conversationId !== active) {
       usePanes.getState().setTabConversation(f.leafId, t.id, active)
+    } else if (bot.activeSessionId === HARK_DRAFT_SESSION && t.conversationId) {
+      // 新建项目 in a split: unpin the tab so it shows the draft instead of mirroring the old project.
+      usePanes.getState().setTabConversation(f.leafId, t.id, undefined)
     }
   }
   let lastFocusKey = ''

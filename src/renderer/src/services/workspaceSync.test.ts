@@ -4,6 +4,7 @@ import { useBotStore } from '@/store/botStore'
 import { usePanes } from '@/store/paneStore'
 import type { Bot } from '@/types'
 import { startWorkspaceSync } from './workspaceSync'
+import { HARK_DRAFT_SESSION } from '@shared/harkProjects'
 
 const bot = (id: string, platformId: string, activeSessionId?: string) =>
   ({ id, name: id, platformId, accountIds: ['acc'], activeAccountId: 'acc', activeSessionId }) as unknown as Bot
@@ -53,5 +54,17 @@ describe('workspaceSync: tab ↔ conversation (Issue #7)', () => {
     useBotStore.setState({ bots: [bot('m', 'meta-muse', 'S3'), bot('d', 'dot')] })
     expect(focusedTab()?.conversationId).toBe('S3')
     expect(switchConversation).not.toHaveBeenCalled()
+  })
+
+  it('新建项目 in a split unpins the tab so the draft shows, then pins the new project', () => {
+    useBotStore.setState({ bots: [bot('h', 'hark', 'P1')] })
+    usePanes.getState().place('h')
+    usePanes.getState().split('L1', 'right', null)
+    usePanes.getState().focus('L1')
+    expect(focusedTab()?.conversationId).toBe('P1')
+    useBotStore.setState({ bots: [bot('h', 'hark', HARK_DRAFT_SESSION)] })
+    expect(focusedTab()?.conversationId).toBeUndefined()
+    useBotStore.setState({ bots: [bot('h', 'hark', 'P2')] })
+    expect(focusedTab()?.conversationId).toBe('P2')
   })
 })
