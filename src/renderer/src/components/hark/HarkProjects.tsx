@@ -27,6 +27,7 @@ import { useBotStore } from '@/store/botStore'
 import type { HarkProjectWork } from '@/lib/harkWork'
 import { noteHarkRun, useHarkWork } from '@/services/harkWork'
 import { useConversationTitles } from '@/services/workspaceSync'
+import { conversationRowProps } from '@/components/workspace/conversationDnd'
 
 async function rpc(request: HarkRpcRequest) {
   const result = await getBridge()?.hark.rpc(request)
@@ -337,6 +338,7 @@ export function HarkProjects({
           return (
             <li
               key={p.id}
+              {...conversationRowProps(botId, p.id, p.title)}
               className={cn(
                 'group flex items-center gap-2 rounded-xl px-2 py-1.5 transition-colors',
                 isCurrent ? 'bg-active text-ink' : 'hover:bg-hover text-ink'
