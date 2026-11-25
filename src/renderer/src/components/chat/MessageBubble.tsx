@@ -378,15 +378,27 @@ async function fetchPlatformMediaBytes(
   return null
 }
 
+/** GOXF: several pictures share one row at an equal height, each as wide as its shape allows; a very wide shot fits whole on a tint. */
+const TILE_H = 130
+function tileWidth(aspect?: number): number {
+  return aspect ? Math.round(Math.max(90, Math.min(280, aspect * TILE_H))) : TILE_H
+}
+function tileImgClass(aspect?: number): string {
+  return aspect && aspect > 2.2 ? 'max-h-full max-w-full object-contain' : 'size-full object-cover'
+}
+
 function WorkspaceImage({
   part,
   accountId,
-  mine
+  mine,
+  tile
 }: {
   part: ChatMediaPart
   accountId?: string
   /** User's own picture: same size cap as a local attachment. */
   mine?: boolean
+  /** One of several pictures: an equal-height tile, clickable anywhere. */
+  tile?: boolean
 }) {
   const initialDirectSrc =
     /^data:image\//i.test(part.path) || (isHttp(part.path) && !needsAuthProxyHttpUrl(part.path))
@@ -441,6 +453,7 @@ function WorkspaceImage({
   }, [accountId, part, src, failed, retryNonce])
 
   const [fitWidth, setFitWidth] = useState<number | null>(null)
+  const [aspect, setAspect] = useState<number>()
   const filename = part.name || (!isHttp(part.path) ? part.path.split('/').pop() : undefined) || 'image.png'
 
   if (src) {
@@ -450,20 +463,22 @@ function WorkspaceImage({
           <button
             type="button"
             onClick={() => setLightboxOpen(true)}
-            className="block w-full cursor-zoom-in text-left"
+            className={tile ? 'flex cursor-zoom-in items-center justify-center' : 'block w-full cursor-zoom-in text-left'}
+            style={tile ? { width: tileWidth(aspect), height: TILE_H } : undefined}
             title="点击放大查看"
           >
             <img
               src={src}
               alt={part.name || part.path}
               {...{ [LIGHTBOX_ATTR]: filename }}
-              className={cn(mine ? 'max-h-56 max-w-64' : 'max-h-72 max-w-full', 'mx-auto block object-contain')}
+              className={tile ? tileImgClass(aspect) : cn(mine ? 'max-h-56 max-w-64' : 'max-h-72 max-w-full', 'mx-auto block object-contain')}
               // Give the image its scaled width up front, so a fit-content card hugs it
               // instead of reserving the natural width (blank strip beside wide-ish shots).
-              style={fitWidth ? { width: fitWidth } : undefined}
+              style={!tile && fitWidth ? { width: fitWidth } : undefined}
               onLoad={(e) => {
                 const { naturalWidth: w, naturalHeight: h } = e.currentTarget
                 if (w && h) setFitWidth(Math.round(Math.min(w, (w * (mine ? 224 : 288)) / h)))
+                if (w && h) setAspect(w / h)
               }}
               onError={() => {
                 if (isHttp(src) && !triedProxy && accountId) {
@@ -723,7 +738,7 @@ function MediaParts({
       <ul
         className={cn(
           'mb-1.5 max-w-[78%] gap-1.5',
-          allImages ? 'grid grid-cols-2' : 'flex flex-col'
+          allImages ? cn('flex flex-wrap', mine && 'justify-end') : 'flex flex-col'
         )}
         aria-label={t('Media')}
       >
@@ -743,7 +758,7 @@ function MediaParts({
             )}
           >
             {looksLikeImage(part) ? (
-              <WorkspaceImage part={part} accountId={accountId} mine={mine} />
+              <WorkspaceImage part={part} accountId={accountId} mine={mine} tile={allImages} />
             ) : looksLikeAudio(part) ? (
               <WorkspaceAV part={part} accountId={accountId} kind="audio" />
             ) : looksLikeVideo(part) ? (
@@ -1801,11 +1816,15 @@ function OptionChips({ message, widget }: { message: ChatMessage; widget: ChatOp
 }
 
 function UserAttachmentItem({
-  file
+  file,
+  tile
 }: {
   file: NonNullable<ChatMessage['attachments']>[number]
+  /** One of several pictures: an equal-height tile, clickable anywhere. */
+  tile?: boolean
 }) {
   const [lightboxOpen, setLightboxOpen] = useState(false)
+  const [aspect, setAspect] = useState<number>()
   const [avUrl, setAvUrl] = useState<string | null>(null)
   const isImage = file.mimeType.startsWith('image/') && Boolean(file.dataBase64)
   const isVideo = file.mimeType.startsWith('video/') && Boolean(file.dataBase64)
@@ -1832,10 +1851,16 @@ function UserAttachmentItem({
           <button
             type="button"
             onClick={() => setLightboxOpen(true)}
-            className="block cursor-zoom-in"
+            className={tile ? 'flex cursor-zoom-in items-center justify-center bg-sunken/30' : 'block cursor-zoom-in'}
+            style={tile ? { width: tileWidth(aspect), height: TILE_H } : undefined}
             title={file.name}
           >
-            <img src={dataSrc} alt={file.name} {...{ [LIGHTBOX_ATTR]: file.name }} className="max-h-56 max-w-64 object-contain" />
+            <img src={dataSrc} alt={file.name} {...{ [LIGHTBOX_ATTR]: file.name }}
+              className={tile ? tileImgClass(aspect) : 'max-h-56 max-w-64 object-contain'}
+              onLoad={(e) => {
+                const { naturalWidth: w, naturalHeight: h } = e.currentTarget
+                if (w && h) setAspect(w / h)
+              }} />
           </button>
         </li>
         {lightboxOpen && (
@@ -2207,7 +2232,8 @@ const MessageBubbleBody = memo(function MessageBubbleBody({
       {message.attachments && message.attachments.length > 0 && (
         <ul className={cn('mb-1.5 flex max-w-[78%] flex-wrap gap-1.5', mine && 'justify-end')}>
           {message.attachments.map((file) => (
-            <UserAttachmentItem key={file.id} file={file} />
+            <UserAttachmentItem key={file.id} file={file}
+              tile={message.attachments!.filter((f) => f.mimeType.startsWith('image/') && f.dataBase64).length >= 2} />
           ))}
         </ul>
       )}
