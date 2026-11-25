@@ -906,6 +906,7 @@ function RichWidgets({
                 } catch {
                   /* keep the raw url */
                 }
+                const shownUrl = l.url.replace(/^https?:\/\//, '')
                 return (
                   <a
                     key={`${l.url}-${i}`}
@@ -925,7 +926,8 @@ function RichWidgets({
                     <span className="min-w-0 flex-1">
                       <span className="block truncate text-[13px] font-medium text-ink">{l.name || host}</span>
                       <span className="block truncate text-caption text-ink-muted">
-                        {[host, l.label].filter(Boolean).join(' · ')}
+                        {l.label ? `${l.label} · ` : ''}
+                        {shownUrl}
                       </span>
                     </span>
                     <ExternalLink className="size-3.5 shrink-0 text-ink-muted" aria-hidden />
@@ -2047,15 +2049,16 @@ const MessageBubbleBody = memo(function MessageBubbleBody({
   }
 
   // GOXF: right-click menu on a bubble, the same actions as the hover row (Menu component, spec styling).
-  const [ctx, setCtx] = useState<{ x: number; y: number; selection: string; img: string | null } | null>(null)
+  const [ctx, setCtx] = useState<{ x: number; y: number; selection: string; img: string | null; link: string | null } | null>(null)
   const onBubbleContextMenu = (e: React.MouseEvent) => {
     const target = e.target as HTMLElement
     if (target.closest('input, textarea, [contenteditable="true"]')) return
     const img = target instanceof HTMLImageElement ? target.currentSrc || target.src : null
+    const link = img ? null : (target.closest('a[href]') as HTMLAnchorElement | null)?.href ?? null
     const selection = window.getSelection()?.toString().trim() ?? ''
-    if (!message.text && !img) return
+    if (!message.text && !img && !link) return
     e.preventDefault()
-    setCtx({ x: e.clientX, y: e.clientY, selection, img })
+    setCtx({ x: e.clientX, y: e.clientY, selection, img, link })
   }
   const copyImage = async (src: string) => {
     try {
@@ -2099,7 +2102,20 @@ const MessageBubbleBody = memo(function MessageBubbleBody({
               {formatClock(message.createdAt)}
               {senderName ? ` · ${senderName}` : ''}
             </MenuLabel>
-            {ctx.img ? (
+            {ctx.link && (
+              <>
+                <MenuItem onSelect={() => window.open(ctx.link!, '_blank', 'noreferrer')}>
+                  <ExternalLink aria-hidden />
+                  打开链接
+                </MenuItem>
+                <MenuItem onSelect={() => void navigator.clipboard.writeText(ctx.link!).catch(() => undefined)}>
+                  <Copy aria-hidden />
+                  复制链接
+                </MenuItem>
+                {message.text && <MenuSeparator />}
+              </>
+            )}
+            {ctx.link && !message.text ? null : ctx.img ? (
               <>
                 <MenuItem onSelect={() => quoteImage(ctx.img!)}>
                   <CornerDownRight aria-hidden />
