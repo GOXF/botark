@@ -348,6 +348,10 @@ export class HarkAdapter implements PlatformAdapter {
         }, polled?.tailing)
         settledByReply = true
       }
+      // GOXF: a tool-only first message counts as "completed" while Hark's turn goes on;
+      // wait out the tail so its real answer reaches callers that listen per turn (rooms).
+      if (polled?.tailing && !reply?.content.trim()) await this.waitForTail(conversationId, message.conversationId, message.signal)
+      message.signal?.throwIfAborted()
 
       this.setStatus(message.accountId, 'online')
       return {
@@ -378,6 +382,31 @@ export class HarkAdapter implements PlatformAdapter {
     } finally {
       if (!settledByReply) this.clearReplyActivity(message.accountId, message.conversationId, conversationId)
     }
+  }
+
+  /** Resolves once the tail has gone quiet: no new answer text and no activity for a moment. */
+  private waitForTail(sessionId: string, conversationId: string, signal?: AbortSignal): Promise<void> {
+    return new Promise((resolve) => {
+      let quiet: ReturnType<typeof setTimeout> | undefined
+      const done = (): void => {
+        clearTimeout(cap)
+        clearTimeout(quiet)
+        stop()
+        signal?.removeEventListener('abort', done)
+        resolve()
+      }
+      // Same 30-minute cap as the main-process tail (HARK_TAIL_CAP_MS).
+      const cap = setTimeout(done, 30 * 60_000)
+      const stop = this.subscribe((e) => {
+        const answer = e.type === 'message' && e.message.conversationId === conversationId && Boolean(e.message.text)
+        const idle = e.type === 'activity' && e.sessionId === sessionId && !e.activity.busy
+        if (!answer && !idle) return
+        clearTimeout(quiet)
+        quiet = setTimeout(done, 1_500)
+      })
+      if (signal?.aborted) done()
+      else signal?.addEventListener('abort', done, { once: true })
+    })
   }
 
   subscribe(listener: AdapterListener): Unsubscribe {

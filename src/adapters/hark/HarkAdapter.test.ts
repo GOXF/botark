@@ -95,6 +95,24 @@ it.each([true, false])('publishes the terminal reply once and uses the send ackn
   expect(fixture.onMessage).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ id: 'hark_answer', text: 'Hello there' }))
 })
 
+it('waits for the tail when the first finished message only ran tools', async () => {
+  vi.useFakeTimers()
+  const fixture = setupHarkAdapter(async (req) => {
+    if (req.op === 'conversationSnapshot') return { ok: true, data: { conversationId: 'project', messages: [] } }
+    if (req.op === 'sendMessage') return { ok: true, data: { responseMessageId: 'tools', idempotencyKey: 'sent-id' } }
+    return { ok: true, data: { outcome: 'completed', tailing: true, reply: { id: 'hark_tools', role: 'assistant', content: '' } } }
+  })
+  let settled = false
+  const sent = fixture.adapter.sendMessage(turn).then(() => { settled = true })
+  await vi.advanceTimersByTimeAsync(60_000)
+  expect(settled).toBe(false)
+  fixture.event(completed)
+  await vi.advanceTimersByTimeAsync(1_500)
+  await sent
+  expect(fixture.onMessage).toHaveBeenCalledWith(expect.objectContaining({ text: 'Hello there' }))
+  vi.useRealTimers()
+})
+
 it('cancels the exact main-process watch when the room aborts', async () => {
   const controller = new AbortController()
   const rpc = vi.fn(async (req: HarkRequest) => {

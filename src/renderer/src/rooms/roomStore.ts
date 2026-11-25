@@ -941,7 +941,13 @@ export async function submitBrief(
           id: createId('post'), author: 'BotArk', notice: true,
           text: `${member.name} 本轮未取得回复。`, createdAt: Date.now()
         }
-        update(id, (r) => ({ ...r, messages: [...r.messages, notice] }))
+        // A delivered turn was read: move the cursor so the next turn does not resend the same history.
+        const read = detail === NO_REPLY_ERROR && member.sessionId
+        update(id, (r) => ({
+          ...r,
+          messages: [...r.messages, notice],
+          members: read ? r.members.map((m) => m.botId === member.botId ? { ...m, cursor: r.messages.length + 1 } : m) : r.members
+        }))
         if (coordinator && !isQueued(coordinator.botId)) queue.push({ member: coordinator, trigger: notice })
         continue
       } finally {

@@ -299,6 +299,7 @@ export function turnPrompt(room: CollabRoom, member: RoomMember, trigger?: RoomM
 export function assistantTurnPrompt(room: CollabRoom, member: RoomMember): string {
   const context = room.messages
     .slice(Math.max(member.cursor, room.messages.length - 20))
+    .filter((m) => !m.notice)
     .map((m) => `[${m.author}] ${messageWithReferences(m)}`)
     .join('\n')
   return [
