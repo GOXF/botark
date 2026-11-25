@@ -833,7 +833,7 @@ function HighlightMentions({
 }
 
 function ToolExecutionCard({ message }: { message: RoomMessage }) {
-  const [expanded, setExpanded] = useState(true)
+  const [expanded, setExpanded] = useState(false)
   const lines = message.text.split('\n')
   const summary = lines[0]?.trim().slice(0, 72) || 'workspace'
 
