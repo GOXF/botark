@@ -426,6 +426,11 @@ function isOmittedPlaceholderText(text: string): boolean {
   return text.startsWith('[消息内容较大') || text.startsWith('[Message body omitted')
 }
 
+/** Text or pictures: a picture-only message still has to match its server copy (else it shows twice). */
+function hasBody(m: ChatMessage): boolean {
+  return Boolean(m.text || m.attachments?.length || m.media?.length)
+}
+
 function mergeHydratedMessages(
   existing: ChatMessage[],
   hydrated: ChatMessage[],
@@ -451,7 +456,7 @@ function mergeHydratedMessages(
   for (const message of hydratedById.values()) {
     earliestHydratedTs = Math.min(earliestHydratedTs, message.createdAt)
     latestHydratedTs = Math.max(latestHydratedTs, message.createdAt)
-    if (!message.text || existingById.has(message.id)) continue
+    if (!hasBody(message) || existingById.has(message.id)) continue
     const key = fallbackKey(message)
     const matches = fallbackRows.get(key)
     if (matches) matches.push(message)
@@ -462,7 +467,7 @@ function mergeHydratedMessages(
   for (const localMsg of normalizedExisting) {
     if (hydratedById.has(localMsg.id)) continue
     const live = liveIds.has(localMsg.id)
-    if (localMsg.text && localMsg.delivery !== 'failed' && (live || (localMsg.role === 'user' &&
+    if (hasBody(localMsg) && localMsg.delivery !== 'failed' && (live || (localMsg.role === 'user' &&
         (localMsg.id.startsWith('msg_') || localMsg.id.startsWith('opt_'))))) {
       const candidates = fallbackRows.get(fallbackKey(localMsg))
       const match = candidates?.find((remote) => !localByHistoryId.has(remote.id) &&
