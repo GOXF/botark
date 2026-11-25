@@ -18,6 +18,8 @@ export interface SegmentedControlProps<T extends string = string> {
   'aria-label'?: string
   className?: string
   fullWidth?: boolean
+  /** GOXF: fully round capsule, matching the top ViewTab. */
+  pill?: boolean
 }
 
 const ITEM_SIZES = {
@@ -36,7 +38,8 @@ export function SegmentedControl<T extends string = string>({
   size = 'sm',
   'aria-label': ariaLabel,
   className,
-  fullWidth = false
+  fullWidth = false,
+  pill = false
 }: SegmentedControlProps<T>) {
   const glide = useGlide<HTMLDivElement>(`${value}:${options.length}`, { axis: 'x' })
 
@@ -47,6 +50,7 @@ export function SegmentedControl<T extends string = string>({
       aria-label={ariaLabel}
       className={cn(
         'no-drag relative inline-flex items-center rounded-[11px] bg-hover p-0.5 select-none',
+        pill && 'rounded-full',
         fullWidth && 'flex w-full',
         className
       )}
@@ -68,7 +72,7 @@ export function SegmentedControl<T extends string = string>({
       {glide.thumb && (
         <span
           aria-hidden
-          className="pointer-events-none absolute top-0.5 bottom-0.5 rounded-[9px] bg-surface shadow-float"
+          className={cn('pointer-events-none absolute top-0.5 bottom-0.5 rounded-[9px] bg-surface shadow-float', pill && 'rounded-full')}
           style={glide.thumb}
         />
       )}
@@ -88,6 +92,7 @@ export function SegmentedControl<T extends string = string>({
               'press relative inline-flex min-w-0 items-center justify-center rounded-[9px] font-medium tracking-tight whitespace-nowrap transition-colors outline-none',
               'disabled:pointer-events-none disabled:opacity-35',
               fullWidth && 'flex-1',
+              pill && 'rounded-full',
               ITEM_SIZES[size],
               active ? 'text-ink' : 'text-ink-secondary hover:text-ink'
             )}

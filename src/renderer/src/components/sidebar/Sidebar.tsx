@@ -126,6 +126,7 @@ export function Sidebar({ onAddBot }: SidebarProps) {
           <SegmentedControl<'sessions' | 'collab' | 'all'>
             aria-label="范围"
             size="xs"
+            pill
             value={scope}
             onValueChange={setScope}
             options={[{ value: 'sessions', label: '会话' }, { value: 'collab', label: '协作' }, { value: 'all', label: '任务' }]}
