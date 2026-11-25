@@ -72,7 +72,7 @@ export function Sidebar({ onAddBot }: SidebarProps) {
       <div className="flex min-h-0 flex-1 flex-col items-center" onKeyDown={typeToSearch}>
         <div className="drag-region h-[42px] w-full shrink-0" />
         <div className="flex min-h-0 w-full flex-1 flex-col items-center px-1.5 pt-1 pb-2">
-          {scope === 'collab' ? <><PinnedRoomsList compact /><RoomList compact fill /></> : <BotList />}
+          {scope === 'collab' ? <><PinnedRoomsList compact /><RoomList compact fill /></> : scope === 'all' ? <><PinnedRoomsList compact /><BotList /><RoomList compact /></> : <BotList />}
         </div>
         <div className="no-drag flex shrink-0 flex-col items-center gap-1.5 pb-3 pt-1">
           <IconButton
@@ -123,12 +123,12 @@ export function Sidebar({ onAddBot }: SidebarProps) {
         )}
       >
         <div className="no-drag shrink-0">
-          <SegmentedControl<'sessions' | 'collab'>
+          <SegmentedControl<'sessions' | 'collab' | 'all'>
             aria-label="范围"
             size="xs"
             value={scope}
             onValueChange={setScope}
-            options={[{ value: 'sessions', label: '会话' }, { value: 'collab', label: '协作' }]}
+            options={[{ value: 'sessions', label: '会话' }, { value: 'collab', label: '协作' }, { value: 'all', label: '任务' }]}
           />
         </div>
         <div className="no-drag ml-auto flex shrink-0 items-center gap-0.5">
@@ -150,7 +150,7 @@ export function Sidebar({ onAddBot }: SidebarProps) {
 
       <div className="flex min-h-0 flex-1 flex-col px-2 pt-0.5 pb-2">
         {/* GOXF: 会话 = conversations only; 协作 = groups only (expand a group to see its members' conversations). */}
-        {scope === 'collab' ? <><PinnedRoomsList /><RoomList fill /></> : <BotList />}
+        {scope === 'collab' ? <><PinnedRoomsList /><RoomList fill /></> : scope === 'all' ? <><PinnedRoomsList /><BotList /><RoomList /></> : <BotList />}
       </div>
 
       <footer className="no-drag flex shrink-0 items-center justify-between gap-1.5 border-t border-ink/[0.06] px-2.5 py-2">

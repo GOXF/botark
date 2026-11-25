@@ -179,7 +179,7 @@ export const ChatHeader = memo(function ChatHeader({ bot, compact = false, extra
       {merged ? (
         <div role="tablist" aria-label="页面" className={cn(VIEW_TRACK, 'max-w-[50%]')}>
           {capsuleEl}
-          <ViewTab label="看板" selected={false} onClick={() => setView('board')} />
+          <ViewTab label="任务" selected={false} onClick={() => setView('board')} />
         </div>
       ) : (
         capsuleEl

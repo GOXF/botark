@@ -13,9 +13,10 @@ import { VIEW_TRACK, ViewTab } from './ViewTab'
 
 /** GOXF v25: the chat tab names what it opens — the selected bot (会话) or group (协作). */
 function ChatTab({ selected, onClick }: { selected: boolean; onClick: () => void }) {
-  const scope = usePanes((s) => s.scope)
   const bot = useBotStore((s) => s.bots.find((b) => b.id === s.selectedBotId))
   const room = useRooms((r) => r.rooms.find((x) => x.id === useBotStore.getState().selectedBotId))
+  // 会话/协作 follow the sidebar; 任务 (all) names whatever is selected.
+  const scope = usePanes((s) => (s.scope === 'all' ? (room ? 'collab' : 'sessions') : s.scope))
   const fallback = scope === 'collab' ? '协作' : '会话'
   const name = scope === 'collab' ? room?.title : bot?.name
   return (
@@ -143,11 +144,13 @@ export function WorkspaceTopBar() {
           selected={!settingsOpen && view !== 'board'}
           onClick={() => {
             if (settingsOpen) setSettingsOpen(false)
-            setView(usePanes.getState().scope)
+            const scope = usePanes.getState().scope
+            const roomOn = useRooms.getState().rooms.some((r) => r.id === useBotStore.getState().selectedBotId)
+            setView(scope === 'all' ? (roomOn ? 'collab' : 'sessions') : scope)
           }}
         />
         <ViewTab
-          label="看板"
+          label="任务"
           selected={!settingsOpen && view === 'board'}
           onClick={() => {
             if (settingsOpen) setSettingsOpen(false)

@@ -8,7 +8,9 @@ import { appendFileSync, renameSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { PORTABLE_DATA_DIR } from '../goxfPortable'
 
-const MAX_BYTES = 1024 * 1024
+const MAX_BYTES = 4 * 1024 * 1024
+const TASK_KEYS = ['requests', 'threads', 'activeWork', 'log', 'windows'] as const
+const TASK_OPS = /request|work|thread|tool|panel|window|entry_add|log/i
 const INTERESTING = /narrat|activit|status|wait|progress|thinking|line|label/i
 
 function write(text: string): void {
@@ -53,12 +55,14 @@ export function logHarkFrame(conversationId: string, raw: string): void {
   if (parsed['type'] === 'snapshot') {
     const data = (parsed['data'] ?? {}) as Record<string, unknown>
     write(`${conv} snapshot keys=${Object.keys(data).join(',')} ${JSON.stringify(pick(data)).slice(0, 1500)}`)
+    // v25 任务: how Hark groups concurrent work (per request) — keep these whole.
+    for (const key of TASK_KEYS) if (key in data) write(`${conv} snapshot.${key} ${JSON.stringify(data[key]).slice(0, 20_000)}`)
   } else if (parsed['type'] === 'patches') {
     const list = Array.isArray(parsed['data']) ? (parsed['data'] as Array<Record<string, unknown>>) : []
     for (const p of list) {
       const op = String(p['op'] ?? '')
       if (op === 'message_update' && !INTERESTING.test(JSON.stringify(Object.keys((p['fields'] ?? {}) as object)))) continue
-      write(`${conv} ${op} ${JSON.stringify(pick(p)).slice(0, 800)}`)
+      write(`${conv} ${op} ${TASK_OPS.test(op) ? JSON.stringify(p).slice(0, 4000) : JSON.stringify(pick(p)).slice(0, 800)}`)
     }
   } else {
     write(`${conv} type=${String(parsed['type'])}`)

@@ -61,7 +61,7 @@ export function BoardView() {
   if (scope === 'sessions') return <StatusBoard scope="sessions" />
   const toggle = (
     <SegmentedControl<BoardMode>
-      aria-label="看板视图"
+      aria-label="任务视图"
       size="xs"
       value={mode}
       onValueChange={(v) => usePipeline.setState({ mode: v })}
@@ -72,16 +72,17 @@ export function BoardView() {
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="flex h-12 shrink-0 items-center px-4">{toggle}</div>
-      <StatusBoard scope="collab" />
+      <StatusBoard scope={scope} />
     </div>
   )
 }
 
-function StatusBoard({ scope }: { scope: 'sessions' | 'collab' }) {
+/** v25: 任务 in the sidebar (all) shows everything; the top 任务 tab shows the selected bot's or group's. */
+function StatusBoard({ scope }: { scope: 'sessions' | 'collab' | 'all' }) {
   useMinuteTick()
   const titles = useConversationTitles()
   const [picked, setPicked] = useState<Card['project'] & { title: string }>()
-  useProjectTitles(scope === 'sessions')
+  useProjectTitles(scope !== 'collab')
   const { bots, accounts, typing, activity, messages } = useBotStore(
     useShallow((s) => ({ bots: s.bots, accounts: s.accounts, typing: s.typing, activity: s.activity, messages: s.messages }))
   )
@@ -91,7 +92,8 @@ function StatusBoard({ scope }: { scope: 'sessions' | 'collab' }) {
   const { rooms, speakers, errors } = useRooms(useShallow((s) => ({ rooms: s.rooms, speakers: s.speakers, errors: s.errors })))
 
   const cards: Card[] = []
-  for (const bot of scope === 'sessions' ? bots : []) {
+  const selectedId = useBotStore((s) => s.selectedBotId)
+  for (const bot of scope === 'collab' ? [] : scope === 'sessions' ? bots.filter((b) => b.id === selectedId) : bots) {
     // v25: a Hark bot shows one card per project with something going on; the bot card only when none.
     if (bot.platformId === 'hark') {
       let shown = 0
@@ -150,7 +152,7 @@ function StatusBoard({ scope }: { scope: 'sessions' | 'collab' }) {
       room: false
     })
   }
-  for (const room of scope === 'collab' ? rooms : []) {
+  for (const room of scope === 'sessions' ? [] : scope === 'collab' ? rooms.filter((r) => r.id === selectedId) : rooms) {
     const last = room.messages[room.messages.length - 1]
     const speaking = speakers[room.id]
     cards.push({

@@ -33,7 +33,7 @@ export type WorkspaceView = 'board' | 'sessions' | 'collab'
 interface PaneState {
   view: WorkspaceView
   /** GOXF v25: sidebar 会话 / 协作 — what the sidebar lists and what 看板 shows. */
-  scope: 'sessions' | 'collab'
+  scope: 'sessions' | 'collab' | 'all'
   /** Page shown at launch; 'last' = whatever was open when the app closed. */
   startView: WorkspaceView | 'last'
   tree: PaneNode
@@ -43,7 +43,7 @@ interface PaneState {
   /** botId → last scroll offset (null = stuck to bottom). */
   scroll: Record<string, number | null>
   setView: (view: WorkspaceView) => void
-  setScope: (scope: 'sessions' | 'collab') => void
+  setScope: (scope: 'sessions' | 'collab' | 'all') => void
   setStartView: (view: WorkspaceView | 'last') => void
   focus: (leafId: string) => void
   /** Put a bot on screen: focus its tab if it has one, else swap it into the focused pane's active tab. */
@@ -80,7 +80,8 @@ export const usePanes = create<PaneState>()(
       stash: null,
       scroll: {},
       setView: (view) => set(view === 'board' ? { view } : { view, scope: view }),
-      setScope: (scope) => set((s) => (s.view === 'board' ? { scope } : { scope, view: scope })),
+      // 任务 (all) always shows the task board; 会话/协作 keep the board if it is open.
+      setScope: (scope) => set((s) => (scope === 'all' ? { scope, view: 'board' } : s.view === 'board' ? { scope } : { scope, view: scope })),
       setStartView: (startView) => set({ startView }),
       focus: (leafId) => {
         if (findLeaf(get().tree, leafId)) set({ focusedId: leafId })
@@ -196,7 +197,7 @@ export const usePanes = create<PaneState>()(
           ...current,
           startView,
           view,
-          scope: view === 'collab' ? 'collab' : view === 'sessions' ? 'sessions' : p.scope === 'collab' ? 'collab' : 'sessions',
+          scope: view === 'collab' ? 'collab' : view === 'sessions' ? 'sessions' : p.scope === 'collab' || p.scope === 'all' ? p.scope : 'sessions',
           tree,
           focusedId: p.focusedId && ids.includes(p.focusedId) ? p.focusedId : ids[0]!,
           scroll: p.scroll && typeof p.scroll === 'object' ? p.scroll : {}
