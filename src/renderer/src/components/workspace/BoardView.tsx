@@ -17,6 +17,7 @@ import { harkProjects } from '@shared/harkProjects'
 import { deriveTasks, type HarkSnapshotLike, type HarkSubtask, type HarkTask } from '@/lib/harkSubtasks'
 import { openConversationTab } from './conversationDnd'
 import { useBotStore } from '@/store/botStore'
+import { useBoardDetail } from '@/store/boardDetailStore'
 import { SegmentedControl } from '@/components/ui/SegmentedControl'
 import { PipelineView } from '@/pipeline/PipelineView'
 import { usePipeline, type BoardMode } from '@/pipeline/pipelineStore'
@@ -58,6 +59,8 @@ function useMinuteTick(): void {
 export function BoardView() {
   const scope = usePanes((s) => s.scope)
   const mode = usePipeline((s) => s.mode)
+  const clearPicked = useBoardDetail((s) => s.setPicked)
+  useEffect(() => () => clearPicked(undefined), [clearPicked])
   const harkBot = useBotStore((s) => (scope === 'sessions' ? s.bots.find((b) => b.id === s.selectedBotId && b.platformId === 'hark') : undefined))
   if (harkBot) return <HarkTaskBoard key={harkBot.id} botId={harkBot.id} />
   if (scope === 'sessions') return <StatusBoard scope="sessions" />
@@ -83,7 +86,7 @@ export function BoardView() {
 function StatusBoard({ scope }: { scope: 'sessions' | 'collab' | 'all' }) {
   useMinuteTick()
   const titles = useConversationTitles()
-  const [picked, setPicked] = useState<Card['project'] & { title: string }>()
+  const { picked, setPicked } = useBoardDetail()
   const projectIds = useProjectTitles(scope !== 'collab')
   const { bots, accounts, typing, activity, messages } = useBotStore(
     useShallow((s) => ({ bots: s.bots, accounts: s.accounts, typing: s.typing, activity: s.activity, messages: s.messages }))
@@ -246,7 +249,6 @@ function StatusBoard({ scope }: { scope: 'sessions' | 'collab' | 'all' }) {
         )
       })}
     </div>
-    {picked && <ProjectDetail key={picked.conversationId} project={picked} onClose={() => setPicked(undefined)} />}
     </div>
   )
 }
@@ -285,7 +287,7 @@ const TASK_DOT: Record<HarkTask['state'], string> = { working: 'bg-status-busy',
 const TASK_WORD: Record<HarkTask['state'], string> = { working: '进行中', open: '待处理', done: '已完成' }
 const KIND_WORD: Record<HarkSubtask['kind'], string> = { browser: '浏览器', subagent: '子代理', other: '工具' }
 
-type PickedProject = NonNullable<Card['project']> & { title: string }
+type PickedProject = NonNullable<Card['project']> & { title: string; taskId?: string }
 interface TaskCard extends HarkTask { conversationId: string; column: BoardColumn }
 const DAY = 24 * 60 * 60 * 1000
 
@@ -305,20 +307,25 @@ function HarkTaskBoard({ botId }: { botId: string }) {
   const snapsRef = useRef(snaps)
   snapsRef.current = snaps
   const [filter, setFilter] = useState<string>()
-  const [picked, setPicked] = useState<PickedProject & { taskId?: string }>()
+  const { picked, setPicked } = useBoardDetail()
   const [olderOpen, setOlderOpen] = useState(false)
   const accountId = bot?.activeAccountId ?? ''
   const ids = [...new Set([...(projectIds[accountId] ?? []), ...Object.keys(work.projects[accountId] ?? {})])]
   const idsKey = ids.join(',')
+  const mounted = useRef(true)
+  useEffect(() => {
+    mounted.current = true
+    return () => { mounted.current = false }
+  }, [])
   const busyKey = ids.filter((id) => work.projects[accountId]?.[id]?.working || (asks[accountId]?.[id] ?? 0) > 0).join(',')
 
   // Every project once a minute; the busy ones (and any with live tasks) every 8 s.
   useEffect(() => {
     if (!accountId) return
-    let live = true
     const load = (cid: string) =>
       void getBridge()?.hark.rpc({ accountId, op: 'conversationSnapshot', conversationId: cid }).then((res) => {
-        if (live && res?.ok) setSnaps((prev) => ({ ...prev, [cid]: deriveTasks(res.data as HarkSnapshotLike) }))
+        // A re-run (a project turned busy) must not drop answers still in flight: that left the board empty.
+        if (mounted.current && res?.ok) setSnaps((prev) => ({ ...prev, [cid]: deriveTasks(res.data as HarkSnapshotLike) }))
       }).catch(() => undefined)
     const all = idsKey ? idsKey.split(',') : []
     all.forEach(load)
@@ -328,7 +335,6 @@ function HarkTaskBoard({ botId }: { botId: string }) {
     }, 8000)
     const slow = setInterval(() => all.forEach(load), 60_000)
     return () => {
-      live = false
       clearInterval(fast)
       clearInterval(slow)
     }
@@ -417,7 +423,6 @@ function HarkTaskBoard({ botId }: { botId: string }) {
           })}
         </div>
       </div>
-      {picked && <ProjectDetail key={picked.conversationId} project={picked} highlight={picked.taskId} onClose={() => setPicked(undefined)} />}
     </div>
   )
 }
@@ -479,7 +484,7 @@ function TaskCardView({ task, title, selected, onClick }: { task: TaskCard; titl
 }
 
 /** v25: right-side detail for one Hark project: what it runs at once, refreshed while open. */
-function ProjectDetail({ project, highlight, onClose }: { project: PickedProject; highlight?: string; onClose: () => void }) {
+export function ProjectDetail({ project, highlight, onClose }: { project: PickedProject; highlight?: string; onClose: () => void }) {
   useMinuteTick()
   const [tasks, setTasks] = useState<HarkTask[]>()
   const [status, setStatus] = useState('')
@@ -515,22 +520,23 @@ function ProjectDetail({ project, highlight, onClose }: { project: PickedProject
     el.scrollIntoView({ block: 'nearest' })
   }
   return (
-    <aside aria-label="项目详情" className="flex w-[340px] shrink-0 flex-col border-l border-line bg-main">
-      <header className="flex items-start gap-2 px-4 pt-3 pb-2">
-        <span className="flex min-w-0 flex-1 flex-col gap-1">
-          <h3 className="truncate text-[15px] font-semibold text-ink">{project.title}</h3>
-          <span className="w-fit max-w-full truncate rounded-full bg-hover px-2 text-[11px] text-ink-muted">{project.botName}</span>
-        </span>
+    // Rows line up with the middle: title = top bar (52), account + state = project chips (52), 任务 = column heads (40).
+    <section aria-label="项目详情" className="flex min-h-0 flex-1 flex-col bg-main">
+      <header className="flex h-[52px] shrink-0 items-center gap-2 pr-2 pl-4">
+        <h3 className="min-w-0 flex-1 truncate text-[15px] font-semibold text-ink">{project.title}</h3>
         <button type="button" aria-label="关闭" onClick={onClose} className="press grid size-7 place-items-center rounded-full text-ink-muted hover:bg-hover hover:text-ink">
           <X className="size-4" aria-hidden />
         </button>
       </header>
-      <p className={cn('px-4 text-[12px]', project.working ? 'text-status-busy-ink' : 'text-ink-muted')}>
-        {project.working ? '进行中' : '已完成'}
-        {status ? ` · ${status}` : ''}
-      </p>
-      <div className="mt-3 flex min-h-0 flex-1 flex-col overflow-y-auto px-3 pb-3">
-        <h4 className="px-1 pb-1.5 text-[12.5px] font-medium text-ink">
+      <div className="flex h-[52px] shrink-0 items-center gap-2 px-4">
+        <span className="max-w-[50%] shrink-0 truncate rounded-full bg-hover px-2 text-[11px] text-ink-muted">{project.botName}</span>
+        <span className={cn('min-w-0 truncate text-[12px]', project.working ? 'text-status-busy-ink' : 'text-ink-muted')}>
+          {project.working ? '进行中' : '已完成'}
+          {status ? ` · ${status}` : ''}
+        </span>
+      </div>
+      <div className="flex min-h-0 flex-1 flex-col overflow-y-auto px-3 pb-3">
+        <h4 className="flex h-10 shrink-0 items-center px-1 text-[12.5px] font-medium text-ink">
           任务 <span className="text-ink-muted">{running} 个进行中</span>
         </h4>
         {error && <p className="px-1 text-[12px] text-status-error">{error}</p>}
@@ -583,6 +589,6 @@ function ProjectDetail({ project, highlight, onClose }: { project: PickedProject
           打开这个项目的对话
         </button>
       </div>
-    </aside>
+    </section>
   )
 }

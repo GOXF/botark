@@ -3,7 +3,8 @@ import { RoomInspectorPanel } from '@/rooms/RoomInspectorPanel'
 import { useRooms } from '@/rooms/roomStore'
 import { useEffect } from 'react'
 import { AddBotDialog } from '@/components/add-bot/AddBotDialog'
-import { BoardView } from '@/components/workspace/BoardView'
+import { BoardView, ProjectDetail } from '@/components/workspace/BoardView'
+import { useBoardDetail } from '@/store/boardDetailStore'
 import { PaneGrid } from '@/components/workspace/PaneGrid'
 import { WorkspaceTopBar } from '@/components/workspace/WorkspaceTopBar'
 import { startWorkspaceSync } from '@/services/workspaceSync'
@@ -41,6 +42,10 @@ export default function App() {
       (view === 'collab' ? Boolean(activeRoom) : s.bots.some((b) => b.id === s.selectedBotId))
   )
   const setAddBotOpen = useBotStore((s) => s.setAddBotOpen)
+  // 任务 page: the picked project's detail lives in the same right slot as the chat's, top to bottom.
+  const boardPicked = useBoardDetail((s) => s.picked)
+  const setBoardPicked = useBoardDetail((s) => s.setPicked)
+  const boardAside = view === 'board' && !settingsOpen && Boolean(boardPicked)
 
   useEffect(() => {
     const stop = startAdapterBridge()
@@ -219,7 +224,7 @@ export default function App() {
       <div className="relative isolate h-full">
         <GoxfUpdateBanner />
         <AppShell
-          asideOpen={infoOpen}
+          asideOpen={infoOpen || boardAside}
           sidebar={<Sidebar onAddBot={() => setAddBotOpen(true)} />}
           main={
             <div className="flex min-h-0 min-w-0 flex-1 flex-col">
@@ -239,7 +244,9 @@ export default function App() {
           }
           aside={
             <ErrorBoundary surface="右侧面板" resetKey={selectedBotId}>
-              {view === 'collab' && activeRoom ? <RoomInspectorPanel room={activeRoom} /> : <InfoPanel />}
+              {view === 'board' ? (
+                boardPicked && <ProjectDetail key={boardPicked.conversationId} project={boardPicked} highlight={boardPicked.taskId} onClose={() => setBoardPicked(undefined)} />
+              ) : view === 'collab' && activeRoom ? <RoomInspectorPanel room={activeRoom} /> : <InfoPanel />}
             </ErrorBoundary>
           }
         />
