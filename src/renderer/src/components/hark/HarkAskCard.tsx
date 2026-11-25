@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Eye, EyeOff, ExternalLink, ShieldAlert } from 'lucide-react'
+import { Eye, EyeOff, ExternalLink, Lock, ShieldAlert, X } from 'lucide-react'
 import type { HarkAskView } from '@shared/harkAsks'
 import { Button } from '@/components/ui/Button'
 import { TextInput } from '@/components/ui/Field'
@@ -24,9 +24,12 @@ export function HarkAskCards({ accountId, sessionId, asks }: { accountId: string
   const [sent, setSent] = useState<Record<string, true>>({})
   const [login, setLogin] = useState<Record<string, Record<string, string>>>({})
   const [showPw, setShowPw] = useState<Record<string, boolean>>({})
+  const [key, setKey] = useState<Record<string, string>>({})
   const openWeb = useBotStore((s) => s.openWebSessionAt)
   const hark = getBridge()?.hark
   const visible = asks.filter((a) => !sent[a.id])
+  // The web form for this very project, not Hark's home page.
+  const openHere = () => openWeb(sessionId ? `https://app.hark.com/projects/${encodeURIComponent(sessionId)}` : null)
   if (!hark || !sessionId || visible.length === 0) return null
 
   const submit = async (ask: HarkAskView, value: string) => {
@@ -79,17 +82,71 @@ export function HarkAskCards({ accountId, sessionId, asks }: { accountId: string
     }
   }
 
+  /** Like the login: save the key to the Hark vault, then hand its id to the waiting tool. Body shape inferred from the login form, not observed. */
+  const submitSecret = async (ask: HarkAskView) => {
+    const value = key[ask.id]?.trim()
+    if (!ask.secret || !ask.requestId || !value) return
+    setBusy(ask.id)
+    setError((e) => ({ ...e, [ask.id]: '' }))
+    try {
+      const saved = await hark.rpc({
+        accountId, op: 'call', method: 'POST', path: '/secrets',
+        body: { type: 'api_key', scope: ask.secret.scope, label: ask.secret.label, conversationId: sessionId, fields: { apiKey: value } }
+      })
+      if (!saved.ok) throw new Error(saved.message || '保存失败')
+      const d = (saved.data ?? {}) as Record<string, unknown>
+      const inner = (d['secret'] ?? d['data'] ?? {}) as Record<string, unknown>
+      const secretId = String(d['id'] ?? d['secretId'] ?? inner['id'] ?? inner['secretId'] ?? '')
+      if (!secretId) throw new Error('没拿到保存编号')
+      const res = await hark.rpc({
+        accountId, op: 'call', method: 'POST', path: '/messages/tool-response',
+        body: { conversationId: sessionId, requestId: ask.requestId, dispatchId: ask.dispatchId, type: 'user_input', value: JSON.stringify({ secretId }) }
+      })
+      if (!res.ok) throw new Error(res.message || '提交失败')
+      setSent((s) => ({ ...s, [ask.id]: true }))
+      setKey((k) => ({ ...k, [ask.id]: '' }))
+    } catch (err) {
+      setError((e) => ({ ...e, [ask.id]: `${err instanceof Error ? err.message : String(err)}，请在网页里填` }))
+    } finally {
+      setBusy(undefined)
+    }
+  }
+
   return (
     <div className="mx-5 mb-1 flex shrink-0 flex-col gap-1.5">
       {visible.map((ask) => (
         <section key={ask.id} role="alert"
-          className="rounded-xl border border-status-attention/40 bg-status-attention/8 px-3 py-2.5 text-[12px]">
-          <div className="flex items-center gap-1.5 font-semibold text-status-attention-ink">
-            <ShieldAlert className="size-4 shrink-0" aria-hidden />
-            <span className="truncate">需要你：{ask.prompt}</span>
+          className="rounded-2xl border border-line bg-surface px-4 py-3.5 text-[12px] shadow-soft">
+          <div className="flex items-center gap-2">
+            {ask.kind === 'credential' ? <Lock className="size-4 shrink-0 text-ink" aria-hidden /> : <ShieldAlert className="size-4 shrink-0 text-ink" aria-hidden />}
+            <span className="min-w-0 truncate text-[14px] font-semibold text-ink">{ask.prompt}</span>
+            {ask.domain && <span className="shrink-0 truncate text-ink-muted">{ask.domain}</span>}
+            <span className="size-1.5 shrink-0 rounded-full bg-status-attention" aria-label="待处理" />
+            <button type="button" aria-label="先收起" onClick={() => setSent((s) => ({ ...s, [ask.id]: true }))}
+              className="press ml-auto grid size-7 shrink-0 place-items-center rounded-full text-ink-muted hover:bg-hover hover:text-ink">
+              <X className="size-4" aria-hidden />
+            </button>
           </div>
-          {ask.domain && <p className="mt-0.5 truncate text-ink-muted">{ask.domain}</p>}
-          <div className="mt-2 flex flex-wrap items-center gap-1.5">
+          {ask.hint && <p className="mt-1 text-[12.5px] leading-[18px] text-ink-secondary">{ask.hint}</p>}
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            {ask.secret && ask.requestId && (
+              <form className="flex w-full items-center gap-2" autoComplete="off"
+                onSubmit={(e) => { e.preventDefault(); void submitSecret(ask) }}>
+                <div className="relative min-w-0 flex-1">
+                  <TextInput value={key[ask.id] ?? ''} placeholder="令牌" aria-label="令牌"
+                    type={showPw[ask.id] ? 'text' : 'password'} autoComplete="new-password" className="pr-9"
+                    onChange={(e) => setKey((k) => ({ ...k, [ask.id]: e.target.value }))} />
+                  <button type="button" aria-label={showPw[ask.id] ? '隐藏' : '显示'}
+                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-ink-muted"
+                    onClick={() => setShowPw((s) => ({ ...s, [ask.id]: !s[ask.id] }))}>
+                    {showPw[ask.id] ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
+                  </button>
+                </div>
+                <Button type="submit" size="md" variant="primary" disabled={busy === ask.id || !key[ask.id]?.trim()}>
+                  {busy === ask.id ? '保存中…' : '保存'}
+                </Button>
+              </form>
+            )}
             {ask.kind === 'code' && ask.requestId && (<>
               <TextInput value={code[ask.id] ?? ''} inputMode="numeric" autoComplete="one-time-code" placeholder="验证码"
                 aria-label="验证码" className="h-8 w-40 text-[13px]"
@@ -125,15 +182,18 @@ export function HarkAskCards({ accountId, sessionId, asks }: { accountId: string
                     disabled={busy === ask.id || ask.login.fields.some((f) => !login[ask.id]?.[f])}>
                     {busy === ask.id ? '提交中…' : '登录'}
                   </Button>
-                  <span className="text-[11px] text-ink-muted">存进你的 Hark 保险库，BotArk 不保存</span>
+
                 </div>
               </form>
             )}
-            {ask.kind === 'confirm' && ask.requestId && (<>
+            {ask.kind === 'confirm' && ask.requestId && !ask.secret && (<>
               <Button size="sm" variant="primary" disabled={busy === ask.id} onClick={() => void submit(ask, 'approved')}>允许</Button>
               <Button size="sm" variant="ghost" disabled={busy === ask.id} onClick={() => void submit(ask, 'denied')}>拒绝</Button>
             </>)}
-            <Button size="sm" variant="ghost" className="text-accent-600" onClick={() => openWeb(null)}>
+          </div>
+          <div className="mt-2.5 flex items-center gap-2">
+            {(ask.secret || ask.login) && <span className="text-[11.5px] text-ink-muted">存进你的 Hark 保险库，BotArk 不保存</span>}
+            <Button size="sm" variant="secondary" className="ml-auto" onClick={openHere}>
               在网页里填 <ExternalLink aria-hidden />
             </Button>
           </div>

@@ -10,6 +10,10 @@ export interface HarkAskView {
   domain?: string
   /** Set when the ask is a site sign-in BotArk can fill natively (POST /secrets, then tool-response {secretId}). */
   login?: { scope: string; label: string; fields: string[] }
+  /** Set when the ask wants one key / token (saved to the Hark vault as an api_key, then its id handed to the tool). */
+  secret?: { scope: string; label: string }
+  /** Hark's own line under the title (where to find the value). */
+  hint?: string
 }
 
 interface RawAsk {
@@ -28,7 +32,7 @@ const DONE = /^(answered|resolved|completed|done|cancel+ed|expired|closed|submit
 export function askKind(hint = '', prompt = ''): HarkAskKind {
   const s = `${hint} ${prompt}`
   if (/\b(otp|2fa|mfa|totp|one[-_ ]?time|verification[-_ ]?code|code)\b|验证码|動態碼|两步验证/i.test(s)) return 'code'
-  if (/password|passkey|login|sign[-_ ]?in|credential|card|payment|secret|api[-_ ]?key|token|vault|登录|密码|卡号|密钥/i.test(s)) return 'credential'
+  if (/password|passkey|login|sign[-_ ]?in|credential|card|payment|secret|api[-_ ]?key|token|vault|登录|密码|卡号|密钥|令牌|口令/i.test(s)) return 'credential'
   return 'confirm'
 }
 
@@ -41,7 +45,7 @@ export function loginSpec(a: RawAsk, kind: HarkAskKind): HarkAskView['login'] {
   const req = ((raw['request'] ?? raw['userInputRequest'] ?? raw) || {}) as Record<string, unknown>
   const type = `${str(req['secretType'])} ${str(req['type'])} ${str(req['kind'])} ${a.displayHint ?? ''}`.toLowerCase()
   if (/card|payment|api[-_ ]?key|token|cvv|cvc/.test(type)) return undefined
-  if (/card|卡号|payment|api[-_ ]?key|密钥|token/i.test(a.prompt ?? '')) return undefined
+  if (/card|卡号|payment|api[-_ ]?key|密钥|token|令牌|口令/i.test(a.prompt ?? '')) return undefined
   const scope = str(req['scope']) || str(req['secretScope']) || a.domain || ''
   if (!scope) return undefined
   const rawFields = Array.isArray(req['fields']) ? (req['fields'] as unknown[]) : []
@@ -49,6 +53,21 @@ export function loginSpec(a: RawAsk, kind: HarkAskKind): HarkAskView['login'] {
     .filter((n) => /^[\w.-]{1,40}$/.test(n))
   const fields = names.length ? names : ['username', 'password']
   return { scope, label: str(req['label']) || 'Login', fields }
+}
+
+/** A key or token ask: one hidden field. A card stays on the web form. */
+export function secretSpec(a: RawAsk, kind: HarkAskKind): HarkAskView['secret'] {
+  if (kind !== 'credential') return undefined
+  const req = ((a.raw?.['request'] ?? a.raw?.['userInputRequest'] ?? a.raw) || {}) as Record<string, unknown>
+  const s = `${str(req['secretType'])} ${str(req['type'])} ${a.displayHint ?? ''} ${a.prompt ?? ''}`
+  if (/card|payment|卡号|cvv|cvc/i.test(s) || !/api[-_ ]?key|token|secret|密钥|令牌|口令/i.test(s)) return undefined
+  return { scope: str(req['scope']) || str(req['secretScope']) || a.domain || '', label: str(req['label']) || a.prompt || 'API key' }
+}
+
+function askHint(a: RawAsk): string | undefined {
+  const req = ((a.raw?.['request'] ?? a.raw?.['userInputRequest'] ?? a.raw) || {}) as Record<string, unknown>
+  const h = str(req['description']) || str(req['instructions']) || str(req['helpText']) || str(req['body'])
+  return h && h !== a.prompt ? h.slice(0, 300) : undefined
 }
 
 export function pendingHarkAsks(asks: RawAsk[] | undefined): HarkAskView[] {
@@ -61,7 +80,9 @@ export function pendingHarkAsks(asks: RawAsk[] | undefined): HarkAskView[] {
       kind,
       prompt: (a.prompt || a.displayHint || 'Hark 需要你确认').slice(0, 200),
       domain: a.domain,
-      login: loginSpec(a, kind)
+      login: loginSpec(a, kind),
+      secret: secretSpec(a, kind),
+      hint: askHint(a)
     }
   })
 }

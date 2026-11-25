@@ -1,4 +1,4 @@
-import { expect, it } from 'vitest'
+import { describe, expect, it } from 'vitest'
 import { askKind, pendingHarkAsks } from './harkAsks'
 import { downloadFileName, downloadPercent, formatDownloadSize } from './goxfDownload'
 
@@ -34,4 +34,15 @@ it('builds a native login form only for site sign-ins', () => {
   expect(a!.login).toEqual({ scope: 'ciyundata.com', label: 'Login', fields: ['username', 'password'] })
   expect(b!.login).toBeUndefined()
   expect(c!.login).toEqual({ scope: 'x.com', label: 'Login', fields: ['email', 'password'] })
+})
+
+describe('GOXF: 令牌 asks', () => {
+  it('a Chinese token ask is a one-field secret, not an approval or a login', () => {
+    const [ask] = pendingHarkAsks([{ id: 'a', requestId: 'r', prompt: 'bridge-dev 令牌（haisiku.com）', domain: 'haisiku.com', status: 'pending',
+      raw: { request: { description: '填 keyless-url.txt 里 /mcp/ 后面那一段' } } }])
+    expect(ask!.kind).toBe('credential')
+    expect(ask!.secret).toEqual({ scope: 'haisiku.com', label: 'bridge-dev 令牌（haisiku.com）' })
+    expect(ask!.login).toBeUndefined()
+    expect(ask!.hint).toBe('填 keyless-url.txt 里 /mcp/ 后面那一段')
+  })
 })
