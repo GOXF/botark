@@ -86,6 +86,8 @@ export function startWorkspaceSync(): () => void {
         return
       }
       if (!s.bots.some((b) => b.id === id)) return
+      // GOXF: a group member picked inside 协作 opens there, not in 会话.
+      if (panes.view === 'collab' && useRooms.getState().rooms.some((r) => r.members.some((m) => m.botId === id))) return
       if (isPopped(id)) {
         void getBridge()?.goxfPopout?.focus(id)
         return

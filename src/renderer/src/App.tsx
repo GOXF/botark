@@ -22,6 +22,7 @@ import { startAdapterBridge } from '@/services/adapterBridge'
 import { startMobileSyncBridge } from '@/services/mobileSyncBridge'
 import { useBotStore } from '@/store/botStore'
 import { startPrefsSync, usePrefsStore } from '@/store/prefsStore'
+import { ChatArea } from '@/components/chat/ChatArea'
 import { ErrorBoundary } from '@/components/ui/ErrorBoundary'
 
 export default function App() {
@@ -31,17 +32,21 @@ export default function App() {
   const view = usePanes((s) => s.view)
   const firstRoomId = useRooms((s) => s.rooms[0]?.id)
   const roomSelected = selectedBotId === 'room-create' || Boolean(selectedRoom)
+  // GOXF: a member's row picked inside 协作 shows that member's conversation and its own details.
+  const memberRoomId = useRooms((s) =>
+    roomSelected || !selectedBotId ? undefined : s.rooms.find((r) => r.members.some((m) => m.botId === selectedBotId))?.id
+  )
+  const collabMemberId = view === 'collab' && memberRoomId ? selectedBotId : undefined
   // 协作 shows the selected group chat, else the first one, else the new-group form.
-  const collabRoomId = roomSelected && selectedBotId ? selectedBotId : firstRoomId ?? 'room-create'
-  // The group on screen (also when a member's row is selected), so its details panel can open.
-  const activeRoom = useRooms((s) => s.rooms.find((r) => r.id === collabRoomId))
+  const collabRoomId = roomSelected && selectedBotId ? selectedBotId : memberRoomId ?? firstRoomId ?? 'room-create'
+  const activeRoom = useRooms((s) => (collabMemberId ? undefined : s.rooms.find((r) => r.id === collabRoomId)))
   // Details slide open next to a selected bot or active collaboration room (and not while in Settings).
   const infoOpen = useBotStore(
     (s) =>
       !s.settingsOpen &&
       s.infoPanelOpen &&
       view !== 'board' &&
-      (view === 'collab' ? Boolean(activeRoom) : s.bots.some((b) => b.id === s.selectedBotId))
+      (view === 'collab' && !collabMemberId ? Boolean(activeRoom) : s.bots.some((b) => b.id === s.selectedBotId))
   )
   const setAddBotOpen = useBotStore((s) => s.setAddBotOpen)
   // 任务 page: the picked project's detail lives in the same right slot as the chat's, top to bottom.
@@ -236,6 +241,8 @@ export default function App() {
                   <SettingsView />
                 ) : view === 'board' ? (
                   <BoardView />
+                ) : view === 'collab' && collabMemberId ? (
+                  <ChatArea key={collabMemberId} botId={collabMemberId} merged />
                 ) : view === 'collab' ? (
                   <RoomView key={collabRoomId} id={collabRoomId} />
                 ) : (
