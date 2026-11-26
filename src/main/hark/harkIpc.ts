@@ -47,7 +47,7 @@ import {
   harkRunningToolLine
 } from './harkClient'
 import { harkTurnBusy } from './harkBusy'
-import { logHarkFrame } from './harkFrameLog'
+import { logHarkCall, logHarkFrame } from './harkFrameLog'
 import { cancelHarkLogin, completeHarkCredentialImport, onHarkLoginEvent, openHarkLoginWindow } from './harkLogin'
 import { loadAccountProxyUrl } from '../muse/accountProxy'
 import { guessMediaMimeFromName } from '../mediaMime'
@@ -481,13 +481,23 @@ async function runHarkRpc(req: HarkRequest, signal?: AbortSignal): Promise<HarkR
             busy: false
           })
         }
-        const data = await callHarkApi(req.accountId, {
-          method: req.method,
-          path: req.path,
-          query: req.query,
-          body: req.body
-        })
-        return { ok: true, data }
+        const isConnector = /^\/?connectors\//i.test(req.path)
+        try {
+          const data = await callHarkApi(req.accountId, {
+            method: req.method,
+            path: req.path,
+            query: req.query,
+            body: req.body
+          })
+          if (isConnector) logHarkCall(req.path, req.body, data)
+          return { ok: true, data }
+        } catch (err) {
+          if (isConnector) {
+            const e = err as { status?: number; message?: string; body?: unknown }
+            logHarkCall(req.path, req.body, { error: true, status: e.status, message: e.message, body: e.body })
+          }
+          throw err
+        }
       }
       default:
         return { ok: false, status: 400, message: `Unknown op` }

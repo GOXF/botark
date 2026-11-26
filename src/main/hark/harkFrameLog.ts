@@ -52,6 +52,8 @@ export function logHarkFrame(conversationId: string, raw: string): void {
     return
   }
   const conv = conversationId.slice(0, 8)
+  // GOXF 2026-11-26: keep every button Hark sends (connect cards), to see its command/url fields.
+  for (const m of raw.matchAll(/"buttons"\s*:\s*\[[^\]]{0,2000}\]/g)) write(`${conv} buttons ${m[0]}`)
   if (parsed['type'] === 'snapshot') {
     const data = (parsed['data'] ?? {}) as Record<string, unknown>
     write(`${conv} snapshot keys=${Object.keys(data).join(',')} ${JSON.stringify(pick(data)).slice(0, 1500)}`)
@@ -67,4 +69,9 @@ export function logHarkFrame(conversationId: string, raw: string): void {
   } else {
     write(`${conv} type=${String(parsed['type'])}`)
   }
+}
+
+/** GOXF 2026-11-26: one line per Hark connector call (connect buttons), to see why no auth link came back. */
+export function logHarkCall(path: string, body: unknown, outcome: unknown): void {
+  write(`call ${path} body=${JSON.stringify(body ?? null).slice(0, 500)} -> ${JSON.stringify(outcome ?? null).slice(0, 2000)}`)
 }
