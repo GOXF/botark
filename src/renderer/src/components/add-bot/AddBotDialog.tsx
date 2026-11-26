@@ -59,31 +59,34 @@ function AddBotFlow({ open, wizardId }: { open: boolean; wizardId: number }) {
   const botId = useRef(createId('bot')).current
   const login = usePlatformLogin(botId)
   const listRef = useRef<HTMLUListElement>(null)
-  // GOXF: one Hark account signs in once. After sign-in, compare its handle with the Hark accounts already added.
-  const [dupChecked, setDupChecked] = useState('')
-  const failLogin = useRef(login.fail)
-  failLogin.current = login.fail
-  const signedInHark = login.phase.kind === 'signed-in' && login.phase.platformId === 'hark' ? login.accountId : ''
+  // GOXF 2026-11-26: after any sign-in, warn (never block) when the same login is already added on that platform.
+  const [dupWarning, setDupWarning] = useState<{ accountId: string; text: string } | null>(null)
+  const signedInPlatform = login.phase.kind === 'signed-in' ? login.phase.platformId : undefined
+  const signedInId = signedInPlatform ? login.accountId : ''
   useEffect(() => {
-    if (!signedInHark || dupChecked === signedInHark) return
+    if (!signedInPlatform || !signedInId) return
     let current = true
-    const status = getBridge()?.hark?.authStatus
-    void (status ? status(signedInHark) : Promise.resolve(null)).catch(() => null).then((st) => {
-      if (!current) return
-      const handle = String((st as { handle?: string } | null)?.handle ?? '').trim().toLowerCase()
-      const state = useBotStore.getState()
-      const twin = handle && handle !== signedInHark.toLowerCase()
-        ? Object.values(state.accounts).find((a) => a.platformId === 'hark' && a.id !== signedInHark && a.handle?.trim().toLowerCase() === handle)
-        : undefined
-      if (twin) {
-        const bot = state.bots.find((b) => b.accountIds.includes(twin.id))
-        failLogin.current(`这个 Hark 账号（${handle}）已经登录在「${bot?.name ?? twin.label ?? twin.displayName}」里，不能重复添加。`)
-        return
+    const own = async (): Promise<string> => {
+      if (signedInPlatform === 'hark') {
+        const st = await getBridge()?.hark?.authStatus?.(signedInId).catch(() => null)
+        const h = String((st as { handle?: string } | null)?.handle ?? '')
+        if (h) return h
       }
-      setDupChecked(signedInHark)
+      const list = await adapterRegistry.get(signedInPlatform)?.listAccounts().catch(() => []) ?? []
+      return list.find((a) => a.id === signedInId)?.handle ?? ''
+    }
+    void own().then((raw) => {
+      const handle = raw.trim().toLowerCase()
+      if (!current || !handle || handle === signedInId.toLowerCase()) return
+      const state = useBotStore.getState()
+      const twin = Object.values(state.accounts).find((a) =>
+        a.platformId === signedInPlatform && a.id !== signedInId && a.handle?.trim().toLowerCase() === handle)
+      if (!twin) return
+      const bot = state.bots.find((b) => b.accountIds.includes(twin.id))
+      setDupWarning({ accountId: signedInId, text: `这个账号（${raw.trim()}）已经登录在「${bot?.name ?? twin.label ?? twin.displayName}」里，继续添加会有两个会话共用同一个账号。` })
     })
     return () => { current = false }
-  }, [signedInHark, dupChecked])
+  }, [signedInPlatform, signedInId])
   const morph = useMorphHeight<HTMLDivElement>()
   const created = useRef(false)
   const grokSyncedRef = useRef(false)
@@ -443,13 +446,12 @@ function AddBotFlow({ open, wizardId }: { open: boolean; wizardId: number }) {
               )}
             </div>
           )}
-          {!batch && phase.kind === 'signed-in' && phase.platformId === 'hark' && dupChecked !== login.accountId && (
-            <div className="flex flex-col items-center justify-center gap-3 py-8 text-center">
-              <RefreshCw className="size-5 animate-spin text-ink-secondary" />
-              <p className="text-[13.5px] text-ink-secondary">登录成功，正在确认这个账号没有重复添加…</p>
-            </div>
+          {!batch && phase.kind === 'signed-in' && dupWarning?.accountId === login.accountId && (
+            <p role="alert" className="mx-1 mb-2 rounded-lg bg-status-attention/10 px-3 py-2 text-left text-[12.5px] leading-5 text-ink">
+              {dupWarning.text}
+            </p>
           )}
-          {!batch && phase.kind === 'signed-in' && phase.platformId !== 'grok' && (phase.platformId !== 'hark' || dupChecked === login.accountId) && (
+          {!batch && phase.kind === 'signed-in' && phase.platformId !== 'grok' && (
             <NameStep
               key="name"
               platformId={phase.platformId}
