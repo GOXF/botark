@@ -1,8 +1,10 @@
 /** GOXF fork: close-to-tray on Windows/Linux. The tray menu's 退出 BotArk is the real quit. */
-import { app, ipcMain, Menu, Notification, Tray, type BrowserWindow } from 'electron'
+import { app, ipcMain, Menu, nativeImage, Notification, Tray, type BrowserWindow } from 'electron'
 import { readFileSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { getAppWindowIcon } from './appIcon'
+// build/ is not packaged; ?asset makes electron-vite copy the icon into out/ so the packaged app has it.
+import trayIconAsset from '../../build/icon.png?asset'
 import { GOXF_TRAY_CHANNELS, normalizeCloseBehavior, type GoxfCloseBehavior } from '@shared/goxfTray'
 
 const settingsFile = (): string => join(app.getPath('userData'), 'goxf-tray.json')
@@ -48,9 +50,19 @@ function reveal(win: BrowserWindow): void {
   win.focus()
 }
 
+function trayIcon(): Electron.NativeImage | string | undefined {
+  try {
+    const img = nativeImage.createFromPath(trayIconAsset)
+    if (!img.isEmpty()) return process.platform === 'win32' ? img.resize({ width: 16, height: 16 }) : img
+  } catch {
+    /* fall back */
+  }
+  return getAppWindowIcon()
+}
+
 function ensureTray(getWin: () => BrowserWindow | null): void {
   if (tray && !tray.isDestroyed()) return
-  const icon = getAppWindowIcon()
+  const icon = trayIcon()
   if (!icon) return
   tray = new Tray(icon)
   tray.setToolTip('BotArk')
@@ -73,7 +85,11 @@ function ensureTray(getWin: () => BrowserWindow | null): void {
 export function hideToTray(win: BrowserWindow, getWin: () => BrowserWindow | null): boolean {
   if (!closeToTray()) return false
   ensureTray(getWin)
-  if (!tray) return false // no icon: hiding would leave no way back
+  if (!tray) {
+    // No icon means no tray to come back from: minimize instead of quitting.
+    win.minimize()
+    return true
+  }
   win.hide()
   if (!hintShown) {
     hintShown = true
