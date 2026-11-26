@@ -279,3 +279,4 @@ git clone <GOXF/botark> && cd botark && git checkout fix/hark-login-sync && npm 
 ### 2026-11-26 11:30 Hark 连接按钮
 - MessageBubble text_with_button: hark:connect 拿不到 startUrl 时打开 app.hark.com/settings/connected-accounts，不再发英文「Connect github」；失败原因 console.warn。
 - 0073619: hark-frames.log 记录连接卡按钮(buttons)和 /connectors 调用结果，等用户点一次「连接 GitHub」后发 log 查原因。
+- 根因（用户 log 11:35）：Hark 连接卡是 entry card actions[{kind:connect_connector, connector:github, onConnected:resume_agent}]；mapHarkRichWidgets 没给按钮 command，渲染层从不请求授权链接，直接发「Connect github」。修复：按钮带 command hark:connect:<connector>，走 POST /connectors/link-sessions；拿不到链接开连接账号页。link-sessions 的请求体是猜的，看下次 log 的 call 行确认。

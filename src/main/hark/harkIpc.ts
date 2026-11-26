@@ -106,7 +106,10 @@ function mapHarkRichWidgets(msg: HarkChatMessage): MuseRichWidgetView[] | undefi
       text: '',
       buttons: msg.actions.map((a) => ({
         label: a.label || `Connect ${a.connector ?? ''}`,
-        actionText: a.connector ? `Connect ${a.connector}` : a.label
+        actionText: a.connector ? `Connect ${a.connector}` : a.label,
+        // GOXF 2026-11-26: without this the renderer never asked Hark for the auth link and
+        // just posted "Connect github" into the chat.
+        ...(a.connector ? { command: `hark:connect:${a.connector}` } : {})
       }))
     }
   ]
