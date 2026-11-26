@@ -91,12 +91,9 @@ export function HarkAskCards({ accountId, sessionId, asks, className = 'mx-5' }:
   }
 
   /**
-   * secure_screen code (secret.type one_time_code): save it like a login (type one_time_code) and hand over its id.
-   * Inferred from the login form, not observed; when the vault call is refused, the plain code goes instead.
-   */
-  /**
    * Hark's secure code form: the code goes to POST /one-time-codes (as Hark's web does; /secrets refuses
-   * one_time_code), and its id goes to the waiting tool. The body shape is inferred; when that call is refused,
+   * one_time_code), which answers {codeId} (seen in hark-frames.log 2026-11-26 17:22); that id goes to the waiting
+   * tool as {codeId} (key inferred, mirrored as secretId like the login form). When that call is refused,
    * the code goes to the tool as the form's fields ({"code": …}), not as bare text, which the browser kept re-asking for.
    */
   const submitCode = async (ask: HarkAskView, value: string) => {
@@ -111,7 +108,7 @@ export function HarkAskCards({ accountId, sessionId, asks, className = 'mx-5' }:
       })
       const d = (saved.ok ? saved.data ?? {} : {}) as Record<string, unknown>
       const inner = (d['oneTimeCode'] ?? d['secret'] ?? d['data'] ?? {}) as Record<string, unknown>
-      codeId = String(d['id'] ?? d['secretId'] ?? inner['id'] ?? inner['secretId'] ?? '')
+      codeId = String(d['codeId'] ?? d['id'] ?? d['secretId'] ?? inner['codeId'] ?? inner['id'] ?? inner['secretId'] ?? '')
     } catch {
       /* fall back to the form's fields */
     }
@@ -120,7 +117,7 @@ export function HarkAskCards({ accountId, sessionId, asks, className = 'mx-5' }:
         accountId, op: 'call', method: 'POST', path: '/messages/tool-response',
         body: {
           conversationId: sessionId, requestId: ask.requestId, dispatchId: ask.dispatchId, type: 'user_input',
-          value: JSON.stringify(codeId ? { secretId: codeId } : { code: value })
+          value: JSON.stringify(codeId ? { codeId, secretId: codeId } : { code: value })
         }
       })
       if (!res.ok) throw new Error(res.message || '提交失败')
