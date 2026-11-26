@@ -4,7 +4,8 @@ import { readFileSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { getAppWindowIcon } from './appIcon'
 // build/ is not packaged; ?asset makes electron-vite copy the icon into out/ so the packaged app has it.
-import trayIconAsset from '../../build/icon.png?asset'
+// tray-icon.png = icon.png without its macOS transparent margin (≈11% each side), so it fills the tray slot like other apps.
+import trayIconAsset from '../../build/tray-icon.png?asset'
 import { GOXF_TRAY_CHANNELS, normalizeCloseBehavior, type GoxfCloseBehavior } from '@shared/goxfTray'
 
 const settingsFile = (): string => join(app.getPath('userData'), 'goxf-tray.json')
@@ -53,7 +54,15 @@ function reveal(win: BrowserWindow): void {
 function trayIcon(): Electron.NativeImage | string | undefined {
   try {
     const img = nativeImage.createFromPath(trayIconAsset)
-    if (!img.isEmpty()) return process.platform === 'win32' ? img.resize({ width: 16, height: 16 }) : img
+    if (!img.isEmpty()) {
+      // 1x and 2x so it stays sharp at 150%/200% display scaling.
+      const out = nativeImage.createEmpty()
+      for (const scaleFactor of [1, 1.5, 2]) {
+        const px = Math.round(16 * scaleFactor)
+        out.addRepresentation({ scaleFactor, width: px, height: px, buffer: img.resize({ width: px, height: px, quality: 'best' }).toPNG() })
+      }
+      return out
+    }
   } catch {
     /* fall back */
   }
