@@ -132,7 +132,7 @@ export function ChatArea({
   const openAntigravityLogin = useBotStore((s) => s.openAntigravityLogin)
   const openCueLogin = useBotStore((s) => s.openCueLogin)
   const webSessionOpen = useBotStore((s) => s.webSessionOpen)
-  const webSessionSide = useBotStore((s) => s.webSessionSide)
+  const harkSideOpen = useBotStore((s) => s.harkSideOpen)
   const hasBots = useBotStore((s) => s.bots.length > 0)
   const infoPanelOpen = useBotStore((s) => s.infoPanelOpen)
   const toggleInfoPanel = useBotStore((s) => s.toggleInfoPanel)
@@ -231,11 +231,8 @@ export function ChatArea({
     activeAccount?.status === 'online' ||
     activeAccount?.status === 'busy' ||
     activeAccount?.status === 'attention'
-  const webSessionAllowed =
+  const showWebSession =
     focused && webSessionOpen && !!activeAccount && getPlatformInspector(bot.platformId).supportsWebSession
-  // GOXF: 「在 Hark 里控制」 opens Hark's page as a column beside the chat instead of over it.
-  const sideWebSession = webSessionAllowed && Boolean(webSessionSide)
-  const showWebSession = webSessionAllowed && !sideWebSession
   const latestMuseReply = bot.platformId === 'meta-muse'
     ? messages.findLast((message) => message.role === 'bot' && message.accountId === activeAccount?.id)
     : undefined
@@ -320,12 +317,10 @@ export function ChatArea({
           </>
         )}
       </div>
-      {sideWebSession && activeAccount && (
-        <div className="flex min-h-0 w-[48%] min-w-[420px] shrink-0 flex-col border-l border-line/60">
-          <ChatWebSession key={`${bot.id}:${activeAccount.id}:side`} bot={bot} account={activeAccount} />
-        </div>
+      {focused && harkSideOpen && bot.platformId === 'hark' && !showWebSession && (
+        <div id="hark-side-slot" className="flex min-h-0 w-[48%] min-w-[420px] shrink-0 flex-col border-l border-line/60 bg-[#0b0f14]" />
       )}
-      {focused && activeDocument && !showWebSession && !sideWebSession && (
+      {focused && activeDocument && !showWebSession && (
         <DocumentCanvasPane
           target={activeDocument}
           onClose={() => setActiveDocument(null)}

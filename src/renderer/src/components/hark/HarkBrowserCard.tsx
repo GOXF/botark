@@ -5,7 +5,6 @@ import { ArrowRight, Check, ChevronUp, Download, ExternalLink, ListChecks, Loade
 import { harkRpc } from '@adapters/hark/harkRequests'
 import { harkBrowserLive, type HarkBrowserPreview } from '@shared/harkBrowserPreview'
 import { createId } from '@shared/id'
-import { harkBrowserOnlyUrl } from '@shared/harkProjects'
 import { getBridge } from '@/lib/bridge'
 import { cn } from '@/lib/cn'
 import { useBotStore } from '@/store/botStore'
@@ -50,6 +49,16 @@ export function HarkBrowserCard({ accountId, sessionId, attention = false }: { a
   const snapshotRequest = useRef<AbortController | null>(null)
   const hark = getBridge()?.hark
   const openWeb = useBotStore((s) => s.openWebSessionAt)
+  const side = useBotStore((s) => Boolean(s.harkSideOpen))
+  const setSide = useBotStore((s) => s.setHarkSideOpen)
+  const [slot, setSlot] = useState<HTMLElement | null>(null)
+  useEffect(() => {
+    if (!side) { setSlot(null); return }
+    let raf = 0
+    const find = () => { const el = document.getElementById('hark-side-slot'); if (el) setSlot(el); else raf = requestAnimationFrame(find) }
+    find()
+    return () => cancelAnimationFrame(raf)
+  }, [side])
 
   useEffect(() => hark?.onEvent((event) => {
     if (event.type !== 'projectHistory' || event.accountId !== accountId || event.conversationId !== sessionId) return
@@ -131,6 +140,10 @@ export function HarkBrowserCard({ accountId, sessionId, attention = false }: { a
     return () => window.removeEventListener('keydown', onKey)
   }, [full, closeFull])
 
+  // Nothing to dock: close the side column rather than leave it empty.
+  const gone = !hark || hidden || !panel || (ended && !image && !key && !url)
+  useEffect(() => { if (gone && side) setSide(false) }, [gone, side, setSide])
+
   // An ended browser with nothing to show is noise.
   if (!hark || hidden || !panel || (ended && !image && !key && !url)) return null
 
@@ -197,9 +210,9 @@ export function HarkBrowserCard({ accountId, sessionId, attention = false }: { a
           </div>
           <button type="button" className="mx-3 mt-2 block w-[calc(100%-1.5rem)] overflow-hidden rounded-xl bg-sunken" onClick={() => setFull(true)}
             aria-label="全屏查看">
-            {live && !full && <HarkLiveView src={live} accountId={accountId} onState={setLivePainted}
+            {live && !full && !(side && slot) && <HarkLiveView src={live} accountId={accountId} onState={setLivePainted}
               className="pointer-events-none aspect-video max-h-[38vh] w-full border-0" />}
-            {live && !full && livePainted ? null
+            {live && !full && !(side && slot) && livePainted ? null
               : image ? <img src={image} alt="Hark 远程浏览器截图" className="max-h-[38vh] w-full object-contain" />
               : <div className="grid h-40 place-items-center text-ink-muted">{error || (key || url ? '正在加载截图…' : '暂无截图')}</div>}
           </button>
@@ -210,9 +223,9 @@ export function HarkBrowserCard({ accountId, sessionId, attention = false }: { a
               className={cn('press flex h-7 shrink-0 items-center gap-1 rounded-full px-3 font-medium', plan ? 'border-[0.5px] border-line-strong bg-main text-ink shadow-float' : 'text-ink-secondary hover:bg-hover hover:text-ink')}>
               <ListChecks className="size-3.5" />计划
             </button>
-            <button type="button" onClick={() => openWeb(harkBrowserOnlyUrl(sessionId), { side: true })}
+            <button type="button" onClick={() => setSide(!side)} aria-pressed={side}
               className="press flex h-7 shrink-0 items-center gap-1 rounded-full bg-ink px-3 font-medium text-main hover:opacity-90">
-              在 Hark 里看/控制<ArrowRight className="size-3.5" />
+              {side ? '收回侧栏' : '在侧栏看'}<ArrowRight className="size-3.5" />
             </button>
             <IconBtn label="全屏" onClick={() => setFull(true)}><Maximize2 className="size-3.5" /></IconBtn>
             <IconBtn label="收起" onClick={() => setMini(true)}><Minus className="size-3.5" /></IconBtn>
@@ -227,6 +240,27 @@ export function HarkBrowserCard({ accountId, sessionId, attention = false }: { a
       </section>
       </div>
 
+      {side && slot && !full && createPortal(
+        <div className="flex min-h-0 flex-1 flex-col text-[12px] text-white/85">
+          <header className="flex shrink-0 items-center gap-2 px-3 py-2.5">
+            <span className={cn('flex shrink-0 items-center gap-1 font-medium', active || waiting ? 'text-status-online' : 'text-white/55')}>
+              <span className={cn('size-2 rounded-full', active || waiting ? 'bg-status-online' : 'bg-white/40')} />{active || waiting ? '实时' : '已结束'}
+            </span>
+            <span className="truncate text-white/55">{panel.label}</span>
+            {shotAt > 0 && <span className="ml-auto shrink-0 tabular-nums text-white/55">{clock(shotAt)}</span>}
+            <button type="button" aria-label="全屏" title="全屏" onClick={() => setFull(true)}
+              className={cn('press-icon grid size-7 shrink-0 place-items-center rounded-full bg-white/15 text-white hover:bg-white/25', shotAt > 0 ? '' : 'ml-auto')}><Maximize2 className="size-3.5" /></button>
+            <button type="button" aria-label="收回侧栏" title="收回侧栏" onClick={() => setSide(false)}
+              className="press-icon grid size-7 shrink-0 place-items-center rounded-full bg-white/15 text-white hover:bg-white/25"><X className="size-3.5" /></button>
+          </header>
+          <div className="relative mx-3 grid min-h-0 flex-1 place-items-center overflow-hidden rounded-xl bg-white/[0.06]">
+            {live && <HarkLiveView src={live} accountId={accountId} onState={setLivePainted} className="h-full w-full border-0" />}
+            {live && livePainted ? null
+              : image ? <img src={image} alt="Hark 远程浏览器截图" className="max-h-full max-w-full object-contain" />
+              : <span className="text-white/55">{error || '暂无画面'}</span>}
+          </div>
+          <footer className="flex shrink-0 items-center gap-2 p-3"><div className="min-w-0 flex-1"><StepPill dark /></div></footer>
+        </div>, slot)}
       {full && createPortal(
         <div role="dialog" aria-modal="true" aria-label="远程浏览器全屏" className="fixed inset-0 z-[100] flex flex-col bg-black/82 text-[12px] text-white/85 backdrop-blur-sm">
           <header className="flex shrink-0 items-center gap-3 px-4 py-3">
@@ -240,7 +274,7 @@ export function HarkBrowserCard({ accountId, sessionId, attention = false }: { a
             {viewing && <Button size="sm" variant="primary" onClick={() => setViewing(null)}>回到实时</Button>}
             <button type="button" onClick={save} disabled={!shown}
               className="press inline-flex h-7 shrink-0 items-center gap-1.5 rounded-full bg-white/15 px-3 font-medium text-white hover:bg-white/25 disabled:opacity-40"><Download className="size-3.5" />保存截图</button>
-            <button type="button" onClick={() => { closeFull(); openWeb(harkBrowserOnlyUrl(sessionId), { side: true }) }}
+            <button type="button" onClick={() => { closeFull(); openWeb(null) }}
               className="press inline-flex h-7 shrink-0 items-center gap-1.5 rounded-full bg-white/15 px-3 font-medium text-white hover:bg-white/25">在网页里接管<ExternalLink className="size-3.5" /></button>
           </header>
           <div className="flex min-h-0 flex-1 gap-4 px-4">

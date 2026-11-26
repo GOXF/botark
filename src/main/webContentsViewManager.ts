@@ -1,5 +1,4 @@
 import { createHash } from 'node:crypto'
-import { installHarkBrowserOnly } from './goxfHarkBrowserOnly'
 import {
   BrowserWindow,
   session as electronSession,
@@ -207,7 +206,6 @@ export class WebContentsViewManager {
     contents.once('destroyed', () => this.removeView(managed))
     view.setBackgroundColor('#ffffff')
     attachGoogleOAuthWebContentsGuard(contents, ses)
-    installHarkBrowserOnly(contents)
     const popupSize = { width: 1060, height: 740, minWidth: 680 }
     this.installPopupHandler(contents, partition, this.window, popupSize, () => managed.proxyConfigured)
 
