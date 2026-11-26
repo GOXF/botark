@@ -1613,6 +1613,7 @@ export const useBotStore = create<BotHubState>()(
       const bot: Bot = {
         id: input.id ?? createId('bot'),
         name: input.name.trim() || getPlatform(input.platformId).name,
+        ...(input.customName ? { customName: true } : {}),
         emoji: input.emoji ?? '🤖',
         avatar: input.avatar,
         ...(input.avatarShape ? { avatarShape: input.avatarShape } : {}),
@@ -1676,7 +1677,7 @@ export const useBotStore = create<BotHubState>()(
 
     renameBot: (botId, name) => {
       const trimmed = name.trim()
-      if (trimmed) patchBot(botId, () => ({ name: trimmed }))
+      if (trimmed) patchBot(botId, () => ({ name: trimmed, customName: true }))
     },
 
     setBotAvatar: (botId, avatar) => patchBot(botId, () => ({ avatar })),
@@ -2474,6 +2475,15 @@ export const useBotStore = create<BotHubState>()(
                   handle: st.handle || get().accounts[accountId]?.handle || account.handle,
                   displayName: st.displayName || get().accounts[accountId]?.displayName || account.displayName
                 })
+                // displayName falls back to the email when the Hark profile has no name.
+                const harkName = st.displayName !== st.handle ? st.displayName?.trim() : undefined
+                if (isCurrent() && harkName) {
+                  set((s) => ({
+                    bots: s.bots.map((b) =>
+                      b.activeAccountId === accountId && !b.customName && b.name !== harkName ? { ...b, name: harkName } : b
+                    )
+                  }))
+                }
               }
             })
             .catch(() => undefined)

@@ -88,7 +88,7 @@ export function AccountList({ bot, accounts }: AccountListProps) {
           account.status === 'busy' ||
           account.status === 'attention'
         const unread = account.unread ?? 0
-        const name = account.label || account.displayName
+        const name = account.label || (account.platformId === 'hark' && account.handle?.includes('@') ? account.handle : account.displayName)
         const showError = account.status === 'error' && account.statusDetail
         const showSignInRow = !connected && editingId !== account.id
         const loginLabel = t(LOGIN_CTA_LABEL[account.platformId])

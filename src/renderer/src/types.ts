@@ -59,6 +59,8 @@ export interface Bot {
   unread: number
   /** Local-only: shown in the sidebar Pinned row. */
   pinned?: boolean
+  /** Named by the user in BotArk; a Hark bot otherwise follows its Hark profile name. */
+  customName?: boolean
 }
 
 export type MessageRole = 'user' | 'bot'
@@ -276,6 +278,7 @@ export interface NewBotInput {
   id?: string
   platformId: PlatformId
   name: string
+  customName?: boolean
   avatar?: string
   avatarShape?: string
   avatarColor?: string

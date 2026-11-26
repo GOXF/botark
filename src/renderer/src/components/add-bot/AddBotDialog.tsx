@@ -160,7 +160,7 @@ function AddBotFlow({ open, wizardId }: { open: boolean; wizardId: number }) {
     login.start(platformId)
   }
 
-  const finish = (platformId: PlatformId, name: string, avatar: string | undefined) => {
+  const finish = (platformId: PlatformId, name: string, avatar: string | undefined, typed = false) => {
     if (!isCurrentWizard()) return
     login.keep()
     created.current = true
@@ -183,6 +183,7 @@ function AddBotFlow({ open, wizardId }: { open: boolean; wizardId: number }) {
       id: botId,
       platformId,
       name,
+      customName: typed,
       avatar,
       emoji: picked.emoji,
       description: picked.id === 'blank' ? undefined : picked.description,
@@ -331,7 +332,7 @@ function AddBotFlow({ open, wizardId }: { open: boolean; wizardId: number }) {
                 bots.map((b) => b.name)
               )}
               takenNames={bots.map((b) => b.name)}
-              onDone={(name, avatar) => finish('hermes', name, avatar)}
+              onDone={(name, avatar, typed) => finish('hermes', name, avatar, typed)}
             />
           )}
           {!batch && phase.kind === 'idle' && !grokAccountChoiceOpen && !hermesConnectOpen && !hermesReady && (
@@ -384,7 +385,7 @@ function AddBotFlow({ open, wizardId }: { open: boolean; wizardId: number }) {
                 bots.map((b) => b.name)
               )}
               takenNames={bots.map((b) => b.name)}
-              onDone={(name, avatar) => finish(phase.platformId, name, avatar)}
+              onDone={(name, avatar, typed) => finish(phase.platformId, name, avatar, typed)}
             />
           )}
         </div>
@@ -1014,7 +1015,7 @@ function NameStep({
   onTemplate: (template: BotTemplate) => void
   defaultName: string
   takenNames: readonly string[]
-  onDone: (name: string, avatar: string | undefined) => void
+  onDone: (name: string, avatar: string | undefined, typed: boolean) => void
 }) {
   const [name, setName] = useState('')
   const [avatar, setAvatar] = useState<string | undefined>()
@@ -1058,7 +1059,7 @@ function NameStep({
       className="flex animate-step-in flex-col items-center gap-5 pt-2"
       onSubmit={(event) => {
         event.preventDefault()
-        if (!decoding) onDone(finalName, avatar)
+        if (!decoding) onDone(finalName, avatar, Boolean(name.trim()))
       }}
     >
       <div className="relative">
