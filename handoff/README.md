@@ -25,3 +25,4 @@ git remote add upstream https://github.com/qybaihe/botark.git && git fetch upstr
 - 说「盘点」→ 四段汇总：等你回答 / 等你动手 / 我在做 / 搁置，带编号和总数。
 - 正式 tag 前先升 goxfBuild；日常改动走测试通道。
 - 每次结束前更新 `handoff/handoff.md` 并提交（提交信息带 [skip ci] 避免触发测试版构建）。
+- 设计规范见 `docs/goxf-design.md`：字号/圆角/颜色/组件只用档位和 token；效果图必须是真组件截图（`node scripts/goxf-mock.mjs <名字>`），发图前按文末清单自查浅色+深色。
