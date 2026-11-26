@@ -44,12 +44,27 @@ export async function isHarkProviderConnected(accountId: string, provider: strin
 /**
  * GOXF: connect a Hark connector from a chat card. The auth page opens in a BotArk window on
  * the Hark account's session (system browser only when asked), and we report back whether the
- * provider is connected afterwards. `external` means the page went to the system browser.
+ * provider is connected afterwards. When the page goes to the system browser, Hark is polled until connected.
  */
+/** After a hand-off to the system browser, ask Hark every `everyMs` whether the provider is connected. */
+export async function waitForHarkProvider(
+  accountId: string,
+  provider: string,
+  { everyMs = 5000, maxMs = 10 * 60_000, signal }: { everyMs?: number; maxMs?: number; signal?: AbortSignal } = {}
+): Promise<boolean> {
+  const until = Date.now() + maxMs
+  while (Date.now() < until) {
+    await new Promise((r) => setTimeout(r, everyMs))
+    if (signal?.aborted) return false
+    if (await isHarkProviderConnected(accountId, provider)) return true
+  }
+  return false
+}
+
 export async function connectHarkProvider(
   accountId: string,
   provider: string,
-  opts: { origin?: 'chat' | 'settings'; external?: boolean } = {}
+  opts: { origin?: 'chat' | 'settings'; external?: boolean; onExternal?: () => void; signal?: AbortSignal } = {}
 ): Promise<'connected' | 'not-connected' | 'external'> {
   const bridge = getBridge()
   let startUrl = HARK_CONNECT_RETURN_URL
@@ -71,11 +86,17 @@ export async function connectHarkProvider(
     }
   }
   const inApp = bridge?.goxfInApp
-  if (!inApp) {
+  let external = !inApp
+  if (inApp) {
+    const res = await inApp.open({ url: startUrl, accountId, doneUrlPrefix: HARK_CONNECT_RETURN_URL, external: opts.external })
+    external = res.result === 'external'
+  } else {
     await bridge?.muse?.openHttps?.(startUrl)
-    return 'external'
   }
-  const res = await inApp.open({ url: startUrl, accountId, doneUrlPrefix: HARK_CONNECT_RETURN_URL, external: opts.external })
-  if (res.result === 'external') return 'external'
+  // The system browser never tells us it finished: poll Hark (5 s, up to 10 min).
+  if (external) {
+    opts.onExternal?.()
+    return (await waitForHarkProvider(accountId, provider, { signal: opts.signal })) ? 'connected' : 'not-connected'
+  }
   return (await isHarkProviderConnected(accountId, provider)) ? 'connected' : 'not-connected'
 }

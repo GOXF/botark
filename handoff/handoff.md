@@ -316,3 +316,4 @@ git clone <GOXF/botark> && cd botark && git checkout fix/hark-login-sync && npm 
 - Hark connect card: `HarkConnectButton.tsx` + `lib/harkConnect.ts`. link-sessions → in-app window → closes on return to app.hark.com/settings/connected-accounts → GET /connectors → card shows 「已连接 X ✓」(localStorage `botark:hark-connected-cards`) and sends 「X 已连接好了，继续吧。」 to resume Hark (no known resume API; onConnected.toolUseId is not used). Not connected → 「还没连上。改用浏览器打开」.
 - Settings 连接 also uses the in-app window and refreshes after.
 - Unverified on device: Google/other OAuth may refuse Electron (use 在浏览器打开).
+- 14:45 follow-up: when the auth page goes to the system browser (menu 在浏览器打开 or 改用浏览器打开), `waitForHarkProvider` polls GET /connectors every 5 s for up to 10 min; card shows 「等待浏览器里授权 X…」 + 取消, then 已连接 + continue message as in-app. Settings 连接 refreshes the same way.

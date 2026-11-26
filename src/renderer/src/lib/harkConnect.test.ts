@@ -9,3 +9,12 @@ describe('providerConnected', () => {
     expect(providerConnected(null, 'github')).toBe(false)
   })
 })
+
+describe('waitForHarkProvider', () => {
+  it('stops when aborted', async () => {
+    const { waitForHarkProvider } = await import('./harkConnect')
+    const ac = new AbortController()
+    ac.abort()
+    await expect(waitForHarkProvider('a', 'github', { everyMs: 1, maxMs: 50, signal: ac.signal })).resolves.toBe(false)
+  })
+})

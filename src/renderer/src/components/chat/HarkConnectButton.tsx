@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Check, Loader2 } from 'lucide-react'
 import { ConnectorIcon } from '@/components/ui/ConnectorIcon'
 import { connectHarkProvider, isHarkProviderConnected } from '@/lib/harkConnect'
@@ -40,7 +40,7 @@ export function HarkConnectButton({
   cardKey: string
 }) {
   const sendMessage = useBotStore((s) => s.sendMessage)
-  const [state, setState] = useState<'idle' | 'busy' | 'done' | 'retry'>(() => (readDone().includes(cardKey) ? 'done' : 'idle'))
+  const [state, setState] = useState<'idle' | 'busy' | 'browser' | 'done' | 'retry'>(() => (readDone().includes(cardKey) ? 'done' : 'idle'))
   const name = label.replace(/^(连接|重新连接|Connect)\s*/i, '') || provider
 
   // A card shown again after the provider was connected elsewhere still reads as done.
@@ -55,15 +55,26 @@ export function HarkConnectButton({
     }
   }, [accountId, provider, state])
 
+  const abort = useRef<AbortController | null>(null)
+  useEffect(() => () => abort.current?.abort(), [])
+
   const run = async (external?: boolean) => {
+    abort.current?.abort()
+    abort.current = new AbortController()
     setState('busy')
-    const res = await connectHarkProvider(accountId, provider, { origin: 'chat', external })
+    const res = await connectHarkProvider(accountId, provider, {
+      origin: 'chat',
+      external,
+      signal: abort.current.signal,
+      onExternal: () => setState('browser')
+    })
+    if (abort.current.signal.aborted) return
     if (res === 'connected') {
       setState('done')
       markDone(cardKey)
       void sendMessage(botId, `${name} 已连接好了，继续吧。`)
     } else {
-      setState(res === 'external' ? 'idle' : 'retry')
+      setState('retry')
     }
   }
 
@@ -80,17 +91,22 @@ export function HarkConnectButton({
     <span className="inline-flex flex-wrap items-center gap-1.5">
       <button
         type="button"
-        disabled={state === 'busy'}
+        disabled={state === 'busy' || state === 'browser'}
         onClick={() => void run()}
         className="inline-flex items-center gap-1.5 rounded-full border border-line-strong bg-surface px-3 py-1 text-[12px] font-medium text-ink hover:bg-hover disabled:opacity-60"
       >
-        {state === 'busy' ? (
+        {state === 'busy' || state === 'browser' ? (
           <Loader2 className="size-4 animate-spin" />
         ) : (
           <ConnectorIcon id={provider} name={label} className="size-4 border-0 bg-transparent shadow-none" />
         )}
-        {state === 'busy' ? `正在连接 ${name}…` : label}
+        {state === 'busy' ? `正在连接 ${name}…` : state === 'browser' ? `等待浏览器里授权 ${name}…` : label}
       </button>
+      {state === 'browser' && (
+        <button type="button" onClick={() => { abort.current?.abort(); setState('idle') }} className="text-[12px] text-ink-muted hover:underline">
+          取消
+        </button>
+      )}
       {state === 'retry' && (
         <>
           <span className="text-[12px] text-ink-muted">还没连上。</span>
