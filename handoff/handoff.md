@@ -322,3 +322,10 @@ git clone <GOXF/botark> && cd botark && git checkout fix/hark-login-sync && npm 
 - User 15:11: scrolling up stopped at 13:23. Cause: Hark history = first /sync/poll snapshot only (recent stretch).
 - Hark web loads older via `GET /api/messages/history?conversationId=&v=2&before=<messageId>&beforeCreatedAt=<ms>` (from user's F12, 15:18). Response shape NOT seen: `parseHarkHistoryPage` accepts records ({messages:{id:m},log}) or a list, optional `data` wrapper; hasMore from hasMore/hasOlder/more else non-empty. Each page is sampled (first 1500 chars) into hark-frames.log as `history-page …` — read it if pages come back empty.
 - IPC op `olderHistory`; store `loadOlderHistory(botId)` / `olderHistoryDone`; MessageList shows 「加载更早的消息」 at the top for Hark and auto-loads when scrolled near the top (keeps position).
+
+## 2026-11-26 16:27 — Hark secure_screen asks, live view, stale send-timeout notice
+- 1559f1b: 4b90e18 CI fix (harkClient no longer imports harkFrameLog; history page logged from harkIpc as `call /messages/history`).
+- 78eca10: Hark asks now come as `displayHint: secure_screen` with `request.screen {components, secret{scope,type: login|one_time_code}}`, `request.site`. harkAsks reads them: login → native form; one_time_code → HarkAskCard.submitCode tries POST /secrets {type:'one_time_code', scope, fields:{code}} → tool-response {secretId}, falls back to the plain code (INFERRED, check hark-frames.log `call /secrets` / `call /messages/tool-response`, outcome only).
+- 78eca10: browser panels carry `liveViewUrl` (/api/liveview/view?t=…, token page with X-Frame-Options SAMEORIGIN). main/goxfLiveView.ts strips frame headers for it; CSP frame-src + https://app.hark.com; HarkBrowserCard shows an iframe while live. Panels also carry `phases` (Hark's plan steps) — not used yet.
+- 35ee059: 「发送超时…正在等待原发送完成」 cleared when a reply exists after the message (applyError, receiveMessage incl. streamed replies, history merge).
+- Test build expected v0.16.0-goxf.dev.35ee059 (~16:47, unconfirmed). Waiting on user tests.
