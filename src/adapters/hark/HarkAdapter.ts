@@ -135,6 +135,7 @@ export class HarkAdapter implements PlatformAdapter {
         handle: event.handle ?? existing?.handle ?? event.accountId
       })
       this.setStatus(event.accountId, 'online')
+      this.recordSignedIn(event.accountId)
       return
     }
     this.emit({
@@ -154,6 +155,15 @@ export class HarkAdapter implements PlatformAdapter {
         console.error('[hark] listener failed', error)
       }
     }
+  }
+
+  /** Signed in (web login / embedded page): replace a stale 已失效 line, then fill in the expiry. */
+  private recordSignedIn(accountId: string): void {
+    const at = Date.now()
+    recordHarkSessionCheck(accountId, { result: 'ok', at })
+    void getBotHubBridge()?.hark?.authStatus(accountId).then((st) => {
+      if (st.signedIn && st.expiresAt) recordHarkSessionCheck(accountId, { result: 'ok', at, expiresAt: st.expiresAt })
+    }).catch(() => undefined)
   }
 
   private setStatus(accountId: string, status: ConnectionStatus, detail?: string): void {
@@ -243,6 +253,7 @@ export class HarkAdapter implements PlatformAdapter {
       if (status.signedIn) {
         this.upsert(accountId, { displayName: status.displayName, handle: status.handle })
         this.setStatus(accountId, 'online')
+        recordHarkSessionCheck(accountId, { result: 'ok', at: Date.now(), expiresAt: status.expiresAt })
         return 'online'
       }
       return this.getStatus(accountId)

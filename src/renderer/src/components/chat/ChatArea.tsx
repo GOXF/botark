@@ -280,7 +280,10 @@ export function ChatArea({
               />
             )}
             {bot.platformId === 'hark' && activeAccount && (
-              <HarkAskCards accountId={activeAccount.id} sessionId={bot.activeSessionId} asks={harkAsks} />
+              <div className="mx-auto w-full max-w-[860px] shrink-0 px-8">
+                {/* Same column as the Hark bubbles and the browser card (past the avatar, at most 600). */}
+                <HarkAskCards accountId={activeAccount.id} sessionId={bot.activeSessionId} asks={harkAsks} className="ml-[38px] max-w-[600px]" />
+              </div>
             )}
             <ChatComposer
               key={bot.id}

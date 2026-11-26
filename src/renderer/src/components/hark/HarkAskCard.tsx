@@ -4,6 +4,7 @@ import type { HarkAskView } from '@shared/harkAsks'
 import { Button } from '@/components/ui/Button'
 import { TextInput } from '@/components/ui/Field'
 import { getBridge } from '@/lib/bridge'
+import { cn } from '@/lib/cn'
 import { useBotStore } from '@/store/botStore'
 
 /** GOXF: Hark's pending asks in the native chat. A code is typed here; a sign-in, card or key opens the Hark web view. */
@@ -17,7 +18,7 @@ export function useHarkAsks(accountId: string, sessionId?: string): HarkAskView[
   return asks
 }
 
-export function HarkAskCards({ accountId, sessionId, asks }: { accountId: string; sessionId?: string; asks: HarkAskView[] }) {
+export function HarkAskCards({ accountId, sessionId, asks, className = 'mx-5' }: { accountId: string; sessionId?: string; asks: HarkAskView[]; className?: string }) {
   const [code, setCode] = useState<Record<string, string>>({})
   const [busy, setBusy] = useState<string>()
   const [error, setError] = useState<Record<string, string>>({})
@@ -113,7 +114,7 @@ export function HarkAskCards({ accountId, sessionId, asks }: { accountId: string
   }
 
   return (
-    <div className="mx-5 mb-1 flex shrink-0 flex-col gap-1.5">
+    <div className={cn(className, 'mb-1 flex shrink-0 flex-col gap-1.5')}>
       {visible.map((ask) => (
         <section key={ask.id} role="alert"
           className="rounded-2xl border border-line bg-surface px-4 py-3.5 text-[12px] shadow-soft">
