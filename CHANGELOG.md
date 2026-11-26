@@ -2,6 +2,23 @@
 
 All notable changes to **BotArk** (formerly BotHub) are documented in this file.
 
+## [0.16.0] - 2026-11-26
+
+### Added
+
+- **Native DS Bot (`Fei-Craft/DS-Bot`) platform adapter** (#75, #73): full multi-protocol support covering Noise_IK encrypted Relay, DSH Web/Docker HTTP+SSE, and MCP HTTP (local & remote), with automatic team roster & group chat sync, streaming chat, multimodal attachments, interactive tool approvals, `ask_user` prompt cards, `MEMORY.md` editor, scheduled tasks, and token usage tracking.
+- **Proxy availability & latency testing** (#77): real end-to-end proxy probing through BotArk's `proxyFetch` transport (HTTP, HTTPS TLS ALPN, SOCKS5/5H, authenticated proxies, and direct mode) with latency (`ms`), exit region/IP lookup, per-account draft testing in Inspector, concurrent batch pool testing (`全部测速`), and one-click failed-proxy cleanup (`移除失效`).
+- **Hardened Hark Workspace Portal** (#74): scoped workspace portal bridge for Hark collaboration room members using cloudflared HTTPS tunnels with strict path containment and access guards.
+- **Cue embedded WebSession & persistent background watch** (#76): enabled one-click isolated `cue.im` WebSession view in chat/inspector and warm Socket.IO background watching for scheduled tasks and cross-device replies.
+
+### Fixed
+
+- **Cue adapter hardening** (#76): wired end-to-end `stopRun` cancellation across chat and Collaboration Rooms (`platformCancel.ts`, `CueAdapter`, native Socket.IO, and Manus OpenAPI v2 `task.stop`), replaced the fixed 120s timeout with an activity-refreshed inactivity deadline (up to 10 min), prevented premature WebSocket close on idle settle, forwarded image/file attachments via `file.upload` (+ presigned `PUT`) instead of silently dropping them, extracted tool calls & rich media across streaming and history sync (with allowlisted `downloadMedia` proxy), implemented OpenAPI v2 paginated `getHistory` and live polling progress, enforced live credential verification on UI import, propagated real `401/403` errors on `health`/`listAgents` with same-identity partition cookie recapture, and added Cue to `OnboardingGuide`.
+
+### Changed
+
+- Updated Electron to `45.4.1`, `https-proxy-agent` to `9.1.0`, `tailwindcss` / `@tailwindcss/vite` to `4.3.5`, and `vitest` to `5.1.1`.
+
 ## [0.15.1] - 2026-11-25
 
 ### Added
