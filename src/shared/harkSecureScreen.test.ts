@@ -37,3 +37,18 @@ describe('Hark live view', () => {
       .toBe('https://app.hark.com/api/liveview/view?t=abc')
   })
 })
+
+describe('stale Hark asks', () => {
+  it('keeps only the newest ask of a dispatch and drops asks with no request left', () => {
+    const ask = (id: string, at: number, prompt?: string) => ({
+      id, dispatchId: 'tu_1', requestId: id, status: 'waiting_for_input', prompt,
+      raw: { at, request: prompt ? { prompt, askedAt: at } : undefined }
+    })
+    const out = pendingHarkAsks([
+      ask('a', 1, 'Enter the verification code'),
+      ask('b', 3, 'Enter the verification code'),
+      { id: 'c', requestId: 'c', status: 'waiting_for_input', raw: {} }
+    ])
+    expect(out.map((a) => a.id)).toEqual(['b'])
+  })
+})

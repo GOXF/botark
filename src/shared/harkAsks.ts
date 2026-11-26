@@ -92,8 +92,26 @@ function askHint(a: RawAsk): string | undefined {
   return h && h !== a.prompt ? h.slice(0, 300) : undefined
 }
 
+const askedAt = (a: RawAsk): number => {
+  const req = obj(a.raw?.['request'] ?? a.raw?.['userInputRequest'])
+  return Number(req['askedAt'] ?? a.raw?.['at'] ?? a.raw?.['updatedAt'] ?? 0) || 0
+}
+
+/**
+ * Asks Hark still waits on. GOXF 2026-11-26: a browser waits on one input at a time, so an older ask of the same
+ * dispatch is stale (Hark answers it with "input request is unavailable or already answered differently"), and an
+ * ask whose request is gone (no prompt, no form) has nothing left to answer; both are dropped.
+ */
 export function pendingHarkAsks(asks: RawAsk[] | undefined): HarkAskView[] {
-  return (asks ?? []).filter((a) => !DONE.test(a.status)).map((a) => {
+  const open = (asks ?? []).filter((a) => !DONE.test(a.status) &&
+    (a.prompt || a.displayHint || Object.keys(screenOf(a).secret).length > 0))
+  const newest = new Map<string, RawAsk>()
+  for (const a of open) {
+    if (!a.dispatchId) continue
+    const cur = newest.get(a.dispatchId)
+    if (!cur || askedAt(a) >= askedAt(cur)) newest.set(a.dispatchId, a)
+  }
+  return open.filter((a) => !a.dispatchId || newest.get(a.dispatchId) === a).map((a) => {
     const sc = screenOf(a)
     const secretType = str(sc.secret['type'])
     const kind: HarkAskKind = secretType === 'one_time_code' ? 'code' : secretType ? 'credential' : askKind(a.displayHint, a.prompt)
