@@ -275,24 +275,28 @@ export function ChatArea({
             ) : (
               <MessageList bot={bot} messages={messages} accounts={accounts} typing={typing} onRetry={onRetry} />
             )}
-            {/* GOXF v10: Hark's browser sits at the end of the conversation, like hark.com. */}
-            {bot.platformId === 'hark' && activeAccount && canSend && (
-              <HarkBrowserCard key={JSON.stringify([activeAccount.id, bot.activeSessionId])}
-                accountId={activeAccount.id} sessionId={bot.activeSessionId} attention={harkAsks.length > 0} />
-            )}
-            {(bot.platformId === 'meta-muse' || bot.platformId === 'grok') && activeAccount && (
-              <ChatApprovals
-                accountId={activeAccount.id}
-                platformId={bot.platformId}
-                agentId={bot.selectedAgentId}
-              />
-            )}
-            {bot.platformId === 'hark' && activeAccount && (
-              <div className="mx-auto w-full max-w-[860px] shrink-0 px-8">
-                {/* Same column as the Hark bubbles and the browser card (past the avatar, at most 600). */}
-                <HarkAskCards accountId={activeAccount.id} sessionId={bot.activeSessionId} asks={harkAsks} className="ml-[38px] max-w-[600px]" />
-              </div>
-            )}
+            {/* GOXF: browser card, approvals and asks share one dock under the messages. It is capped and
+                scrolls on its own, so however many piled up the composer always stays on screen. */}
+            <div className="max-h-[45%] shrink-0 overflow-y-auto overscroll-contain">
+              {/* GOXF v10: Hark's browser sits at the end of the conversation, like hark.com. */}
+              {bot.platformId === 'hark' && activeAccount && canSend && (
+                <HarkBrowserCard key={JSON.stringify([activeAccount.id, bot.activeSessionId])}
+                  accountId={activeAccount.id} sessionId={bot.activeSessionId} attention={harkAsks.length > 0} />
+              )}
+              {(bot.platformId === 'meta-muse' || bot.platformId === 'grok') && activeAccount && (
+                <ChatApprovals
+                  accountId={activeAccount.id}
+                  platformId={bot.platformId}
+                  agentId={bot.selectedAgentId}
+                />
+              )}
+              {bot.platformId === 'hark' && activeAccount && (
+                <div className="mx-auto w-full max-w-[860px] shrink-0 px-8">
+                  {/* Same column as the Hark bubbles and the browser card (past the avatar, at most 600). */}
+                  <HarkAskCards accountId={activeAccount.id} sessionId={bot.activeSessionId} asks={harkAsks} className="ml-[38px] max-w-[600px]" />
+                </div>
+              )}
+            </div>
             <ChatComposer
               key={bot.id}
               bot={bot}
