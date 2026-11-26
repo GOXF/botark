@@ -299,3 +299,7 @@ git clone <GOXF/botark> && cd botark && git checkout fix/hark-login-sync && npm 
   - dotClient → dotAuth: fork resolveDotProxyUrl (per-account network mode) ported. muse-native chat → chatExtractors: file-presentation file card + `mime` key ported; captureLine/BOTARK_MUSE_CAPTURE and file-card text fix stay in chat.ts.
   - Test change: botStoreSessions "maps Hark content…" now asserts the thought-only row is dropped (fork hides Hark thought).
 - Left out / at risk: upstream ProxySection's 测试延迟 button (fork's 测试连通 covers it, no country shown on the account panel); some ported settings lines have odd indentation (cosmetic); upstream new settings files keep a few rounded-lg buttons (capsule pass not re-done).
+
+## 2026-11-26 14:10 quoted image reaches the bot as an attachment
+- Bug (user 13:55): quoting a picture whose bubble shows it from data:/blob: (auth-proxied platform media) sent only "> [图片]"; the bot said it could not see the image.
+- Fix: botStore.sendMessage converts a data:/blob: quote thumb into an image attachment (quoted-image.<ext>, dataBase64). http thumbs still go as the URL in the quote line. Test build follows this commit.

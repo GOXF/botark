@@ -835,6 +835,21 @@ export const useBotStore = create<BotHubState>()(
     }
   }
 
+  const quotedImageAttachment = async (thumb?: string): Promise<AttachmentMeta | undefined> => {
+    if (!thumb || !/^(data|blob):/i.test(thumb)) return undefined
+    try {
+      const blob = await (await fetch(thumb)).blob()
+      if (!blob.type.startsWith('image/')) return undefined
+      const bytes = new Uint8Array(await blob.arrayBuffer())
+      let bin = ''
+      for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000))
+      const ext = blob.type.split('/')[1]?.split('+')[0] || 'png'
+      return { id: createId('att'), name: `quoted-image.${ext}`, size: blob.size, mimeType: blob.type, dataBase64: btoa(bin) }
+    } catch {
+      return undefined
+    }
+  }
+
   // A quoted picture reaches the bot as its web address, so it can tell which image was meant.
   const quoteForBot = (m: ChatMessage) =>
     m.replyThumb && /^https?:/i.test(m.replyThumb) ? `${m.replyQuote} ${m.replyThumb}` : m.replyQuote ?? ''
@@ -1420,7 +1435,11 @@ export const useBotStore = create<BotHubState>()(
       const bot = get().bots.find((b) => b.id === botId)
       const trimmed = text.trim()
       if (!bot || (!trimmed && !attachments?.length)) return
-      await deliver(botId, enqueueUserMessage(bot, trimmed, attachments))
+      // A quoted picture the bot can't open by address (shown from data:/blob:) travels as an attachment.
+      const thumb = get().replyingTo[botId]?.thumb
+      const quoted = thumb && /^(data|blob):/i.test(thumb) ? await quotedImageAttachment(thumb) : undefined
+      const outgoing = quoted ? [...(attachments ?? []), quoted] : attachments
+      await deliver(botId, enqueueUserMessage(bot, trimmed, outgoing))
     },
 
     queueMobileMessage: ({ botId, text, clientMessageId, attachments }) => {
