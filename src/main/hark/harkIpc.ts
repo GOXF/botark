@@ -328,6 +328,12 @@ async function runHarkRpc(req: HarkRequest, signal?: AbortSignal): Promise<HarkR
       case 'olderHistory': {
         if (!harkProjectId(req.conversationId)) return { ok: false, status: 400, message: 'conversationId required' }
         const page = await fetchHarkHistoryPage(req.accountId, req.conversationId, { id: req.beforeId, createdAt: req.beforeCreatedAt }, signal)
+        // The page shape is undocumented: keep a sample in hark-frames.log for the next fix.
+        try {
+          logHarkCall('/messages/history', { before: req.beforeId, beforeCreatedAt: req.beforeCreatedAt }, page.raw)
+        } catch {
+          /* logging only */
+        }
         return { ok: true, data: { conversationId: req.conversationId, messages: historyView(page.messages), hasMore: page.hasMore } }
       }
       case 'conversationStatus':

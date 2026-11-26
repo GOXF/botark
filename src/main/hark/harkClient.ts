@@ -1,4 +1,3 @@
-import { logHarkFrame } from './harkFrameLog'
 /**
  * Hark Go REST + Real-time Sync (`/api/sync/conversation` SSE + `/api/sync/poll` fallback)
  * bound to an Electron session partition.
@@ -2226,7 +2225,7 @@ export async function fetchHarkHistoryPage(
   conversationId: string,
   before: { id: string; createdAt?: number },
   signal?: AbortSignal
-): Promise<{ messages: HarkChatMessage[]; hasMore: boolean }> {
+): Promise<{ messages: HarkChatMessage[]; hasMore: boolean; raw: unknown }> {
   const ses = await preparedSessionForAccount(accountId)
   const payload = await harkFetch(ses, '/messages/history', {
     method: 'GET',
@@ -2238,11 +2237,5 @@ export async function fetchHarkHistoryPage(
     },
     signal
   })
-  // The page shape is undocumented: keep a sample in hark-frames.log for the next fix.
-  try {
-    logHarkFrame(conversationId, `history-page ${JSON.stringify(payload).slice(0, 1500)}`)
-  } catch {
-    /* logging only */
-  }
-  return parseHarkHistoryPage(payload)
+  return { ...parseHarkHistoryPage(payload), raw: payload }
 }
