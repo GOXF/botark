@@ -415,9 +415,16 @@ function RichWidgets({
                                   return
                                 }
                               }
-                            } catch {
-                              /* fall through to sendMessage */
+                              console.warn('[hark] link-sessions returned no start URL', res)
+                            } catch (err) {
+                              console.warn('[hark] link-sessions failed', err)
                             }
+                          }
+                          // A connect button never posts "Connect <provider>" into the chat; without a
+                          // start link, open Hark's connected-accounts page instead.
+                          if (harkProvider) {
+                            await getBridge()?.muse?.openHttps?.('https://app.hark.com/settings/connected-accounts')
+                            return
                           }
                           void sendMessage(botId, b.actionText || b.label)
                         }}

@@ -89,7 +89,7 @@ function mapHarkMedia(msg: HarkChatMessage): MuseMediaPartView[] | undefined {
   return out.length > 0 ? out : undefined
 }
 
-function mapHarkRichWidgets(msg: HarkChatMessage): MuseRichWidgetView[] | undefined {
+export function mapHarkRichWidgets(msg: HarkChatMessage): MuseRichWidgetView[] | undefined {
   if (!msg.actions || msg.actions.length === 0) return undefined
   return [
     {
@@ -98,7 +98,9 @@ function mapHarkRichWidgets(msg: HarkChatMessage): MuseRichWidgetView[] | undefi
       text: '',
       buttons: msg.actions.map((a) => ({
         label: a.label || `Connect ${a.connector ?? ''}`,
-        actionText: a.connector ? `Connect ${a.connector}` : a.label
+        actionText: a.connector ? `Connect ${a.connector}` : a.label,
+        // The renderer asks Hark for the provider's auth link on click instead of posting the action text.
+        ...(a.connector ? { command: `hark:connect:${a.connector}` } : {})
       }))
     }
   ]

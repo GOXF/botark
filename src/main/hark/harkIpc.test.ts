@@ -67,3 +67,19 @@ it('rejects a malformed project response even when it contains main-conversation
     .resolves.toMatchObject({ ok: false, message: 'Hark returned no project ID' })
   expect(fetch).toHaveBeenCalledOnce()
 })
+
+it('gives connect actions a hark:connect command so the click asks for the auth link', async () => {
+  const { mapHarkRichWidgets } = await import('./harkIpc')
+  const widgets = mapHarkRichWidgets({
+    id: 'm1', role: 'assistant', content: '',
+    actions: [{ kind: 'connect_connector', connector: 'github', label: 'Connect GitHub' }, { kind: 'link', label: 'Open' }]
+  } as Parameters<typeof mapHarkRichWidgets>[0])
+  expect(widgets?.[0]).toMatchObject({
+    kind: 'text_with_button',
+    buttons: [
+      { label: 'Connect GitHub', actionText: 'Connect github', command: 'hark:connect:github' },
+      { label: 'Open', actionText: 'Open' }
+    ]
+  })
+  expect(widgets?.[0]?.kind === 'text_with_button' && widgets[0].buttons[1]).not.toHaveProperty('command')
+})
