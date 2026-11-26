@@ -27,3 +27,14 @@ it('shows the live browser run, not a finished one or the dispatching tool call'
   expect(currentHarkBrowser([done, call])?.label).toBe('https://a.test')
   expect(currentHarkBrowser([call])?.label).toBe('https://c.test')
 })
+
+it('lists every running browser so BotArk can switch between them', () => {
+    const preview = currentHarkBrowser([
+      { kind: 'browser', status: 'running', url: 'https://github.com/a' },
+      { kind: 'browser', status: 'completed', url: 'https://old.example' },
+      { kind: 'browser', status: 'running', url: 'https://www.16688.com.cn/' }
+    ])
+    expect(preview?.label).toBe('https://www.16688.com.cn/')
+    expect(preview?.browsers?.map((b) => b.label)).toEqual(['https://github.com/a', 'https://www.16688.com.cn/'])
+    expect(currentHarkBrowser([{ kind: 'browser', status: 'running', url: 'https://x.test' }])?.browsers).toBeUndefined()
+})

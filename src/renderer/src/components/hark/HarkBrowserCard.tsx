@@ -32,7 +32,12 @@ function clock(at: number): string {
  * screenshot history, save and "open in web".
  */
 export function HarkBrowserCard({ accountId, sessionId, attention = false }: { accountId: string; sessionId?: string; attention?: boolean }) {
-  const [panel, setPanel] = useState<HarkBrowserPreview | null>(null)
+  const [preview, setPanel] = useState<HarkBrowserPreview | null>(null)
+  // GOXF: Hark can run several browsers at once; pick which one the card, side column and full view show.
+  const [pick, setPick] = useState(-1)
+  const browsers = preview?.browsers ?? []
+  const picked = pick >= 0 && pick < browsers.length ? pick : Math.max(0, browsers.findIndex((b) => b.label === preview?.label && b.liveViewUrl === preview?.liveViewUrl))
+  const panel = browsers.length > 1 ? browsers[picked] : preview
   const [image, setImage] = useState('')
   const [shotAt, setShotAt] = useState(0)
   const [error, setError] = useState('')
@@ -100,6 +105,8 @@ export function HarkBrowserCard({ accountId, sessionId, attention = false }: { a
     const timer = setInterval(() => setRevision((r) => r + 1), live ? 5000 : 15_000)
     return () => clearInterval(timer)
   }, [hidden, waiting, active, full])
+
+  useEffect(() => { imageRef.current = ''; setImage(''); setShotAt(0); setShots([]); setViewing(null); setLivePainted(false) }, [picked])
 
   const key = panel?.screenshotKey
   const url = panel?.screenshotUrl
@@ -171,6 +178,19 @@ export function HarkBrowserCard({ accountId, sessionId, attention = false }: { a
   const IconBtn = ({ label, onClick, children }: { label: string; onClick: () => void; children: ReactNode }) => (
     <IconButton label={label} size="sm" onClick={onClick}>{children}</IconButton>
   )
+  const host = (l: string) => { try { return new URL(l).hostname.replace(/^www\./, '') } catch { return l } }
+  const Switcher = ({ dark = false }: { dark?: boolean }) => browsers.length > 1 ? (
+    <div role="tablist" aria-label="切换浏览器" className={cn('flex min-w-0 shrink items-center gap-0.5 overflow-x-auto rounded-full p-0.5', dark ? 'bg-white/10' : 'bg-sunken')}>
+      {browsers.map((b, i) => (
+        <button key={`${i}-${b.label}`} type="button" role="tab" aria-selected={i === picked} title={b.label}
+          onClick={(e) => { e.stopPropagation(); setPick(i) }}
+          className={cn('max-w-[140px] shrink-0 truncate rounded-full px-2 py-0.5 text-[11px]',
+            i === picked ? (dark ? 'bg-white text-ink' : 'bg-main text-ink shadow-float') : (dark ? 'text-white/70 hover:text-white' : 'text-ink-secondary hover:text-ink'))}>
+          {i + 1} · {host(b.label)}
+        </button>
+      ))}
+    </div>
+  ) : null
   const StepList = ({ dark = false }: { dark?: boolean }) => (
     <ol className="flex flex-col gap-2">
       {steps.length === 0 && <li className={dark ? 'text-white/55' : 'text-ink-muted'}>还没有步骤记录</li>}
@@ -205,7 +225,7 @@ export function HarkBrowserCard({ accountId, sessionId, attention = false }: { a
             <span className={cn('flex shrink-0 items-center gap-1 font-medium', active || waiting ? 'text-status-online' : 'text-ink-muted')}>
               <span className={cn('size-2 rounded-full', active || waiting ? 'bg-status-online' : 'bg-ink-muted')} />{active || waiting ? '实时' : '已结束'}
             </span>
-            <span className="truncate text-ink-muted">{panel.label}</span>
+            {browsers.length > 1 ? <Switcher /> : <span className="truncate text-ink-muted">{panel.label}</span>}
             {shotAt > 0 && <span className="ml-auto shrink-0 text-[11px] text-ink-muted">{clock(shotAt)}</span>}
           </div>
           <button type="button" className="mx-3 mt-2 block w-[calc(100%-1.5rem)] overflow-hidden rounded-xl bg-sunken" onClick={() => setFull(true)}
@@ -246,7 +266,7 @@ export function HarkBrowserCard({ accountId, sessionId, attention = false }: { a
             <span className={cn('flex shrink-0 items-center gap-1 font-medium', active || waiting ? 'text-status-online' : 'text-white/55')}>
               <span className={cn('size-2 rounded-full', active || waiting ? 'bg-status-online' : 'bg-white/40')} />{active || waiting ? '实时' : '已结束'}
             </span>
-            <span className="truncate text-white/55">{panel.label}</span>
+            {browsers.length > 1 ? <Switcher dark /> : <span className="truncate text-white/55">{panel.label}</span>}
             {shotAt > 0 && <span className="ml-auto shrink-0 tabular-nums text-white/55">{clock(shotAt)}</span>}
             <button type="button" aria-label="全屏" title="全屏" onClick={() => setFull(true)}
               className={cn('press-icon grid size-7 shrink-0 place-items-center rounded-full bg-white/15 text-white hover:bg-white/25', shotAt > 0 ? '' : 'ml-auto')}><Maximize2 className="size-3.5" /></button>
@@ -267,7 +287,7 @@ export function HarkBrowserCard({ accountId, sessionId, attention = false }: { a
             <button type="button" aria-label="关闭全屏 (Esc)" onClick={closeFull}
               className="press-icon grid size-8 place-items-center rounded-full bg-white/15 text-white hover:bg-white/25"><X className="size-4" /></button>
             <span className="shrink-0 text-[13px] font-semibold text-white">远程浏览器</span>
-            <span className="truncate text-white/55">{panel.label}</span>
+            {browsers.length > 1 ? <Switcher dark /> : <span className="truncate text-white/55">{panel.label}</span>}
             <span className="ml-auto shrink-0 text-white/55 tabular-nums">
               {viewing ? `回看 ${clock(viewing.at)}` : `${active || waiting ? '实时' : '已结束'}${shotAt ? ` · ${clock(shotAt)}` : ''}`}
             </span>

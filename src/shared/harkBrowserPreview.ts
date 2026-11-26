@@ -5,6 +5,8 @@ export interface HarkBrowserPreview {
   screenshotUrl?: string
   /** Hark's live stream page (/api/liveview/view?t=…), absolute on app.hark.com; token-authenticated. */
   liveViewUrl?: string
+  /** GOXF: every browser Hark runs at once (two or more), so BotArk can switch between them; this one is among them. */
+  browsers?: HarkBrowserPreview[]
 }
 
 /** Only Hark's own live view page, made absolute. */
@@ -41,10 +43,12 @@ export function currentHarkBrowser(panels: Panel[]): HarkBrowserPreview | null {
   const pool = own.length ? own : browsers
   const panel = pool.findLast((p) => harkBrowserLive(p.status)) ?? pool.at(-1)
   if (!panel) return null
-  return {
-    label: panel.url || panel.title || panel.kind, status: panel.status, liveViewUrl: harkLiveViewUrl(panel.liveViewUrl),
-    ...harkScreenshotReference(panel.screenshotKey, panel.screenshotUrl)
-  }
+  const view = (p: Panel): HarkBrowserPreview => ({
+    label: p.url || p.title || p.kind, status: p.status, liveViewUrl: harkLiveViewUrl(p.liveViewUrl),
+    ...harkScreenshotReference(p.screenshotKey, p.screenshotUrl)
+  })
+  const running = pool.filter((p) => harkBrowserLive(p.status))
+  return running.length > 1 ? { ...view(panel), browsers: running.map(view) } : view(panel)
 }
 
 export function harkScreenshotReference(key?: string, directUrl?: string): Pick<HarkBrowserPreview, 'screenshotKey' | 'screenshotUrl'> {
