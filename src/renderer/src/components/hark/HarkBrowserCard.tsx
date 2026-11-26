@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
+import { HarkLiveView } from './HarkLiveView'
 import { createPortal } from 'react-dom'
 import { Check, ChevronUp, Download, ExternalLink, ListChecks, Loader2, Maximize2, Minimize2, Minus, X } from 'lucide-react'
 import { harkRpc } from '@adapters/hark/harkRequests'
@@ -120,6 +121,7 @@ export function HarkBrowserCard({ accountId, sessionId, attention = false }: { a
     setShots((s) => (s.length && !s.at(-1)!.step && step ? [...s.slice(0, -1), { ...s.at(-1)!, step }] : s))
   }, [shots.length, step])
 
+  const [livePainted, setLivePainted] = useState(false)
   const closeFull = useCallback(() => { setFull(false); setViewing(null) }, [])
   useEffect(() => {
     if (!full) return
@@ -194,7 +196,9 @@ export function HarkBrowserCard({ accountId, sessionId, attention = false }: { a
           </div>
           <button type="button" className="mx-3 mt-2 block w-[calc(100%-1.5rem)] overflow-hidden rounded-xl bg-sunken" onClick={() => setFull(true)}
             aria-label="全屏查看">
-            {live && !full ? <iframe src={live} title="Hark 远程浏览器实时画面" className="pointer-events-none aspect-video max-h-[38vh] w-full border-0" sandbox="allow-scripts allow-same-origin" />
+            {live && !full && <HarkLiveView src={live} accountId={accountId} onState={setLivePainted}
+              className="pointer-events-none aspect-video max-h-[38vh] w-full border-0" />}
+            {live && !full && livePainted ? null
               : image ? <img src={image} alt="Hark 远程浏览器截图" className="max-h-[38vh] w-full object-contain" />
               : <div className="grid h-40 place-items-center text-ink-muted">{error || (key || url ? '正在加载截图…' : '暂无截图')}</div>}
           </button>
@@ -236,7 +240,9 @@ export function HarkBrowserCard({ accountId, sessionId, attention = false }: { a
           </header>
           <div className="flex min-h-0 flex-1 gap-4 px-4">
             <div className="relative grid min-w-0 flex-1 place-items-center overflow-hidden rounded-xl bg-white/[0.06]">
-              {live && !viewing ? <iframe src={live} title="Hark 远程浏览器实时画面" className="aspect-video max-h-full w-full border-0" sandbox="allow-scripts allow-same-origin" />
+              {live && !viewing && <HarkLiveView src={live} accountId={accountId} onState={setLivePainted}
+                className="aspect-video max-h-full w-full border-0" />}
+              {live && !viewing && livePainted ? null
                 : shown ? <img src={shown.src} alt="Hark 远程浏览器截图" className="max-h-full max-w-full object-contain" />
                 : <span className="text-white/55">{error || '暂无截图'}</span>}
             </div>

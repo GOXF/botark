@@ -161,7 +161,9 @@ function createMainWindow(): BrowserWindow {
       nodeIntegration: false,
       sandbox: true,
       // GOXF: the built-in PDF viewer renders previewed PDFs (blob: iframes).
-      plugins: true
+      plugins: true,
+      // GOXF: Hark's live browser view runs in a <webview> on the Hark account's partition (goxfLiveView.ts).
+      webviewTag: true
     }
   })
 
@@ -262,7 +264,8 @@ function createPopoutWindow(query: Record<string, string>, bounds?: Rectangle): 
       preload: join(__dirname, '../preload/index.js'),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: true
+      sandbox: true,
+      webviewTag: true
     }
   })
   win.webContents.on('before-input-event', (event, input) => {

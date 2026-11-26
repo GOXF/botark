@@ -94,27 +94,34 @@ export function HarkAskCards({ accountId, sessionId, asks, className = 'mx-5' }:
    * secure_screen code (secret.type one_time_code): save it like a login (type one_time_code) and hand over its id.
    * Inferred from the login form, not observed; when the vault call is refused, the plain code goes instead.
    */
+  /**
+   * Hark's secure code form: the code goes to POST /one-time-codes (as Hark's web does; /secrets refuses
+   * one_time_code), and its id goes to the waiting tool. The body shape is inferred; when that call is refused,
+   * the code goes to the tool as the form's fields ({"code": …}), not as bare text, which the browser kept re-asking for.
+   */
   const submitCode = async (ask: HarkAskView, value: string) => {
     if (!ask.codeSecret || !ask.requestId) return submit(ask, value)
     setBusy(ask.id)
     setError((e) => ({ ...e, [ask.id]: '' }))
-    let secretId = ''
+    let codeId = ''
     try {
       const saved = await hark.rpc({
-        accountId, op: 'call', method: 'POST', path: '/secrets',
-        body: { type: 'one_time_code', scope: ask.codeSecret.scope, label: ask.prompt, conversationId: sessionId, fields: { code: value } }
+        accountId, op: 'call', method: 'POST', path: '/one-time-codes',
+        body: { scope: ask.codeSecret.scope, code: value, conversationId: sessionId, requestId: ask.requestId, dispatchId: ask.dispatchId }
       })
       const d = (saved.ok ? saved.data ?? {} : {}) as Record<string, unknown>
-      const inner = (d['secret'] ?? d['data'] ?? {}) as Record<string, unknown>
-      secretId = String(d['id'] ?? d['secretId'] ?? inner['id'] ?? inner['secretId'] ?? '')
+      const inner = (d['oneTimeCode'] ?? d['secret'] ?? d['data'] ?? {}) as Record<string, unknown>
+      codeId = String(d['id'] ?? d['secretId'] ?? inner['id'] ?? inner['secretId'] ?? '')
     } catch {
-      /* fall back to the plain code */
+      /* fall back to the form's fields */
     }
-    if (!secretId) return submit(ask, value)
     try {
       const res = await hark.rpc({
         accountId, op: 'call', method: 'POST', path: '/messages/tool-response',
-        body: { conversationId: sessionId, requestId: ask.requestId, dispatchId: ask.dispatchId, type: 'user_input', value: JSON.stringify({ secretId }) }
+        body: {
+          conversationId: sessionId, requestId: ask.requestId, dispatchId: ask.dispatchId, type: 'user_input',
+          value: JSON.stringify(codeId ? { secretId: codeId } : { code: value })
+        }
       })
       if (!res.ok) throw new Error(res.message || '提交失败')
       setSent((s) => ({ ...s, [ask.id]: true }))

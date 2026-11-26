@@ -506,13 +506,13 @@ async function runHarkRpc(req: HarkRequest, signal?: AbortSignal): Promise<HarkR
           })
           if (isConnector) logHarkCall(req.path, req.body, data)
           // Answers to asks: log the outcome only (bodies hold passwords and codes).
-          else if (/^\/?(secrets|messages\/tool-response)\b/i.test(req.path)) logHarkCall(req.path, null, { ok: true, keys: data && typeof data === 'object' ? Object.keys(data) : typeof data })
+          else if (/^\/?(secrets|one-time-codes|messages\/tool-response)\b/i.test(req.path)) logHarkCall(req.path, null, { ok: true, keys: data && typeof data === 'object' ? Object.keys(data) : typeof data })
           return { ok: true, data }
         } catch (err) {
           if (isConnector) {
             const e = err as { status?: number; message?: string; body?: unknown }
             logHarkCall(req.path, req.body, { error: true, status: e.status, message: e.message, body: e.body })
-          } else if (/^\/?(secrets|messages\/tool-response)\b/i.test(req.path)) {
+          } else if (/^\/?(secrets|one-time-codes|messages\/tool-response)\b/i.test(req.path)) {
             const e = err as { status?: number; message?: string }
             logHarkCall(req.path, null, { error: true, status: e.status, message: e.message })
           }
