@@ -1206,9 +1206,16 @@ function RichWidgets({
                                   return
                                 }
                               }
-                            } catch {
-                              /* fall through to sendMessage */
+                              console.warn('[hark] link-sessions gave no startUrl', res)
+                            } catch (err) {
+                              console.warn('[hark] link-sessions failed', err)
                             }
+                          }
+                          // GOXF 2026-11-26: a connect button never posts "Connect xxx" into the chat;
+                          // without a start link, open Hark's connected-accounts page instead.
+                          if (harkProvider) {
+                            await getBridge()?.muse?.openHttps?.('https://app.hark.com/settings/connected-accounts')
+                            return
                           }
                           void sendMessage(botId, b.actionText || b.label)
                         }}
