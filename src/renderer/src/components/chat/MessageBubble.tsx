@@ -103,6 +103,14 @@ function DeliveryState({ message, onRetry }: Pick<MessageBubbleProps, 'message' 
   }
 }
 
+// GOXF: Hark's tool names in plain Chinese; unknown names stay as they are.
+const TOOL_LABELS: Record<string, string> = {
+  display_file: '发送文件', browser: '浏览器', web_search: '网页搜索', web_fetch: '读取网页',
+  image_search: '图片搜索', shell: '运行命令', read_file: '读取文件', write_file: '写入文件',
+  edit_file: '修改文件', send_message: '发送消息', run_subagent: '子任务', memory: '记忆', skill: '技能'
+}
+export const toolLabel = (name: string) => TOOL_LABELS[name] ?? name
+
 export function ToolChips({ tools }: { tools: ChatToolCall[] }) {
   if (!tools.length) return null
   return (
@@ -119,7 +127,7 @@ export function ToolChips({ tools }: { tools: ChatToolCall[] }) {
           )}
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2">
-              <span className="min-w-0 flex-1 truncate font-medium text-ink">{tool.name}</span>
+              <span className="min-w-0 flex-1 truncate font-medium text-ink" title={tool.name}>{toolLabel(tool.name)}</span>
               {tool.toolType && tool.toolType !== tool.name && (
                 <span className="shrink-0 text-ink-muted">{tool.toolType}</span>
               )}

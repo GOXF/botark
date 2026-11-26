@@ -24,6 +24,7 @@ import {
 import { useShallow } from 'zustand/react/shallow'
 import { MarkdownText } from '@/components/chat/MarkdownText'
 import { MediaParts, ToolChips } from '@/components/chat/MessageBubble'
+import { HarkBrowserCard } from '@/components/hark/HarkBrowserCard'
 import { formatClock } from '@/lib/format'
 import { AttachmentChips } from '@/components/chat/AttachmentChips'
 import { createAttachmentDraft, type DraftAttachment } from '@/components/chat/attachmentDraft'
@@ -1585,6 +1586,13 @@ export function RoomView({ id }: { id: string }) {
                 </div>
               </div>
             )}
+
+            {/* GOXF: a Hark member's browser shows here too, as in its own chat. */}
+            {room.members.filter((m) => m.platform === 'hark' && m.sessionId).map((m) => (
+              <div key={JSON.stringify([m.accountId, m.sessionId])} className="mx-auto w-full max-w-[780px]">
+                <HarkBrowserCard accountId={m.accountId} sessionId={m.sessionId} />
+              </div>
+            ))}
           </div>
         </div>
       )}
