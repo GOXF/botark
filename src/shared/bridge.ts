@@ -2,6 +2,7 @@ import type { GoxfUpdateBridge } from './goxfUpdate'
 import type { GoxfDownloadBridge } from './goxfDownload'
 import type { GoxfPopoutBridge } from './goxfPopout'
 import type { GoxfInAppBridge } from './goxfInApp'
+import type { GoxfTrayBridge } from './goxfTray'
 import type { SlackBridge } from './slack'
 import type { WorkspaceBridge } from './workspace'
 import type { PortalBridge } from './workspacePortal'
@@ -336,4 +337,6 @@ export interface BotHubBridge {
   readonly goxfPopout?: GoxfPopoutBridge
   /** GOXF fork: web pages in a BotArk window first, system browser on request. */
   readonly goxfInApp?: GoxfInAppBridge
+  /** GOXF fork: close button hides to the tray (Windows/Linux). */
+  readonly goxfTray?: GoxfTrayBridge
 }

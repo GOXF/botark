@@ -6,6 +6,7 @@ import { SecurityVaultCenter } from '@/components/info/SecurityVaultCard'
 import { Button } from '@/components/ui/Button'
 import { SegmentedControl } from '@/components/ui/SegmentedControl'
 import { GoxfChannelRow } from '@/components/update/GoxfChannelRow'
+import { GoxfTrayRow } from '@/components/update/GoxfTrayRow'
 import { getBridge } from '@/lib/bridge'
 import { cn } from '@/lib/cn'
 import { useT, t } from '@/lib/i18n'
@@ -361,6 +362,8 @@ export function GeneralSettingsSection({
             ]}
           />
         </div>
+
+        <GoxfTrayRow />
 
         <div className="flex items-center justify-between px-4 py-3.5">
           <div>

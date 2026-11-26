@@ -7,6 +7,7 @@ import { GOXF_UPDATE_CHANNELS, type GoxfUpdateEvent } from '@shared/goxfUpdate'
 import { GOXF_DOWNLOAD_CHANNELS, type GoxfDownloadEvent } from '@shared/goxfDownload'
 import { GOXF_POPOUT_CHANNELS, type PopoutPatch } from '@shared/goxfPopout'
 import { GOXF_INAPP_CHANNELS } from '@shared/goxfInApp'
+import { GOXF_TRAY_CHANNELS } from '@shared/goxfTray'
 import {
   ANTIGRAVITY_CHANNELS,
   CUE_CHANNELS,
@@ -151,6 +152,10 @@ const bridge: BotHubBridge = {
   },
   goxfInApp: {
     open: (req) => ipcRenderer.invoke(GOXF_INAPP_CHANNELS.open, req)
+  },
+  goxfTray: {
+    get: () => ipcRenderer.invoke(GOXF_TRAY_CHANNELS.get),
+    set: (behavior) => ipcRenderer.invoke(GOXF_TRAY_CHANNELS.set, behavior)
   },
   goxfPopout: {
     open: (botId) => ipcRenderer.invoke(GOXF_POPOUT_CHANNELS.open, botId),

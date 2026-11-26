@@ -36,6 +36,7 @@ import { getAppWindowIcon } from './appIcon'
 import { hasPopouts, registerPopoutIpc, restorePopouts } from './goxfPopout'
 import { openInApp, registerInAppIpc } from './goxfInApp'
 import { allowHarkLiveViewFrames } from './goxfLiveView'
+import { hideToTray, registerTrayIpc, startTray } from './goxfTray'
 
 try {
   app.commandLine?.appendSwitch?.('disable-blink-features', 'AutomationControlled')
@@ -193,6 +194,11 @@ function createMainWindow(): BrowserWindow {
   // re-created window used to start a second Muse session manager while the
   // old one kept its timers and gateways running (one leak per reopen).
   win.on('close', (event) => {
+    // GOXF: Windows/Linux close button hides to the tray unless the setting says quit.
+    if (!isMac && !quitting && hideToTray(win, () => mainWindow)) {
+      event.preventDefault()
+      return
+    }
     if (isMac && !quitting) {
       event.preventDefault()
       // Hiding a fullscreen window leaves an empty black Space behind.
@@ -362,7 +368,9 @@ app.whenReady().then(async () => {
   registerSlackIpc(() => mainWindow)
   registerPopoutIpc(() => mainWindow, createPopoutWindow)
   registerInAppIpc()
+  registerTrayIpc()
   mainWindow = createMainWindow()
+  startTray(() => mainWindow)
   startPerfLog(mainWindow)
   readyForDeepLinks = true
   const initialCueCallback = findCueCallbackArg(process.argv)
