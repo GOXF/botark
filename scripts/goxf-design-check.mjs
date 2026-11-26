@@ -88,9 +88,9 @@ export const MAPPING = {
   'text-amber-500': { color: 'var(--color-status-attention)' },
   'text-amber-600': { color: 'var(--color-status-attention-ink)' },
   'bg-amber-500/15': tint('status-attention', 15),
-  'text-orange-400': { color: 'var(--color-status-error-ink)' },
-  'text-orange-600': { color: 'var(--color-status-error-ink)' },
-  'bg-orange-500/15': tint('status-error', 15),
+  'text-orange-400': { color: 'var(--color-status-attention-ink)' },
+  'text-orange-600': { color: 'var(--color-status-attention-ink)' },
+  'bg-orange-500/15': tint('status-attention', 15),
   'text-emerald-600': { color: 'var(--color-status-online-ink)' }
 }
 

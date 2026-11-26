@@ -16,7 +16,7 @@
 }
 
 .bg-amber-500\/15 { background-color: color-mix(in oklab, var(--color-status-attention) 15%, transparent); }
-.bg-orange-500\/15 { background-color: color-mix(in oklab, var(--color-status-error) 15%, transparent); }
+.bg-orange-500\/15 { background-color: color-mix(in oklab, var(--color-status-attention) 15%, transparent); }
 .rounded { border-radius: var(--radius-md); }
 .rounded-3xl { border-radius: var(--radius-2xl); }
 .rounded-xs { border-radius: var(--radius-sm); }
@@ -43,9 +43,9 @@
 .text-amber-600 { color: var(--color-status-attention-ink); }
 .text-emerald-600 { color: var(--color-status-online-ink); }
 .text-lg { font-size: 17px; }
-.text-orange-400 { color: var(--color-status-error-ink); }
-.text-orange-600 { color: var(--color-status-error-ink); }
+.text-orange-400 { color: var(--color-status-attention-ink); }
+.text-orange-600 { color: var(--color-status-attention-ink); }
 .dark\:text-amber-400:where([data-theme=dark], [data-theme=dark] *) { color: var(--color-status-attention-ink); }
-.dark\:text-orange-400:where([data-theme=dark], [data-theme=dark] *) { color: var(--color-status-error-ink); }
+.dark\:text-orange-400:where([data-theme=dark], [data-theme=dark] *) { color: var(--color-status-attention-ink); }
 @media (width >= 40rem) { .sm\:text-\[30px\] { font-size: 28px; } }
 @media (width >= 40rem) { .sm\:text-\[32px\] { font-size: 28px; } }
