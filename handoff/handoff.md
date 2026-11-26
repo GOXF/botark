@@ -317,3 +317,8 @@ git clone <GOXF/botark> && cd botark && git checkout fix/hark-login-sync && npm 
 - Settings 连接 also uses the in-app window and refreshes after.
 - Unverified on device: Google/other OAuth may refuse Electron (use 在浏览器打开).
 - 14:45 follow-up: when the auth page goes to the system browser (menu 在浏览器打开 or 改用浏览器打开), `waitForHarkProvider` polls GET /connectors every 5 s for up to 10 min; card shows 「等待浏览器里授权 X…」 + 取消, then 已连接 + continue message as in-app. Settings 连接 refreshes the same way.
+
+## 2026-11-26 15:35 Hark: load earlier messages
+- User 15:11: scrolling up stopped at 13:23. Cause: Hark history = first /sync/poll snapshot only (recent stretch).
+- Hark web loads older via `GET /api/messages/history?conversationId=&v=2&before=<messageId>&beforeCreatedAt=<ms>` (from user's F12, 15:18). Response shape NOT seen: `parseHarkHistoryPage` accepts records ({messages:{id:m},log}) or a list, optional `data` wrapper; hasMore from hasMore/hasOlder/more else non-empty. Each page is sampled (first 1500 chars) into hark-frames.log as `history-page …` — read it if pages come back empty.
+- IPC op `olderHistory`; store `loadOlderHistory(botId)` / `olderHistoryDone`; MessageList shows 「加载更早的消息」 at the top for Hark and auto-loads when scrolled near the top (keeps position).

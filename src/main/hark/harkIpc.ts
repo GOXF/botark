@@ -22,6 +22,7 @@ import {
   downloadHarkArtifact,
   extractMessages,
   fetchConversationSnapshotSummary,
+  fetchHarkHistoryPage,
   getAuthSession,
   getConversationStatuses,
   getMainConversation,
@@ -323,6 +324,11 @@ async function runHarkRpc(req: HarkRequest, signal?: AbortSignal): Promise<HarkR
             activeWork: snap?.activeWork ?? []
           }
         }
+      }
+      case 'olderHistory': {
+        if (!harkProjectId(req.conversationId)) return { ok: false, status: 400, message: 'conversationId required' }
+        const page = await fetchHarkHistoryPage(req.accountId, req.conversationId, { id: req.beforeId, createdAt: req.beforeCreatedAt }, signal)
+        return { ok: true, data: { conversationId: req.conversationId, messages: historyView(page.messages), hasMore: page.hasMore } }
       }
       case 'conversationStatus':
         return { ok: true, data: await getConversationStatuses(req.accountId) }

@@ -5,6 +5,7 @@ import { cn } from '@/lib/cn'
 import { formatDayLabel, isSameDay } from '@/lib/format'
 import type { Bot, BotAccount, ChatMessage } from '@/types'
 import { MessageBubble } from './MessageBubble'
+import { useBotStore } from '@/store/botStore'
 import { TypingIndicator } from './TypingIndicator'
 import { plural, useT } from '@/lib/i18n'
 
@@ -133,7 +134,7 @@ function Transcript({ bot, messages, accounts, typing, onRetry }: MessageListPro
       view.scrollTop += newTop - anchor.top
     }
     updateScrollState(view)
-  }, [hiddenCount, visibleCount, updateScrollState])
+  }, [hiddenCount, visibleCount, visibleMessages[0]?.id, updateScrollState])
 
   useLayoutEffect(() => {
     const receiveFocus = () => {
@@ -173,6 +174,36 @@ function Transcript({ bot, messages, accounts, typing, onRetry }: MessageListPro
     setVisibleCount((count) => count + WINDOW_SIZE)
   }
 
+  // GOXF: Hark only sends the newest stretch at first; older pages come from Hark on demand.
+  const loadOlderHistory = useBotStore((s) => s.loadOlderHistory)
+  const olderDone = useBotStore((s) => s.olderHistoryDone)
+  const [olderState, setOlderState] = useState<'idle' | 'loading' | 'error'>('idle')
+  const [olderTick, setOlderTick] = useState(0)
+  const canLoadOlder = hiddenCount === 0 && messages.length > 0 && !olderDone(bot.id)
+  void olderTick
+  const loadOlder = async () => {
+    if (olderState === 'loading' || !canLoadOlder) return
+    setOlderState('loading')
+    // Room for the new page so it is not hidden behind "load earlier", then pin the current top bubble.
+    setVisibleCount((count) => Math.max(count, messages.length) + 500)
+    await new Promise((r) => requestAnimationFrame(() => r(null)))
+    const view = scrollRef.current
+    const firstMessage = transcriptRef.current?.querySelector<HTMLElement>('[data-message-id]')
+    if (view && firstMessage) {
+      prependAnchor.current = { message: firstMessage, top: firstMessage.getBoundingClientRect().top - view.getBoundingClientRect().top }
+    }
+    try {
+      await loadOlderHistory(bot.id)
+      setOlderState('idle')
+    } catch (err) {
+      console.warn('[history] older page failed', err)
+      setOlderState('error')
+    } finally {
+      prependAnchor.current = null
+      setOlderTick((n) => n + 1)
+    }
+  }
+
   const jumpToLatest = () => {
     if (scrollFrame.current !== null) cancelAnimationFrame(scrollFrame.current)
     scrollFrame.current = null
@@ -190,6 +221,7 @@ function Transcript({ bot, messages, accounts, typing, onRetry }: MessageListPro
           const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < STICKY_THRESHOLD_PX
           if (!atBottom && stickToBottom.current && Date.now() - mountedAt.current < 800) return
           updateScrollState(el)
+          if (el.scrollTop < 80 && canLoadOlder && olderState === 'idle' && Date.now() - mountedAt.current > 1500) void loadOlder()
         }}
         className="min-h-0 flex-1 overflow-y-auto"
       >
@@ -204,6 +236,19 @@ function Transcript({ bot, messages, accounts, typing, onRetry }: MessageListPro
               >
                 <ChevronUp className="size-3.5" aria-hidden />
                 {plural(t, Math.min(hiddenCount, WINDOW_SIZE), 'Load {n} earlier message', 'Load {n} earlier messages')}
+              </button>
+            </li>
+          )}
+          {canLoadOlder && (
+            <li className="flex justify-center pb-5 [overflow-anchor:none]">
+              <button
+                type="button"
+                onClick={() => void loadOlder()}
+                disabled={olderState === 'loading'}
+                className="press inline-flex items-center gap-1.5 rounded-full border border-line bg-surface px-3 py-1.5 text-[12px] font-medium text-ink-secondary hover:bg-hover hover:text-ink disabled:opacity-60"
+              >
+                <ChevronUp className="size-3.5" aria-hidden />
+                {olderState === 'loading' ? '正在加载更早的消息…' : olderState === 'error' ? '加载失败，点此重试' : '加载更早的消息'}
               </button>
             </li>
           )}

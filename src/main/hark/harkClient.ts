@@ -1,3 +1,4 @@
+import { logHarkFrame } from './harkFrameLog'
 /**
  * Hark Go REST + Real-time Sync (`/api/sync/conversation` SSE + `/api/sync/poll` fallback)
  * bound to an Electron session partition.
@@ -2191,4 +2192,57 @@ export function harkToolDetail(...sources: Array<Record<string, unknown> | undef
     }
   }
   return undefined
+}
+
+/**
+ * GOXF: parse one page of `GET /api/messages/history` (what Hark's web app calls while you scroll up).
+ * The exact shape is not documented, so accept the snapshot "records" form ({messages:{id:m}, log})
+ * as well as a plain list, optionally wrapped in `data`.
+ */
+export function parseHarkHistoryPage(payload: unknown): { messages: HarkChatMessage[]; hasMore: boolean } {
+  const outer = payload && typeof payload === 'object' ? (payload as Record<string, unknown>) : {}
+  const root = (outer['data'] && typeof outer['data'] === 'object' && !Array.isArray(outer['data'])
+    ? outer['data']
+    : Array.isArray(payload) ? { messages: payload } : outer) as Record<string, unknown>
+  let messages: HarkChatMessage[]
+  const map = root['messages']
+  if (map && typeof map === 'object' && !Array.isArray(map)) {
+    const state = new HarkConversationSyncState()
+    state.applyFrame(JSON.stringify({ type: 'snapshot', shape: 'records', data: { messages: map, log: root['log'] ?? [] } }))
+    messages = state.orderedMessages()
+  } else {
+    messages = extractMessages(root)
+  }
+  // Oldest first, like the snapshot.
+  const at = (m: HarkChatMessage) => (m.createdAt ? Number(m.createdAt) || Date.parse(String(m.createdAt)) || 0 : 0)
+  if (messages.length > 1 && at(messages[0]!) > at(messages[messages.length - 1]!)) messages.reverse()
+  const flag = root['hasMore'] ?? root['hasOlder'] ?? root['more'] ?? outer['hasMore']
+  const hasMore = typeof flag === 'boolean' ? flag : messages.length > 0
+  return { messages, hasMore }
+}
+
+export async function fetchHarkHistoryPage(
+  accountId: string,
+  conversationId: string,
+  before: { id: string; createdAt?: number },
+  signal?: AbortSignal
+): Promise<{ messages: HarkChatMessage[]; hasMore: boolean }> {
+  const ses = await preparedSessionForAccount(accountId)
+  const payload = await harkFetch(ses, '/messages/history', {
+    method: 'GET',
+    query: {
+      conversationId,
+      v: '2',
+      before: before.id,
+      beforeCreatedAt: before.createdAt ? String(Math.round(before.createdAt)) : undefined
+    },
+    signal
+  })
+  // The page shape is undocumented: keep a sample in hark-frames.log for the next fix.
+  try {
+    logHarkFrame(conversationId, `history-page ${JSON.stringify(payload).slice(0, 1500)}`)
+  } catch {
+    /* logging only */
+  }
+  return parseHarkHistoryPage(payload)
 }

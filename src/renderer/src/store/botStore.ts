@@ -208,6 +208,10 @@ export interface BotHubState {
   togglePinBot: (botId: string) => void
   /** Local drag-reorder: place `botId` before `beforeId` (or at end) inside `groupId`. */
   reorderBot: (botId: string, groupId: string, beforeId: string | null) => void
+  /** GOXF: fetch older Hark messages above the oldest one shown. Returns how many were added (0 = none left). */
+  loadOlderHistory: (botId: string) => Promise<number>
+  /** GOXF: true once Hark said there is nothing older for this bot's conversation. */
+  olderHistoryDone: (botId: string) => boolean
   toggleInfoPanel: () => void
   toggleSidebarCollapsed: () => void
   setSidebarWidth: (width: number) => void
@@ -581,6 +585,8 @@ export const useBotStore = create<BotHubState>()(
     })
 
   const pendingHarkSelections = new Map<string, symbol>()
+  /** GOXF: `${botId}:${sessionId}` whose Hark history has nothing older left. */
+  const olderHistoryEnd = new Set<string>()
   const loadHarkSession = async (bot: Bot, sessionId: string | undefined, selection: symbol | undefined) => {
     const accountId = bot.activeAccountId
     if (sessionId === HARK_DRAFT_SESSION) return // nothing on Hark yet
@@ -1161,6 +1167,42 @@ export const useBotStore = create<BotHubState>()(
     togglePinBot: (botId) =>
       set((state) => ({ bots: state.bots.map((b) => (b.id === botId ? { ...b, pinned: !b.pinned } : b)) })),
 
+    olderHistoryDone: (botId) => {
+      const bot = get().bots.find((b) => b.id === botId)
+      return !bot || bot.platformId !== 'hark' || olderHistoryEnd.has(`${botId}:${bot.activeSessionId}`)
+    },
+    loadOlderHistory: async (botId) => {
+      const bot = get().bots.find((b) => b.id === botId)
+      const sessionId = bot?.activeSessionId
+      if (!bot || bot.platformId !== 'hark' || !sessionId || sessionId === HARK_DRAFT_SESSION) return 0
+      const endKey = `${botId}:${sessionId}`
+      if (olderHistoryEnd.has(endKey)) return 0
+      const list = get().messages[botId] ?? []
+      const oldest = list.find((m) => /^hark_(u_)?/.test(m.id))
+      if (!oldest) return 0
+      const res = await electronBridge()?.hark?.rpc({
+        accountId: bot.activeAccountId,
+        op: 'olderHistory',
+        conversationId: sessionId,
+        beforeId: oldest.id.replace(/^hark_(u_)?/, ''),
+        beforeCreatedAt: oldest.createdAt
+      })
+      if (!res?.ok) throw new Error(res?.message ?? 'Hark unavailable')
+      const current = get().bots.find((b) => b.id === botId)
+      if (current?.activeSessionId !== sessionId) return 0
+      const page = harkHistory(res.data, botId, bot.activeAccountId)
+      const hasMore = (res.data as { hasMore?: boolean } | null)?.hasMore !== false
+      let added = 0
+      set((state) => {
+        const now = state.messages[botId] ?? []
+        const have = new Set(now.map((m) => m.id))
+        const older = page.filter((m) => !have.has(m.id) && m.createdAt <= (now[0]?.createdAt ?? Infinity))
+        added = older.length
+        return added ? { messages: { ...state.messages, [botId]: [...older, ...now] } } : state
+      })
+      if (!hasMore || added === 0) olderHistoryEnd.add(endKey)
+      return added
+    },
     reorderBot: (botId, groupId, beforeId) =>
       set((state) => {
         if (botId === beforeId) return state

@@ -1024,6 +1024,8 @@ export type HarkRpcRequest =
   | { accountId: string; op: 'leaveProject'; subscription: string }
   | { accountId: string; op: 'browserPreview'; conversationId?: string }
   | { accountId: string; op: 'conversationSnapshot'; conversationId: string }
+  /** GOXF: one page of messages older than `beforeId` (Hark web's scroll-up request). */
+  | { accountId: string; op: 'olderHistory'; conversationId: string; beforeId: string; beforeCreatedAt?: number }
   | { accountId: string; op: 'createConversation'; title: string; timezone?: string }
   | { accountId: string; op: 'conversationStatus' }
   | {
