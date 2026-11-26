@@ -6,7 +6,7 @@ import { cn } from '@/lib/cn'
 import { t } from '@/lib/i18n'
 
 const CARD =
-  'no-drag pointer-events-auto flex w-[340px] max-w-[92vw] items-center gap-3 rounded-3xl border border-line-strong bg-main py-3 pr-2 pl-4 text-[13px] shadow-toast animate-toast-in'
+  'no-drag pointer-events-auto flex w-85 max-w-[92vw] items-center gap-3 rounded-2xl border border-line-strong bg-main py-3 pr-2 pl-4 text-[13px] shadow-toast animate-toast-in'
 
 export function Notice({ icon, title, desc, note, action, onDismiss, tip, error, leaving }: {
   icon?: ReactNode; title: string; desc?: string; note?: string; action?: ReactNode; onDismiss?: () => void; tip?: string

@@ -7,6 +7,7 @@ import { usePanes } from '@/store/paneStore'
 import { useRooms } from '@/rooms/roomStore'
 import { RoomAvatarCluster } from '@/rooms/RoomAvatarCluster'
 import { BotAvatar } from '@/components/ui/Avatar'
+import { Button } from '@/components/ui/Button'
 import { MULTI_CONVERSATION } from '@/services/workspaceSync'
 import { canSplitFocused, paneArea } from './PaneGrid'
 import { VIEW_TRACK, ViewTab } from './ViewTab'
@@ -29,7 +30,7 @@ function ChatTab({ selected, onClick }: { selected: boolean; onClick: () => void
       onClick={onClick}
       title={name ?? fallback}
       className={cn(
-        'no-drag press flex h-10 max-w-[260px] min-w-0 shrink items-center gap-2 rounded-full pr-3.5 pl-2 font-medium',
+        'no-drag press flex h-10 max-w-65 min-w-0 shrink items-center gap-2 rounded-full pr-3.5 pl-2 font-medium',
         selected ? 'border-[0.5px] border-line-strong bg-main text-[14px] text-ink shadow-float' : 'text-[13px] text-ink-muted hover:text-ink',
         !name && !split && 'px-3.5', split && 'pl-3'
       )}
@@ -68,17 +69,12 @@ export function splitFocused(side: SplitSide): string | undefined {
 
 function ToolButton({ icon, label, keys, fold, onClick }: { icon: React.ReactNode; label: string; keys?: string; fold?: boolean; onClick: () => void }) {
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      title={keys ? `${label} (${keys})` : label}
-      className="no-drag press flex h-[28px] items-center gap-1.5 rounded-full bg-hover px-2.5 text-[12px] font-medium text-ink hover:bg-active"
-    >
+    <Button size="sm" onClick={onClick} title={keys ? `${label} (${keys})` : label} className="px-2.5">
       {icon}
       {/* Folded (merged header): keys go first, then labels, as the left side narrows. */}
       <span className={cn(fold && 'hidden @min-[360px]:inline')}>{label}</span>
-      {keys && <span className={cn('text-[10.5px] font-normal text-ink-muted', fold && 'hidden @min-[560px]:inline')}>{keys}</span>}
-    </button>
+      {keys && <span className={cn('text-[11px] text-ink-muted', fold && 'hidden @min-[560px]:inline')}>{keys}</span>}
+    </Button>
   )
 }
 
@@ -117,17 +113,17 @@ export function SplitTools({ fold = false }: { fold?: boolean }) {
         <span
           role="status"
           className={cn(
-            'absolute top-full z-40 mt-2 rounded-full bg-ink px-3 py-1.5 text-[12px] whitespace-nowrap text-white shadow-soft',
+            'absolute top-full z-40 mt-2 rounded-full bg-ink px-3 py-1.5 text-[12px] whitespace-nowrap text-main shadow-soft',
             fold ? 'left-0' : 'right-0'
           )}
         >
           {notice}
         </span>
       )}
-      <ToolButton icon={<Columns2 className="size-3.5" />} label="向右分" fold={fold} keys={shortcutLabel('\\')} onClick={() => split('right')} />
-      <ToolButton icon={<Rows2 className="size-3.5" />} label="向下分" fold={fold} keys={shortcutLabel('Shift+\\')} onClick={() => split('bottom')} />
+      <ToolButton icon={<Columns2 />} label="向右分" fold={fold} keys={shortcutLabel('\\')} onClick={() => split('right')} />
+      <ToolButton icon={<Rows2 />} label="向下分" fold={fold} keys={shortcutLabel('Shift+\\')} onClick={() => split('bottom')} />
       <span className={cn(!many && 'pointer-events-none opacity-40')}>
-        <ToolButton icon={<Equal className="size-3.5" />} label="均分" fold={fold} onClick={equalizeAll} />
+        <ToolButton icon={<Equal />} label="均分" fold={fold} onClick={equalizeAll} />
       </span>
     </div>
   )
@@ -147,7 +143,7 @@ export function WorkspaceTopBar() {
   if (merged) return null
 
   return (
-    <div className="drag-region relative flex h-[52px] shrink-0 items-center gap-2 border-b border-line px-3">
+    <div className="drag-region relative flex h-13 shrink-0 items-center gap-2 border-b border-line px-3">
       <div role="tablist" aria-label="页面" className={cn(VIEW_TRACK, 'absolute left-1/2 -translate-x-1/2')}>
         {everything && view === 'board' && !settingsOpen ? (
           <ViewTab label="全部任务" selected onClick={() => undefined} />

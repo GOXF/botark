@@ -159,7 +159,7 @@ function PlainCardView({ card }: { card: Card }) {
       type="button"
       onClick={open}
       className={cn(
-        'press flex w-full flex-col gap-1.5 rounded-[12px] border bg-main p-3 text-left shadow-soft transition-colors hover:border-line-strong',
+        'press flex w-full flex-col gap-1.5 rounded-xl border bg-main p-3 text-left shadow-soft transition-colors hover:border-line-strong',
         card.column === 'wait' ? 'border-status-attention/50' : card.column === 'fail' ? 'border-status-error/40' : 'border-line'
       )}
     >
@@ -170,12 +170,12 @@ function PlainCardView({ card }: { card: Card }) {
           <RoomAvatarCluster members={room.members.slice(0, 3)} size="xs" />
         ) : null}
         <span className="min-w-0 flex-1 truncate text-[13px] font-semibold text-ink">{card.title}</span>
-        {card.room && <span className="shrink-0 rounded-full bg-hover px-1.5 text-[10.5px] text-ink-muted">群聊</span>}
+        {card.room && <span className="shrink-0 rounded-full bg-hover px-1.5 text-[11px] text-ink-muted">群聊</span>}
         <span className="shrink-0 text-[11px] text-ink-muted">{formatShortTime(card.time || undefined)}</span>
       </span>
       <span className="flex min-w-0 items-start gap-1.5">
-        {card.column === 'run' && <Loader2 aria-hidden className="mt-[3px] size-3 shrink-0 animate-spin text-status-busy" />}
-        <span className={cn('line-clamp-2 text-[12.5px] leading-[18px]', card.column === 'wait' ? 'font-medium text-status-attention-ink' : 'text-ink-secondary')}>
+        {card.column === 'run' && <Loader2 aria-hidden className="mt-0.75 size-3 shrink-0 animate-spin text-status-busy" />}
+        <span className={cn('line-clamp-2 text-[13px] leading-4.5', card.column === 'wait' ? 'font-medium text-status-attention-ink' : 'text-ink-secondary')}>
           {card.step}
         </span>
       </span>
@@ -328,7 +328,7 @@ function TaskBoard({ botIds, roomIds, single }: { botIds: string[]; roomIds: str
       type="button"
       onClick={() => setFilter(id)}
       className={cn(
-        'press inline-flex h-7 max-w-[200px] shrink-0 items-center gap-1.5 rounded-full border px-3 text-[12px]',
+        'press inline-flex h-7 max-w-50 shrink-0 items-center gap-1.5 rounded-full border px-3 text-[12px]',
         filter === id ? 'border-[0.5px] border-line-strong bg-main font-medium text-ink shadow-float' : 'border-transparent text-ink-muted hover:bg-hover hover:text-ink',
         filter !== id && (n ? 'text-ink' : 'text-ink-muted')
       )}
@@ -362,7 +362,7 @@ function TaskBoard({ botIds, roomIds, single }: { botIds: string[]; roomIds: str
             const older = all.length - list.length
             const plainHere = shownPlain.filter((c) => c.column === col.id).sort((a, b) => b.time - a.time)
             return (
-              <section key={col.id} aria-label={col.label} className="flex min-w-[220px] flex-1 flex-col rounded-[14px] bg-canvas/60">
+              <section key={col.id} aria-label={col.label} className="flex min-w-55 flex-1 flex-col rounded-2xl bg-canvas/60">
                 <header className="flex h-10 shrink-0 items-center gap-2 px-3">
                   <span className={cn('size-2 rounded-full', COLUMN_STYLE[col.id].dot)} />
                   <h3 className={cn('text-[13px] font-semibold', COLUMN_STYLE[col.id].head)}>{col.label}</h3>
@@ -417,11 +417,11 @@ function TaskCardView({ task, title, selected, onClick }: { task: TaskCard; titl
       onClick={onClick}
       onKeyDown={(e) => e.key === 'Enter' && onClick()}
       className={cn(
-        'press flex w-full cursor-pointer flex-col gap-1.5 rounded-[12px] border bg-main p-3 text-left shadow-soft transition-colors hover:border-line-strong',
+        'press flex w-full cursor-pointer flex-col gap-1.5 rounded-xl border bg-main p-3 text-left shadow-soft transition-colors hover:border-line-strong',
         selected ? 'border-accent-600 ring-1 ring-accent-600' : task.column === 'wait' ? 'border-status-attention/50' : 'border-line'
       )}
     >
-      <span className="line-clamp-2 text-[13px] leading-[19px] text-ink" title={task.title}>{task.title}</span>
+      <span className="line-clamp-2 text-[13px] leading-5 text-ink" title={task.title}>{task.title}</span>
       <span className="flex min-w-0 items-center gap-2">
         <span className="max-w-[70%] truncate rounded-full bg-hover px-2 text-[11px] text-ink-muted">{title}</span>
         <span className="shrink-0 text-[11px] text-ink-muted">{formatShortTime(task.createdAt)}</span>
@@ -433,8 +433,8 @@ function TaskCardView({ task, title, selected, onClick }: { task: TaskCard; titl
           </span>
           <ul className="flex flex-col gap-1 border-l border-line pl-2.5">
             {subs.map((st) => (
-              <li key={st.id} className="flex items-start gap-2 text-[11.5px] leading-[16px]">
-                <span className={cn('mt-[5px] size-1.5 shrink-0 rounded-full', SUBTASK_DOT[st.status])} />
+              <li key={st.id} className="flex items-start gap-2 text-[12px] leading-4">
+                <span className={cn('mt-1.25 size-1.5 shrink-0 rounded-full', SUBTASK_DOT[st.status])} />
                 <span className="min-w-0 flex-1 truncate text-ink" title={st.title}>
                   <span className="text-ink-muted">{KIND_WORD[st.kind]} · </span>
                   {st.title}
@@ -501,13 +501,13 @@ export function ProjectDetail({ project, highlight, onClose }: { project: Picked
   return (
     // Rows line up with the middle: title = top bar (52), account + state = project chips (52), 任务 = column heads (40).
     <section aria-label="项目详情" className="flex min-h-0 flex-1 flex-col bg-main">
-      <header className="flex h-[52px] shrink-0 items-center gap-2 pr-2 pl-4">
+      <header className="flex h-13 shrink-0 items-center gap-2 pr-2 pl-4">
         <h3 className="min-w-0 flex-1 truncate text-[15px] font-semibold text-ink">{project.title}</h3>
         <IconButton label="关闭" size="sm" onClick={onClose}>
           <X aria-hidden />
         </IconButton>
       </header>
-      <div className="flex h-[52px] shrink-0 items-center gap-2 px-4">
+      <div className="flex h-13 shrink-0 items-center gap-2 px-4">
         <span className="max-w-[50%] shrink-0 truncate rounded-full bg-hover px-2 text-[11px] text-ink-muted">{project.botName}</span>
         <span className={cn('min-w-0 truncate text-[12px]', project.working ? 'text-status-busy-ink' : 'text-ink-muted')}>
           {project.working ? '进行中' : '已完成'}
@@ -515,7 +515,7 @@ export function ProjectDetail({ project, highlight, onClose }: { project: Picked
         </span>
       </div>
       <div className="flex min-h-0 flex-1 flex-col overflow-y-auto px-3 pb-3">
-        <h4 className="flex h-10 shrink-0 items-center px-1 text-[12.5px] font-medium text-ink">
+        <h4 className="flex h-10 shrink-0 items-center px-1 text-[13px] font-medium text-ink">
           任务 <span className="text-ink-muted">{running} 个进行中</span>
         </h4>
         {error && <p className="px-1 text-[12px] text-status-error">{error}</p>}
@@ -526,12 +526,12 @@ export function ProjectDetail({ project, highlight, onClose }: { project: Picked
             <li
               key={t.id}
               ref={t.id === highlight ? scrollOnce : undefined}
-              className={cn('flex flex-col gap-1 rounded-[10px] bg-canvas/60 px-3 py-2', t.id === highlight && 'ring-2 ring-accent-600')}
+              className={cn('flex flex-col gap-1 rounded-lg bg-canvas/60 px-3 py-2', t.id === highlight && 'ring-2 ring-accent-600')}
             >
               <span className="flex items-start gap-2.5">
-                <span className={cn('mt-[7px] size-2 shrink-0 rounded-full', TASK_DOT[t.state])} />
+                <span className={cn('mt-1.75 size-2 shrink-0 rounded-full', TASK_DOT[t.state])} />
                 <span className="flex min-w-0 flex-1 flex-col">
-                  <span className="line-clamp-2 text-[12.5px] leading-[18px] font-medium text-ink" title={t.title}>{t.title}</span>
+                  <span className="line-clamp-2 text-[13px] leading-4.5 font-medium text-ink" title={t.title}>{t.title}</span>
                   <span className="text-[11px] text-ink-muted">
                     {TASK_WORD[t.state]}
                     {t.createdAt ? ` · ${formatShortTime(t.createdAt)}` : ''}
@@ -539,10 +539,10 @@ export function ProjectDetail({ project, highlight, onClose }: { project: Picked
                 </span>
               </span>
               {t.subtasks.length > 0 && (
-                <ul className="ml-[18px] flex flex-col gap-1 border-l border-line pl-2.5">
+                <ul className="ml-4.5 flex flex-col gap-1 border-l border-line pl-2.5">
                   {t.subtasks.map((st) => (
-                    <li key={st.id} className="flex items-start gap-2 text-[11.5px] leading-[16px]">
-                      <span className={cn('mt-[5px] size-1.5 shrink-0 rounded-full', SUBTASK_DOT[st.status])} />
+                    <li key={st.id} className="flex items-start gap-2 text-[12px] leading-4">
+                      <span className={cn('mt-1.25 size-1.5 shrink-0 rounded-full', SUBTASK_DOT[st.status])} />
                       <span className="min-w-0 flex-1 truncate text-ink" title={st.title}>
                         <span className="text-ink-muted">{KIND_WORD[st.kind]} · </span>
                         {st.title}

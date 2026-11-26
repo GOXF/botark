@@ -1,3 +1,4 @@
+import { Button } from '@/components/ui/Button'
 import { IconButton } from '@/components/ui/IconButton'
 import { useEffect, useLayoutEffect, useRef, useState, type DragEvent, type PointerEvent as ReactPointerEvent } from 'react'
 import { Maximize2, Minimize2, SquareArrowOutUpRight, X } from 'lucide-react'
@@ -110,7 +111,7 @@ function Divider({ handle }: { handle: PaneHandle }) {
       <span
         className={cn(
           'rounded-full transition-colors',
-          row ? 'h-7 w-[3px]' : 'h-[3px] w-7',
+          row ? 'h-7 w-0.75' : 'h-0.75 w-7',
           dragging ? 'bg-accent-600' : 'bg-line-strong group-hover:bg-accent-600'
         )}
       />
@@ -148,51 +149,29 @@ function Pane({ leaf, rect, multi, focused, hint, box }: {
   const merged = useMergedHeader()
 
   const popOut = botId && getBridge()?.goxfPopout ? (
-    <button
-      type="button"
-      title="弹出到独立窗口"
-      aria-label="弹出到独立窗口"
-      onClick={() => void getBridge()?.goxfPopout?.open(botId)}
-      className="grid size-7 place-items-center rounded-full text-ink-secondary hover:bg-hover hover:text-ink"
-    >
-      <SquareArrowOutUpRight className="size-3.5" />
-    </button>
+    <IconButton size="sm" label="弹出到独立窗口" onClick={() => void getBridge()?.goxfPopout?.open(botId)}>
+      <SquareArrowOutUpRight />
+    </IconButton>
   ) : null
 
   const controls = (
     <span className="no-drag flex items-center gap-0.5 border-l border-line pl-1">
       {popOut}
-      <button
-        type="button"
-        title={maximized ? '还原分屏' : '最大化这一格'}
-        aria-label={maximized ? '还原分屏' : '最大化这一格'}
-        onClick={() => toggleMaximize(id)}
-        className="grid size-7 place-items-center rounded-full text-ink-secondary hover:bg-hover hover:text-ink"
-      >
-        {maximized ? <Minimize2 className="size-3.5" /> : <Maximize2 className="size-3.5" />}
-      </button>
+      <IconButton size="sm" label={maximized ? '还原分屏' : '最大化这一格'} onClick={() => toggleMaximize(id)}>
+        {maximized ? <Minimize2 /> : <Maximize2 />}
+      </IconButton>
       {!maximized && (
-        <button
-          type="button"
-          title="关闭这一格"
-          aria-label="关闭这一格"
-          onClick={() => close(id)}
-          className="grid size-7 place-items-center rounded-full text-ink-secondary hover:bg-hover hover:text-ink"
-        >
-          <X className="size-3.5" />
-        </button>
+        <IconButton size="sm" label="关闭这一格" onClick={() => close(id)}>
+          <X />
+        </IconButton>
       )}
     </span>
   )
 
   const restore = (
-    <button
-      type="button"
-      onClick={() => toggleMaximize(id)}
-      className="no-drag flex h-7 shrink-0 items-center gap-1 rounded-full bg-hover px-2.5 text-[12px] text-ink-secondary hover:text-ink"
-    >
-      <Minimize2 className="size-3.5" /> 还原分屏
-    </button>
+    <Button size="sm" onClick={() => toggleMaximize(id)} className="px-2.5">
+      <Minimize2 /> 还原分屏
+    </Button>
   )
 
   const rowTabs = showTabs && bot ? <PaneTabs leaf={leaf} inline /> : undefined
@@ -241,7 +220,7 @@ function Pane({ leaf, rect, multi, focused, hint, box }: {
       aria-label="会话格"
       className={cn(
         'absolute flex min-h-0 flex-col overflow-hidden bg-main',
-        multi && 'rounded-[12px] border',
+        multi && 'rounded-xl border',
         multi && (focused ? 'border-accent-600 ring-1 ring-accent-600' : 'border-line')
       )}
     >
@@ -273,7 +252,7 @@ function Pane({ leaf, rect, multi, focused, hint, box }: {
         <div className="pointer-events-none absolute inset-0 z-30">
           <div
             className={cn(
-              'absolute flex items-center justify-center rounded-[12px] border-2',
+              'absolute flex items-center justify-center rounded-xl border-2',
               zoneRect(shown.zone),
               shown.ok ? 'border-accent-600 bg-accent-600/15' : 'border-status-error/60 bg-status-error/10'
             )}
@@ -281,7 +260,7 @@ function Pane({ leaf, rect, multi, focused, hint, box }: {
             <span
               className={cn(
                 'rounded-full px-3 py-1 text-[13px] font-medium',
-                shown.ok ? 'bg-main text-accent-700' : 'bg-ink text-white'
+                shown.ok ? 'bg-main text-accent-700' : 'bg-ink text-main'
               )}
             >
               {shown.ok ? ZONE_LABEL[shown.zone] : shown.reason}

@@ -6,6 +6,7 @@ import { useConversationTitles } from '@/services/workspaceSync'
 import { useBotStore } from '@/store/botStore'
 import { usePanes } from '@/store/paneStore'
 import { BotAvatar } from '@/components/ui/Avatar'
+import { IconButton } from '@/components/ui/IconButton'
 
 /** Drag payload of a pane tab: `${leafId}\n${tabId}`. */
 export const PANE_TAB_MIME = 'application/x-botark-pane-tab'
@@ -45,7 +46,7 @@ export function PaneTabs({ leaf, extra, inline = false, tall = false }: { leaf: 
     <div
       role="tablist"
       aria-label="会话标签"
-      className={cn('no-drag flex min-w-0 items-center gap-1', inline ? 'flex-1' : cn(tall ? 'h-[52px] pr-3 pl-2' : 'h-9 px-1.5', 'shrink-0 border-b border-line'))}
+      className={cn('no-drag flex min-w-0 items-center gap-1', inline ? 'flex-1' : cn(tall ? 'h-13 pr-3 pl-2' : 'h-9 px-1.5', 'shrink-0 border-b border-line'))}
     >
       <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto [scrollbar-width:none]">
         {leaf.tabs.map((tab) => {
@@ -72,26 +73,25 @@ export function PaneTabs({ leaf, extra, inline = false, tall = false }: { leaf: 
                 if (e.button === 1) closeTab(leaf.id, tab.id)
               }}
               className={cn(
-                'group press flex h-7 max-w-52 min-w-0 shrink-0 cursor-default items-center gap-1.5 rounded-[9px] pr-1 pl-2.5 text-[12px] font-medium select-none',
+                'group press flex h-7 max-w-52 min-w-0 shrink-0 cursor-default items-center gap-1.5 rounded-lg pr-1 pl-2.5 text-[12px] font-medium select-none',
                 active ? 'bg-hover text-ink' : 'text-ink-secondary hover:bg-hover hover:text-ink'
               )}
             >
               <TabLabel tab={tab} otherBot={tab.botId !== activeBot} />
-              <button
-                type="button"
-                title="关闭标签"
-                aria-label="关闭标签"
+              <IconButton
+                size="sm"
+                label="关闭标签"
                 onClick={(e) => {
                   e.stopPropagation()
                   closeTab(leaf.id, tab.id)
                 }}
                 className={cn(
-                  'grid size-5 shrink-0 place-items-center rounded-full text-ink-muted hover:bg-active hover:text-ink',
+                  'size-5 text-ink-muted hover:bg-active [&_svg]:size-3',
                   !active && 'opacity-0 group-hover:opacity-100 focus-visible:opacity-100'
                 )}
               >
-                <X className="size-3" />
-              </button>
+                <X />
+              </IconButton>
             </div>
           )
         })}

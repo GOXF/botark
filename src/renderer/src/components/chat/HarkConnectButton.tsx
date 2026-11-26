@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { Check, Loader2 } from 'lucide-react'
+import { Button } from '@/components/ui/Button'
 import { ConnectorIcon } from '@/components/ui/ConnectorIcon'
 import { connectHarkProvider, isHarkProviderConnected } from '@/lib/harkConnect'
 import { useBotStore } from '@/store/botStore'
@@ -83,17 +84,17 @@ export function HarkConnectButton({
       <span className="inline-flex items-center gap-1.5 rounded-full border border-line bg-sunken px-3 py-1 text-[12px] font-medium text-ink-secondary">
         <ConnectorIcon id={provider} name={label} className="size-4 border-0 bg-transparent shadow-none" />
         已连接 {name}
-        <Check className="size-3.5 text-emerald-600" />
+        <Check className="size-3 text-status-online-ink" />
       </span>
     )
   }
   return (
     <span className="inline-flex flex-wrap items-center gap-1.5">
-      <button
-        type="button"
+      <Button
+        size="sm"
         disabled={state === 'busy' || state === 'browser'}
         onClick={() => void run()}
-        className="inline-flex items-center gap-1.5 rounded-full border border-line-strong bg-surface px-3 py-1 text-[12px] font-medium text-ink hover:bg-hover disabled:opacity-60"
+        className="border border-line-strong bg-surface hover:bg-hover"
       >
         {state === 'busy' || state === 'browser' ? (
           <Loader2 className="size-4 animate-spin" />
@@ -101,18 +102,18 @@ export function HarkConnectButton({
           <ConnectorIcon id={provider} name={label} className="size-4 border-0 bg-transparent shadow-none" />
         )}
         {state === 'busy' ? `正在连接 ${name}…` : state === 'browser' ? `等待浏览器里授权 ${name}…` : label}
-      </button>
+      </Button>
       {state === 'browser' && (
-        <button type="button" onClick={() => { abort.current?.abort(); setState('idle') }} className="text-[12px] text-ink-muted hover:underline">
+        <Button size="sm" variant="ghost" onClick={() => { abort.current?.abort(); setState('idle') }}>
           取消
-        </button>
+        </Button>
       )}
       {state === 'retry' && (
         <>
           <span className="text-[12px] text-ink-muted">还没连上。</span>
-          <button type="button" onClick={() => void run(true)} className="text-[12px] text-accent-600 hover:underline">
+          <Button size="sm" variant="ghost" onClick={() => void run(true)} className="text-accent-600 hover:text-accent-700">
             改用浏览器打开
-          </button>
+          </Button>
         </>
       )}
     </span>

@@ -68,12 +68,12 @@ export function ConversationMirror({ bot, conversationId, leading, extra }: { bo
           platformId={bot.platformId}
           size="sm"
         />
-        <span className="min-w-0 truncate text-[13.5px] font-medium text-ink">{bot.name}</span>
+        <span className="min-w-0 truncate text-[14px] font-medium text-ink">{bot.name}</span>
         </span>
         {leading ? (
           <div className="flex min-w-0 flex-1 items-center justify-end">{extra}</div>
         ) : (
-          <span className="min-w-0 flex-1 truncate text-[12.5px] text-ink-muted">{title ?? '对话'}</span>
+          <span className="min-w-0 flex-1 truncate text-[13px] text-ink-muted">{title ?? '对话'}</span>
         )}
       </PaneHeader>
       {error && messages.length === 0 ? (

@@ -5,6 +5,7 @@ import { MarkdownText } from '@/components/chat/MarkdownText'
 import { Button } from '@/components/ui/Button'
 import { SwitchPill } from '@/components/ui/Controls'
 import { TextInput } from '@/components/ui/Field'
+import { IconButton } from '@/components/ui/IconButton'
 import { MENU_SURFACE } from '@/components/ui/Menu'
 import { cn } from '@/lib/cn'
 import type { CollabRoom, RoomMessage } from './model'
@@ -42,10 +43,10 @@ export function HandoffPicker({ room, message, onClose }: {
       className={cn('absolute top-full left-0 z-30 mt-2 flex w-80 flex-col gap-2 p-3', MENU_SURFACE, 'animate-pop-lift')}
     >
       <div className="flex items-center justify-between">
-        <h3 className="text-[13.5px] font-semibold text-ink">交给其他群组</h3>
-        <button type="button" aria-label="关闭" onClick={onClose} className="press-icon grid size-6 place-items-center rounded-full text-ink-muted hover:bg-hover hover:text-ink">
-          <X className="size-3.5" />
-        </button>
+        <h3 className="text-[14px] font-semibold text-ink">交给其他群组</h3>
+        <IconButton size="sm" label="关闭" onClick={onClose} className="size-6 text-ink-muted [&_svg]:size-3.5">
+          <X />
+        </IconButton>
       </div>
       {others.length === 0 ? (
         <p className="py-2 text-[12px] text-ink-muted">还没有其他群组，先新建一个再交接。</p>
@@ -65,7 +66,7 @@ export function HandoffPicker({ room, message, onClose }: {
                 <RoomAvatarCluster members={r.members} size="xs" ringClassName="ring-surface" />
                 <div className="min-w-0 flex-1">
                   <p className="truncate text-[13px] font-medium text-ink">{r.title}</p>
-                  <p className="text-[11.5px] text-ink-muted">{r.members.length} 位成员 · {speakers[r.id] ? '进行中' : '空闲'}</p>
+                  <p className="text-[12px] text-ink-muted">{r.members.length} 位成员 · {speakers[r.id] ? '进行中' : '空闲'}</p>
                 </div>
                 <span className={cn('grid size-4 shrink-0 place-items-center rounded-full border', picked ? 'border-accent-600 bg-accent-600 text-white' : 'border-line-strong')}>
                   {picked && <Check className="size-3" strokeWidth={3} />}
@@ -81,7 +82,7 @@ export function HandoffPicker({ room, message, onClose }: {
         onKeyDown={(e) => { if (e.key === 'Enter' && !e.nativeEvent.isComposing && target) submit() }}
         placeholder="附言（可选）：重点看哪里"
         aria-label="附言"
-        className="h-8 text-[12.5px]"
+        className="h-8 text-[13px]"
       />
       <label className="flex items-center gap-2 text-[12px] text-ink-secondary">
         <SwitchPill size="sm" checked={autoStart && canAutoStart} disabled={!canAutoStart} onCheckedChange={setAutoStart} aria-label="自动开工" />
@@ -106,30 +107,31 @@ export function HandoffMessage({ message }: { message: RoomMessage }) {
   const original = source?.messages.some((m) => m.id === message.handoff?.messageId)
   const ref = message.references?.[0]
   return (
-    <article className="mx-auto w-full max-w-[780px] animate-veil-in">
-      <div className="mb-1 flex items-center gap-2 text-[12.5px]">
+    <article className="mx-auto w-full max-w-195 animate-veil-in">
+      <div className="mb-1 flex items-center gap-2 text-[13px]">
         {source && <RoomAvatarCluster members={source.members} size="xs" ringClassName="ring-main" />}
         <span className="font-semibold tracking-tight text-ink">{message.author}</span>
         <span className="rounded-full bg-accent-50 px-1.5 py-px text-[11px] font-medium text-accent-600">需求</span>
-        <span className="text-[11.5px] text-ink-muted">{clock(message.createdAt)}</span>
+        <span className="text-[12px] text-ink-muted">{clock(message.createdAt)}</span>
       </div>
       <div className="max-w-[min(100%,560px)] rounded-2xl border border-line bg-surface px-4 py-3 shadow-soft">
-        <p className="mb-2 text-[14px] leading-[22px] font-medium whitespace-pre-wrap break-words text-ink">{message.text}</p>
+        <p className="mb-2 text-[14px] leading-5.5 font-medium whitespace-pre-wrap break-words text-ink">{message.text}</p>
         {ref && (
           <div className="rounded-lg border-l-[3px] border-status-online bg-sunken px-3 py-2">
-            <div className="mb-1 flex items-center justify-between gap-2 text-[11.5px] text-ink-muted">
+            <div className="mb-1 flex items-center justify-between gap-2 text-[12px] text-ink-muted">
               <span className="truncate">{ref.label}</span>
               {source && original && message.handoff && (
-                <button
-                  type="button"
+                <Button
+                  size="sm"
+                  variant="ghost"
                   onClick={() => openHandoffSource(message.handoff!.roomId, message.handoff!.messageId)}
-                  className="press inline-flex shrink-0 items-center gap-0.5 text-accent-600 hover:underline"
+                  className="h-6 gap-0.5 px-2 text-accent-600 hover:text-accent-700 [&_svg]:size-3"
                 >
-                  查看原消息 <ArrowRight className="size-3" />
-                </button>
+                  查看原消息 <ArrowRight />
+                </Button>
               )}
             </div>
-            <div className="max-h-64 overflow-y-auto text-[13px] leading-[21px] text-ink">
+            <div className="max-h-64 overflow-y-auto text-[13px] leading-5 text-ink">
               <MarkdownText text={ref.text} />
             </div>
           </div>
@@ -145,7 +147,7 @@ export function HandoffBreadcrumb({ room }: { room: CollabRoom }) {
   const chain = room.handoffChain
   if (!chain || chain.length < 2) return null
   return (
-    <span className="hidden min-w-0 items-center gap-1 truncate text-[11.5px] text-ink-muted lg:inline-flex" aria-label="交接链">
+    <span className="hidden min-w-0 items-center gap-1 truncate text-[12px] text-ink-muted lg:inline-flex" aria-label="交接链">
       交接链
       {chain.map((id, i) => (
         <span key={id} className="inline-flex items-center gap-1">
@@ -175,7 +177,7 @@ export function HandoffPanel({ room }: { room: CollabRoom }) {
           <ol className="flex flex-col">
             {steps.map((step, i) => (
               <li key={step.key} className="relative flex gap-2.5 pb-4 last:pb-0">
-                {i < steps.length - 1 && <span aria-hidden className="absolute top-5 bottom-0 left-[7px] w-px bg-line" />}
+                {i < steps.length - 1 && <span aria-hidden className="absolute top-5 bottom-0 left-1.75 w-px bg-line" />}
                 <span className="mt-0.5 grid size-4 shrink-0 place-items-center">
                   {step.status === 'done' ? (
                     <span className="grid size-4 place-items-center rounded-full bg-status-online text-white"><Check className="size-2.5" strokeWidth={3.5} /></span>
@@ -186,9 +188,9 @@ export function HandoffPanel({ room }: { room: CollabRoom }) {
                   )}
                 </span>
                 <div className="min-w-0 flex-1">
-                  <div className="flex items-baseline gap-1.5 text-[12.5px]">
+                  <div className="flex items-baseline gap-1.5 text-[13px]">
                     <span className={cn('font-semibold', step.roomId === room.id ? 'text-accent-600' : 'text-ink')}>{step.title}</span>
-                    <span className="truncate text-[11.5px] text-ink-muted">{step.who}</span>
+                    <span className="truncate text-[12px] text-ink-muted">{step.who}</span>
                     <span className="ml-auto shrink-0 text-[11px] tabular-nums text-ink-muted">{clock(step.at)}</span>
                   </div>
                   {step.note && <p className="mt-0.5 line-clamp-2 text-[12px] text-ink-secondary">{step.note}</p>}

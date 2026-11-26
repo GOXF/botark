@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { ChevronDown, Eye, EyeOff, ExternalLink, Lock, ShieldAlert, X } from 'lucide-react'
 import type { HarkAskView } from '@shared/harkAsks'
 import { Button } from '@/components/ui/Button'
+import { IconButton } from '@/components/ui/IconButton'
 import { TextInput } from '@/components/ui/Field'
 import { getBridge } from '@/lib/bridge'
 import { cn } from '@/lib/cn'
@@ -194,24 +195,24 @@ export function HarkAskCards({ accountId, sessionId, asks, className = 'mx-5' }:
   return (
     <div className={cn(className, 'mb-1 flex shrink-0 flex-col gap-1.5')}>
       {visible.length > 1 && (
-        <div className="flex items-center gap-2 px-1 text-[11.5px] text-ink-muted">
+        <div className="flex items-center gap-2 px-1 text-[12px] text-ink-muted">
           <span>Hark 有 {visible.length} 个请求等你处理，较早的已折叠</span>
-          <button type="button" onClick={() => close(visible.map((a) => a.id))}
-            className="press ml-auto rounded-full px-2 py-0.5 hover:bg-hover hover:text-ink">全部收起</button>
+          <Button size="sm" variant="ghost" onClick={() => close(visible.map((a) => a.id))}
+            className="ml-auto h-6 px-2 text-ink-muted">全部收起</Button>
         </div>
       )}
       {visible.map((ask) => ask.id !== openId ? (
         <div key={ask.id} className="flex items-center gap-2 rounded-xl border border-line bg-surface px-3 py-1.5 text-[12px]">
-          {ask.kind === 'credential' ? <Lock className="size-3.5 shrink-0 text-ink-muted" aria-hidden /> : <ShieldAlert className="size-3.5 shrink-0 text-ink-muted" aria-hidden />}
+          {ask.kind === 'credential' ? <Lock className="size-3 shrink-0 text-ink-muted" aria-hidden /> : <ShieldAlert className="size-3 shrink-0 text-ink-muted" aria-hidden />}
           <button type="button" onClick={() => setExpanded(ask.id)} className="flex min-w-0 flex-1 items-center gap-1.5 text-left">
             <span className="min-w-0 truncate font-medium text-ink">{ask.prompt}</span>
             {ask.domain && <span className="shrink-0 truncate text-ink-muted">{ask.domain}</span>}
-            <ChevronDown className="size-3.5 shrink-0 text-ink-muted" aria-hidden />
+            <ChevronDown className="size-3 shrink-0 text-ink-muted" aria-hidden />
           </button>
-          <button type="button" aria-label="不需要了，收起" title="不需要了，收起" onClick={() => close([ask.id])}
-            className="press grid size-6 shrink-0 place-items-center rounded-full text-ink-muted hover:bg-hover hover:text-ink">
-            <X className="size-3.5" aria-hidden />
-          </button>
+          <IconButton size="sm" label="不需要了，收起" onClick={() => close([ask.id])}
+            className="size-6 text-ink-muted [&_svg]:size-3.5">
+            <X aria-hidden />
+          </IconButton>
         </div>
       ) : (
         <section key={ask.id} role="alert"
@@ -221,12 +222,11 @@ export function HarkAskCards({ accountId, sessionId, asks, className = 'mx-5' }:
             <span className="min-w-0 truncate text-[14px] font-semibold text-ink">{ask.prompt}</span>
             {ask.domain && <span className="shrink-0 truncate text-ink-muted">{ask.domain}</span>}
             <span className="size-1.5 shrink-0 rounded-full bg-status-attention" aria-label="待处理" />
-            <button type="button" aria-label="不需要了，收起" title="不需要了，收起" onClick={() => close([ask.id])}
-              className="press ml-auto grid size-7 shrink-0 place-items-center rounded-full text-ink-muted hover:bg-hover hover:text-ink">
-              <X className="size-4" aria-hidden />
-            </button>
+            <IconButton size="sm" label="不需要了，收起" onClick={() => close([ask.id])} className="ml-auto text-ink-muted">
+              <X aria-hidden />
+            </IconButton>
           </div>
-          {ask.hint && <p className="mt-1 text-[12.5px] leading-[18px] text-ink-secondary">{ask.hint}</p>}
+          {ask.hint && <p className="mt-1 text-[13px] leading-4.5 text-ink-secondary">{ask.hint}</p>}
           <div className="mt-3 flex flex-wrap items-center gap-2">
             {ask.secret && ask.requestId && (
               <form className="flex w-full items-center gap-2" autoComplete="off"
@@ -235,11 +235,11 @@ export function HarkAskCards({ accountId, sessionId, asks, className = 'mx-5' }:
                   <TextInput value={key[ask.id] ?? ''} placeholder="令牌" aria-label="令牌"
                     type={showPw[ask.id] ? 'text' : 'password'} autoComplete="new-password" className="pr-9"
                     onChange={(e) => setKey((k) => ({ ...k, [ask.id]: e.target.value }))} />
-                  <button type="button" aria-label={showPw[ask.id] ? '隐藏' : '显示'}
-                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-ink-muted"
+                  <IconButton size="sm" label={showPw[ask.id] ? '隐藏' : '显示'}
+                    className="absolute top-1/2 right-1 -translate-y-1/2 text-ink-muted"
                     onClick={() => setShowPw((s) => ({ ...s, [ask.id]: !s[ask.id] }))}>
-                    {showPw[ask.id] ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
-                  </button>
+                    {showPw[ask.id] ? <EyeOff /> : <Eye />}
+                  </IconButton>
                 </div>
                 <Button type="submit" size="md" variant="primary" disabled={busy === ask.id || !key[ask.id]?.trim()}>
                   {busy === ask.id ? '保存中…' : '保存'}
@@ -267,11 +267,11 @@ export function HarkAskCards({ accountId, sessionId, asks, className = 'mx-5' }:
                         autoComplete={pw ? 'new-password' : 'off'} className="h-8 w-full pr-8 text-[13px]"
                         onChange={(e) => setLogin((l) => ({ ...l, [ask.id]: { ...l[ask.id], [f]: e.target.value } }))} />
                       {pw && (
-                        <button type="button" aria-label={showPw[ask.id] ? '隐藏密码' : '显示密码'}
-                          className="absolute right-2 top-1/2 -translate-y-1/2 text-ink-muted"
+                        <IconButton size="sm" label={showPw[ask.id] ? '隐藏密码' : '显示密码'}
+                          className="absolute top-1/2 right-1 size-6 -translate-y-1/2 text-ink-muted"
                           onClick={() => setShowPw((s) => ({ ...s, [ask.id]: !s[ask.id] }))}>
-                          {showPw[ask.id] ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
-                        </button>
+                          {showPw[ask.id] ? <EyeOff /> : <Eye />}
+                        </IconButton>
                       )}
                     </div>
                   )
@@ -291,7 +291,7 @@ export function HarkAskCards({ accountId, sessionId, asks, className = 'mx-5' }:
             </>)}
           </div>
           <div className="mt-2.5 flex items-center gap-2">
-            {(ask.secret || ask.login) && <span className="text-[11.5px] text-ink-muted">存进你的 Hark 保险库，BotArk 不保存</span>}
+            {(ask.secret || ask.login) && <span className="text-[12px] text-ink-muted">存进你的 Hark 保险库，BotArk 不保存</span>}
             <Button size="sm" variant="secondary" className="ml-auto" onClick={openHere}>
               在网页里填 <ExternalLink aria-hidden />
             </Button>

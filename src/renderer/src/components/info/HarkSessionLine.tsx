@@ -15,7 +15,7 @@ export function HarkSessionLine({ accountId, className }: { accountId: string; c
   const line = harkSessionLine(check)
   if (!line) return null
   return (
-    <span title={line.text} className={cn('block max-w-full truncate text-[11.5px] leading-4', TONE[line.tone], className)}>
+    <span title={line.text} className={cn('block max-w-full truncate text-[12px] leading-4', TONE[line.tone], className)}>
       {line.text}
     </span>
   )

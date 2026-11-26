@@ -2,6 +2,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { Check, ChevronLeft, ChevronRight, Copy, Download, X, ZoomIn, ZoomOut } from 'lucide-react'
+import { Button } from '@/components/ui/Button'
 import { IconButton } from '@/components/ui/IconButton'
 
 /** Dark round button over an image thumbnail (shown on hover). */
@@ -11,7 +12,7 @@ export function ImageOverlayButton({ label, onClick, children }: { label: string
       size="sm"
       label={label}
       onClick={onClick}
-      className="pointer-events-auto bg-black/55 text-white backdrop-blur-sm hover:bg-black/75 hover:text-white"
+      className="pointer-events-auto bg-overlay text-on-overlay backdrop-blur-sm hover:bg-overlay-strong hover:text-on-overlay"
     >
       {children}
     </IconButton>
@@ -138,68 +139,55 @@ export function ImageLightbox({
   // Portal: markdown images sit inside <p>, and a transformed ancestor would break `fixed`.
   return createPortal(
     <div
-      className="fixed inset-0 z-50 flex flex-col items-center justify-center bg-black/82 p-6 backdrop-blur-sm"
+      className="fixed inset-0 z-50 flex flex-col items-center justify-center bg-overlay-strong p-6 backdrop-blur-sm"
       role="dialog"
       aria-modal="true"
       aria-label={current.alt}
       onClick={onClose}
     >
       <div
-        className="mb-3 flex w-full max-w-4xl items-center justify-between gap-3 text-white"
+        className="mb-3 flex w-full max-w-4xl items-center justify-between gap-3 text-on-overlay"
         onClick={(e) => e.stopPropagation()}
       >
-        <span className="truncate text-[13px] font-medium text-white/90">
+        <span className="truncate text-[13px] font-medium text-on-overlay">
           {current.filename}
-          {count > 1 && <span className="ml-2 tabular-nums text-white/55">{index + 1} / {count}</span>}
+          {count > 1 && <span className="ml-2 tabular-nums text-on-overlay-muted">{index + 1} / {count}</span>}
         </span>
         <div className="flex shrink-0 items-center gap-1.5">
-          <button
-            type="button"
+          <IconButton
+            label="缩小"
+            shortcut="-"
             onClick={() => setZoom((z) => Math.max(0.5, Number((z - 0.25).toFixed(2))))}
-            title="缩小 (-)"
-            className="grid size-8 place-items-center rounded-full bg-white/15 text-white hover:bg-white/25"
+            className="bg-on-overlay/15 text-on-overlay hover:bg-on-overlay/25 hover:text-on-overlay"
           >
-            <ZoomOut className="size-3.5" />
-          </button>
-          <button
-            type="button"
+            <ZoomOut />
+          </IconButton>
+          <Button
+            size="sm"
             onClick={() => setZoom(1)}
             title="重置缩放 (0)"
-            className="rounded-full bg-white/15 px-2.5 py-1 text-[11.5px] font-medium tabular-nums text-white hover:bg-white/25"
+            className="tabular-nums bg-on-overlay/15 text-on-overlay hover:bg-on-overlay/25 hover:text-on-overlay"
           >
             {Math.round(zoom * 100)}%
-          </button>
-          <button
-            type="button"
+          </Button>
+          <IconButton
+            label="放大"
+            shortcut="+"
             onClick={() => setZoom((z) => Math.min(3, Number((z + 0.25).toFixed(2))))}
-            title="放大 (+)"
-            className="grid size-8 place-items-center rounded-full bg-white/15 text-white hover:bg-white/25"
+            className="bg-on-overlay/15 text-on-overlay hover:bg-on-overlay/25 hover:text-on-overlay"
           >
-            <ZoomIn className="size-3.5" />
-          </button>
-          <button
-            type="button"
-            onClick={() => void copyImageToClipboard()}
-            className="inline-flex items-center gap-1.5 rounded-full bg-white/15 px-3 py-1.5 text-[12px] font-medium text-white hover:bg-white/25"
-          >
-            {copiedImg ? <Check className="size-3.5 text-status-online" /> : <Copy className="size-3.5" />}
+            <ZoomIn />
+          </IconButton>
+          <Button size="sm" onClick={() => void copyImageToClipboard()} className="bg-on-overlay/15 text-on-overlay hover:bg-on-overlay/25 hover:text-on-overlay">
+            {copiedImg ? <Check className="text-status-online" /> : <Copy />}
             {copiedImg ? '已复制' : '复制图片'}
-          </button>
-          <button
-            type="button"
-            onClick={save}
-            className="inline-flex items-center gap-1.5 rounded-full bg-white/15 px-3 py-1.5 text-[12px] font-medium text-white hover:bg-white/25"
-          >
-            <Download className="size-3.5" /> 保存图片
-          </button>
-          <button
-            type="button"
-            aria-label="关闭预览"
-            onClick={onClose}
-            className="grid size-8 place-items-center rounded-full bg-white/15 text-white hover:bg-white/25"
-          >
-            <X className="size-4" />
-          </button>
+          </Button>
+          <Button size="sm" onClick={save} className="bg-on-overlay/15 text-on-overlay hover:bg-on-overlay/25 hover:text-on-overlay">
+            <Download /> 保存图片
+          </Button>
+          <IconButton label="关闭预览" onClick={onClose} className="bg-on-overlay/15 text-on-overlay hover:bg-on-overlay/25 hover:text-on-overlay">
+            <X />
+          </IconButton>
         </div>
       </div>
       <div ref={scrollRef} className="flex max-h-[82vh] max-w-[92vw] overflow-auto" onClick={(e) => e.stopPropagation()}>
@@ -214,30 +202,28 @@ export function ImageLightbox({
       </div>
       {count > 1 && (
         <>
-          <button
-            type="button"
-            aria-label="上一张 (←)"
-            title="上一张 (←)"
+          <IconButton
+            label="上一张"
+            shortcut="←"
             onClick={(e) => {
               e.stopPropagation()
               go(-1)
             }}
-            className="absolute top-1/2 left-4 grid size-11 -translate-y-1/2 place-items-center rounded-full bg-white/15 text-white hover:bg-white/25"
+            className="absolute top-1/2 left-4 size-11 -translate-y-1/2 [&_svg]:size-6 bg-on-overlay/15 text-on-overlay hover:bg-on-overlay/25 hover:text-on-overlay"
           >
-            <ChevronLeft className="size-6" />
-          </button>
-          <button
-            type="button"
-            aria-label="下一张 (→)"
-            title="下一张 (→)"
+            <ChevronLeft />
+          </IconButton>
+          <IconButton
+            label="下一张"
+            shortcut="→"
             onClick={(e) => {
               e.stopPropagation()
               go(1)
             }}
-            className="absolute top-1/2 right-4 grid size-11 -translate-y-1/2 place-items-center rounded-full bg-white/15 text-white hover:bg-white/25"
+            className="absolute top-1/2 right-4 size-11 -translate-y-1/2 [&_svg]:size-6 bg-on-overlay/15 text-on-overlay hover:bg-on-overlay/25 hover:text-on-overlay"
           >
-            <ChevronRight className="size-6" />
-          </button>
+            <ChevronRight />
+          </IconButton>
         </>
       )}
     </div>,

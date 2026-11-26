@@ -37,14 +37,14 @@ const HEAD: Record<Stage, string> = {
   live: 'bg-status-online'
 }
 
-const BOX = 'rounded-[9px] bg-hover px-2.5 py-1.5 text-[12px] leading-[18px] text-ink-secondary'
+const BOX = 'rounded-lg bg-hover px-2.5 py-1.5 text-[12px] leading-4.5 text-ink-secondary'
 const clip = (s?: string) => (s ?? '').replace(/\s+/g, ' ').trim()
 
 function ExecutorLine({ ex, time }: { ex?: Executor; time: number }) {
   const bot = useBotStore((s) => (ex?.kind === 'bot' ? s.bots.find((b) => b.id === ex.id) : undefined))
   const room = useRooms((s) => (ex?.kind === 'room' ? s.rooms.find((r) => r.id === ex.id) : undefined))
   return (
-    <span className="flex min-w-0 items-center gap-1.5 text-[12.5px]">
+    <span className="flex min-w-0 items-center gap-1.5 text-[13px]">
       {!ex ? (
         <>
           <HelpCircle aria-hidden className="size-4 text-ink-faint" />
@@ -58,7 +58,7 @@ function ExecutorLine({ ex, time }: { ex?: Executor; time: number }) {
             <RoomAvatarCluster members={room.members.slice(0, 3)} size="xs" />
           ) : null}
           <span className="min-w-0 truncate font-medium text-ink">{bot?.name ?? room?.title ?? ex.name}</span>
-          <span className="shrink-0 rounded-full bg-hover px-1.5 text-[10.5px] text-ink-muted">{ex.kind === 'room' ? '群组' : 'Bot'}</span>
+          <span className="shrink-0 rounded-full bg-hover px-1.5 text-[11px] text-ink-muted">{ex.kind === 'room' ? '群组' : 'Bot'}</span>
         </>
       )}
       <span className="ml-auto shrink-0 text-[11px] text-ink-muted">{formatShortTime(time)}</span>
@@ -73,7 +73,7 @@ function Progress({ task }: { task: PipelineTask }) {
   return (
     <span aria-hidden className="flex gap-1">
       {STAGES.map((s, i) => (
-        <span key={s.id} className={cn('h-[3px] flex-1 rounded-full', i <= at ? (done ? 'bg-status-online' : 'bg-accent-600') : 'bg-hover')} />
+        <span key={s.id} className={cn('h-0.75 flex-1 rounded-full', i <= at ? (done ? 'bg-status-online' : 'bg-accent-600') : 'bg-hover')} />
       ))}
     </span>
   )
@@ -90,7 +90,7 @@ function DevStep({ ex }: { ex?: Executor }) {
   })
   const text = speaker ? `${speaker} 正在发言` : live
   return (
-    <span className="flex min-w-0 flex-col gap-0.5 text-[12px] leading-[18px]">
+    <span className="flex min-w-0 flex-col gap-0.5 text-[12px] leading-4.5">
       <span className={cn('flex min-w-0 items-center gap-1.5', text ? 'text-status-busy-ink' : 'text-ink-muted')}>
         {text && <Loader2 aria-hidden className="size-3 shrink-0 animate-spin" />}
         <span className="truncate">{text || '等待执行者回复'}</span>
@@ -144,16 +144,16 @@ function Card({ task, onRelease }: { task: PipelineTask; onRelease: (t: Pipeline
   return (
     <li
       className={cn(
-        'group flex flex-col gap-2 rounded-[12px] border bg-main p-3 shadow-soft',
+        'group flex flex-col gap-2 rounded-xl border bg-main p-3 shadow-soft',
         gate ? 'border-status-attention/60' : back ? 'border-status-error/40' : 'border-line'
       )}
     >
       <span className="flex min-w-0 items-center gap-2">
         <span className="min-w-0 flex-1 truncate text-[13px] font-semibold text-ink">{task.title}</span>
-        <IconButton label="删除任务" size="sm" className="hidden size-5 group-hover:inline-flex" onClick={() => deleteTask(task.id)}>
+        <IconButton label="删除任务" size="sm" className="hidden size-5 group-hover:inline-flex [&_svg]:size-3.5" onClick={() => deleteTask(task.id)}>
           <Trash2 />
         </IconButton>
-        <span className="shrink-0 rounded-full bg-hover px-1.5 text-[10.5px] text-ink-muted">#{task.num}</span>
+        <span className="shrink-0 rounded-full bg-hover px-1.5 text-[11px] text-ink-muted">#{task.num}</span>
       </span>
       <ExecutorLine ex={task.executor} time={task.updatedAt} />
       <Progress task={task} />
@@ -206,14 +206,14 @@ function Card({ task, onRelease }: { task: PipelineTask; onRelease: (t: Pipeline
       {task.stage === 'dev' && (
         <>
           {back ? (
-            <span className="flex flex-col gap-0.5 text-[12px] leading-[18px]">
+            <span className="flex flex-col gap-0.5 text-[12px] leading-4.5">
               <span className="text-status-error">已打回 · 第 {task.round} 轮修改中</span>
               <span className="line-clamp-2 text-ink-muted">你：{back.reason}</span>
             </span>
           ) : (
             <DevStep ex={task.executor} />
           )}
-          {sug?.plan.length ? <span className="text-[11.5px] text-ink-muted">共 {sug.plan.length} 步</span> : null}
+          {sug?.plan.length ? <span className="text-[12px] text-ink-muted">共 {sug.plan.length} 步</span> : null}
           <Button size="sm" className="self-start" onClick={() => finishDev(task.id)}>
             开发完成，提交 Review
           </Button>
@@ -237,9 +237,9 @@ function Card({ task, onRelease }: { task: PipelineTask; onRelease: (t: Pipeline
           </span>
           <Gate task={task}>
             {task.reviewRoomId && (
-              <button type="button" className="ml-auto text-[12px] whitespace-nowrap text-accent-600 hover:underline" onClick={() => selectBot(task.reviewRoomId!)}>
+              <Button size="sm" variant="ghost" className="ml-auto h-6 px-2 text-accent-600 hover:text-accent-700" onClick={() => selectBot(task.reviewRoomId!)}>
                 查看评审
-              </button>
+              </Button>
             )}
           </Gate>
         </>
@@ -256,7 +256,7 @@ function Card({ task, onRelease }: { task: PipelineTask; onRelease: (t: Pipeline
       {task.stage === 'live' &&
         (task.releasedAt ? (
           <span className="flex items-center gap-1.5 text-[12px] text-status-online-ink">
-            <Check aria-hidden className="size-3.5" />已上线 · {formatShortTime(task.releasedAt)}
+            <Check aria-hidden className="size-3" />已上线 · {formatShortTime(task.releasedAt)}
           </span>
         ) : (
           <>
@@ -377,13 +377,13 @@ export function PipelineView({ toggle }: { toggle: ReactNode }) {
         {STAGES.map((stage, i) => {
           const list = shown.filter((t) => t.stage === stage.id).sort((a, b) => b.updatedAt - a.updatedAt)
           return (
-            <div key={stage.id} className="flex min-w-[200px] flex-1 items-stretch gap-1">
-              <section aria-label={stage.label} className="flex min-w-0 flex-1 flex-col rounded-[14px] bg-canvas/60">
+            <div key={stage.id} className="flex min-w-50 flex-1 items-stretch gap-1">
+              <section aria-label={stage.label} className="flex min-w-0 flex-1 flex-col rounded-2xl bg-canvas/60">
                 <header className="flex h-10 shrink-0 items-center gap-2 px-3">
                   <span className={cn('size-2 rounded-full', HEAD[stage.id])} />
                   <h3 className="text-[13px] font-semibold text-ink">{stage.label}</h3>
                   <span className="text-[12px] text-ink-muted">{list.length}</span>
-                  {stage.gate && <span className="ml-auto rounded-full bg-status-attention/15 px-1.5 text-[10.5px] text-status-attention-ink">关卡</span>}
+                  {stage.gate && <span className="ml-auto rounded-full bg-status-attention/15 px-1.5 text-[11px] text-status-attention-ink">关卡</span>}
                 </header>
                 <ol className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto px-2 pb-2">
                   {list.map((t) => <Card key={t.id} task={t} onRelease={setReleasing} />)}

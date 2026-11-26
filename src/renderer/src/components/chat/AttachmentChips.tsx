@@ -1,4 +1,5 @@
 import { FileText, Film, Loader2, Music, X } from 'lucide-react'
+import { IconButton } from '@/components/ui/IconButton'
 import { cn } from '@/lib/cn'
 import { formatBytes } from '@/lib/format'
 import { t } from '@/lib/i18n'
@@ -69,14 +70,14 @@ export function AttachmentChips({ attachments, onRemove, onPreview }: {
                 {detail}
               </span>
             </div>
-            <button
-              type="button"
-              aria-label={t('Remove {name}', { name: file.name })}
+            <IconButton
+              size="sm"
+              label={t('Remove {name}', { name: file.name })}
               onClick={() => onRemove(file.id)}
-              className="press-icon grid size-5 shrink-0 place-items-center rounded-full text-ink-muted hover:bg-active hover:text-ink"
+              className="size-5 text-ink-muted hover:bg-active [&_svg]:size-3"
             >
-              <X className="size-3" />
-            </button>
+              <X />
+            </IconButton>
           </li>
         )
       })}

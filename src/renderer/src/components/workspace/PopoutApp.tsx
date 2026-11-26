@@ -1,6 +1,7 @@
 import { useEffect } from 'react'
 import { SquareArrowDownLeft } from 'lucide-react'
 import { ChatArea } from '@/components/chat/ChatArea'
+import { IconButton } from '@/components/ui/IconButton'
 import { ErrorBoundary } from '@/components/ui/ErrorBoundary'
 import { getBridge } from '@/lib/bridge'
 import { startPopoutClient } from '@/services/popoutSync'
@@ -18,15 +19,9 @@ export function PopoutApp({ botId }: { botId: string }) {
 
   const dock = (
     <span className="no-drag flex items-center gap-0.5 border-l border-line pl-1">
-      <button
-        type="button"
-        title="放回主窗口"
-        aria-label="放回主窗口"
-        onClick={() => void getBridge()?.goxfPopout?.dock(botId)}
-        className="grid size-7 place-items-center rounded-full text-ink-secondary hover:bg-hover hover:text-ink"
-      >
-        <SquareArrowDownLeft className="size-3.5" />
-      </button>
+      <IconButton size="sm" label="放回主窗口" onClick={() => void getBridge()?.goxfPopout?.dock(botId)}>
+        <SquareArrowDownLeft />
+      </IconButton>
     </span>
   )
 
