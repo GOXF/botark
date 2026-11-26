@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react'
-import { Eye, EyeOff, ExternalLink, Lock, ShieldAlert, X } from 'lucide-react'
+import { useEffect, useMemo, useState } from 'react'
+import { ChevronDown, Eye, EyeOff, ExternalLink, Lock, ShieldAlert, X } from 'lucide-react'
 import type { HarkAskView } from '@shared/harkAsks'
 import { Button } from '@/components/ui/Button'
 import { TextInput } from '@/components/ui/Field'
@@ -7,15 +7,47 @@ import { getBridge } from '@/lib/bridge'
 import { cn } from '@/lib/cn'
 import { useBotStore } from '@/store/botStore'
 
-/** GOXF: Hark's pending asks in the native chat. A code is typed here; a sign-in, card or key opens the Hark web view. */
+const DISMISSED_KEY = 'botark:hark-dismissed-asks'
+const DISMISSED_MAX = 300
+
+function readDismissed(): string[] {
+  try {
+    const v = JSON.parse(localStorage.getItem(DISMISSED_KEY) ?? '[]') as unknown
+    return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : []
+  } catch {
+    return []
+  }
+}
+
+/**
+ * GOXF: asks the user closed stay closed (across restarts and pane switches),
+ * so a stale sign-in or key request no longer sits over the composer forever.
+ */
+export function dismissHarkAsks(ids: string[]) {
+  if (!ids.length) return
+  const next = [...new Set([...readDismissed(), ...ids])].slice(-DISMISSED_MAX)
+  try { localStorage.setItem(DISMISSED_KEY, JSON.stringify(next)) } catch { /* storage full: the close still holds this session */ }
+  window.dispatchEvent(new Event(DISMISSED_KEY))
+}
+
+/** GOXF: Hark's pending asks in the native chat, minus the ones the user closed. A code is typed here; a sign-in, card or key opens the Hark web view. */
 export function useHarkAsks(accountId: string, sessionId?: string): HarkAskView[] {
   const [asks, setAsks] = useState<HarkAskView[]>([])
+  const [dismissed, setDismissed] = useState<string[]>(readDismissed)
   const hark = getBridge()?.hark
   useEffect(() => hark?.onEvent((event) => {
     if (event.type === 'projectHistory' && event.accountId === accountId && event.conversationId === sessionId
       && event.asks !== undefined) setAsks(event.asks)
   }), [hark, accountId, sessionId])
-  return asks
+  useEffect(() => {
+    const sync = () => setDismissed(readDismissed())
+    window.addEventListener(DISMISSED_KEY, sync)
+    return () => window.removeEventListener(DISMISSED_KEY, sync)
+  }, [])
+  return useMemo(() => {
+    const gone = new Set(dismissed)
+    return asks.filter((a) => !gone.has(a.id))
+  }, [asks, dismissed])
 }
 
 export function HarkAskCards({ accountId, sessionId, asks, className = 'mx-5' }: { accountId: string; sessionId?: string; asks: HarkAskView[]; className?: string }) {
@@ -28,7 +60,14 @@ export function HarkAskCards({ accountId, sessionId, asks, className = 'mx-5' }:
   const [key, setKey] = useState<Record<string, string>>({})
   const openWeb = useBotStore((s) => s.openWebSessionAt)
   const hark = getBridge()?.hark
+  const [expanded, setExpanded] = useState<string>()
   const visible = asks.filter((a) => !sent[a.id])
+  // GOXF: only one ask is open at a time (the newest, or the one picked); the rest are one-line rows.
+  const openId = visible.some((a) => a.id === expanded) ? expanded : visible.at(-1)?.id
+  const close = (ids: string[]) => {
+    setSent((s) => ({ ...s, ...Object.fromEntries(ids.map((id) => [id, true as const])) }))
+    dismissHarkAsks(ids)
+  }
   // The web form for this very project, not Hark's home page.
   const openHere = () => openWeb(sessionId ? `https://app.hark.com/projects/${encodeURIComponent(sessionId)}` : null)
   if (!hark || !sessionId || visible.length === 0) return null
@@ -115,7 +154,27 @@ export function HarkAskCards({ accountId, sessionId, asks, className = 'mx-5' }:
 
   return (
     <div className={cn(className, 'mb-1 flex shrink-0 flex-col gap-1.5')}>
-      {visible.map((ask) => (
+      {visible.length > 1 && (
+        <div className="flex items-center gap-2 px-1 text-[11.5px] text-ink-muted">
+          <span>Hark 有 {visible.length} 个请求等你处理，较早的已折叠</span>
+          <button type="button" onClick={() => close(visible.map((a) => a.id))}
+            className="press ml-auto rounded-full px-2 py-0.5 hover:bg-hover hover:text-ink">全部收起</button>
+        </div>
+      )}
+      {visible.map((ask) => ask.id !== openId ? (
+        <div key={ask.id} className="flex items-center gap-2 rounded-xl border border-line bg-surface px-3 py-1.5 text-[12px]">
+          {ask.kind === 'credential' ? <Lock className="size-3.5 shrink-0 text-ink-muted" aria-hidden /> : <ShieldAlert className="size-3.5 shrink-0 text-ink-muted" aria-hidden />}
+          <button type="button" onClick={() => setExpanded(ask.id)} className="flex min-w-0 flex-1 items-center gap-1.5 text-left">
+            <span className="min-w-0 truncate font-medium text-ink">{ask.prompt}</span>
+            {ask.domain && <span className="shrink-0 truncate text-ink-muted">{ask.domain}</span>}
+            <ChevronDown className="size-3.5 shrink-0 text-ink-muted" aria-hidden />
+          </button>
+          <button type="button" aria-label="不需要了，收起" title="不需要了，收起" onClick={() => close([ask.id])}
+            className="press grid size-6 shrink-0 place-items-center rounded-full text-ink-muted hover:bg-hover hover:text-ink">
+            <X className="size-3.5" aria-hidden />
+          </button>
+        </div>
+      ) : (
         <section key={ask.id} role="alert"
           className="rounded-2xl border border-line bg-surface px-4 py-3.5 text-[12px] shadow-soft">
           <div className="flex items-center gap-2">
@@ -123,7 +182,7 @@ export function HarkAskCards({ accountId, sessionId, asks, className = 'mx-5' }:
             <span className="min-w-0 truncate text-[14px] font-semibold text-ink">{ask.prompt}</span>
             {ask.domain && <span className="shrink-0 truncate text-ink-muted">{ask.domain}</span>}
             <span className="size-1.5 shrink-0 rounded-full bg-status-attention" aria-label="待处理" />
-            <button type="button" aria-label="先收起" onClick={() => setSent((s) => ({ ...s, [ask.id]: true }))}
+            <button type="button" aria-label="不需要了，收起" title="不需要了，收起" onClick={() => close([ask.id])}
               className="press ml-auto grid size-7 shrink-0 place-items-center rounded-full text-ink-muted hover:bg-hover hover:text-ink">
               <X className="size-4" aria-hidden />
             </button>
