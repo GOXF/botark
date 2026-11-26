@@ -140,7 +140,9 @@ function createMainWindow(): BrowserWindow {
       preload: join(__dirname, '../preload/index.js'),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: true
+      sandbox: true,
+      // Built-in PDF viewer for previewed PDFs (blob: iframes in NativeDocumentDialog).
+      plugins: true
     }
   })
 
