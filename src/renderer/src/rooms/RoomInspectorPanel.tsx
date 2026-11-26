@@ -22,8 +22,10 @@ import { Select } from '@/components/ui/Select'
 import { cn } from '@/lib/cn'
 import { shortcutLabel } from '@/lib/shortcuts'
 import { useBotStore } from '@/store/botStore'
-import { roomMarkdown, roomRecipient, type CollabRoom } from './model'
+import { roomRecipient, type CollabRoom } from './model'
 import { RoomAvatarCluster } from './RoomAvatarCluster'
+import { exportRoomMarkdownFile } from './roomExport'
+export { exportRoomMarkdownFile }
 import {
   clearRoomTranscript,
   deleteRoom,
@@ -40,15 +42,6 @@ import { HandoffPanel } from './HandoffViews'
 import { WorkspaceTools } from './WorkspaceTools'
 
 type RoomTab = 'overview' | 'workspace' | 'slack' | 'handoff'
-
-export function exportRoomMarkdownFile(room: CollabRoom, finalId?: string) {
-  const url = URL.createObjectURL(new Blob([roomMarkdown(room, finalId)], { type: 'text/markdown' }))
-  const link = document.createElement('a')
-  link.href = url
-  link.download = `${room.title}.md`
-  link.click()
-  setTimeout(() => URL.revokeObjectURL(url), 1000)
-}
 
 export function RoomInspectorPanel({ room }: { room: CollabRoom }) {
   const toggleInfoPanel = useBotStore((s) => s.toggleInfoPanel)

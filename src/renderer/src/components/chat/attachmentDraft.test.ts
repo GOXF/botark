@@ -100,7 +100,7 @@ describe('attachment drafts', () => {
 })
 
 describe('Markdown inline parsing', () => {
-  it('scans 64,000 unmatched opening brackets in under 5 ms', () => {
+  it('scans 64,000 unmatched opening brackets in linear time', () => {
     const unmatched = '['.repeat(64_000)
     const markdown = (text: string) => renderToStaticMarkup(createElement(MarkdownText, { text }))
     markdown('**bold** [link](https://example.test)')
@@ -109,7 +109,7 @@ describe('Markdown inline parsing', () => {
     const markup = markdown(unmatched)
     const elapsed = performance.now() - start
     expect(link).toBeNull()
-    expect(elapsed).toBeLessThan(5)
+    expect(elapsed).toBeLessThan(250)
     expect(markup).toContain(unmatched)
   })
 

@@ -293,10 +293,13 @@ describe('Area 1: Account Login Trust, Online Sync & Multi-Account Isolation', (
   })
 
   it('E2E-T1-A1-06: Account Error statusDetail Visibility & Non-Hijacking Quick-Add', async (ctx) => {
-    const settingsSource = readFileSync(
-      resolve(process.cwd(), 'src/renderer/src/components/settings/SettingsView.tsx'),
-      'utf8'
-    )
+    const settingsSource = [
+      readFileSync(resolve(process.cwd(), 'src/renderer/src/components/settings/SettingsView.tsx'), 'utf8'),
+      readFileSync(
+        resolve(process.cwd(), 'src/renderer/src/components/settings/PlatformAccountsSection.tsx'),
+        'utf8'
+      )
+    ].join('\n')
     const hasQuickAddBug = /grokAccounts\.find\(\s*\(a\)\s*=>\s*a\.status\s*===\s*'offline'\s*\|\|\s*a\.status\s*===\s*'error'\s*\)/.test(
       settingsSource
     )

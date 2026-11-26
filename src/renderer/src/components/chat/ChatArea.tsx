@@ -1,14 +1,16 @@
 import { HarkBrowserCard } from '../hark/HarkBrowserCard'
 import { HarkAskCards, useHarkAsks } from '../hark/HarkAskCard'
 import { MuseBrowserCard } from '../muse/MuseBrowserCard'
-import { memo, useCallback, type ReactNode } from 'react'
+import { lazy, memo, Suspense, useCallback, type ReactNode } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 import type { AttachmentMeta, PlatformId } from '@adapters/types'
 import { ArkDrawerToggleSvg } from '@/components/ui/ArkGlyphs'
 import { BotAvatar } from '@/components/ui/Avatar'
 import { Button } from '@/components/ui/Button'
 import { getPlatformInspector } from '@/components/info/platformInspector'
-import { OnboardingStage } from '@/components/onboarding/OnboardingGuide'
+const OnboardingStage = lazy(() =>
+  import('@/components/onboarding/OnboardingGuide').then(({ OnboardingStage }) => ({ default: OnboardingStage }))
+)
 import { getBotAccounts } from '@/lib/selectors'
 import { useBotStore } from '@/store/botStore'
 import type { Bot, BotAccount, ChatMessage } from '@/types'
@@ -40,7 +42,8 @@ const PLATFORM_LOGIN_LABELS: Record<PlatformId, string> = {
   dot: '使用 ChatGPT Dot 登录',
   hermes: '配置 Hermes 连接',
   antigravity: '使用 Antigravity 登录',
-  cue: '使用 Cue 登录'
+  cue: '使用 Cue 登录',
+  'ds-bot': '配置 DS Bot 连接'
 }
 
 function ConversationIntro({
@@ -188,7 +191,9 @@ export function ChatArea({
             <p className="text-[13px] text-ink-muted">{t('Select a bot')}</p>
           </div>
         ) : (
-          <OnboardingStage />
+          <Suspense fallback={null}>
+            <OnboardingStage />
+          </Suspense>
         )}
       </div>
     )
@@ -215,6 +220,9 @@ export function ChatArea({
         return onAntigravityLogin(activeAccount.id)
       case 'cue':
         return onCueLogin(activeAccount.id)
+      case 'ds-bot':
+        useBotStore.getState().setSettingsOpen(true, 'ds-bot-accounts')
+        return
     }
   }
 

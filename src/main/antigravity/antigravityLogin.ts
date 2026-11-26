@@ -2,7 +2,7 @@
  * Interactive Google Antigravity login via BrowserWindow + isolated persist partition.
  *
  * Opens https://antigravity.google.com/ (redirects to Google Sign-In when signed out).
- * Uses a clean desktop Chrome User-Agent so Google OAuth never rejects the window.
+ * Uses a clean desktop Chrome User-Agent with a Firefox compatibility retry.
  * Success is verified via live `GetUserProfile` RPC (`aicode.clients6.google.com`).
  * Never prints cookie or auth-header values.
  */
@@ -16,15 +16,20 @@ import {
   cleanChromeUserAgentForGoogle,
   GOOGLE_BLOCK_CHECK_SCRIPT,
   installGoogleOAuthHeaderGuard,
+  isGoogleFirefoxCompatMode,
   isGoogleBlockedOrPasskeyText,
   setGoogleFirefoxCompatMode
 } from '../googleOAuthUaGuard'
 import { applyProxyToPartition } from '../muse/accountProxy'
 import { partitionForAccount } from '../webContentsViewManager'
 import { listAntigravityCookieNames, probeAntigravitySession } from './antigravityClient'
+import { withAntigravityCredentials } from './antigravityCredentials'
 import {
   ANTIGRAVITY_ORIGIN,
-  isAllowedAntigravityUrl
+  antigravityAuthUserFromUrl,
+  isAllowedAntigravityUrl,
+  isAntigravitySigningCookie,
+  type AntigravityUserProfile
 } from './antigravityProtocol'
 
 const loginWindows = new Map<string, BrowserWindow>()
@@ -33,8 +38,8 @@ const loginAttempts = new Map<string, symbol>()
 export type AntigravityLoginSuccess = {
   accountId: string
   signedIn: true
-  handle: string
-  displayName?: string
+  handle?: string
+  displayName: string
   planDisplayName?: string
   sessionCookieNames: string[]
 }
@@ -64,13 +69,33 @@ function emit(event: AntigravityLoginEvent): void {
 
 function isAuthTriggerCookie(name: string): boolean {
   return (
-    name === 'SAPISID' ||
-    name === '__Secure-1PAPISID' ||
-    name === '__Secure-3PAPISID' ||
+    isAntigravitySigningCookie(name) ||
     name === 'SID' ||
     name === '__Secure-1PSID' ||
     name === '__Secure-3PSID'
   )
+}
+
+function signedInEvent(accountId: string, profile: AntigravityUserProfile, sessionCookieNames: string[]): AntigravityLoginSuccess {
+  return {
+    accountId,
+    signedIn: true,
+    handle: profile.email,
+    displayName: profile.email?.split('@')[0] || 'Antigravity',
+    planDisplayName: profile.planDisplayName,
+    sessionCookieNames
+  }
+}
+
+export async function completeAntigravityCredentialImport(
+  accountId: string,
+  profile: AntigravityUserProfile
+): Promise<AntigravityLoginSuccess> {
+  const cookieNames = await listAntigravityCookieNames(accountId).catch(() => [])
+  closeAntigravityLoginWindow(accountId)
+  const event = signedInEvent(accountId, profile, cookieNames)
+  emit(event)
+  return event
 }
 
 export async function openAntigravityLoginWindow(accountId: string, parent?: BrowserWindow): Promise<void> {
@@ -96,24 +121,17 @@ export async function openAntigravityLoginWindow(accountId: string, parent?: Bro
   const partition = partitionForAccount(accountId)
   const ses = electronSession.fromPartition(partition)
   const cleanUa = cleanChromeUserAgentForGoogle(ses.getUserAgent())
-  ses.setUserAgent(cleanUa)
+  setGoogleFirefoxCompatMode(ses, false)
   installGoogleOAuthHeaderGuard(ses)
 
   // Already signed in on this partition?
-  const already = await probeAntigravitySession(accountId)
+  const already = await withAntigravityCredentials(accountId, () => probeAntigravitySession(accountId))
   if (!ownsAttempt()) return
   if (already.signedIn) {
     const cookieNames = await listAntigravityCookieNames(accountId)
     if (!ownsAttempt()) return
     finishAttempt()
-    emit({
-      accountId,
-      signedIn: true,
-      handle: already.profile.email,
-      displayName: already.profile.email.split('@')[0] || 'Antigravity',
-      planDisplayName: already.profile.planDisplayName,
-      sessionCookieNames: cookieNames
-    })
+    emit(signedInEvent(accountId, already.profile, cookieNames))
     return
   }
 
@@ -154,13 +172,26 @@ export async function openAntigravityLoginWindow(accountId: string, parent?: Bro
   const attachNavigationGuards = (wc: WebContents, parentForChild: BrowserWindow) => {
     attachGoogleOAuthWebContentsGuard(wc, ses, { allowGlobalCleanUa: true })
 
+    const clearGoogleRejectionCookies = async (): Promise<void> => {
+      if (typeof ses.cookies?.remove !== 'function') return
+      const urls = ['https://accounts.google.com/', 'https://accounts.youtube.com/']
+      const names = ['__Host-GAPS', 'GAPS', 'OTZ']
+      await Promise.allSettled(
+        urls.flatMap((url) => names.map((name) => ses.cookies.remove(url, name)))
+      )
+    }
+
     const retryWithFirefoxUa = () => {
       setGoogleFirefoxCompatMode(ses, true)
-      const ffUa = buildGoogleFirefoxCompatUa()
-      ses.setUserAgent(ffUa)
-      if (!wc.isDestroyed()) {
-        wc.setUserAgent(ffUa)
-        void wc.loadURL(ANTIGRAVITY_ORIGIN).catch(() => undefined)
+      const mainContents = win.webContents
+      closeChildPopups()
+      if (!mainContents.isDestroyed()) {
+        mainContents.setUserAgent(buildGoogleFirefoxCompatUa())
+        void clearGoogleRejectionCookies().finally(() => {
+          if (!mainContents.isDestroyed()) {
+            void mainContents.loadURL(ANTIGRAVITY_ORIGIN).catch(() => undefined)
+          }
+        })
       }
     }
 
@@ -218,31 +249,54 @@ export async function openAntigravityLoginWindow(accountId: string, parent?: Bro
 
   let settling = false
   let checking = false
+  let preferredAuthUser: string | undefined
+  let shownProbeMessage: string | undefined
+
+  const isAntigravityPage = (url: string) => url === ANTIGRAVITY_ORIGIN || url.startsWith(ANTIGRAVITY_ORIGIN + '/')
+
+  const showProbeFailure = async (message: string): Promise<void> => {
+    const wc = win.webContents
+    if (!isAntigravityPage(wc.getURL()) || shownProbeMessage === message) return
+    const id = 'botark-antigravity-session-banner'
+    const banner = buildGoogleFallbackBannerScript({
+      id,
+      title: 'BotArk 尚未验证 Antigravity 会话',
+      detail: message + ' 也可在系统浏览器完成登录后，将 Cookie 或「Copy as cURL」粘贴到 BotArk 的「添加 Bot」窗口。',
+      buttonLabel: '在系统浏览器打开',
+      actionUrl: 'botark-external://open'
+    })
+    try {
+      const shown = await wc.executeJavaScript(`(() => {
+        if (location.origin !== ${JSON.stringify(ANTIGRAVITY_ORIGIN)} || !document.body) return false;
+        document.getElementById(${JSON.stringify(id)})?.remove();
+        ${banner};
+        return Boolean(document.getElementById(${JSON.stringify(id)}));
+      })()`, true)
+      if (shown) shownProbeMessage = message
+    } catch {
+      /* The page may have navigated while the probe was running. */
+    }
+  }
 
   const finishIfSignedIn = async (): Promise<void> => {
     if (settling || checking || win.isDestroyed() || !ownsAttempt()) return
     checking = true
     try {
-      const probe = await probeAntigravitySession(accountId)
-      if (!probe.signedIn || settling || win.isDestroyed() || !ownsAttempt()) return
-      const cookieNames = await listAntigravityCookieNames(accountId)
-      if (settling || win.isDestroyed() || !ownsAttempt()) return
-      settling = true
-      emit({
-        accountId,
-        signedIn: true,
-        handle: probe.profile.email,
-        displayName: probe.profile.email.split('@')[0] || 'Antigravity',
-        planDisplayName: probe.profile.planDisplayName,
-        sessionCookieNames: cookieNames
+      await withAntigravityCredentials(accountId, async () => {
+        if (!ownsAttempt() || win.isDestroyed()) return
+        const authUser = preferredAuthUser
+        const probe = await probeAntigravitySession(accountId, authUser)
+        if (authUser !== preferredAuthUser || win.isDestroyed() || !ownsAttempt()) return
+        if (!probe.signedIn) {
+          if (probe.reason !== 'no-cookies') await showProbeFailure(probe.message)
+          return
+        }
+        const cookieNames = await listAntigravityCookieNames(accountId)
+        if (authUser !== preferredAuthUser || win.isDestroyed() || !ownsAttempt()) return
+        settling = true
+        closeAntigravityLoginWindow(accountId)
+        emit(signedInEvent(accountId, probe.profile, cookieNames))
       })
-      closeChildPopups()
-      try {
-        if (!win.isDestroyed()) win.close()
-      } catch {
-        /* ignore */
-      }
-      finishAttempt()
     } finally {
       checking = false
     }
@@ -267,10 +321,10 @@ export async function openAntigravityLoginWindow(accountId: string, parent?: Bro
       await wc.executeJavaScript(
         buildGoogleFallbackBannerScript({
           title: 'Google 登录受限或需要通行密钥',
-          detail: '可点击「兼容模式重试」，或在系统浏览器打开 Antigravity 核对账号状态。',
+          detail: '可点击「兼容模式重试」，也可在系统浏览器完成登录，再将 Antigravity 请求的 Cookie 或「Copy as cURL」粘贴到 BotArk 的「添加 Bot」窗口。',
           buttonLabel: '在系统浏览器打开',
           actionUrl: 'botark-external://open',
-          secondaryActions: [{ label: '尝试兼容模式重试', actionUrl: 'botark-action://retry-firefox-ua' }]
+          secondaryActions: [{ label: '兼容模式重试', actionUrl: 'botark-action://retry-firefox-ua' }]
         }),
         true
       )
@@ -279,25 +333,34 @@ export async function openAntigravityLoginWindow(accountId: string, parent?: Bro
     }
   }
 
-  const onNav = (wc: WebContents) => {
+  const onNav = (wc: WebContents, url = wc.getURL()) => {
+    const authUser = antigravityAuthUserFromUrl(url)
+    if (authUser !== undefined) preferredAuthUser = authUser
     void finishIfSignedIn()
     void maybeShowGoogleFallbackBanner(wc)
   }
-  win.webContents.on('did-finish-load', () => onNav(win.webContents))
+  win.webContents.on('did-finish-load', () => {
+    shownProbeMessage = undefined
+    onNav(win.webContents)
+  })
   win.webContents.on('did-navigate', () => onNav(win.webContents))
   win.webContents.on('did-navigate-in-page', () => onNav(win.webContents))
-  win.webContents.on('did-redirect-navigation', () => onNav(win.webContents))
+  win.webContents.on('did-redirect-navigation', (details) => {
+    if (details.isMainFrame) onNav(win.webContents, details.url)
+  })
 
   const trackChildWindow = (childWin: BrowserWindow) => {
     childPopups.add(childWin)
     if (!childWin.webContents.isDestroyed()) {
-      childWin.webContents.setUserAgent(cleanUa)
+      childWin.webContents.setUserAgent(isGoogleFirefoxCompatMode(ses) ? buildGoogleFirefoxCompatUa() : cleanUa)
     }
     attachNavigationGuards(childWin.webContents, childWin)
     childWin.webContents.on('did-finish-load', () => onNav(childWin.webContents))
     childWin.webContents.on('did-navigate', () => onNav(childWin.webContents))
     childWin.webContents.on('did-navigate-in-page', () => onNav(childWin.webContents))
-    childWin.webContents.on('did-redirect-navigation', () => onNav(childWin.webContents))
+    childWin.webContents.on('did-redirect-navigation', (details) => {
+      if (details.isMainFrame) onNav(childWin.webContents, details.url)
+    })
     childWin.webContents.on('did-create-window', (nested) => trackChildWindow(nested))
     childWin.on('closed', () => {
       childPopups.delete(childWin)
@@ -329,30 +392,27 @@ export async function openAntigravityLoginWindow(accountId: string, parent?: Bro
   win.on('closed', () => {
     clearInterval(poll)
     ses.cookies.off('changed', onCookie)
-    closeChildPopups()
     const wasTracked = loginWindows.get(accountId) === win
-    if (wasTracked) loginWindows.delete(accountId)
+    if (wasTracked) {
+      loginWindows.delete(accountId)
+      setGoogleFirefoxCompatMode(ses, false)
+    }
+    closeChildPopups()
     if (!wasTracked || settling || !ownsAttempt()) return
-    void (async () => {
-      const probe = await probeAntigravitySession(accountId)
+    void withAntigravityCredentials(accountId, async () => {
+      if (!ownsAttempt()) return
+      const probe = await probeAntigravitySession(accountId, preferredAuthUser)
       if (!ownsAttempt()) return
       if (probe.signedIn) {
         const cookieNames = await listAntigravityCookieNames(accountId)
         if (!ownsAttempt()) return
         finishAttempt()
-        emit({
-          accountId,
-          signedIn: true,
-          handle: probe.profile.email,
-          displayName: probe.profile.email.split('@')[0] || 'Antigravity',
-          planDisplayName: probe.profile.planDisplayName,
-          sessionCookieNames: cookieNames
-        })
+        emit(signedInEvent(accountId, probe.profile, cookieNames))
         return
       }
       finishAttempt()
       emit({ accountId, signedIn: false, windowClosed: true })
-    })()
+    })
   })
 
   try {
@@ -369,5 +429,6 @@ export function closeAntigravityLoginWindow(accountId: string): void {
   loginAttempts.delete(accountId)
   const win = loginWindows.get(accountId)
   loginWindows.delete(accountId)
+  setGoogleFirefoxCompatMode(electronSession.fromPartition(partitionForAccount(accountId)), false)
   if (win && !win.isDestroyed()) win.destroy()
 }

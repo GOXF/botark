@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import * as RadixDialog from '@radix-ui/react-dialog'
-import { Globe, PanelRight, Plus, RefreshCw, Search, Sparkles, Users, X } from 'lucide-react'
+import { Globe, PanelRight, Pin, Plus, RefreshCw, Search, ShieldCheck, Sparkles, Users, X } from 'lucide-react'
+import { focusChatMessage } from '@/components/chat/MessageList'
 import { getPlatformInspector } from '@/components/info/platformInspector'
 import { BotAvatar } from '@/components/ui/Avatar'
 import { useGlide } from '@/hooks/useGlide'
@@ -10,10 +11,10 @@ import { useOverlayLock } from '@/lib/overlay'
 import { botMatches } from '@/lib/selectors'
 import { shortcutLabel } from '@/lib/shortcuts'
 import { RoomAvatarCluster } from '@/rooms/RoomAvatarCluster'
-import { NEW_ROOM_ID } from '@/rooms/RoomView'
+import { NEW_ROOM_ID } from '@/rooms/roomExport'
 import { useRooms } from '@/rooms/roomStore'
 import { useBotStore } from '@/store/botStore'
-import { t } from '@/lib/i18n'
+import { plural, useT } from '@/lib/i18n'
 
 interface Row {
   key: string
@@ -21,6 +22,7 @@ interface Row {
   subtitle?: string
   lead: ReactNode
   hint?: string
+  badges?: ReactNode
   run: () => void
 }
 
@@ -42,8 +44,9 @@ function CommandIcon({ children }: { children: ReactNode }) {
   )
 }
 
-/** ⌘K: jump to a bot, find a message, or run a command. */
+/** ⌘K: jump to a bot, room or message, or run a command. */
 export function CommandPalette() {
+  const t = useT()
   const open = useBotStore((s) => s.paletteOpen)
   const key = useBotStore((s) => s.paletteKey)
   const close = useBotStore((s) => s.closePalette)
@@ -70,6 +73,7 @@ export function CommandPalette() {
 }
 
 function PaletteBody({ onClose }: { onClose: () => void }) {
+  const t = useT()
   const seed = useBotStore((s) => s.paletteQuery)
   const bots = useBotStore((s) => s.bots)
   const rooms = useRooms((s) => s.rooms)
@@ -94,6 +98,49 @@ function PaletteBody({ onClose }: { onClose: () => void }) {
       selectBot(id)
       window.dispatchEvent(new Event('bothub:focus-composer'))
     }
+
+    const pinnedRows: Row[] = []
+    const roomRows: Row[] = []
+    for (const room of rooms) {
+      const pinned = room.pinned === true
+      const admin = Boolean(room.coordinatorId)
+      const names = room.members.map((member) => member.name)
+      const searchTerms = [
+        room.title,
+        ...names,
+        ...(pinned ? ['pinned', t('Pinned')] : []),
+        ...(admin ? ['admin', t('Admin')] : [])
+      ]
+      if (wanted && !searchTerms.some((term) => term.toLowerCase().includes(wanted))) continue
+      const memberCount = plural(t, names.length, '{n} agent', '{n} agents')
+      const row: Row = {
+        key: `room:${room.id}`,
+        title: room.title,
+        subtitle: [memberCount, ...names].join(' · '),
+        lead: <RoomAvatarCluster members={room.members.slice(0, 2)} size="xs" />,
+        badges: (pinned || admin) && (
+          <span className="flex shrink-0 items-center gap-1.5 text-[11px] font-medium">
+            {pinned && (
+              <span title={t('Pinned')} className="grid size-6 place-items-center rounded-full bg-hover text-ink-secondary">
+                <Pin className="size-3" aria-hidden />
+                <span className="sr-only">{t('Pinned')}</span>
+              </span>
+            )}
+            {admin && (
+              <span className="inline-flex items-center gap-1 rounded-full bg-accent-50 px-2 py-0.5 text-accent-600">
+                <ShieldCheck className="size-3" aria-hidden />
+                {t('Admin')}
+              </span>
+            )}
+          </span>
+        ),
+        run: () => selectBot(room.id)
+      }
+      const items = pinned ? pinnedRows : roomRows
+      items.push(row)
+    }
+    if (pinnedRows.length) out.push([t('Pinned rooms'), pinnedRows])
+
     const botRows: Row[] = bots
       .filter((bot) => botMatches(bot, wanted, accounts, groups.find((g) => g.id === bot.groupId)))
       .map((bot) => ({
@@ -103,22 +150,7 @@ function PaletteBody({ onClose }: { onClose: () => void }) {
         run: openBot(bot.id)
       }))
     if (botRows.length) out.push([t('Bots'), botRows])
-
-    const roomRows: Row[] = rooms
-      .filter(
-        (r) =>
-          !wanted ||
-          r.title.toLowerCase().includes(wanted) ||
-          r.members.some((m) => m.name.toLowerCase().includes(wanted))
-      )
-      .map((r) => ({
-        key: `room:${r.id}`,
-        title: r.title,
-        subtitle: `${r.members.length} Agents · ${r.members.map((m) => m.name).join(' · ')}`,
-        lead: <RoomAvatarCluster members={r.members.slice(0, 2)} size="xs" />,
-        run: () => selectBot(r.id)
-      }))
-    if (roomRows.length) out.push(['协作群聊', roomRows])
+    if (roomRows.length) out.push([t('Collaboration rooms'), roomRows])
 
     if (wanted.length >= 2) {
       const hits: Row[] = []
@@ -129,11 +161,16 @@ function PaletteBody({ onClose }: { onClose: () => void }) {
           const message = history[i]!
           if (!message.text.toLowerCase().includes(wanted)) continue
           hits.push({
-            key: `msg:${message.id}`,
+            key: `msg:${bot.id}:${message.id}`,
             title: bot.name,
             subtitle: snippet(message.text, wanted),
             lead: <BotAvatar emoji={bot.emoji} seed={bot.id} avatar={bot.avatar} platformId={bot.platformId} size="xs" />,
-            run: openBot(bot.id)
+            run: () => {
+              selectBot(bot.id)
+              const { webSessionOpen, closeWebSession } = useBotStore.getState()
+              if (webSessionOpen) closeWebSession()
+              focusChatMessage(bot.id, message.id)
+            }
           })
           if (hits.length === MAX_MESSAGE_HITS) break
         }
@@ -156,7 +193,7 @@ function PaletteBody({ onClose }: { onClose: () => void }) {
       },
       {
         key: 'cmd:new-room',
-        title: '组建多 Agent 协作群聊',
+        title: t('Create a collaboration room'),
         lead: (
           <CommandIcon>
             <Users />
@@ -220,10 +257,11 @@ function PaletteBody({ onClose }: { onClose: () => void }) {
     ].filter((row) => !wanted || row.title.toLowerCase().includes(wanted))
     if (commands.length) out.push([t('Commands'), commands])
     return out
-  }, [bots, rooms, selectedBotId, groups, accounts, messages, wanted, infoOpen, webOpen, selectBot, setAddBotOpen, setOnboardingOpen, toggleInfoPanel, toggleWebSession])
+  }, [t, bots, rooms, selectedBotId, groups, accounts, messages, wanted, infoOpen, webOpen, selectBot, setAddBotOpen, setOnboardingOpen, toggleInfoPanel, toggleWebSession])
 
   const rows = sections.flatMap(([, items]) => items)
-  const active = Math.min(cursor, Math.max(rows.length - 1, 0))
+  const lastIndex = Math.max(rows.length - 1, 0)
+  const active = Math.min(cursor, lastIndex)
   const activeKey = rows[active]?.key
   const glide = useGlide<HTMLDivElement>(`${activeKey}|${rows.length}`)
 
@@ -251,7 +289,7 @@ function PaletteBody({ onClose }: { onClose: () => void }) {
           aria-controls="palette-results"
           aria-activedescendant={activeKey ? `palette-${activeKey}` : undefined}
           aria-label={t('Search')}
-          placeholder={t('Search bots, messages and commands')}
+          placeholder={t('Search bots, rooms, messages and commands')}
           onChange={(event) => {
             setQuery(event.target.value)
             setCursor(0)
@@ -260,7 +298,7 @@ function PaletteBody({ onClose }: { onClose: () => void }) {
             if (event.nativeEvent.isComposing) return
             if (event.key === 'ArrowDown') {
               event.preventDefault()
-              setCursor(Math.min(active + 1, rows.length - 1))
+              setCursor(Math.min(active + 1, lastIndex))
             } else if (event.key === 'ArrowUp') {
               event.preventDefault()
               setCursor(Math.max(active - 1, 0))
@@ -328,6 +366,7 @@ function PaletteBody({ onClose }: { onClose: () => void }) {
                       <span className="truncate text-[14px] leading-5 text-ink">{row.title}</span>
                       {row.subtitle && <span className="truncate text-[12px] leading-4 text-ink-muted">{row.subtitle}</span>}
                     </span>
+                    {row.badges}
                     {row.hint && <span className="shrink-0 text-[12px] text-ink-muted tabular-nums">{row.hint}</span>}
                   </button>
                 )

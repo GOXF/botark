@@ -54,6 +54,7 @@ import type {
   HermesRpcRequest,
   HermesRpcResponse,
   AntigravityAuthStatus,
+  AntigravityImportCredentialsRequest,
   AntigravityMainEvent,
   AntigravityOpenLoginRequest,
   AntigravityRpcRequest,
@@ -67,6 +68,12 @@ import type {
   CueOpenLoginRequest,
   CueRpcRequest,
   CueRpcResponse,
+  DsBotAuthStatus,
+  DsBotConfigureRequest,
+  DsBotLocalDetection,
+  DsBotMainEvent,
+  DsBotRpcRequest,
+  DsBotRpcResponse,
   SecurityVaultStatus,
   VaultStatusRequest
 } from './ipc'
@@ -180,6 +187,8 @@ export interface MuseBridge {
   testProxy(target: { accountId?: string; poolId?: string; draft?: MuseProxyConfigInput }): Promise<import('./ipc').ProxyTestResult>
   /** What the OS proxy resolves to right now, e.g. `PROXY 127.0.0.1:7890` or `DIRECT`. */
   getSystemProxy(): Promise<string>
+  /** Upstream #77: probe pool proxies directly (latency, exit IP, country), several at once. */
+  testProxyPool(ids?: string[]): Promise<Record<string, import('./ipc').MuseProxyTestResult>>
 }
 
 export interface UpdateBridge {
@@ -238,6 +247,7 @@ export interface HermesBridge {
 export interface AntigravityBridge {
   openLogin(request: AntigravityOpenLoginRequest): Promise<AntigravityAuthStatus>
   cancelLogin(accountId: string): Promise<void>
+  importCredentials?(request: AntigravityImportCredentialsRequest): Promise<AntigravityAuthStatus>
   clearAuth(accountId: string): Promise<void>
   authStatus(accountId: string): Promise<AntigravityAuthStatus>
   sendMessage(request: AntigravitySendRequest): Promise<AntigravitySendResponse>
@@ -255,6 +265,16 @@ export interface CueBridge {
   getSession(accountId: string): Promise<CueAuthSessionPayload>
   rpc(request: CueRpcRequest): Promise<CueRpcResponse>
   onEvent(listener: (event: CueMainEvent) => void): () => void
+}
+
+export interface DsBotBridge {
+  configure(request: DsBotConfigureRequest): Promise<DsBotAuthStatus>
+  detectLocal(): Promise<DsBotLocalDetection>
+  authStatus(accountId: string): Promise<DsBotAuthStatus>
+  listAccounts(): Promise<DsBotAuthStatus[]>
+  clearAuth(accountId: string): Promise<DsBotAuthStatus>
+  rpc(request: DsBotRpcRequest): Promise<DsBotRpcResponse>
+  onEvent(listener: (event: DsBotMainEvent) => void): () => void
 }
 
 export interface MobileSyncBridge {
@@ -301,6 +321,7 @@ export interface BotHubBridge {
   readonly hermes: HermesBridge
   readonly antigravity: AntigravityBridge
   readonly cue?: CueBridge
+  readonly dsBot?: DsBotBridge
   readonly mobileSync?: MobileSyncBridge
   readonly slack?: SlackBridge
   readonly workspace?: WorkspaceBridge

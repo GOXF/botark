@@ -35,7 +35,8 @@ const LOGIN_CTA_LABEL: Record<PlatformId, string> = {
   dot: 'Sign in with ChatGPT Dot',
   hermes: 'Configure Hermes connection',
   antigravity: 'Sign in with Antigravity',
-  cue: 'Sign in with Cue'
+  cue: 'Sign in with Cue',
+  'ds-bot': 'Configure DS Bot connection'
 }
 
 /**
@@ -76,6 +77,9 @@ export function AccountList({ bot, accounts }: AccountListProps) {
         return void openAntigravityLogin(account.id)
       case 'cue':
         return void useBotStore.getState().openCueLogin(account.id)
+      case 'ds-bot':
+        useBotStore.getState().setSettingsOpen(true, 'ds-bot-accounts')
+        return
     }
   }
 

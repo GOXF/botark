@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
+import { asObj } from '@shared/parse'
 import { EmptyLine, Section } from '@/components/info/Section'
 import { Button } from '@/components/ui/Button'
 import { TextInput } from '@/components/ui/Field'
@@ -13,10 +14,6 @@ type GoalItem = {
   title: string
   description?: string
   status?: string
-}
-
-function asObj(v: unknown): Record<string, unknown> | null {
-  return v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : null
 }
 
 function parseGoals(raw: unknown): GoalItem[] {

@@ -1,7 +1,7 @@
-import { PinnedRoomsList, RoomList } from '@/rooms/RoomView'
+import { PinnedRoomsList, RoomList } from '@/rooms/RoomSidebarList'
 import { type KeyboardEvent } from 'react'
 import { Plus, Search, Settings } from 'lucide-react'
-import { hasSeenOnboarding } from '@/components/onboarding/OnboardingGuide'
+import { hasSeenOnboarding } from '@/components/onboarding/onboardingState'
 import {
   ArkDrawerToggleSvg,
   ArkMobileLinkSvg,
@@ -56,7 +56,11 @@ export function Sidebar({ onAddBot }: SidebarProps) {
             ? 'hermes-accounts'
             : selectedPlatformId === 'antigravity'
               ? 'antigravity-accounts'
-              : 'muse-accounts'
+              : selectedPlatformId === 'cue'
+                ? 'cue-accounts'
+                : selectedPlatformId === 'ds-bot'
+                  ? 'ds-bot-accounts'
+                  : 'muse-accounts'
 
   // Typing while the sidebar has focus starts a search.
   const typeToSearch = (event: KeyboardEvent<HTMLDivElement>) => {

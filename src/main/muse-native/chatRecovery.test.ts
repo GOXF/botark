@@ -1,6 +1,7 @@
 import { EventEmitter } from 'node:events'
 import { describe, expect, it, vi } from 'vitest'
-import { historyAssistantsAfterTurn, MUSE_STREAM_SUPERSEDED, MuseChatChannel, parseHistoryTranscript, parseRichWidgets, streamChat } from './chat'
+import { MUSE_STREAM_SUPERSEDED, MuseChatChannel, streamChat } from './chat'
+import { historyAssistantsAfterTurn, parseHistoryTranscript, parseRichWidgets } from './chatExtractors'
 import type { MuseNativeGateway, SubscriptionHandle } from './gateway'
 
 class FakeGateway extends EventEmitter {
@@ -389,7 +390,11 @@ describe('Muse turn ownership and deadline', () => {
     fake.pushChatEvent('delta.message_done', { session_id: 'sess_1', message_id: 'own_reply', display_text: 'Right' })
     expect(onAck).not.toHaveBeenCalled()
     expect(update).not.toHaveBeenCalled()
-    ack.resolve({ session_id: 'sess_1', message_id: 'own_user' })
+    ack.resolve({
+      session_id: 123,
+      message_id: { id: 'other_user' },
+      result: { session_id: 'sess_1', message_id: 'own_user' }
+    })
     await expect(turn).resolves.toMatchObject({ sessionId: 'sess_1', text: 'Right', assistantMessageIds: ['own_reply'] })
     expect(onAck).toHaveBeenCalledExactlyOnceWith('sess_1')
     channel.stop()

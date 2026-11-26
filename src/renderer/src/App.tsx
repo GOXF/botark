@@ -1,8 +1,5 @@
-import { RoomView } from '@/rooms/RoomView'
-import { RoomInspectorPanel } from '@/rooms/RoomInspectorPanel'
-import { useRooms } from '@/rooms/roomStore'
-import { useEffect } from 'react'
-import { AddBotDialog } from '@/components/add-bot/AddBotDialog'
+import { lazy, Suspense, useEffect, useState, type ReactNode } from 'react'
+import { adapterRegistry } from '@adapters/registry'
 import { BoardView, ProjectDetail } from '@/components/workspace/BoardView'
 import { useBoardDetail } from '@/store/boardDetailStore'
 import { PaneGrid } from '@/components/workspace/PaneGrid'
@@ -12,21 +9,47 @@ import { startPopoutHost } from '@/services/popoutSync'
 import { usePanes } from '@/store/paneStore'
 import { AppShell } from '@/components/layout/AppShell'
 import { InfoPanel } from '@/components/info/InfoPanel'
-import { hasSeenOnboarding, OnboardingDialog } from '@/components/onboarding/OnboardingGuide'
-import { CommandPalette } from '@/components/palette/CommandPalette'
-import { SettingsView } from '@/components/settings/SettingsView'
+import { hasSeenOnboarding } from '@/components/onboarding/onboardingState'
 import { Sidebar } from '@/components/sidebar/Sidebar'
 import { GoxfUpdateBanner } from '@/components/update/GoxfUpdateBanner'
+import { ErrorBoundary } from '@/components/ui/ErrorBoundary'
 import { useGlobalShortcuts } from '@/lib/shortcuts'
+import { useRooms } from '@/rooms/roomStore'
+import { applySlackConnection } from '@/rooms/slackRooms'
 import { startAdapterBridge } from '@/services/adapterBridge'
 import { startMobileSyncBridge } from '@/services/mobileSyncBridge'
 import { useBotStore } from '@/store/botStore'
 import { startPrefsSync, usePrefsStore } from '@/store/prefsStore'
 import { ChatArea } from '@/components/chat/ChatArea'
-import { ErrorBoundary } from '@/components/ui/ErrorBoundary'
+
+const SettingsView = lazy(() => import('@/components/settings/SettingsView').then(({ SettingsView }) => ({ default: SettingsView })))
+const RoomView = lazy(() => import('@/rooms/RoomView').then(({ RoomView }) => ({ default: RoomView })))
+const RoomInspectorPanel = lazy(() =>
+  import('@/rooms/RoomInspectorPanel').then(({ RoomInspectorPanel }) => ({ default: RoomInspectorPanel }))
+)
+const AddBotDialog = lazy(() => import('@/components/add-bot/AddBotDialog').then(({ AddBotDialog }) => ({ default: AddBotDialog })))
+const OnboardingDialog = lazy(() =>
+  import('@/components/onboarding/OnboardingGuide').then(({ OnboardingDialog }) => ({ default: OnboardingDialog }))
+)
+const CommandPalette = lazy(() =>
+  import('@/components/palette/CommandPalette').then(({ CommandPalette }) => ({ default: CommandPalette }))
+)
+
+function OnDemandDialog({ open, children }: { open: boolean; children: ReactNode }) {
+  const [hasOpened, setHasOpened] = useState(open)
+  useEffect(() => {
+    if (open) setHasOpened(true)
+  }, [open])
+
+  // Keep Radix mounted after the first open so it can animate out and restore focus.
+  return open || hasOpened ? <Suspense fallback={null}>{children}</Suspense> : null
+}
 
 export default function App() {
   const settingsOpen = useBotStore((s) => s.settingsOpen)
+  const addBotOpen = useBotStore((s) => s.addBotOpen)
+  const onboardingOpen = useBotStore((s) => s.onboardingOpen)
+  const paletteOpen = useBotStore((s) => s.paletteOpen)
   const selectedBotId = useBotStore((s) => s.selectedBotId)
   const selectedRoom = useRooms((s) => s.rooms.find((r) => r.id === selectedBotId))
   const view = usePanes((s) => s.view)
@@ -68,7 +91,8 @@ export default function App() {
         account.platformId === 'dot' ||
         account.platformId === 'hermes' ||
         account.platformId === 'antigravity' ||
-        account.platformId === 'cue'
+        account.platformId === 'cue' ||
+        account.platformId === 'ds-bot'
       ) {
         void connectAccount(account.id)
       }
@@ -201,8 +225,8 @@ export default function App() {
     const bridge = window.electron?.slack
     if (!bridge) return
     let live = true
-    void Promise.all([import('@/rooms/slackRooms'), bridge.request({ op: 'status' })])
-      .then(([{ applySlackConnection }, state]) => { if (live) applySlackConnection(bridge, state) })
+    void bridge.request({ op: 'status' })
+      .then((state) => { if (live) applySlackConnection(bridge, state) })
       .catch(() => {})
     return () => { live = false }
   }, [])
@@ -216,8 +240,8 @@ export default function App() {
         (new URLSearchParams(window.location.search).get('e2e') === '1' ||
           window.localStorage.getItem('BOTHUB_E2E') === '1'))
     if (!e2e) return
-    void import("@adapters/registry").then(({ adapterRegistry }) => {
-      ;(window as unknown as { __bothub?: unknown }).__bothub = {
+    Object.assign(window, {
+      __bothub: {
         store: useBotStore,
         rooms: useRooms,
         prefs: usePrefsStore,
@@ -237,32 +261,42 @@ export default function App() {
             <div className="flex min-h-0 min-w-0 flex-1 flex-col">
               {!settingsOpen && <WorkspaceTopBar />}
               <ErrorBoundary surface={settingsOpen ? '管理控制台' : '对话区'} resetKey={settingsOpen ? 'settings' : `${view}:${view === 'sessions' ? '' : selectedBotId}`}>
-                {settingsOpen ? (
-                  <SettingsView />
-                ) : view === 'board' ? (
-                  <BoardView />
-                ) : view === 'collab' && collabMemberId ? (
-                  <ChatArea key={collabMemberId} botId={collabMemberId} merged />
-                ) : view === 'collab' ? (
-                  <RoomView key={collabRoomId} id={collabRoomId} />
-                ) : (
-                  <PaneGrid />
-                )}
+                <Suspense fallback={null}>
+                  {settingsOpen ? (
+                    <SettingsView />
+                  ) : view === 'board' ? (
+                    <BoardView />
+                  ) : view === 'collab' && collabMemberId ? (
+                    <ChatArea key={collabMemberId} botId={collabMemberId} merged />
+                  ) : view === 'collab' ? (
+                    <RoomView key={collabRoomId} id={collabRoomId} />
+                  ) : (
+                    <PaneGrid />
+                  )}
+                </Suspense>
               </ErrorBoundary>
             </div>
           }
           aside={
             <ErrorBoundary surface="右侧面板" resetKey={selectedBotId}>
-              {view === 'board' ? (
-                boardPicked && <ProjectDetail key={boardPicked.conversationId} project={boardPicked} highlight={boardPicked.taskId} onClose={() => setBoardPicked(undefined)} />
-              ) : view === 'collab' && activeRoom ? <RoomInspectorPanel room={activeRoom} /> : <InfoPanel />}
+              <Suspense fallback={null}>
+                {view === 'board' ? (
+                  boardPicked && <ProjectDetail key={boardPicked.conversationId} project={boardPicked} highlight={boardPicked.taskId} onClose={() => setBoardPicked(undefined)} />
+                ) : view === 'collab' && activeRoom ? <RoomInspectorPanel room={activeRoom} /> : <InfoPanel />}
+              </Suspense>
             </ErrorBoundary>
           }
         />
       </div>
-      <AddBotDialog />
-      <OnboardingDialog />
-      <CommandPalette />
+      <OnDemandDialog open={addBotOpen}>
+        <AddBotDialog />
+      </OnDemandDialog>
+      <OnDemandDialog open={onboardingOpen}>
+        <OnboardingDialog />
+      </OnDemandDialog>
+      <OnDemandDialog open={paletteOpen}>
+        <CommandPalette />
+      </OnDemandDialog>
     </>
   )
 }

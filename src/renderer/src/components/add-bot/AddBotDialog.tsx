@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent, type RefObject } from 'react'
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent, type RefObject } from 'react'
 import { getPlatform } from '@adapters/platforms'
 import { adapterRegistry } from '@adapters/registry'
 import type { PlatformId } from '@adapters/types'
 import { createId } from '@shared/id'
 import { Camera, ChevronLeft, ChevronRight, ExternalLink, ListPlus, Plus, RefreshCw } from 'lucide-react'
 import { MuseBatchImport } from './MuseBatchImport'
+import { DsBotConnectForm } from '@/components/dsbot/DsBotConnectForm'
 import { ArkRelayOrbSvg } from '@/components/ui/ArkGlyphs'
 import { BotAvatar } from '@/components/ui/Avatar'
 import { Button } from '@/components/ui/Button'
@@ -13,7 +14,7 @@ import { Dialog } from '@/components/ui/Dialog'
 import { IconButton } from '@/components/ui/IconButton'
 import { PlatformGlyph } from '@/components/ui/PlatformGlyph'
 import { Select } from '@/components/ui/Select'
-import { NEW_ROOM_ID } from '@/rooms/RoomView'
+import { NEW_ROOM_ID } from '@/rooms/roomExport'
 import { useMorphHeight } from '@/hooks/useMorphHeight'
 import { usePlatformLogin } from '@/hooks/usePlatformLogin'
 import { avatarFromFile } from '@/lib/avatarImage'
@@ -45,11 +46,14 @@ export function AddBotDialog() {
   return <AddBotFlow key={key} wizardId={key} open={open} />
 }
 
+export default AddBotDialog
+
 function AddBotFlow({ open, wizardId }: { open: boolean; wizardId: number }) {
   const addBot = useBotStore((s) => s.addBot)
   const bots = useBotStore((s) => s.bots)
   const accounts = useBotStore((s) => s.accounts)
   const syncGrokAccountBots = useBotStore((s) => s.syncGrokAccountBots)
+  const syncDsBotAccountBots = useBotStore((s) => s.syncDsBotAccountBots)
   const selectBot = useBotStore((s) => s.selectBot)
   const initialPlatform = useBotStore((s) => s.addBotInitialPlatform)
   const botId = useRef(createId('bot')).current
@@ -65,6 +69,7 @@ function AddBotFlow({ open, wizardId }: { open: boolean; wizardId: number }) {
   const [grokSyncError, setGrokSyncError] = useState<string>()
   const [hermesConnectOpen, setHermesConnectOpen] = useState(false)
   const [hermesReady, setHermesReady] = useState<{ handle: string; displayName: string } | null>(null)
+  const [dsBotConnectOpen, setDsBotConnectOpen] = useState(false)
   const { phase } = login
   const t = useT()
   const locale = usePrefsStore((s) => s.locale)
@@ -107,6 +112,9 @@ function AddBotFlow({ open, wizardId }: { open: boolean; wizardId: number }) {
     } else if (initialPlatform === 'cue') {
       autoStartedRef.current = true
       login.start('cue')
+    } else if (initialPlatform === 'ds-bot') {
+      autoStartedRef.current = true
+      setDsBotConnectOpen(true)
     }
   }, [open, initialPlatform, isCurrentWizard, liveGrokAccounts.length])
 
@@ -155,6 +163,10 @@ function AddBotFlow({ open, wizardId }: { open: boolean; wizardId: number }) {
     }
     if (platformId === 'hermes') {
       setHermesConnectOpen(true)
+      return
+    }
+    if (platformId === 'ds-bot') {
+      setDsBotConnectOpen(true)
       return
     }
     login.start(platformId)
@@ -209,7 +221,9 @@ function AddBotFlow({ open, wizardId }: { open: boolean; wizardId: number }) {
       ? t('Set up your bot')
       : hermesConnectOpen && phase.kind === 'idle'
         ? t('Connect Hermes')
-        : grokAccountChoiceOpen && phase.kind === 'idle'
+        : dsBotConnectOpen && phase.kind === 'idle'
+          ? t('Connect DS Bot')
+          : grokAccountChoiceOpen && phase.kind === 'idle'
           ? '添加 Grok Bot'
           : phase.kind === 'idle'
             ? t('New bot')
@@ -243,6 +257,18 @@ function AddBotFlow({ open, wizardId }: { open: boolean; wizardId: number }) {
             onClick={() => {
               login.discard()
               setHermesConnectOpen(false)
+            }}
+            className="-ml-1"
+          >
+            <ChevronLeft />
+          </IconButton>
+        ) : dsBotConnectOpen && phase.kind === 'idle' ? (
+          <IconButton
+            label={t('Back')}
+            size="sm"
+            onClick={() => {
+              login.discard()
+              setDsBotConnectOpen(false)
             }}
             className="-ml-1"
           >
@@ -335,7 +361,25 @@ function AddBotFlow({ open, wizardId }: { open: boolean; wizardId: number }) {
               onDone={(name, avatar, typed) => finish('hermes', name, avatar, typed)}
             />
           )}
-          {!batch && phase.kind === 'idle' && !grokAccountChoiceOpen && !hermesConnectOpen && !hermesReady && (
+          {!batch && phase.kind === 'idle' && dsBotConnectOpen && (
+            <div key="dsbot-connect" className="pt-1">
+              <DsBotConnectForm
+                accountId={login.accountId}
+                onConnected={(status) => {
+                  if (!isCurrentWizard()) return
+                  login.keep()
+                  created.current = true
+                  void syncDsBotAccountBots(status.accountId, {
+                    includeDismissed: true,
+                    selectFirst: true
+                  }).finally(() => {
+                    if (isCurrentWizard()) onClose()
+                  })
+                }}
+              />
+            </div>
+          )}
+          {!batch && phase.kind === 'idle' && !grokAccountChoiceOpen && !hermesConnectOpen && !hermesReady && !dsBotConnectOpen && (
             <PlatformStep
               key="platform"
               listRef={listRef}
@@ -715,6 +759,7 @@ export function LoginWaiting({
 }) {
   const platform = getPlatform(platformId)
   const actionRef = useRef<HTMLButtonElement>(null)
+  const importInstructionsId = useId()
   const t = useT()
   const locale = usePrefsStore((s) => s.locale)
   const tr = (zh: string, en: string) => (locale === 'en' ? en : zh)
@@ -724,6 +769,8 @@ export function LoginWaiting({
   const [refreshInput, setRefreshInput] = useState('')
   const [showRaw, setShowRaw] = useState(false)
   const [browserOpened, setBrowserOpened] = useState(false)
+  const pasteAfterBrowserLogin =
+    platformId === 'hark' || platformId === 'dot' || platformId === 'cue' || platformId === 'antigravity'
 
   useEffect(() => actionRef.current?.focus(), [])
 
@@ -742,6 +789,7 @@ export function LoginWaiting({
   const openPlatformInSystemBrowser = async () => {
     if (!systemLoginUrl) return
     setErr('')
+    if (pasteAfterBrowserLogin) setShowRaw(true)
     const openHttps = window.electron?.muse?.openHttps
     if (!openHttps) {
       setErr(tr('当前环境暂不支持打开系统浏览器', 'System browser launch is unavailable here'))
@@ -750,9 +798,6 @@ export function LoginWaiting({
     try {
       await openHttps(systemLoginUrl)
       setBrowserOpened(true)
-      if (platformId === 'hark' || platformId === 'dot' || platformId === 'cue') {
-        setShowRaw(true)
-      }
     } catch (e) {
       setErr(errorMessage(e))
     }
@@ -822,7 +867,8 @@ export function LoginWaiting({
     try {
       const st = await window.electron.cue.importCredentials({
         accountId,
-        credential: rawInput.trim()
+        credential: rawInput.trim(),
+        verifyApiKey: true
       })
       if (!st.signedIn) {
         setErr('未检测到有效 Cue 会话，请检查 Cookie（cue_session_id）/ Bearer Token')
@@ -837,14 +883,41 @@ export function LoginWaiting({
     }
   }
 
+  const quickImportAntigravityRaw = async () => {
+    if (!accountId || !rawInput.trim() || busy) return
+    setBusy(true)
+    setErr('')
+    try {
+      const status = await window.electron?.antigravity?.importCredentials?.({
+        accountId,
+        rawInput: rawInput.trim()
+      })
+      if (!status) {
+        setErr(t('Antigravity credential import is unavailable here.'))
+        return
+      }
+      if (!status.signedIn) {
+        setErr(
+          status.error?.trim() ||
+            t('Could not verify your Antigravity session. Check the credentials and try again.')
+        )
+        return
+      }
+      // Antigravity's cancelLogin clears the account partition, including imported cookies.
+      setRawInput('')
+      onImported?.()
+    } catch {
+      setErr(t('Could not import your Antigravity credentials. Please try again.'))
+    } finally {
+      setBusy(false)
+    }
+  }
+
   const waitingHeadline = browserOpened
     ? platformId === 'grok'
       ? tr('已在默认浏览器打开授权页，点击确认后将自动同步…', 'Authorization opened in your browser. Confirm there to sync automatically…')
-      : platformId === 'hark' || platformId === 'dot' || platformId === 'cue'
-        ? tr(
-            '已在系统浏览器打开登录页，完成后请复制 Cookie / Token 并粘贴至下方导入',
-            'Opened in your system browser. After signing in, paste your Cookie / Token below'
-          )
+      : pasteAfterBrowserLogin
+        ? t('Opened in your system browser. After signing in, paste your credentials below.')
         : tr(
             '已在系统浏览器打开页面；如需完成账号安全验证或改用邮箱验证码，请在窗口内操作',
             'Opened in your system browser. Complete verification or use Email OTP in the sign-in window'
@@ -870,6 +943,7 @@ export function LoginWaiting({
         <Button
           ref={actionRef}
           variant={windowClosed && !browserOpened ? 'primary' : 'secondary'}
+          disabled={busy}
           onClick={() => {
             setBrowserOpened(false)
             onReopen()
@@ -888,13 +962,13 @@ export function LoginWaiting({
         {systemLoginUrl && (
           <Button variant="secondary" disabled={busy} onClick={() => void openPlatformInSystemBrowser()}>
             <ExternalLink className="size-3.5" />
-            {tr('在系统浏览器打开', 'Open in system browser')}
+            {t('Open in system browser')}
           </Button>
         )}
 
-        {(platformId === 'grok' || platformId === 'dot' || platformId === 'hark' || platformId === 'cue') && accountId && (
-          <Button variant="ghost" disabled={busy} onClick={() => setShowRaw((v) => !v)}>
-            粘贴凭据导入
+        {(platformId === 'grok' || pasteAfterBrowserLogin) && accountId && (
+          <Button variant="ghost" aria-expanded={showRaw} disabled={busy} onClick={() => setShowRaw((v) => !v)}>
+            {t('Paste credentials')}
           </Button>
         )}
       </div>
@@ -979,7 +1053,7 @@ export function LoginWaiting({
           <textarea
             value={rawInput}
             onChange={(e) => setRawInput(e.target.value)}
-            placeholder="粘贴 Cue Cookie（含 cue_session_id=...）、Bearer Token (eyJ...) 或 JSON…"
+            placeholder="粘贴 Manus API Key（sk-...）、Cue Cookie（cue_session_id=...）、Bearer Token (eyJ...) 或 JSON…"
             rows={3}
             spellCheck={false}
             className="w-full rounded-lg border border-line bg-surface p-2 font-mono text-[11.5px] text-ink outline-none"
@@ -995,7 +1069,36 @@ export function LoginWaiting({
         </div>
       )}
 
-      {err && <p className="text-[12px] text-status-error">{err}</p>}
+      {platformId === 'antigravity' && showRaw && (
+        <div className="flex w-full flex-col gap-2 text-left">
+          <p id={importInstructionsId} className="text-[12px] leading-relaxed text-ink-secondary">
+            {t('Sign in to antigravity.google.com in Chrome or Edge. Open DevTools (F12 on Windows or ⌘⌥I on macOS) and go to Network. Select any request to antigravity.google.com or aicode.clients6.google.com, then choose Copy as cURL or copy its Cookie request header. You can also export JSON from Cookie-Editor. Paste it below and select Connect & Continue.')}
+          </p>
+          <textarea
+            value={rawInput}
+            onChange={(event) => setRawInput(event.target.value)}
+            aria-label={t('Antigravity credentials')}
+            aria-describedby={importInstructionsId}
+            placeholder={t('Paste a cURL command, Cookie header, or Cookie-Editor JSON')}
+            rows={3}
+            spellCheck={false}
+            autoComplete="off"
+            autoCapitalize="off"
+            disabled={busy}
+            className="w-full rounded-lg border border-line bg-surface p-2 font-mono text-[11.5px] text-ink outline-none focus:border-accent-600"
+          />
+          <Button
+            size="sm"
+            variant="primary"
+            disabled={busy || !accountId || !rawInput.trim()}
+            onClick={() => void quickImportAntigravityRaw()}
+          >
+            {busy ? t('Verifying session…') : t('Connect & Continue')}
+          </Button>
+        </div>
+      )}
+
+      {err && <p role="alert" className="text-[12px] text-status-error">{err}</p>}
     </div>
   )
 }

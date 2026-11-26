@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { asObj, str } from '@shared/parse'
 import { EmptyLine, Section } from '@/components/info/Section'
 import { Button } from '@/components/ui/Button'
 import { TextInput } from '@/components/ui/Field'
@@ -63,14 +64,6 @@ type PeersStatus = {
   allowedOperations: string[]
   trustPresets: string[]
   raw: Record<string, unknown>
-}
-
-function asObj(v: unknown): Record<string, unknown> | null {
-  return v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : null
-}
-
-function str(v: unknown): string {
-  return typeof v === 'string' ? v : v == null ? '' : String(v)
 }
 
 function parseStatus(raw: unknown): PeersStatus {

@@ -12,6 +12,7 @@ import {
   removeProxyPoolItem,
   setAccountProxy,
   testProxy,
+  testProxyPoolItems,
   type MuseProxyConfig,
   type ProxyScheme
 } from './accountProxy'
@@ -286,6 +287,12 @@ export function registerMuseIpc(): void {
 
   ipcMain.handle(MUSE_CHANNELS.listProxyPool, async () => {
     return listProxyPool()
+  })
+
+  ipcMain.handle(MUSE_CHANNELS.testProxyPool, async (_event, ids?: unknown) => {
+    if (ids !== undefined && !Array.isArray(ids)) throw new TypeError('Invalid pool item ids')
+    const filtered = Array.isArray(ids) ? ids.filter((id): id is string => typeof id === 'string') : undefined
+    return testProxyPoolItems(filtered)
   })
 
   ipcMain.handle(MUSE_CHANNELS.importProxyPool, async (_event, rawText: unknown, defaultMode: unknown) => {

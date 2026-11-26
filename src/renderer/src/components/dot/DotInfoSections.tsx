@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { Download, Eye, FileText, KeyRound, Lock, LogIn, Pause, Play, Plus, Sparkles, Target, Trash2 } from 'lucide-react'
+import { asObj, str } from '@shared/parse'
 import { EmptyLine, Section } from '@/components/info/Section'
 import { Button } from '@/components/ui/Button'
 import { SwitchPill } from '@/components/ui/Controls'
@@ -13,14 +14,6 @@ import { loadDotMemoryDraft, saveDotMemoryDraft } from '@/lib/vaultClient'
 import { useBotStore } from '@/store/botStore'
 import { t } from '@/lib/i18n'
 import type { ChatMessage } from '@/types'
-
-function asObj(v: unknown): Record<string, unknown> | null {
-  return v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : null
-}
-
-function str(v: unknown): string {
-  return typeof v === 'string' ? v : v == null ? '' : String(v)
-}
 
 function useDotConnected(accountId: string): boolean {
   return useBotStore((s) => {

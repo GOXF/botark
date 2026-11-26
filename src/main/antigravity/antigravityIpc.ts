@@ -6,6 +6,7 @@ import { BrowserWindow, ipcMain, session as electronSession } from 'electron'
 import {
   ANTIGRAVITY_CHANNELS,
   type AntigravityAuthStatus,
+  type AntigravityImportCredentialsRequest,
   type AntigravityOpenLoginRequest,
   type AntigravityRpcRequest,
   type AntigravityRpcResponse,
@@ -33,9 +34,11 @@ import {
 } from './antigravityClient'
 import {
   closeAntigravityLoginWindow,
+  completeAntigravityCredentialImport,
   onAntigravityLoginEvent,
   openAntigravityLoginWindow
 } from './antigravityLogin'
+import { AntigravityCredentialError, importAntigravityCredentials, withAntigravityCredentials } from './antigravityCredentials'
 
 let registered = false
 
@@ -56,7 +59,7 @@ async function getAuthStatus(accountId: string): Promise<AntigravityAuthStatus> 
       accountId,
       signedIn: true,
       handle: probe.profile.email,
-      displayName: probe.profile.email.split('@')[0] || 'Antigravity',
+      displayName: probe.profile.email?.split('@')[0] || 'Antigravity',
       planDisplayName: probe.profile.planDisplayName,
       selectedModelEnum: prefs.modelEnum,
       selectedModelName: prefs.modelDisplayName,
@@ -67,7 +70,7 @@ async function getAuthStatus(accountId: string): Promise<AntigravityAuthStatus> 
     accountId,
     signedIn: false,
     sessionCookieNames: cookieNames,
-    error: probe.reason === 'network' ? probe.message : undefined
+    error: probe.reason === 'no-cookies' ? undefined : probe.message
   }
 }
 
@@ -112,25 +115,52 @@ export function registerAntigravityIpc(): void {
     }
     const parent = BrowserWindow.fromWebContents(event.sender) ?? undefined
     await openAntigravityLoginWindow(accountId, parent)
-    return getAuthStatus(accountId)
+    return withAntigravityCredentials(accountId, () => getAuthStatus(accountId))
+  })
+
+  ipcMain.handle(ANTIGRAVITY_CHANNELS.importCredentials, async (_event, request: unknown): Promise<AntigravityAuthStatus> => {
+    if (typeof request !== 'object' || request === null) {
+      throw new TypeError('Invalid antigravity importCredentials request')
+    }
+    const { accountId, rawInput } = request as AntigravityImportCredentialsRequest
+    if (typeof accountId !== 'string' || !accountId.trim() || typeof rawInput !== 'string') {
+      throw new TypeError('Invalid antigravity importCredentials fields')
+    }
+    return withAntigravityCredentials(accountId, async () => {
+      try {
+        const profile = await importAntigravityCredentials(accountId, rawInput)
+        const status = await completeAntigravityCredentialImport(accountId, profile)
+        const prefs = getAntigravityAccountPrefs(accountId)
+        return { ...status, selectedModelEnum: prefs.modelEnum, selectedModelName: prefs.modelDisplayName }
+      } catch (error) {
+        return {
+          accountId,
+          signedIn: false,
+          sessionCookieNames: await listAntigravityCookieNames(accountId),
+          error: error instanceof AntigravityCredentialError ? error.message : '无法导入 Antigravity 凭据。请重试。'
+        }
+      }
+    })
   })
 
   ipcMain.handle(ANTIGRAVITY_CHANNELS.cancelLogin, async (_event, accountId: unknown) => {
     if (typeof accountId !== 'string' || !accountId) return
-    await clearAccountPartition(accountId)
+    await withAntigravityCredentials(accountId, () => clearAccountPartition(accountId))
   })
 
   ipcMain.handle(ANTIGRAVITY_CHANNELS.clearAuth, async (_event, accountId: unknown) => {
     if (typeof accountId !== 'string' || !accountId) return
-    await clearAccountPartition(accountId)
-    broadcast({ type: 'login', accountId, signedIn: false })
+    await withAntigravityCredentials(accountId, async () => {
+      await clearAccountPartition(accountId)
+      broadcast({ type: 'login', accountId, signedIn: false })
+    })
   })
 
   ipcMain.handle(ANTIGRAVITY_CHANNELS.authStatus, async (_event, accountId: unknown) => {
     if (typeof accountId !== 'string' || !accountId) {
       throw new TypeError('Invalid accountId')
     }
-    return getAuthStatus(accountId)
+    return withAntigravityCredentials(accountId, () => getAuthStatus(accountId))
   })
 
   ipcMain.handle(ANTIGRAVITY_CHANNELS.cancelRun, (_event, accountId: unknown) => {

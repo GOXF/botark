@@ -43,6 +43,15 @@ describe('sniffImageMimeFromBytes', () => {
 })
 
 describe('parseMediaParts', () => {
+  it('keeps non-string wire values out of paths and labels', () => {
+    expect(parseMediaParts({
+      attachments: [
+        { type: 'file_ref', path: 42 },
+        { type: 'file_ref', path: 'workspace/report.txt', filename: 42 }
+      ]
+    })).toMatchObject([{ path: 'workspace/report.txt', name: 'report.txt' }])
+  })
+
   it('extracts images from transcript content, attachments, tool results, and inline markdown', () => {
     const fakePngB64 = 'iVBORw0KGgo' + 'A'.repeat(64)
     const parts = parseMediaParts({
@@ -99,6 +108,18 @@ describe('parseMediaParts', () => {
 })
 
 describe('history media stitching', () => {
+  it('uses text blocks when the assistant content is an array', () => {
+    const [reply] = parseHistoryTranscript({
+      messages: [{
+        id: 'a1',
+        role: 'assistant',
+        display_text: { unexpected: true },
+        content: [{ type: 'text', text: 'First paragraph' }, { type: 'markdown', markdown: 'Second paragraph' }]
+      }]
+    })
+    expect(reply?.text).toBe('First paragraph\n\nSecond paragraph')
+  })
+
   it('attaches preceding tool images to assistant rows in historyAssistants and parseHistoryTranscript', () => {
     const rawHistory = {
       ok: true,

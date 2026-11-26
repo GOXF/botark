@@ -1,12 +1,12 @@
 import { create } from 'zustand'
 import { persist, type PersistStorage } from 'zustand/middleware'
 import { shallow } from 'zustand/shallow'
-import { getPlatform } from '@adapters/platforms'
 import { adapterRegistry } from '@adapters/registry'
 import { AdapterError, type AttachmentMeta, type ConnectionStatus, type IncomingMessage, type PlatformId, type SendReceipt } from '@adapters/types'
 import { createId } from '@shared/id'
 import { HARK_DRAFT_SESSION } from '@shared/harkProjects'
 import type { MobileSendCommand, MobileSendResult } from '@shared/mobileSync'
+import { asObj, trimStr } from '@shared/parse'
 import { createSeed } from '@/data/seed'
 import { t } from '@/lib/i18n'
 import type { AccountDraft, Bot, BotAccount, BotGroup, ChatMessage, ChatReplyTarget, NewBotInput } from '@/types'
@@ -14,14 +14,42 @@ import type { MuseProxyPoolItemView } from '@shared/ipc'
 import { keepActivity } from './goxfActivity'
 import { canReloadHistory, hasUnsettledDelivery, trimMessages, TRIM_IDLE_AFTER_MS } from './messageTrim'
 import { usePrefsStore } from './prefsStore'
-import { comparableText, splitLeadingQuote } from '../lib/quoteText'
 import { getEventBot } from '@/services/sessionEvents'
+import {
+  disambiguateDsBotName,
+  disambiguateGrokBotName,
+  dsBotNamesForOtherAccounts,
+  grokNamesForOtherAccounts,
+  isCuePlaceholderAgentId,
+  isGenericDsBotName,
+  isGenericGrokName,
+  materializeAccounts,
+  nameOrPlatformDefault,
+  newCueBotName,
+  syncedCueBotName,
+  uniqueGroupName
+} from './botNaming'
 import {
   ATTACHMENTS_LOST_TEXT, clearNoReplyFlag, createDeliveryAttempts, createSafeStorage, deliveryAfterError,
   hasLostAttachments, sanitizePersisted, SEND_HARD_TIMEOUT_MS, SEND_STILL_PENDING_TEXT, SEND_TIMEOUT_TEXT,
   SendTimeoutError, toPersistedMessages, withTimeout
 } from './delivery'
+import {
+  cueHistory,
+  dotHistory,
+  dsBotHistory,
+  grokHistory,
+  harkHistory,
+  mergeHydratedMessages,
+  mergeIncomingReply,
+  mergeReplyDelta,
+  sameChatMessage
+} from './historyNormalizers'
+import { cancelPlatformTurn } from './platformCancel'
 import { markStalledReply, replyWatchdog } from './replyWatchdog'
+
+export { poolAccountIds, PROXY_POOL_PLATFORMS, proxyPoolArgsForAccounts, uniqueBotName } from './botNaming'
+export { cancelPlatformTurn } from './platformCancel'
 
 let sourceAccounts: BotHubState['accounts'] | undefined
 let persistedAccounts: BotHubState['accounts'] = {}
@@ -45,6 +73,7 @@ function partializeWorkspace(state: BotHubState) {
     collapsedGroups: state.collapsedGroups,
     dismissedGrokAgents: state.dismissedGrokAgents,
     trimmedBots: state.trimmedBots,
+    dismissedDsBotAgents: state.dismissedDsBotAgents,
     webSessionByBot: state.webSessionByBot,
     infoPanelOpen: state.infoPanelOpen,
     sidebarCollapsed: state.sidebarCollapsed,
@@ -147,6 +176,7 @@ export interface BotHubState {
     | 'hermes-accounts'
     | 'antigravity-accounts'
     | 'cue-accounts'
+    | 'ds-bot-accounts'
     | 'mcp-hub'
     | 'mobile-sync'
     | 'proxy-pool'
@@ -160,6 +190,8 @@ export interface BotHubState {
   dismissedGrokAgents: Record<string, string[]>
   /** Bots whose displayed list was cut while idle; their history reloads on next open. */
   trimmedBots: Record<string, true>
+  /** Per-account DS Bot target ids (`bot:<id>` / `room:<id>`) explicitly removed from sidebar until manual sync. */
+  dismissedDsBotAgents: Record<string, string[]>
 
   // Navigation & layout
   selectBot: (botId: string) => void
@@ -196,6 +228,7 @@ export interface BotHubState {
       | 'hermes-accounts'
       | 'antigravity-accounts'
       | 'cue-accounts'
+      | 'ds-bot-accounts'
       | 'mcp-hub'
       | 'mobile-sync'
       | 'proxy-pool'
@@ -288,6 +321,10 @@ export interface BotHubState {
     accountId: string,
     opts?: { selectFirst?: boolean; preferredGroupId?: string }
   ) => Promise<number>
+  syncDsBotAccountBots: (
+    accountId: string,
+    opts?: { selectFirst?: boolean; preferredGroupId?: string; includeDismissed?: boolean }
+  ) => Promise<number>
   /** Hydrate full Cue session history (older turns + latest messages) for a Cue bot. */
   hydrateCueBotHistory: (botId: string) => Promise<number>
   /** Drop old display copies of bots not viewed for a while and not working (renderer memory only). */
@@ -307,61 +344,11 @@ export interface BotHubState {
   resetWorkspace: () => Promise<void>
 }
 
-
-function uniqueGroupName(groups: BotGroup[], base = 'New section'): string {
-  const taken = new Set(groups.map((g) => g.name.toLowerCase()))
-  if (!taken.has(base.toLowerCase())) return base
-  for (let n = 2; ; n++) {
-    const candidate = `${base} ${n}`
-    if (!taken.has(candidate.toLowerCase())) return candidate
-  }
-}
-
-export function uniqueBotName(bots: ReadonlyArray<{ name: string }>, baseName: string): string {
-  const base = baseName.trim() || 'Bot'
-  const taken = new Set(bots.map((b) => b.name.trim().toLowerCase()))
-  if (!taken.has(base.toLowerCase())) return base
-  for (let n = 2; ; n++) {
-    const candidate = `${base} ${n}`
-    if (!taken.has(candidate.toLowerCase())) return candidate
-  }
-}
-
 const seed = createSeed()
 
 export const SIDEBAR_MIN = 240
 export const SIDEBAR_MAX = 400
 export const SIDEBAR_DEFAULT = 280
-
-/** Turn form drafts into account ids, creating BotAccounts for new ones. */
-function materializeAccounts(
-  platformId: PlatformId,
-  drafts: AccountDraft[],
-  existing: Record<string, BotAccount>
-): { ids: string[]; created: Record<string, BotAccount> } {
-  const ids: string[] = []
-  const created: Record<string, BotAccount> = {}
-  for (const draft of drafts) {
-    const displayName = draft.displayName.trim() || draft.handle.trim()
-    // Keep drafts that already have a partition account id even if the name is empty.
-    if (!displayName && !draft.accountId) continue
-    if (draft.accountId && existing[draft.accountId]) {
-      if (!ids.includes(draft.accountId)) ids.push(draft.accountId)
-      continue
-    }
-    const id = draft.accountId ?? createId('acc')
-    created[id] = {
-      id,
-      platformId,
-      displayName: displayName || getPlatform(platformId).name,
-      handle: draft.handle.trim(),
-      status: 'offline',
-      ...(draft.importKey ? { importKey: draft.importKey } : {})
-    }
-    ids.push(id)
-  }
-  return { ids, created }
-}
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : 'Something went wrong.'
@@ -371,154 +358,6 @@ function omitKey<T>(record: Record<string, T>, key: string): Record<string, T> {
   if (!(key in record)) return record
   const { [key]: _removed, ...rest } = record
   return rest
-}
-
-function prevMediaMerge(
-  prev: import('@/types').ChatMediaPart[] | undefined,
-  incoming: import('@/types').ChatMediaPart[] | undefined
-): import('@/types').ChatMediaPart[] | undefined {
-  if (!incoming?.length) return prev
-  if (!prev?.length) return incoming
-  const out = [...prev]
-  const byPath = new Map<string, number>()
-  for (let i = 0; i < out.length; i += 1) {
-    byPath.set(out[i]!.path, i)
-  }
-  let changed = false
-  for (const part of incoming) {
-    const idx = byPath.get(part.path)
-    if (idx === undefined) {
-      byPath.set(part.path, out.length)
-      out.push(part)
-      changed = true
-    } else {
-      const cur = out[idx]!
-      const nextKind = cur.kind === 'image' || part.kind === 'image' ? 'image' : cur.kind
-      const nextName = cur.name || part.name
-      const nextMime = cur.mimeType || part.mimeType
-      const nextImgId = cur.imageId || part.imageId
-      if (
-        nextKind !== cur.kind ||
-        nextName !== cur.name ||
-        nextMime !== cur.mimeType ||
-        nextImgId !== cur.imageId
-      ) {
-        out[idx] = {
-          ...cur,
-          kind: nextKind,
-          name: nextName,
-          mimeType: nextMime,
-          imageId: nextImgId
-        }
-        changed = true
-      }
-    }
-  }
-  return changed ? out : prev
-}
-
-function normalizeDotMsgId(rawId: string, role: 'user' | 'bot'): string {
-  const clean = rawId.replace(/^(dot_u_|dot_)+/, '')
-  return role === 'user' ? `dot_u_${clean}` : `dot_${clean}`
-}
-
-function isOmittedPlaceholderText(text: string): boolean {
-  return text.startsWith('[消息内容较大') || text.startsWith('[Message body omitted')
-}
-
-/** Text or pictures: a picture-only message still has to match its server copy (else it shows twice). */
-function hasBody(m: ChatMessage): boolean {
-  return Boolean(m.text || m.attachments?.length || m.media?.length)
-}
-
-function mergeHydratedMessages(
-  existing: ChatMessage[],
-  hydrated: ChatMessage[],
-  beforeRequest?: ChatMessage[]
-): ChatMessage[] {
-  if (hydrated.length === 0) return existing
-  const { accountId, agentId } = hydrated[0]!
-  const baseline = beforeRequest && new Set(beforeRequest)
-  const liveIds = new Set<string>()
-  const normalizedExisting = existing
-    .filter((m) => m.accountId === accountId && (!agentId || !m.agentId || m.agentId === agentId))
-    .map((m) => {
-      const normalized = m.id.startsWith('dot_dot_') ? { ...m, id: m.id.replace(/^dot_dot_/, 'dot_') } : m
-      if (baseline && !baseline.has(m)) liveIds.add(normalized.id)
-      return normalized
-    })
-  const hydratedById = new Map(hydrated.map((m) => [m.id, m]))
-  const existingById = new Map(normalizedExisting.map((m) => [m.id, m]))
-  const fallbackRows = new Map<string, ChatMessage[]>()
-  const fallbackKey = (message: ChatMessage) => `${message.role}:${comparableText(message.text)}`
-  let earliestHydratedTs = Infinity
-  let latestHydratedTs = -Infinity
-  for (const message of hydratedById.values()) {
-    earliestHydratedTs = Math.min(earliestHydratedTs, message.createdAt)
-    latestHydratedTs = Math.max(latestHydratedTs, message.createdAt)
-    if (!hasBody(message) || existingById.has(message.id)) continue
-    const key = fallbackKey(message)
-    const matches = fallbackRows.get(key)
-    if (matches) matches.push(message)
-    else fallbackRows.set(key, [message])
-  }
-  const keptLocal: ChatMessage[] = []
-  const localByHistoryId = new Map<string, ChatMessage>()
-  for (const localMsg of normalizedExisting) {
-    if (hydratedById.has(localMsg.id)) continue
-    const live = liveIds.has(localMsg.id)
-    if (hasBody(localMsg) && localMsg.delivery !== 'failed' && (live || (localMsg.role === 'user' &&
-        (localMsg.id.startsWith('msg_') || localMsg.id.startsWith('opt_'))))) {
-      const candidates = fallbackRows.get(fallbackKey(localMsg))
-      const match = candidates?.find((remote) => !localByHistoryId.has(remote.id) &&
-        Math.abs(remote.createdAt - localMsg.createdAt) < 120_000)
-      if (match) {
-        localByHistoryId.set(match.id, localMsg)
-        continue
-      }
-    }
-    if (
-      live ||
-      localMsg.delivery === 'sending' ||
-      localMsg.delivery === 'accepted' ||
-      localMsg.delivery === 'failed' ||
-      localMsg.createdAt < earliestHydratedTs - 1000 ||
-      localMsg.createdAt > latestHydratedTs + 1000
-    ) {
-      keptLocal.push(localMsg)
-    }
-  }
-
-  const mergedHydrated = Array.from(hydratedById.values(), (remote) => {
-    const local = existingById.get(remote.id) ?? localByHistoryId.get(remote.id)
-    if (!local) return remote
-    const live = liveIds.has(local.id)
-    const delivering = local.delivery === 'sending' || local.delivery === 'accepted' ||
-      local.error === SEND_STILL_PENDING_TEXT
-    return {
-      ...local,
-      ...remote,
-      id: delivering || live ? local.id : remote.id,
-      text: live && local.text && !isOmittedPlaceholderText(local.text) ? local.text : remote.text,
-      createdAt: live ? local.createdAt : remote.createdAt,
-      widgets: live ? local.widgets ?? remote.widgets : remote.widgets ?? local.widgets,
-      richWidgets: live ? local.richWidgets ?? remote.richWidgets : remote.richWidgets ?? local.richWidgets,
-      tools: live ? local.tools ?? remote.tools : remote.tools ?? local.tools,
-      media: prevMediaMerge(local.media, remote.media),
-      // GOXF: the server copy of a message just sent keeps the pictures it was sent with.
-      attachments: remote.attachments?.length ? remote.attachments : local.attachments,
-      ...(delivering ? { delivery: local.delivery, error: local.error } : { error: undefined })
-    }
-  })
-
-  const combined = [...keptLocal, ...mergedHydrated]
-  combined.sort((a, b) => a.createdAt - b.createdAt)
-  const seen = new Set<string>()
-  return combined.filter((m) => {
-    if (seen.has(m.id)) return false
-    seen.add(m.id)
-    return true
-  })
 }
 
 /**
@@ -551,150 +390,6 @@ export async function autoAssignProxyPool(
   const { accountIds, keepIds } = proxyPoolArgs(useBotStore.getState().accounts, proxyAssignPlatforms, targetIds, pending)
   if (accountIds.length === 0) return undefined
   return assign(accountIds, keepIds, proxyPerProxyLimit)
-}
-
-export async function cancelPlatformTurn(bot: Bot) {
-  const bridge = electronBridge()
-  if (bot.platformId === 'meta-muse' && bridge?.muse?.cancelChat) {
-    await bridge.muse.cancelChat(bot.activeAccountId, bot.activeSessionId)
-  } else if (bot.platformId === 'grok' && bot.selectedAgentId && bridge?.grok?.rpc) {
-    await bridge.grok
-      .rpc({
-        accountId: bot.activeAccountId,
-        op: 'call',
-        method: 'InterruptGrokBotAgentRun',
-        params: {
-          agent_id: bot.selectedAgentId,
-          reason: 'user_interrupt',
-          ...(bot.activeSessionId ? { session_id: bot.activeSessionId } : {})
-        }
-      })
-      .catch(() => undefined)
-  } else if (bot.platformId === 'hark' && bridge?.hark?.rpc) {
-    await Promise.all([
-      bridge.hark
-        .rpc({
-          accountId: bot.activeAccountId,
-          op: 'call',
-          method: 'POST',
-          path: '/messages/pause-agent',
-          body: bot.activeSessionId ? { conversationId: bot.activeSessionId } : {}
-        })
-        .catch(() => undefined),
-      bridge.hark
-        .rpc({
-          accountId: bot.activeAccountId,
-          op: 'call',
-          method: 'POST',
-          path: '/messages/stop-tool',
-          body: bot.activeSessionId ? { conversationId: bot.activeSessionId } : {}
-        })
-        .catch(() => undefined)
-    ])
-  } else if (bot.platformId === 'dot' && bridge?.dot?.rpc) {
-    await bridge.dot
-      .rpc({
-        accountId: bot.activeAccountId,
-        op: 'cancelTurn'
-      })
-      .catch(() => undefined)
-  } else if (bot.platformId === 'hermes' && bridge?.hermes?.rpc) {
-    const res = await bridge.hermes.rpc({
-      accountId: bot.activeAccountId,
-      op: 'stopRun'
-    })
-    if (res && res.ok === false) {
-      throw new Error(res.message || '未能确认停止 Hermes 运行')
-    }
-  } else if (bot.platformId === 'antigravity' && bridge?.antigravity?.cancelRun) {
-    await bridge.antigravity.cancelRun(bot.activeAccountId).catch(() => undefined)
-  }
-}
-
-export function harkHistory(data: unknown, botId: string, accountId: string): ChatMessage[] {
-  const d = data as {
-    conversationId?: string
-    messages?: Array<{
-      id: string
-      role: string
-      content: string
-      thought?: string | null
-      narration?: string | null
-      createdAt?: string | number | null
-      toolCalls?: Array<{ dispatchId: string; name: string; status: string; url?: string }>
-      actions?: Array<{ kind: string; connector?: string; label: string }>
-      media?: ChatMessage['media']
-      richWidgets?: ChatMessage['richWidgets']
-      replyToId?: string
-      replyQuote?: string
-      replyThumb?: string
-    }>
-  }
-  const uiId = (m: { id: string; role: string }) => (/^user$/i.test(m.role) ? `hark_u_${m.id}` : `hark_${m.id}`)
-  const byId = new Map((d.messages ?? []).map((m) => [m.id, m]))
-  return (d.messages ?? [])
-      .filter(
-        (m) =>
-          (m.content && m.content.trim()) ||
-          // GOXF: the model's private "thought" is never shown (Hark's web app hides it too).
-          m.toolCalls?.length || m.narration ||
-          (m.media && m.media.length > 0) ||
-          (m.richWidgets && m.richWidgets.length > 0)
-      )
-      .map((m, i, shown) => {
-        const isUser = /^user$/i.test(m.role)
-        const target = m.replyToId ? byId.get(m.replyToId) : undefined
-        // Answering the message right above is the obvious case: quoting it is noise.
-        const quoted = m.replyQuote && !(target && shown[i - 1]?.id === target.id)
-        // GOXF: our own quote replies carry "> quote" in the text; show it once, as the chip.
-        const split = isUser ? splitLeadingQuote(m.content?.trim() || '') : { body: m.content?.trim() || '' }
-        const ts =
-          typeof m.createdAt === 'number'
-            ? m.createdAt
-            : typeof m.createdAt === 'string'
-              ? Date.parse(m.createdAt) || Date.now()
-              : Date.now()
-        const tools: ChatMessage['tools'] =
-          m.toolCalls && m.toolCalls.length > 0
-            ? m.toolCalls.map((tc) => ({
-                id: tc.dispatchId,
-                name: tc.name,
-                status:
-                  tc.status === 'running'
-                    ? 'running'
-                    : tc.status === 'failed'
-                      ? 'errored'
-                      : 'completed',
-                summary: tc.url || m.narration || undefined
-              }))
-            : m.narration
-              ? [
-                  {
-                    id: `hark_thought_${m.id}`,
-                    name: 'Agent Activity',
-                    status: 'completed',
-                    summary: m.narration.slice(0, 140)
-                  }
-                ]
-              : undefined
-        return {
-          id: uiId(m),
-          botId,
-          accountId,
-          role: isUser ? 'user' : 'bot',
-          text: split.body,
-          createdAt: ts,
-          delivery: isUser ? 'sent' : undefined,
-          richWidgets: m.richWidgets,
-          tools,
-          ...(m.media && m.media.length > 0 ? { media: m.media } : {}),
-          ...(quoted
-            ? { replyQuote: m.replyQuote, ...(target ? { replyToId: uiId(target) } : {}), ...(m.replyThumb ? { replyThumb: m.replyThumb } : {}) }
-            : split.quote
-              ? { replyQuote: split.quote }
-              : {})
-        }
-      })
 }
 
 export const useBotStore = create<BotHubState>()(
@@ -965,11 +660,14 @@ export const useBotStore = create<BotHubState>()(
               : platformId === 'hark' ? bridge?.hark
               : platformId === 'hermes' ? bridge?.hermes
               : platformId === 'antigravity' ? bridge?.antigravity
-              : platformId === 'cue' ? bridge?.cue : undefined
+              : platformId === 'cue' ? bridge?.cue
+              : platformId === 'ds-bot' ? bridge?.dsBot : undefined
             await platformBridge?.clearAuth?.(accountId)
           } finally {
             if (platformId === 'grok') (adapter as { clearAuth?: (id: string) => void })?.clearAuth?.(accountId)
-            if (platformId !== 'hermes') await bridge?.webViews?.clearPartition?.(accountId)
+            if (platformId !== 'hermes' && platformId !== 'ds-bot') {
+              await bridge?.webViews?.clearPartition?.(accountId)
+            }
           }
         }
         patchAccount(accountId, { status: 'offline', statusDetail: 'Signed out', unread: 0 })
@@ -1009,36 +707,11 @@ export const useBotStore = create<BotHubState>()(
         })
         .catch(() => null)
       if (!res?.ok || !res.data || typeof res.data !== 'object') return 0
-      const dataRec = res.data as { sessionId?: unknown; messages?: unknown[] }
-      const resolvedSessionId =
-        typeof dataRec.sessionId === 'string' && dataRec.sessionId.trim()
-          ? dataRec.sessionId.trim()
-          : undefined
+      const data = res.data as { sessionId?: unknown; messages?: unknown }
+      const resolvedSessionId = trimStr(data.sessionId) || undefined
       if ((bot.activeSessionId && resolvedSessionId && bot.activeSessionId !== resolvedSessionId) ||
           !accountIsCurrent() || !isCurrentSession(bot, selection)) return 0
-      const raw = dataRec.messages
-      const hydrated: ChatMessage[] = []
-      if (Array.isArray(raw)) {
-        for (const item of raw) {
-          if (!item || typeof item !== 'object') continue
-          const m = item as Record<string, unknown>
-          const id = typeof m['id'] === 'string' && m['id'] ? m['id'] : ''
-          const text = typeof m['text'] === 'string' ? m['text'].trim() : ''
-          const role = m['role'] === 'user' ? 'user' : m['role'] === 'bot' ? 'bot' : null
-          const createdAt = typeof m['createdAtMs'] === 'number' ? m['createdAtMs'] : Date.now()
-          if (!id || !text || !role) continue
-          hydrated.push({
-            id,
-            botId: bot.id,
-            accountId,
-            ...(bot.selectedAgentId ? { agentId: bot.selectedAgentId } : {}),
-            role,
-            text,
-            createdAt,
-            ...(role === 'user' ? { delivery: 'sent' as const } : {})
-          })
-        }
-      }
+      const hydrated = cueHistory(data.messages, bot.id, accountId, bot.selectedAgentId)
       if (hydrated.length > 0 || (resolvedSessionId && resolvedSessionId !== bot.activeSessionId)) {
         set((s) => ({
           ...(resolvedSessionId && resolvedSessionId !== bot.activeSessionId
@@ -1341,6 +1014,7 @@ export const useBotStore = create<BotHubState>()(
     chatActionErrors: {},
     dismissedGrokAgents: {},
     trimmedBots: {},
+    dismissedDsBotAgents: {},
 
     setActiveDocument: (doc) => set({ activeDocument: doc }),
 
@@ -1431,20 +1105,10 @@ export const useBotStore = create<BotHubState>()(
 
     addGroup: (name) => {
       const id = createId('grp')
-      set((state) => {
-        const requested = name?.trim()
-        const finalName = requested
-          ? (
-              state.groups.some((g) => g.name.toLowerCase() === requested.toLowerCase())
-                ? uniqueGroupName(state.groups, requested)
-                : requested
-            )
-          : uniqueGroupName(state.groups)
-        return {
-          groups: [...state.groups, { id, name: finalName }],
-          collapsedGroups: { ...state.collapsedGroups, [id]: false }
-        }
-      })
+      set((state) => ({
+        groups: [...state.groups, { id, name: uniqueGroupName(state.groups, name?.trim() || undefined) }],
+        collapsedGroups: { ...state.collapsedGroups, [id]: false }
+      }))
       return id
     },
 
@@ -1612,7 +1276,7 @@ export const useBotStore = create<BotHubState>()(
 
       const bot: Bot = {
         id: input.id ?? createId('bot'),
-        name: input.name.trim() || getPlatform(input.platformId).name,
+        name: nameOrPlatformDefault(input.name, input.platformId),
         ...(input.customName ? { customName: true } : {}),
         emoji: input.emoji ?? '🤖',
         avatar: input.avatar,
@@ -1707,6 +1371,7 @@ export const useBotStore = create<BotHubState>()(
         const turn = clearedSession(s, bot)
         const { [botId]: _sessionError, ...hermesSessionErrors } = s.hermesSessionErrors
         let dismissedGrokAgents = s.dismissedGrokAgents
+        let dismissedDsBotAgents = s.dismissedDsBotAgents
         if (
           bot.platformId === 'grok' &&
           bot.selectedAgentId &&
@@ -1721,6 +1386,20 @@ export const useBotStore = create<BotHubState>()(
             }
           }
         }
+        if (
+          bot.platformId === 'ds-bot' &&
+          bot.selectedAgentId &&
+          bot.activeAccountId &&
+          !orphaned.includes(bot.activeAccountId)
+        ) {
+          const prev = s.dismissedDsBotAgents[bot.activeAccountId] ?? []
+          if (!prev.includes(bot.selectedAgentId)) {
+            dismissedDsBotAgents = {
+              ...s.dismissedDsBotAgents,
+              [bot.activeAccountId]: [...prev, bot.selectedAgentId]
+            }
+          }
+        }
         return {
           ...turn,
           bots: s.bots.filter((b) => b.id !== botId),
@@ -1729,6 +1408,7 @@ export const useBotStore = create<BotHubState>()(
           activity: orphaned.reduce(omitKey, turn.activity),
           hermesSessionErrors,
           dismissedGrokAgents,
+          dismissedDsBotAgents,
           selectedBotId: s.selectedBotId === botId ? (neighbour?.id ?? null) : s.selectedBotId
         }
       })
@@ -1811,27 +1491,10 @@ export const useBotStore = create<BotHubState>()(
         const existingIdx = list.findIndex((m) => m.id === incoming.id && m.accountId === incoming.accountId)
         const prev = list[existingIdx]
         const authoritative = Boolean((incoming as { authoritative?: boolean }).authoritative)
-        const text = authoritative
-          ? incoming.text
-          : incoming.text && (!prev?.text || !isOmittedPlaceholderText(incoming.text))
-            ? incoming.text
-            : prev?.text ?? ''
-        const message: ChatMessage = {
-          id: incoming.id,
-          botId,
-          accountId: incoming.accountId,
-          ...(targetBot.selectedAgentId ? { agentId: targetBot.selectedAgentId } : {}),
-          role: 'bot',
-          text,
-          createdAt: prev?.createdAt ?? incoming.createdAt,
-          widgets: incoming.widgets?.length ? incoming.widgets : prev?.widgets,
-          tools: incoming.tools?.length ? incoming.tools : prev?.tools,
-          media: prevMediaMerge(prev?.media, incoming.media),
-          richWidgets: incoming.richWidgets?.length ? incoming.richWidgets : prev?.richWidgets
-        }
+        const message = mergeIncomingReply(prev, incoming, targetBot, authoritative)
         const liveAccounts = applyAccountLive(state.accounts, incoming.accountId, 'online', ['offline', 'error'])
         const accounts = applySettleAccountBusy(liveAccounts, state.activity, state.typing, state.bots, incoming.accountId, botId)
-        if (prev && shallow(prev, message)) {
+        if (prev && sameChatMessage(prev, message)) {
           finalizedReplies.add(prev)
           return accounts === state.accounts ? state : { accounts }
         }
@@ -1852,28 +1515,12 @@ export const useBotStore = create<BotHubState>()(
         const liveAccounts = applyAccountLive(state.accounts, accountId, 'busy', ['offline', 'error'])
         if (existingIdx >= 0) {
           const prevMsg = list[existingIdx]!
-          const prev = prevMsg.text
-          // Reconnect/backfill can briefly send a shorter snapshot — never shrink,
-          // unless replacing an omitted-body placeholder with hydrated real text.
-          const next = text && ((text.length > prev.length && !finalizedReplies.has(prevMsg)) ||
-            (isOmittedPlaceholderText(prev) && !isOmittedPlaceholderText(text))) ? text : prev
-          const nextWidgets = widgets?.length ? widgets : prevMsg.widgets
-          const nextTools = tools?.length ? tools : prevMsg.tools
-          const nextMedia = prevMediaMerge(prevMsg.media, media)
-          const nextRich = richWidgets?.length ? richWidgets : prevMsg.richWidgets
-          if (
-            next === prev &&
-            nextWidgets === prevMsg.widgets &&
-            nextTools === prevMsg.tools &&
-            nextMedia === prevMsg.media &&
-            nextRich === prevMsg.richWidgets
-          ) {
+          const finalized = finalizedReplies.has(prevMsg)
+          const message = mergeReplyDelta(prevMsg, { text, widgets, tools, media, richWidgets }, finalized)
+          if (message === prevMsg) {
             return liveAccounts === state.accounts ? state : { accounts: liveAccounts }
           }
-          const message = {
-            ...prevMsg, text: next, widgets: nextWidgets, tools: nextTools, media: nextMedia, richWidgets: nextRich
-          }
-          if (finalizedReplies.has(prevMsg)) finalizedReplies.add(message)
+          if (finalized) finalizedReplies.add(message)
           const updated = list.slice()
           updated[existingIdx] = message
           return { accounts: liveAccounts, messages: { ...state.messages, [botId]: updated } }
@@ -2364,51 +2011,45 @@ export const useBotStore = create<BotHubState>()(
             })
             .then((res) => {
               if (!isCurrentSession(bot, selection)) return
-              if (!res.ok || !res.data || typeof res.data !== 'object') return
-              const root = res.data as Record<string, unknown>
-              // Prefer pre-decoded, chronological `hydrated` array with presigned media URLs from main
-              if (Array.isArray(root['hydrated'])) {
-                const hydrated: ChatMessage[] = (
-                  root['hydrated'] as Array<Record<string, unknown>>
-                ).map((item, idx) => ({
-                  id: String(item['id'] ?? `grok_h_${idx}`),
-                  botId,
-                  accountId: bot.activeAccountId,
-                  agentId: trimmed,
-                  role: item['role'] === 'user' ? 'user' : 'bot',
-                  text: String(item['text'] ?? ''),
-                  createdAt: Number(item['createdAt'] ?? Date.now()) || Date.now(),
-                  delivery: item['role'] === 'user' ? 'sent' : undefined,
-                  ...(Array.isArray(item['widgets'])
-                    ? { widgets: item['widgets'] as ChatMessage['widgets'] }
-                    : {}),
-                  ...(Array.isArray(item['richWidgets'])
-                    ? { richWidgets: item['richWidgets'] as ChatMessage['richWidgets'] }
-                    : {}),
-                  ...(Array.isArray(item['media'])
-                    ? { media: item['media'] as ChatMessage['media'] }
-                    : {}),
-                  ...(Array.isArray(item['tools'])
-                    ? { tools: item['tools'] as ChatMessage['tools'] }
-                    : {})
-                }))
-                set((s) => ({
-                  accounts: applyAccountLive(s.accounts, bot.activeAccountId, 'online', ['offline', 'error']),
-                  messages: {
-                    ...s.messages,
-                    [botId]:
-                      hydrated.length === 0
-                        ? (s.messages[botId] ?? []).filter(
-                            (m) => !m.agentId || m.agentId === trimmed
-                          )
-                        : mergeHydratedMessages(s.messages[botId] ?? [], hydrated)
-                  }
-                }))
-              }
+              if (!res.ok) return
+              const hydrated = grokHistory(res.data, botId, bot.activeAccountId, trimmed)
+              if (!hydrated) return
+              set((s) => ({
+                accounts: applyAccountLive(s.accounts, bot.activeAccountId, 'online', ['offline', 'error']),
+                messages: {
+                  ...s.messages,
+                  [botId]: hydrated.length === 0
+                    ? (s.messages[botId] ?? []).filter((m) => !m.agentId || m.agentId === trimmed)
+                    : mergeHydratedMessages(s.messages[botId] ?? [], hydrated)
+                }
+              }))
             })
             .catch(() => undefined)
         } else if (bot.platformId === 'cue' && bridge?.cue?.rpc) {
           void hydrateCueHistoryForBot(bot.activeAccountId, bot)
+        } else if (bot.platformId === 'ds-bot' && bridge?.dsBot?.rpc) {
+          void bridge.dsBot
+            .rpc({
+              accountId: bot.activeAccountId,
+              op: 'getHistory',
+              agentId: trimmed
+            })
+            .then((res) => {
+              if (!isCurrentSession(bot, selection)) return
+              if (!res.ok) return
+              const hydrated = dsBotHistory(res.data, botId, bot.activeAccountId, trimmed)
+              if (!hydrated) return
+              set((s) => ({
+                accounts: applyAccountLive(s.accounts, bot.activeAccountId, 'online', ['offline', 'error']),
+                messages: {
+                  ...s.messages,
+                  [botId]: hydrated.length === 0
+                    ? (s.messages[botId] ?? []).filter((m) => !m.agentId || m.agentId === trimmed)
+                    : mergeHydratedMessages(s.messages[botId] ?? [], hydrated)
+                }
+              }))
+            })
+            .catch(() => undefined)
         }
       } catch {
         /* ignore */
@@ -2528,41 +2169,18 @@ export const useBotStore = create<BotHubState>()(
               .rpc({ accountId, op: 'listRoomMessages', limit: 32 })
               .then((res) => {
                 if (!isCurrent() || !res.ok || !res.data || typeof res.data !== 'object') return
-                const d = res.data as {
-                  roomId?: string
-                  dotId?: string
-                  messages?: Array<{
-                    id: string
-                    role: 'user' | 'bot'
-                    text: string
-                    createdAtMs: number
-                    media?: ChatMessage['media']
-                  }>
-                }
+                const d = res.data as { roomId?: string; messages?: unknown }
                 if (d.roomId) {
                   patchBot(ownerBot.id, () => ({ activeSessionId: d.roomId }))
                 }
-                if (Array.isArray(d.messages) && d.messages.length > 0) {
-                  const hydrated: ChatMessage[] = d.messages
-                    .filter((m) => (m.text && m.text.trim()) || (m.media && m.media.length > 0))
-                    .map((m) => ({
-                      id: normalizeDotMsgId(m.id, m.role),
-                      botId: ownerBot.id,
-                      accountId,
-                      role: m.role,
-                      text: (m.text || '').trim(),
-                      createdAt: m.createdAtMs || Date.now(),
-                      delivery: m.role === 'user' ? 'sent' : undefined,
-                      ...(m.media && m.media.length > 0 ? { media: m.media } : {})
-                    }))
-                  if (hydrated.length > 0) {
-                    set((s) => ({
-                      messages: {
-                        ...s.messages,
-                        [ownerBot.id]: mergeHydratedMessages(s.messages[ownerBot.id] ?? [], hydrated)
-                      }
-                    }))
-                  }
+                const hydrated = dotHistory(d.messages, ownerBot.id, accountId)
+                if (hydrated.length > 0) {
+                  set((s) => ({
+                    messages: {
+                      ...s.messages,
+                      [ownerBot.id]: mergeHydratedMessages(s.messages[ownerBot.id] ?? [], hydrated)
+                    }
+                  }))
                 }
               })
               .catch(() => undefined)
@@ -2584,6 +2202,8 @@ export const useBotStore = create<BotHubState>()(
           await get().syncGrokAccountBots(accountId)
         } else if (account.platformId === 'cue' && (status === 'online' || status === 'busy')) {
           await get().syncCueAccountBots(accountId)
+        } else if (account.platformId === 'ds-bot' && (status === 'online' || status === 'busy')) {
+          await get().syncDsBotAccountBots(accountId)
         }
       } catch (error) {
         if (isCurrent()) patchAccount(accountId, { status: 'error', statusDetail: errorMessage(error) })
@@ -2824,24 +2444,10 @@ export const useBotStore = create<BotHubState>()(
       // Match or create one sidebar Bot per Grok Agent
       const claimedBotIds = new Set<string>()
       const botsToHydrate: Array<{ botId: string; agentId: string }> = []
-      let nextBots = [...state.bots]
+      const nextBots = [...state.bots]
       const nextMessages = { ...state.messages }
-
-      const isGenericGrokName = (name: string) =>
-        /^Grok(?:\s+Bot)?(?:\s+\d+)?$/i.test(name.trim())
-
-      const otherGrokNames = new Set(
-        nextBots
-          .filter((b) => b.platformId === 'grok' && !b.accountIds.includes(accountId))
-          .map((b) => b.name.trim().toLowerCase())
-      )
-      const ownerAcc = get().accounts[accountId]
-      const accountSuffix = ownerAcc?.handle || accountId.slice(-4)
-      const disambiguateGrokBotName = (rawName: string): string => {
-        const base = rawName.trim() || 'Grok Bot'
-        if (!otherGrokNames.has(base.toLowerCase())) return base
-        return uniqueBotName(nextBots, `${base} (${accountSuffix})`)
-      }
+      const otherGrokNames = grokNamesForOtherAccounts(nextBots, accountId)
+      const accountSuffix = get().accounts[accountId]?.handle || accountId.slice(-4)
 
       // Pass 1: exact selectedAgentId matches
       const unmatchedAgents: typeof visibleAgents = []
@@ -2860,7 +2466,7 @@ export const useBotStore = create<BotHubState>()(
             ...prev,
             name:
               isGenericGrokName(prev.name) && agent.name
-                ? disambiguateGrokBotName(agent.name)
+                ? disambiguateGrokBotName(nextBots, agent.name, otherGrokNames, accountSuffix)
                 : prev.name,
             description: agent.description ?? prev.description,
             ...(agent.avatarShape ? { avatarShape: agent.avatarShape } : {}),
@@ -2886,7 +2492,7 @@ export const useBotStore = create<BotHubState>()(
           claimedBotIds.add(prev.id)
           nextBots[placeholderIdx] = {
             ...prev,
-            name: agent.name ? disambiguateGrokBotName(agent.name) : prev.name,
+            name: agent.name ? disambiguateGrokBotName(nextBots, agent.name, otherGrokNames, accountSuffix) : prev.name,
             selectedAgentId: agent.id,
             description: agent.description ?? prev.description,
             ...(agent.avatarShape ? { avatarShape: agent.avatarShape } : {}),
@@ -2898,7 +2504,7 @@ export const useBotStore = create<BotHubState>()(
           claimedBotIds.add(newBotId)
           const newBot: Bot = {
             id: newBotId,
-            name: disambiguateGrokBotName(agent.name || 'Grok Bot'),
+            name: disambiguateGrokBotName(nextBots, agent.name || 'Grok Bot', otherGrokNames, accountSuffix),
             emoji: '🤖',
             ...(agent.avatarShape ? { avatarShape: agent.avatarShape } : {}),
             ...(agent.avatarColor ? { avatarColor: agent.avatarColor } : {}),
@@ -2943,6 +2549,244 @@ export const useBotStore = create<BotHubState>()(
       if (
         activeSelected &&
         activeSelected.platformId === 'grok' &&
+        activeSelected.accountIds.includes(accountId) &&
+        activeSelected.selectedAgentId
+      ) {
+        hydrateSet.set(activeSelected.id, activeSelected.selectedAgentId)
+      }
+      for (const [bId, agId] of hydrateSet.entries()) {
+        get().setSelectedAgent(bId, agId)
+      }
+
+      return accountBots.length
+    },
+
+    syncDsBotAccountBots: async (accountId, opts) => {
+      if (accountCleanup.has(accountId) || credentialCleanup) return 0
+      const isCurrent = watchAccount(accountId)
+      const adapter = adapterRegistry.get('ds-bot') as
+        | {
+            connect?: (accId: string) => Promise<ConnectionStatus>
+            listCachedAgents?: (accId: string) => Array<{
+              id: string
+              name: string
+              description?: string
+              avatarShape?: string
+              avatarColor?: string
+            }>
+            refreshAgents?: (accId: string) => Promise<
+              Array<{
+                id: string
+                name: string
+                description?: string
+                avatarShape?: string
+                avatarColor?: string
+              }>
+            >
+            bindConversationAgent?: (convId: string, agentId: string, accId?: string) => void
+          }
+        | undefined
+      if (!adapter) return 0
+
+      if (!get().accounts[accountId]) {
+        const auth = await electronBridge()?.dsBot?.authStatus?.(accountId).catch(() => null)
+        if (!isCurrent()) return 0
+        set((s) => ({
+          accounts: {
+            ...s.accounts,
+            [accountId]: {
+              id: accountId,
+              platformId: 'ds-bot',
+              displayName: auth?.displayName || auth?.hostName || 'DS Bot',
+              handle: auth?.handle || auth?.baseUrl || auth?.relayServer || '',
+              status: auth?.signedIn ? 'online' : 'offline'
+            }
+          }
+        }))
+      }
+
+      if (opts?.includeDismissed) {
+        set((s) => {
+          if (!s.dismissedDsBotAgents[accountId]) return s
+          const { [accountId]: _cleared, ...rest } = s.dismissedDsBotAgents
+          return { dismissedDsBotAgents: rest }
+        })
+      }
+
+      let agents = await adapter.refreshAgents?.(accountId).catch(() => []) ?? []
+      if (agents.length === 0) {
+        agents = adapter.listCachedAgents?.(accountId) ?? []
+      }
+      if (!isCurrent()) return 0
+
+      const state = get()
+      if (!state.accounts[accountId] || state.accounts[accountId]?.platformId !== 'ds-bot') {
+        return 0
+      }
+
+      const dismissed = new Set(
+        opts?.includeDismissed ? [] : (state.dismissedDsBotAgents[accountId] ?? [])
+      )
+      const visibleAgents = agents.filter((a) => !dismissed.has(a.id))
+      const allAgentIds = new Set(agents.map((a) => a.id))
+
+      let groups = state.groups
+      const existingForAccount = state.bots.filter(
+        (b) => b.platformId === 'ds-bot' && b.accountIds.includes(accountId)
+      )
+      const selectedGroup = state.bots.find((b) => b.id === state.selectedBotId)?.groupId
+      const targetGroupId =
+        opts?.preferredGroupId ??
+        existingForAccount[0]?.groupId ??
+        selectedGroup ??
+        groups[0]?.id ??
+        createId('grp')
+      if (!groups.some((g) => g.id === targetGroupId)) {
+        groups = [...groups, { id: targetGroupId, name: 'Workspace' }]
+      }
+
+      if (visibleAgents.length === 0) {
+        if (existingForAccount.length === 0 && agents.length === 0) {
+          const placeholderId = createId('bot')
+          const acc = get().accounts[accountId]
+          const bot: Bot = {
+            id: placeholderId,
+            name: acc?.displayName || 'DS Bot',
+            emoji: '🐋',
+            description: '',
+            platformId: 'ds-bot',
+            groupId: targetGroupId,
+            accountIds: [accountId],
+            activeAccountId: accountId,
+            memory: [],
+            notes: '',
+            createdAt: Date.now(),
+            unread: 0
+          }
+          set((s) => ({
+            groups,
+            bots: [...s.bots, bot],
+            messages: { ...s.messages, [bot.id]: s.messages[bot.id] ?? [] },
+            selectedBotId: opts?.selectFirst || !s.selectedBotId ? bot.id : s.selectedBotId,
+            collapsedGroups: { ...s.collapsedGroups, [targetGroupId]: false }
+          }))
+          return 1
+        }
+        return existingForAccount.length
+      }
+
+      const claimedBotIds = new Set<string>()
+      const botsToHydrate: Array<{ botId: string; agentId: string }> = []
+      const nextBots = [...state.bots]
+      const nextMessages = { ...state.messages }
+      const otherDsNames = dsBotNamesForOtherAccounts(nextBots, accountId)
+      const accountSuffix = get().accounts[accountId]?.displayName || get().accounts[accountId]?.handle || accountId.slice(-4)
+
+      const unmatchedAgents: typeof visibleAgents = []
+      for (const agent of visibleAgents) {
+        const exactIdx = nextBots.findIndex(
+          (b) =>
+            b.platformId === 'ds-bot' &&
+            b.accountIds.includes(accountId) &&
+            b.selectedAgentId === agent.id &&
+            !claimedBotIds.has(b.id)
+        )
+        if (exactIdx >= 0) {
+          const prev = nextBots[exactIdx]!
+          claimedBotIds.add(prev.id)
+          nextBots[exactIdx] = {
+            ...prev,
+            name:
+              isGenericDsBotName(prev.name) && agent.name
+                ? disambiguateDsBotName(nextBots, agent.name, otherDsNames, accountSuffix)
+                : prev.name,
+            description: agent.description ?? prev.description,
+            ...(agent.avatarShape ? { avatarShape: agent.avatarShape } : {}),
+            ...(agent.avatarColor ? { avatarColor: agent.avatarColor } : {})
+          }
+          adapter.bindConversationAgent?.(prev.id, agent.id, accountId)
+        } else {
+          unmatchedAgents.push(agent)
+        }
+      }
+
+      for (const agent of unmatchedAgents) {
+        const placeholderIdx = nextBots.findIndex(
+          (b) =>
+            b.platformId === 'ds-bot' &&
+            b.accountIds.includes(accountId) &&
+            !claimedBotIds.has(b.id) &&
+            (!b.selectedAgentId || !allAgentIds.has(b.selectedAgentId))
+        )
+        if (placeholderIdx >= 0) {
+          const prev = nextBots[placeholderIdx]!
+          claimedBotIds.add(prev.id)
+          nextBots[placeholderIdx] = {
+            ...prev,
+            name: agent.name
+              ? disambiguateDsBotName(nextBots, agent.name, otherDsNames, accountSuffix)
+              : prev.name,
+            selectedAgentId: agent.id,
+            description: agent.description ?? prev.description,
+            ...(agent.avatarShape ? { avatarShape: agent.avatarShape } : {}),
+            ...(agent.avatarColor ? { avatarColor: agent.avatarColor } : {})
+          }
+          botsToHydrate.push({ botId: prev.id, agentId: agent.id })
+        } else {
+          const newBotId = createId('bot')
+          claimedBotIds.add(newBotId)
+          const isGroup = agent.id.startsWith('room:')
+          const newBot: Bot = {
+            id: newBotId,
+            name: disambiguateDsBotName(
+              nextBots,
+              agent.name || (isGroup ? 'DS Bot 群聊' : 'DS Bot'),
+              otherDsNames,
+              accountSuffix
+            ),
+            emoji: isGroup ? '👥' : '🐋',
+            ...(agent.avatarShape ? { avatarShape: agent.avatarShape } : {}),
+            ...(agent.avatarColor ? { avatarColor: agent.avatarColor } : {}),
+            selectedAgentId: agent.id,
+            description: agent.description ?? '',
+            platformId: 'ds-bot',
+            groupId: targetGroupId,
+            accountIds: [accountId],
+            activeAccountId: accountId,
+            memory: [],
+            notes: '',
+            createdAt: Date.now(),
+            unread: 0
+          }
+          nextBots.push(newBot)
+          nextMessages[newBotId] = nextMessages[newBotId] ?? []
+          botsToHydrate.push({ botId: newBotId, agentId: agent.id })
+        }
+      }
+
+      const accountBots = nextBots.filter(
+        (b) => b.platformId === 'ds-bot' && b.accountIds.includes(accountId)
+      )
+      const firstAccountBot = accountBots[0]
+      const nextSelectedId =
+        opts?.selectFirst && firstAccountBot
+          ? firstAccountBot.id
+          : state.selectedBotId ?? firstAccountBot?.id ?? null
+
+      set((s) => ({
+        groups,
+        bots: nextBots,
+        messages: nextMessages,
+        selectedBotId: nextSelectedId,
+        collapsedGroups: { ...s.collapsedGroups, [targetGroupId]: false }
+      }))
+
+      const hydrateSet = new Map<string, string>()
+      for (const item of botsToHydrate) hydrateSet.set(item.botId, item.agentId)
+      const activeSelected = get().bots.find((b) => b.id === get().selectedBotId)
+      if (
+        activeSelected &&
+        activeSelected.platformId === 'ds-bot' &&
         activeSelected.accountIds.includes(accountId) &&
         activeSelected.selectedAgentId
       ) {
@@ -3091,7 +2935,7 @@ export const useBotStore = create<BotHubState>()(
       const previous = cueCredentialImports.get(accountId)
       const importing = (previous ?? Promise.resolve()).catch(() => undefined).then(() => {
         if (!isCurrent()) throw new Error('Cue account changed while importing credentials')
-        return cue.importCredentials({ accountId, credential })
+        return cue.importCredentials({ accountId, credential, verifyApiKey: true })
       })
       cueCredentialImports.set(accountId, importing)
       const st = await importing.finally(() => {
@@ -3147,10 +2991,11 @@ export const useBotStore = create<BotHubState>()(
       if (bridge?.cue?.rpc) {
         const res = await bridge.cue.rpc({ accountId, op: 'listAgents' }).catch(() => null)
         if (res?.ok && res.data) {
+          const nestedAgents = asObj(res.data)?.agents
           const rawList = Array.isArray(res.data)
             ? res.data
-            : typeof res.data === 'object' && Array.isArray((res.data as Record<string, unknown>)['agents'])
-              ? ((res.data as Record<string, unknown>)['agents'] as unknown[])
+            : Array.isArray(nestedAgents)
+              ? nestedAgents
               : []
           for (const item of rawList) {
             if (!item || typeof item !== 'object') continue
@@ -3158,7 +3003,7 @@ export const useBotStore = create<BotHubState>()(
             const id = String(rec['id'] ?? rec['agentId'] ?? '').trim()
             if (!id) continue
             const sessionRaw = rec['sessionId'] ?? rec['sessionUid'] ?? rec['session_uid']
-            const sessionId = typeof sessionRaw === 'string' && sessionRaw.trim() ? sessionRaw.trim() : undefined
+            const sessionId = trimStr(sessionRaw) || undefined
             agents.push({
               id,
               name: String(rec['name'] ?? rec['title'] ?? 'Cue').trim() || 'Cue',
@@ -3196,26 +3041,11 @@ export const useBotStore = create<BotHubState>()(
         groups = [...groups, { id: targetGroupId, name: 'Workspace' }]
       }
 
-      let nextBots = [...state.bots]
+      const nextBots = [...state.bots]
       const nextMessages = { ...state.messages }
       let nextState = state
       const claimedIds = new Set<string>()
       const incomingAgentIds = new Set(agents.map((a) => a.id))
-      const isPlaceholderAgentId = (id: string | undefined): boolean =>
-        !id || id === 'agent-default' || id.startsWith('cue_default_')
-
-      const buildCueBotName = (agentName: string): string => {
-        const cleanAgent = agentName.trim()
-        const isGeneric = !cleanAgent || /^cue(?:\s+bot)?$/i.test(cleanAgent)
-        let base: string
-        if (handle) {
-          base = isGeneric ? `Cue · ${handle}` : `Cue · ${cleanAgent} (${handle})`
-        } else {
-          base = isGeneric ? 'Cue' : `Cue · ${cleanAgent}`
-        }
-        return uniqueBotName(nextBots, base)
-      }
-
       for (const agent of agents) {
         let existingIdx = nextBots.findIndex(
           (b) =>
@@ -3230,7 +3060,7 @@ export const useBotStore = create<BotHubState>()(
               b.platformId === 'cue' &&
               b.accountIds.includes(accountId) &&
               !claimedIds.has(b.id) &&
-              isPlaceholderAgentId(b.selectedAgentId) &&
+              isCuePlaceholderAgentId(b.selectedAgentId) &&
               !incomingAgentIds.has(b.selectedAgentId ?? '')
           )
         }
@@ -3238,20 +3068,7 @@ export const useBotStore = create<BotHubState>()(
           const prev = nextBots[existingIdx]!
           claimedIds.add(prev.id)
           const others = nextBots.filter((_, i) => i !== existingIdx)
-          const cleanAgent = agent.name.trim()
-          const hasNamedAgent = Boolean(cleanAgent && !/^cue(?:\s+bot)?$/i.test(cleanAgent))
-          const isPlaceholderUpgrade =
-            isPlaceholderAgentId(prev.selectedAgentId) &&
-            !isPlaceholderAgentId(agent.id) &&
-            hasNamedAgent &&
-            /^cue(?:\s*·|\s+\d+)?(?:\s+.*)?$/i.test(prev.name.trim())
-          const needsRename =
-            /^cue(?:\s+\d+)?$/i.test(prev.name.trim()) ||
-            isPlaceholderUpgrade ||
-            others.some((o) => o.name.trim().toLowerCase() === prev.name.trim().toLowerCase())
-          const preferredName = isPlaceholderUpgrade
-            ? (handle ? `Cue · ${cleanAgent} (${handle})` : `Cue · ${cleanAgent}`)
-            : (handle ? `Cue · ${handle}` : prev.name)
+          const name = syncedCueBotName(others, prev, agent, handle)
           const rosterSelection = rosterSelections.get(prev.id)
           const ownsSelection = rosterSelection && isCurrentSession(rosterSelection.bot, rosterSelection.selection)
           const selectedAgentId = ownsSelection && prev.activeAccountId === accountId ? agent.id : prev.selectedAgentId
@@ -3268,7 +3085,7 @@ export const useBotStore = create<BotHubState>()(
           }
           nextBots[existingIdx] = {
             ...prev,
-            name: needsRename ? uniqueBotName(others, preferredName) : prev.name,
+            name,
             selectedAgentId,
             activeSessionId,
             description: agent.description ?? prev.description
@@ -3278,7 +3095,7 @@ export const useBotStore = create<BotHubState>()(
           claimedIds.add(newBotId)
           const newBot: Bot = {
             id: newBotId,
-            name: buildCueBotName(agent.name),
+            name: newCueBotName(nextBots, agent.name, handle),
             emoji: '✨',
             selectedAgentId: agent.id,
             ...(agent.sessionId ? { activeSessionId: agent.sessionId } : {}),
@@ -3464,6 +3281,7 @@ export const useBotStore = create<BotHubState>()(
         await bridge?.grok?.clearAuth?.('*').catch(() => undefined)
         await bridge?.cue?.clearAuth?.('*').catch(() => undefined)
         await bridge?.hermes?.clearAuth?.('*').catch(() => undefined)
+        await bridge?.dsBot?.clearAuth?.('*').catch(() => undefined)
         await bridge?.muse?.clearProxyPool?.().catch(() => undefined)
         await bridge?.vault?.clearAll?.().catch(() => undefined)
         try {
@@ -3498,6 +3316,7 @@ export const useBotStore = create<BotHubState>()(
         chatActionErrors: {},
         replyingTo: {},
         dismissedGrokAgents: {},
+        dismissedDsBotAgents: {},
         webSessionByBot: {},
         webSessionOpen: false,
         webSessionTargetUrl: null,

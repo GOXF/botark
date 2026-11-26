@@ -8,13 +8,12 @@ import { cancelPlatformTurn, useBotStore } from '@/store/botStore'
 import { createSafeStorage } from '@/store/delivery'
 import type { Bot } from '@/types'
 import {
-  assistantTurnPrompt,
   classifyRoomReply,
   freshRoomSession,
   isHumanRoomMessage,
   mentions,
-  refusesRoomFrame,
   normalizeMentionName,
+  refusesRoomFrame,
   roomRecipient,
   turnPrompt,
   type CollabRoom,
@@ -790,17 +789,13 @@ async function memberReply(room: CollabRoom, member: RoomMember, trigger: RoomMe
         members: r.members.map((m) => (m.botId === member.botId ? { ...m, sessionId } : m))
       }))
     const contextMember = member.sessionId || hermesSessionKey ? member : { ...member, cursor: 0 }
-    let prompt: string
+    let prompt = turnPrompt(room, contextMember, trigger)
     if (refusesRoomFrame(member.platform)) {
-      // This member will not act behind another application's tool protocol,
-      // and it rejects the collaboration-room frame itself. Give it a plain
-      // assistant frame plus a workspace portal it can reach with its own web
-      // tools instead.
-      prompt = assistantTurnPrompt(room, contextMember)
+      // Hark refuses another app's tool protocol: upstream's plain-language frame (in turnPrompt)
+      // plus the hardened workspace portal it can reach with its own web tools.
       const portal = await openWorkspacePortal(room.id)
       if (portal) prompt += portal
     } else {
-      prompt = turnPrompt(room, contextMember, trigger)
       const hub = getBridge()?.workspace
       const workspace = hub ? await hub.manage(room.id, { op: 'status' }) : undefined
       if (workspace?.tools.length) {

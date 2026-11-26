@@ -19,6 +19,9 @@ describe('workspace portal contract', () => {
       expect(tool.inputSchema.additionalProperties).toBe(false)
       for (const value of Object.values(tool.inputSchema.properties ?? {})) {
         expect(value).toMatchObject({ type: 'string' })
+        expect(
+          Object.keys(value).every((key) => key === 'type' || key === 'description')
+        ).toBe(true)
       }
     }
   })

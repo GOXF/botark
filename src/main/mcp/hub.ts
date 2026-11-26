@@ -1199,9 +1199,9 @@ async function bindDirectory(
     await saveScopeDirectory({ scopeId, directory: realRoot, optimizedAtMs })
     assertCurrent()
     const changing = binding.root !== realRoot
+    const rootChanged = Boolean(binding.root && changing)
     const restarting = changing ? scopedRestarts(binding) : []
     const stopped = changing ? disposeBinding(binding) : Promise.resolve()
-    const rootChanged = changing && Boolean(binding.root)
     binding.root = realRoot
     binding.trusted = true
     if (changing) binding.lastReport = undefined

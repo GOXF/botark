@@ -16,6 +16,7 @@ import { partitionForAccount } from '../webContentsViewManager'
 import {
   ANTIGRAVITY_API_KEY,
   ANTIGRAVITY_API_ORIGIN,
+  ANTIGRAVITY_COOKIE_ORIGINS,
   ANTIGRAVITY_ORIGIN,
   ANTIGRAVITY_RPC_PREFIX,
   buildCancelCascadeReq,
@@ -34,6 +35,7 @@ import {
   JspbStreamBodyParser,
   mergeTrajectorySteps,
   parseAgents,
+  parseAntigravityAuthUser,
   parseAvailableModels,
   parseConversationsList,
   parseEnvironments,
@@ -69,6 +71,32 @@ interface ActiveRun {
 const accountPrefs = new Map<string, AntigravityAccountPrefs>()
 const activeRuns = new Map<string, ActiveRun>()
 const pendingCancellations = new Map<string, Promise<unknown>>()
+
+// Store the verified index with the partition so it follows the Google cookies
+// across restarts and sign-outs. This reserved origin is only used for storage.
+export const ANTIGRAVITY_AUTH_USER_HOST = 'antigravity.botark.invalid'
+const AUTH_USER_COOKIE_URL = `https://${ANTIGRAVITY_AUTH_USER_HOST}/`
+const AUTH_USER_COOKIE_NAME = 'botark-antigravity-authuser'
+const AUTH_USER_COOKIE_LIFETIME_SECONDS = 400 * 86400
+
+export async function getAntigravityAuthUser(accountId: string): Promise<string | undefined> {
+  const ses = electronSession.fromPartition(partitionForAccount(accountId))
+  const cookies = await ses.cookies.get({ url: AUTH_USER_COOKIE_URL, name: AUTH_USER_COOKIE_NAME })
+  return parseAntigravityAuthUser(cookies.find((cookie) => cookie.name === AUTH_USER_COOKIE_NAME)?.value)
+}
+
+async function setAntigravityAuthUser(accountId: string, authUser: string): Promise<void> {
+  const ses = electronSession.fromPartition(partitionForAccount(accountId))
+  await ses.cookies.set({
+    url: AUTH_USER_COOKIE_URL,
+    name: AUTH_USER_COOKIE_NAME,
+    value: authUser,
+    secure: true,
+    httpOnly: true,
+    sameSite: 'strict',
+    expirationDate: Math.floor(Date.now() / 1000) + AUTH_USER_COOKIE_LIFETIME_SECONDS
+  })
+}
 
 export function getAntigravityAccountPrefs(accountId: string): AntigravityAccountPrefs {
   return accountPrefs.get(accountId) ?? {}
@@ -116,13 +144,21 @@ export function cancelAllAntigravityRuns(target: string): void {
 
 async function getPartitionCookies(accountId: string): Promise<Array<{ name: string; value: string }>> {
   const ses = electronSession.fromPartition(partitionForAccount(accountId))
-  const [agyCookies, googleCookies] = await Promise.all([
-    ses.cookies.get({ url: ANTIGRAVITY_ORIGIN }).catch(() => []),
-    ses.cookies.get({ url: 'https://www.google.com' }).catch(() => [])
-  ])
+  const cookieGroups = await Promise.all(ANTIGRAVITY_COOKIE_ORIGINS.map((origin) =>
+    ses.cookies.get({ url: origin }).catch(() => [])
+  ))
+  // Earlier entries take precedence within an origin. The Antigravity page
+  // comes last so its values win across origins, matching its browser client.
   const merged = new Map<string, string>()
-  for (const c of googleCookies) merged.set(c.name, c.value)
-  for (const c of agyCookies) merged.set(c.name, c.value)
+  for (const cookies of cookieGroups) {
+    const namesAtOrigin = new Set<string>()
+    for (const cookie of cookies) {
+      if (cookie.value && !namesAtOrigin.has(cookie.name)) {
+        namesAtOrigin.add(cookie.name)
+        merged.set(cookie.name, cookie.value)
+      }
+    }
+  }
   return [...merged.entries()].map(([name, value]) => ({ name, value }))
 }
 
@@ -131,18 +167,18 @@ export async function listAntigravityCookieNames(accountId: string): Promise<str
   return cookies.map((c) => c.name)
 }
 
-async function buildRequestHeaders(accountId: string): Promise<{
+async function buildRequestHeaders(accountId: string, authUser?: string): Promise<{
   ses: Electron.Session
   headers: Record<string, string>
 } | null> {
   await applyProxyToPartition(accountId)
   const ses = electronSession.fromPartition(partitionForAccount(accountId))
   const cleanUa = cleanAntigravityChromeUserAgent(ses.getUserAgent())
-  ses.setUserAgent(cleanUa)
 
   const cookies = await getPartitionCookies(accountId)
   const authHeader = buildSapisidAuthHeader(cookies, ANTIGRAVITY_ORIGIN)
   if (!authHeader) return null
+  const selectedAuthUser = authUser ?? await getAntigravityAuthUser(accountId) ?? '0'
 
   return {
     ses,
@@ -151,7 +187,7 @@ async function buildRequestHeaders(accountId: string): Promise<{
       Accept: '*/*',
       'X-User-Agent': 'grpc-web-javascript/0.1',
       'X-Goog-Api-Key': ANTIGRAVITY_API_KEY,
-      'X-Goog-AuthUser': '0',
+      'X-Goog-AuthUser': selectedAuthUser,
       Authorization: authHeader,
       Origin: ANTIGRAVITY_ORIGIN,
       Referer: `${ANTIGRAVITY_ORIGIN}/`,
@@ -192,11 +228,12 @@ export async function callAntigravityRpc(
   accountId: string,
   method: string,
   bodyArray: unknown[] = [],
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  authUser?: string
 ): Promise<unknown> {
   signal?.throwIfAborted()
   const setupDeadline = AbortSignal.timeout(ANTIGRAVITY_RPC_TIMEOUT_MS)
-  const prepared = await withAntigravityDeadline(buildRequestHeaders(accountId),
+  const prepared = await withAntigravityDeadline(buildRequestHeaders(accountId, authUser),
     signal ? AbortSignal.any([signal, setupDeadline]) : setupDeadline)
   signal?.throwIfAborted()
   if (!prepared) {
@@ -215,6 +252,8 @@ export async function callAntigravityRpc(
     try {
       const res = await prepared.ses.fetch(url, {
         method: 'POST',
+        credentials: 'include',
+        redirect: 'error',
         headers: prepared.headers,
         body: JSON.stringify(bodyArray),
         signal: effectiveSignal
@@ -259,29 +298,51 @@ export async function callAntigravityRpc(
 
 export type AntigravitySessionProbe =
   | { signedIn: true; profile: AntigravityUserProfile }
-  | { signedIn: false; reason: 'no-cookies' | 'unauthorized' | 'network'; message?: string }
+  | { signedIn: false; reason: 'no-cookies' | 'unauthorized' | 'network'; message: string }
 
-export async function probeAntigravitySession(accountId: string): Promise<AntigravitySessionProbe> {
+export async function probeAntigravitySession(
+  accountId: string,
+  preferredAuthUser?: string
+): Promise<AntigravitySessionProbe> {
+  let savedAuthUser: string | undefined
   try {
-    const raw = await callAntigravityRpc(accountId, 'GetUserProfile', [])
-    const profile = parseUserProfile(raw)
-    if (!profile) {
-      return { signedIn: false, reason: 'unauthorized', message: 'Empty Antigravity user profile' }
-    }
-    return { signedIn: true, profile }
-  } catch (error) {
-    if (error instanceof AntigravityRpcError && error.grpcCode === 16 && error.message.includes('missing SAPISID cookies')) {
-      return { signedIn: false, reason: 'no-cookies' }
-    }
-    if (error instanceof AntigravityRpcError && (error.status === 401 || error.status === 403 || error.grpcCode === 16)) {
-      return { signedIn: false, reason: 'unauthorized', message: error.message }
-    }
-    return {
-      signedIn: false,
-      reason: 'network',
-      message: error instanceof Error ? error.message : String(error)
+    savedAuthUser = await getAntigravityAuthUser(accountId)
+  } catch {
+    return { signedIn: false, reason: 'network', message: '无法读取 Antigravity 的 Google 账号索引。请重试。' }
+  }
+  const selectedAuthUser = parseAntigravityAuthUser(preferredAuthUser) ?? savedAuthUser
+  const authUserIndices = selectedAuthUser === undefined ? ['0', '1', '2'] : [selectedAuthUser]
+  let message = 'Antigravity 未返回可验证的用户资料。'
+
+  for (const authUser of authUserIndices) {
+    try {
+      const raw = await callAntigravityRpc(accountId, 'GetUserProfile', [], undefined, authUser)
+      const profile = parseUserProfile(raw)
+      if (profile) {
+        if (authUser !== savedAuthUser) {
+          try {
+            await setAntigravityAuthUser(accountId, authUser)
+          } catch {
+            return { signedIn: false, reason: 'network', message: '无法保存 Antigravity 的 Google 账号索引。请重试。' }
+          }
+        }
+        return { signedIn: true, profile }
+      }
+    } catch (error) {
+      if (error instanceof AntigravityRpcError) {
+        if (error.grpcCode === 16 && error.message.includes('missing SAPISID cookies')) {
+          return { signedIn: false, reason: 'no-cookies', message: '未找到 Google 登录 Cookie（SAPISID）。' }
+        }
+        if (error.status === 401 || error.status === 403) {
+          message = `Antigravity 拒绝验证 Google 会话（HTTP ${error.status}）。`
+          continue
+        }
+        return { signedIn: false, reason: 'network', message: `Antigravity 会话验证失败（HTTP ${error.status}）。请检查网络或账号代理后重试。` }
+      }
+      return { signedIn: false, reason: 'network', message: '无法连接 Antigravity 验证 Google 会话。请检查网络或账号代理后重试。' }
     }
   }
+  return { signedIn: false, reason: 'unauthorized', message }
 }
 
 export async function fetchAntigravityProfile(accountId: string): Promise<AntigravityUserProfile | null> {
@@ -553,6 +614,8 @@ async function streamCascadeUntilDone(opts: {
       const url = `${ANTIGRAVITY_API_ORIGIN}${ANTIGRAVITY_RPC_PREFIX}/StreamAgentStateUpdates`
       const response = await withIdleDeadline(prepared.ses.fetch(url, {
         method: 'POST',
+        credentials: 'include',
+        redirect: 'error',
         headers: prepared.headers,
         body: JSON.stringify(buildStreamAgentStateUpdatesReq(cascadeId, resumeToken, 2)),
         signal: streamSignal

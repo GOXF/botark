@@ -103,7 +103,7 @@ describe('workspace portal', () => {
   afterEach(async () => {
     setWorkspacePortalIdleTimeoutMs(15 * 60 * 1000)
     await stopWorkspacePortals()
-    stopWorkspaces()
+    await stopWorkspaces()
     await rm(tempBase, { recursive: true, force: true })
   })
 

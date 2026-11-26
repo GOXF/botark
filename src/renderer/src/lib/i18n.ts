@@ -14,6 +14,10 @@ export function translate(locale: Locale, text: string, vars?: Record<string, st
 
 export type TFn = (text: string, vars?: Record<string, string | number>) => string
 
+export function plural(t: TFn, n: number, singular: string, plural: string): string {
+  return t(n === 1 ? singular : plural, { n })
+}
+
 export function useT(): TFn {
   const locale = usePrefsStore((s) => s.locale)
   return useCallback<TFn>((text, vars) => translate(locale, text, vars), [locale])

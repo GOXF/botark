@@ -10,11 +10,18 @@
 
 import { createHash } from 'node:crypto'
 import type { AntigravityMainEvent } from '@shared/ipc'
+import { cleanChromeUserAgentForGoogle } from '../googleOAuthUaGuard'
 
 export const ANTIGRAVITY_ORIGIN = 'https://antigravity.google.com'
 export const ANTIGRAVITY_API_ORIGIN = 'https://aicode.clients6.google.com'
 export const ANTIGRAVITY_API_KEY = 'AIzaSyCUicsvglkMf8CM2MPlGjopIcIxu3VJEDU'
 export const ANTIGRAVITY_RPC_PREFIX = '/$rpc/google.gca.aicode.v1alpha.JetskiRemoteAgentProxyService'
+export const ANTIGRAVITY_COOKIE_ORIGINS = [
+  ANTIGRAVITY_API_ORIGIN,
+  'https://accounts.google.com',
+  'https://www.google.com',
+  ANTIGRAVITY_ORIGIN
+] as const
 
 const ALLOWED_DOMAINS = [
   'antigravity.google.com',
@@ -73,7 +80,7 @@ export const CORTEX_STEP_STATUS = {
 } as const
 
 export interface AntigravityUserProfile {
-  email: string
+  email?: string
   planId?: string
   planDisplayName?: string
 }
@@ -183,18 +190,24 @@ export function isAllowedAntigravityUrl(url: string): boolean {
   }
 }
 
-/**
- * Strip `Electron/<ver>` and `BotArk|BotHub/<ver>` so Google Sign-In never
- * rejects the login window with `403 disallowed_useragent`.
- */
-export function cleanAntigravityChromeUserAgent(rawUa: string): string {
-  const cleaned = rawUa
-    .replace(/\s+Electron\/[\d.]+/gi, '')
-    .replace(/\s+(?:BotArk|BotHub)\/[\d.a-z-]+/gi, '')
-    .replace(/\s{2,}/g, ' ')
-    .trim()
-  if (/Chrome\/[\d.]+/i.test(cleaned)) return cleaned
-  return 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36'
+export const cleanAntigravityChromeUserAgent = cleanChromeUserAgentForGoogle
+
+export function isAntigravitySigningCookie(name: string): boolean {
+  return name === 'SAPISID' || name === '__Secure-1PAPISID' || name === '__Secure-3PAPISID'
+}
+
+export function parseAntigravityAuthUser(value: string | null | undefined): string | undefined {
+  return value && /^(?:0|[1-9]\d{0,2})$/.test(value) ? value : undefined
+}
+
+export function antigravityAuthUserFromUrl(rawUrl: string): string | undefined {
+  try {
+    const url = new URL(rawUrl)
+    if (url.origin !== ANTIGRAVITY_ORIGIN && url.origin !== ANTIGRAVITY_API_ORIGIN) return
+    return parseAntigravityAuthUser(url.searchParams.get('authuser') ?? /^\/u\/(\d+)(?:\/|$)/.exec(url.pathname)?.[1])
+  } catch {
+    return undefined
+  }
 }
 
 function sha1Hex(input: string): string {
@@ -383,11 +396,11 @@ function parseMicrosMs(raw: unknown): number {
 export function parseUserProfile(raw: unknown): AntigravityUserProfile | null {
   const a = asArr(raw)
   if (!a) return null
-  const email = getStr(a, 1).trim()
-  if (!email) return null
+  const email = getStr(a, 1).trim() || undefined
   const plan = asArr(getField(a, 2))
-  const planId = getStr(plan, 1) || undefined
-  const planDisplayName = getStr(plan, 2) || undefined
+  const planId = getStr(plan, 1).trim() || undefined
+  const planDisplayName = getStr(plan, 2).trim() || undefined
+  if (!email && !planId && !planDisplayName) return null
   return { email, planId, planDisplayName }
 }
 

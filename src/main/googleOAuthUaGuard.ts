@@ -1,5 +1,5 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { release as osRelease, tmpdir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import type { Session, WebContents } from 'electron'
 
@@ -25,27 +25,71 @@ export interface GooglePlatformHint {
   header: '"Windows"' | '"macOS"' | '"Linux"'
   uaDataPlatform: 'Windows' | 'macOS' | 'Linux'
   uaOsSegment: string
+  platformVersion: string
+  architecture: 'x86' | 'arm'
+  bitness: '32' | '64'
+  oscpu: string
 }
 
-export function resolvePlatformHint(platform: NodeJS.Platform = process.platform): GooglePlatformHint {
+function resolvePlatformVersion(platform: NodeJS.Platform, releaseStr?: string): string {
+  const effectiveRelease = releaseStr ?? (platform === process.platform ? osRelease() : '')
+  if (platform === 'win32') {
+    const match = /^10\.0\.(\d+)/.exec(effectiveRelease)
+    if (match) {
+      const build = Number(match[1])
+      return build >= 22000 ? '15.0.0' : '10.0.0'
+    }
+    return '15.0.0'
+  }
+  if (platform === 'darwin') {
+    const major = Number(effectiveRelease.split('.')[0])
+    if (Number.isFinite(major) && major >= 20) {
+      const macMajor = Math.max(14, major - 9)
+      return `${macMajor}.0.0`
+    }
+    return '15.0.0'
+  }
+  return '6.8.0'
+}
+
+export function resolvePlatformHint(
+  platform: NodeJS.Platform = process.platform,
+  arch: string = process.arch,
+  releaseStr?: string
+): GooglePlatformHint {
+  const architecture: 'x86' | 'arm' = arch === 'arm64' ? 'arm' : 'x86'
+  const bitness: '32' | '64' = arch === 'ia32' || arch === 'arm' ? '32' : '64'
+  const platformVersion = resolvePlatformVersion(platform, releaseStr)
   if (platform === 'win32') {
     return {
       header: '"Windows"',
       uaDataPlatform: 'Windows',
-      uaOsSegment: 'Windows NT 10.0; Win64; x64'
+      uaOsSegment: 'Windows NT 10.0; Win64; x64',
+      platformVersion,
+      architecture,
+      bitness,
+      oscpu: 'Windows NT 10.0; Win64; x64'
     }
   }
   if (platform === 'darwin') {
     return {
       header: '"macOS"',
       uaDataPlatform: 'macOS',
-      uaOsSegment: 'Macintosh; Intel Mac OS X 10_15_7'
+      uaOsSegment: 'Macintosh; Intel Mac OS X 10_15_7',
+      platformVersion,
+      architecture,
+      bitness,
+      oscpu: 'Intel Mac OS X 10.15'
     }
   }
   return {
     header: '"Linux"',
     uaDataPlatform: 'Linux',
-    uaOsSegment: 'X11; Linux x86_64'
+    uaOsSegment: 'X11; Linux x86_64',
+    platformVersion,
+    architecture,
+    bitness,
+    oscpu: 'Linux x86_64'
   }
 }
 
@@ -61,22 +105,19 @@ export function buildGoogleFirefoxCompatUa(platform: NodeJS.Platform = process.p
 
 export const GOOGLE_FIREFOX_COMPAT_UA = buildGoogleFirefoxCompatUa()
 
+const GOOGLE_SIGN_IN_HOST = /^(?:[\w-]+\.)*(?:accounts\.(?:google|youtube)\.com|(?:myaccount|gds|consent)\.google\.com|oauth2\.googleapis\.com)$/i
+const GOOGLE_SIGN_IN_PATH = /^\/(?:o\/oauth2|v3\/signin|signin|ServiceLogin|AccountChooser)(?:\/|$)/i
+
 export function isGoogleAuthHostUrl(url: string): boolean {
   if (!url) return false
   try {
     const parsed = new URL(url)
     if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return false
     const host = parsed.hostname.toLowerCase()
-    if (/^(?:[\w-]+\.)*(?:accounts\.(?:google|youtube)\.com|antigravity\.google\.com|oauth2\.googleapis\.com)$/i.test(host)) {
-      return true
-    }
-    if (
-      /(?:^|\.)google\.com$/i.test(host) &&
-      /^\/(?:o\/oauth2|v3\/signin|signin|ServiceLogin|AccountChooser)/i.test(parsed.pathname)
-    ) {
-      return true
-    }
-    return false
+    return GOOGLE_SIGN_IN_HOST.test(host) || (
+      (host === 'google.com' || host === 'www.google.com') &&
+      GOOGLE_SIGN_IN_PATH.test(parsed.pathname)
+    )
   } catch {
     return false
   }
@@ -132,27 +173,51 @@ export interface ChromeClientHints {
   major: string
   full: string
   secChUa: string
+  secChUaFullVersion: string
   secChUaFullVersionList: string
   secChUaPlatform: '"Windows"' | '"macOS"' | '"Linux"'
+  secChUaPlatformVersion: string
+  secChUaArch: '"x86"' | '"arm"'
+  secChUaBitness: '"32"' | '"64"'
+  secChUaModel: '""'
+  secChUaWow64: '?0'
+  secChUaFormFactors: '"Desktop"'
   uaDataPlatform: 'Windows' | 'macOS' | 'Linux'
+  platformVersion: string
+  architecture: 'x86' | 'arm'
+  bitness: '32' | '64'
+  oscpu: string
   brands: Array<{ brand: string; version: string }>
   fullVersionList: Array<{ brand: string; version: string }>
 }
 
 export function buildChromeClientHints(
   chromeVersion = process.versions?.chrome,
-  platform: NodeJS.Platform = process.platform
+  platform: NodeJS.Platform = process.platform,
+  arch: string = process.arch
 ): ChromeClientHints {
   const full = normalizeChromeVersion(chromeVersion)
   const major = full.split('.')[0] || '136'
-  const { header, uaDataPlatform } = resolvePlatformHint(platform)
+  const { header, uaDataPlatform, platformVersion, architecture, bitness, oscpu } =
+    resolvePlatformHint(platform, arch)
   return {
     major,
     full,
     secChUa: `"Chromium";v="${major}", "Google Chrome";v="${major}", "Not-A.Brand";v="99"`,
+    secChUaFullVersion: `"${full}"`,
     secChUaFullVersionList: `"Chromium";v="${full}", "Google Chrome";v="${full}", "Not-A.Brand";v="99.0.0.0"`,
     secChUaPlatform: header,
+    secChUaPlatformVersion: `"${platformVersion}"`,
+    secChUaArch: `"${architecture}"`,
+    secChUaBitness: `"${bitness}"`,
+    secChUaModel: '""',
+    secChUaWow64: '?0',
+    secChUaFormFactors: '"Desktop"',
     uaDataPlatform,
+    platformVersion,
+    architecture,
+    bitness,
+    oscpu,
     brands: [
       { brand: 'Chromium', version: major },
       { brand: 'Google Chrome', version: major },
@@ -170,7 +235,7 @@ export function sanitizeGoogleRequestHeaders(
   requestHeaders: Record<string, string>,
   chromeVersion = process.versions?.chrome,
   platform: NodeJS.Platform = process.platform,
-  opts?: { firefoxCompat?: boolean }
+  opts?: { firefoxCompat?: boolean; arch?: string }
 ): Record<string, string> {
   const next = { ...requestHeaders }
 
@@ -204,10 +269,11 @@ export function sanitizeGoogleRequestHeaders(
     platform
   )
   const effectivePlatform = inferPlatformFromUa(cleanedUa, platform)
-  const hints = buildChromeClientHints(chromeVersion, effectivePlatform)
+  const hints = buildChromeClientHints(chromeVersion, effectivePlatform, opts?.arch)
 
   let sawUaKey = false
   let sawSecChUa = false
+  let sawMobile = false
   let sawPlatform = false
   for (const key of Object.keys(next)) {
     const lower = key.toLowerCase()
@@ -217,13 +283,28 @@ export function sanitizeGoogleRequestHeaders(
     } else if (lower === 'sec-ch-ua') {
       next[key] = hints.secChUa
       sawSecChUa = true
+    } else if (lower === 'sec-ch-ua-full-version') {
+      next[key] = hints.secChUaFullVersion
     } else if (lower === 'sec-ch-ua-full-version-list') {
       next[key] = hints.secChUaFullVersionList
     } else if (lower === 'sec-ch-ua-platform') {
       next[key] = hints.secChUaPlatform
       sawPlatform = true
+    } else if (lower === 'sec-ch-ua-platform-version') {
+      next[key] = hints.secChUaPlatformVersion
     } else if (lower === 'sec-ch-ua-mobile') {
       next[key] = '?0'
+      sawMobile = true
+    } else if (lower === 'sec-ch-ua-arch') {
+      next[key] = hints.secChUaArch
+    } else if (lower === 'sec-ch-ua-bitness') {
+      next[key] = hints.secChUaBitness
+    } else if (lower === 'sec-ch-ua-model') {
+      next[key] = hints.secChUaModel
+    } else if (lower === 'sec-ch-ua-wow64') {
+      next[key] = hints.secChUaWow64
+    } else if (lower === 'sec-ch-ua-form-factors') {
+      next[key] = hints.secChUaFormFactors
     }
   }
   if (!sawUaKey) {
@@ -232,6 +313,9 @@ export function sanitizeGoogleRequestHeaders(
   if (!sawSecChUa) {
     next['Sec-CH-UA'] = hints.secChUa
   }
+  if (!sawMobile) {
+    next['Sec-CH-UA-Mobile'] = '?0'
+  }
   if (!sawPlatform) {
     next['Sec-CH-UA-Platform'] = hints.secChUaPlatform
   }
@@ -239,147 +323,508 @@ export function sanitizeGoogleRequestHeaders(
 }
 
 /**
- * Build the pure main-world JavaScript snippet that normalizes `navigator.userAgent`,
- * `navigator.appVersion`, `navigator.userAgentData`, `navigator.webdriver`, and
- * `window.chrome` strictly on Google OAuth origins (never on non-Google / Cloudflare Turnstile pages).
+ * Build the pure main-world JavaScript snippet that normalizes desktop browser fingerprints
+ * (`navigator.userAgent`, `navigator.appVersion`, `navigator.userAgentData`, `navigator.webdriver`,
+ * `navigator.plugins`/`mimeTypes`/`pdfViewerEnabled`, `navigator.permissions`, `window.chrome`,
+ * `Function.prototype.toString`, and synchronous `iframe.contentWindow`/`contentDocument` realms)
+ * strictly on Google OAuth origins (never on non-Google / Cloudflare Turnstile pages).
  */
 export function buildGoogleOAuthMainWorldPatchScript(
   chromeVersion = process.versions?.chrome,
-  platform: NodeJS.Platform = process.platform
+  platform: NodeJS.Platform = process.platform,
+  arch: string = process.arch
 ): string {
-  const hints = buildChromeClientHints(chromeVersion, platform)
+  const hints = buildChromeClientHints(chromeVersion, platform, arch)
   const fallbackUa = cleanChromeUserAgentForGoogle('', chromeVersion, platform)
 
   return `(() => {
   try {
-    var loc = typeof location !== 'undefined' ? location : null;
-    var host = (loc && typeof loc.hostname === 'string' ? loc.hostname : '').toLowerCase();
-    var proto = (loc && typeof loc.protocol === 'string' ? loc.protocol : '').toLowerCase();
-    var isGoogleHost = /(?:^|\\.)(?:google\\.com|youtube\\.com|gstatic\\.com|googleapis\\.com|googleusercontent\\.com)$/i.test(host);
-    var isNonGoogleOpener = false;
-    try {
-      var ref = (typeof document !== 'undefined' && typeof document.referrer === 'string' ? document.referrer : '');
-      if (ref && !/^https?:\\/\\/([^/]+\\.)?(?:google|youtube|gstatic|googleapis|googleusercontent)\\.com(?:[:/]|$)/i.test(ref)) {
-        isNonGoogleOpener = true;
-      }
-    } catch (_) {}
-    var isOpaqueChild = !host && !isNonGoogleOpener && (proto === 'about:' || proto === 'blob:' || proto === 'data:');
-    if (!isGoogleHost && !isOpaqueChild) return;
-
-    var nav = typeof navigator !== 'undefined' ? navigator : null;
-    if (!nav) return;
-    var MARK = Symbol.for('botark.googleOAuthUaPatched');
-    if (nav[MARK]) return;
-    try {
-      Object.defineProperty(nav, MARK, { value: true, configurable: false, enumerable: false });
-    } catch (_) {}
-
     var FALLBACK_UA = ${JSON.stringify(fallbackUa)};
-    var rawUa = typeof nav.userAgent === 'string' ? nav.userAgent : '';
-    var isFirefoxCompat = /\\bFirefox\\/[\\d.]+/i.test(rawUa);
-
-    var defineVal = function(target, prop, getterOrVal, isGetter) {
-      try {
-        Object.defineProperty(
-          target,
-          prop,
-          isGetter
-            ? { get: getterOrVal, enumerable: true, configurable: true }
-            : { value: getterOrVal, enumerable: true, configurable: true }
-        );
-        return true;
-      } catch (_) {
-        return false;
-      }
-    };
-
-    var navProto = typeof Navigator !== 'undefined' && Navigator.prototype ? Navigator.prototype : null;
-    var defineOnNav = function(prop, getter) {
-      if (!navProto || !defineVal(navProto, prop, getter, true)) {
-        defineVal(nav, prop, getter, true);
-      }
-    };
-
-    defineOnNav('webdriver', function() { return false; });
-
-    if (isFirefoxCompat) {
-      defineOnNav('userAgentData', function() { return undefined; });
-      return;
-    }
-
-    var stripped = rawUa
-      .replace(/\\s+Electron\\/[^\\s]+/gi, '')
-      .replace(/\\s+(?:BotArk|BotHub)\\/[^\\s]+/gi, '')
-      .replace(/\\s{2,}/g, ' ')
-      .trim();
-    var cleanUa = /Chrome\\/[\\d.]+/i.test(stripped) ? stripped : FALLBACK_UA;
-    var cleanAppVersion = cleanUa.replace(/^Mozilla\\//, '');
-
-    if (typeof window !== 'undefined' && !window.chrome) {
-      try {
-        Object.defineProperty(window, 'chrome', {
-          value: { runtime: {} },
-          enumerable: true,
-          configurable: true
-        });
-      } catch (_) {}
-    }
-
     var BRANDS = ${JSON.stringify(hints.brands)};
     var FULL_LIST = ${JSON.stringify(hints.fullVersionList)};
     var UA_PLATFORM = ${JSON.stringify(hints.uaDataPlatform)};
+    var UA_PLATFORM_VER = ${JSON.stringify(hints.platformVersion)};
+    var UA_ARCH = ${JSON.stringify(hints.architecture)};
+    var UA_BITNESS = ${JSON.stringify(hints.bitness)};
     var UA_FULL = ${JSON.stringify(hints.full)};
+    var FF_OSCPU = ${JSON.stringify(hints.oscpu)};
+    var MARK = Symbol.for('botark.googleOAuthUaPatched');
 
-    var origUaData = nav.userAgentData;
-    var patchedUaData;
-    try {
-      var protoObj = origUaData && typeof origUaData === 'object' ? Object.getPrototypeOf(origUaData) : Object.prototype;
-      patchedUaData = Object.create(protoObj || Object.prototype);
-    } catch (_) {
-      patchedUaData = {};
-    }
-
-    defineVal(patchedUaData, 'brands', function() { return BRANDS.map(function(b) { return { brand: b.brand, version: b.version }; }); }, true);
-    defineVal(patchedUaData, 'mobile', function() { return false; }, true);
-    defineVal(patchedUaData, 'platform', function() { return UA_PLATFORM; }, true);
-    defineVal(patchedUaData, 'toJSON', function() {
-      return {
-        brands: BRANDS.map(function(b) { return { brand: b.brand, version: b.version }; }),
-        mobile: false,
-        platform: UA_PLATFORM
-      };
-    }, false);
-    defineVal(patchedUaData, 'getHighEntropyValues', function(requestedHints) {
-      var list = Array.isArray(requestedHints) ? requestedHints : [];
-      var basePromise;
+    var isGoogleRealm = function(win) {
       try {
-        if (origUaData && typeof origUaData.getHighEntropyValues === 'function') {
-          basePromise = Promise.resolve(origUaData.getHighEntropyValues(list)).catch(function() { return {}; });
-        } else {
-          basePromise = Promise.resolve({});
-        }
+        var loc = win && win.location ? win.location : (typeof location !== 'undefined' ? location : null);
+        var host = (loc && typeof loc.hostname === 'string' ? loc.hostname : '').toLowerCase();
+        var proto = (loc && typeof loc.protocol === 'string' ? loc.protocol : '').toLowerCase();
+        var isGoogleHost = /(?:^|\\.)(?:google\\.com|youtube\\.com|gstatic\\.com|googleapis\\.com|googleusercontent\\.com)$/i.test(host);
+        var isNonGoogleOpener = false;
+        try {
+          var doc = win && win.document ? win.document : (typeof document !== 'undefined' ? document : null);
+          var ref = (doc && typeof doc.referrer === 'string' ? doc.referrer : '');
+          if (ref && !/^https?:\\/\\/([^/]+\\.)?(?:google|youtube|gstatic|googleapis|googleusercontent)\\.com(?:[:/]|$)/i.test(ref)) {
+            isNonGoogleOpener = true;
+          }
+        } catch (_) {}
+        var isOpaqueChild = !host && !isNonGoogleOpener && (proto === 'about:' || proto === 'blob:' || proto === 'data:');
+        var isAuthPage = (proto === 'https:' || proto === 'http:') && (
+          ${GOOGLE_SIGN_IN_HOST}.test(host) ||
+          (host === 'google.com' || host === 'www.google.com') && ${GOOGLE_SIGN_IN_PATH}.test(loc.pathname || '')
+        );
+        return {
+          allowed: isGoogleHost || isOpaqueChild,
+          isOpaqueChild: isOpaqueChild,
+          isAuthPage: isAuthPage
+        };
       } catch (_) {
-        basePromise = Promise.resolve({});
+        return { allowed: false, isOpaqueChild: false, isAuthPage: false };
       }
-      return basePromise.then(function(base) {
-        var out = Object.assign({}, base || {}, {
-          brands: BRANDS.map(function(b) { return { brand: b.brand, version: b.version }; }),
-          mobile: false,
-          platform: UA_PLATFORM
-        });
-        if (list.indexOf('fullVersionList') >= 0) {
-          out.fullVersionList = FULL_LIST.map(function(b) { return { brand: b.brand, version: b.version }; });
-        }
-        if (list.indexOf('uaFullVersion') >= 0) {
-          out.uaFullVersion = UA_FULL;
-        }
-        return out;
-      });
-    }, false);
+    };
 
-    defineOnNav('userAgent', function() { return cleanUa; });
-    defineOnNav('appVersion', function() { return cleanAppVersion; });
-    defineOnNav('userAgentData', function() { return patchedUaData; });
+    var patchRealm = function(win, forcedParentMeta) {
+      try {
+        if (!win) return;
+        var nav = win.navigator;
+        if (!nav) return;
+        if (nav[MARK]) return;
+
+        var meta = isGoogleRealm(win);
+        if (!meta.allowed && !forcedParentMeta) return;
+        var effectiveAuthPage = meta.isAuthPage || (meta.isOpaqueChild && forcedParentMeta && forcedParentMeta.isAuthPage);
+        var effectiveOpaque = meta.isOpaqueChild;
+
+        try {
+          Object.defineProperty(nav, MARK, { value: true, configurable: false, enumerable: false });
+        } catch (_) {}
+
+        var FnCtor = win.Function || Function;
+        var nativeStrings = typeof WeakMap !== 'undefined' ? new WeakMap() : null;
+        if (nativeStrings && FnCtor && FnCtor.prototype && typeof FnCtor.prototype.toString === 'function') {
+          var origToString = FnCtor.prototype.toString;
+          var wrappedToString = function toString() {
+            if (nativeStrings.has(this)) return nativeStrings.get(this);
+            return origToString.call(this);
+          };
+          nativeStrings.set(wrappedToString, 'function toString() { [native code] }');
+          try {
+            Object.defineProperty(FnCtor.prototype, 'toString', {
+              value: wrappedToString,
+              writable: true,
+              enumerable: false,
+              configurable: true
+            });
+          } catch (_) {}
+        }
+
+        var asNative = function(fn, label) {
+          if (nativeStrings && typeof fn === 'function') {
+            nativeStrings.set(fn, 'function ' + label + '() { [native code] }');
+          }
+          return fn;
+        };
+
+        var defineVal = function(target, prop, getterOrVal, isGetter, nativeLabel) {
+          try {
+            if (isGetter && nativeLabel) asNative(getterOrVal, 'get ' + nativeLabel);
+            else if (!isGetter && nativeLabel) asNative(getterOrVal, nativeLabel);
+            Object.defineProperty(
+              target,
+              prop,
+              isGetter
+                ? { get: getterOrVal, enumerable: true, configurable: true }
+                : { value: getterOrVal, enumerable: true, configurable: true }
+            );
+            return true;
+          } catch (_) {
+            return false;
+          }
+        };
+
+        var navProto = win.Navigator && win.Navigator.prototype ? win.Navigator.prototype : null;
+        var defineOnNav = function(prop, getter) {
+          asNative(getter, 'get ' + prop);
+          if (!navProto || !defineVal(navProto, prop, getter, true)) {
+            defineVal(nav, prop, getter, true);
+          }
+        };
+
+        var installIframeGuard = function(parentMeta) {
+          try {
+            var IframeProto = win.HTMLIFrameElement && win.HTMLIFrameElement.prototype;
+            if (!IframeProto) return;
+            var cwDesc = Object.getOwnPropertyDescriptor(IframeProto, 'contentWindow');
+            if (cwDesc && typeof cwDesc.get === 'function') {
+              var origCwGet = cwDesc.get;
+              var wrappedCwGet = asNative(function contentWindow() {
+                var childWin = origCwGet.call(this);
+                if (childWin) {
+                  try { patchRealm(childWin, parentMeta); } catch (_) {}
+                }
+                return childWin;
+              }, 'get contentWindow');
+              Object.defineProperty(IframeProto, 'contentWindow', {
+                get: wrappedCwGet,
+                enumerable: cwDesc.enumerable !== false,
+                configurable: true
+              });
+            }
+            var cdDesc = Object.getOwnPropertyDescriptor(IframeProto, 'contentDocument');
+            if (cdDesc && typeof cdDesc.get === 'function') {
+              var origCdGet = cdDesc.get;
+              var wrappedCdGet = asNative(function contentDocument() {
+                var doc = origCdGet.call(this);
+                try {
+                  var childWin = doc && doc.defaultView;
+                  if (childWin) patchRealm(childWin, parentMeta);
+                } catch (_) {}
+                return doc;
+              }, 'get contentDocument');
+              Object.defineProperty(IframeProto, 'contentDocument', {
+                get: wrappedCdGet,
+                enumerable: cdDesc.enumerable !== false,
+                configurable: true
+              });
+            }
+          } catch (_) {}
+        };
+
+        if (nav.webdriver !== false) {
+          defineOnNav('webdriver', function webdriver() { return false; });
+        }
+
+        var rawUa = typeof nav.userAgent === 'string' ? nav.userAgent : '';
+        var isFirefoxCompat = /\\bFirefox\\/[\\d.]+/i.test(rawUa) || Boolean(forcedParentMeta && forcedParentMeta.isFirefoxCompat);
+        var nextParentMeta = { isAuthPage: effectiveAuthPage, isFirefoxCompat: isFirefoxCompat };
+
+        if (isFirefoxCompat && (effectiveAuthPage || effectiveOpaque)) {
+          defineOnNav('userAgentData', function userAgentData() { return undefined; });
+          defineOnNav('vendor', function vendor() { return ''; });
+          defineOnNav('productSub', function productSub() { return '20100101'; });
+          defineOnNav('buildID', function buildID() { return '20181001000000'; });
+          defineOnNav('oscpu', function oscpu() { return FF_OSCPU; });
+          try {
+            if ('chrome' in win) {
+              Object.defineProperty(win, 'chrome', {
+                get: asNative(function chrome() { return undefined; }, 'get chrome'),
+                enumerable: false,
+                configurable: true
+              });
+            }
+          } catch (_) {}
+          installIframeGuard(nextParentMeta);
+          return;
+        }
+
+        var stripped = rawUa
+          .replace(/\\s+Electron\\/[^\\s]+/gi, '')
+          .replace(/\\s+(?:BotArk|BotHub)\\/[^\\s]+/gi, '')
+          .replace(/\\s{2,}/g, ' ')
+          .trim();
+        var cleanUa = /Chrome\\/[\\d.]+/i.test(stripped) ? stripped : FALLBACK_UA;
+        var cleanAppVersion = cleanUa.replace(/^Mozilla\\//, '');
+
+        if (rawUa !== cleanUa) {
+          defineOnNav('userAgent', function userAgent() { return cleanUa; });
+        }
+        var rawAppVersion = typeof nav.appVersion === 'string' ? nav.appVersion : '';
+        if (rawAppVersion !== cleanAppVersion) {
+          defineOnNav('appVersion', function appVersion() { return cleanAppVersion; });
+        }
+        if (typeof nav.vendor === 'string' && nav.vendor !== 'Google Inc.') {
+          defineOnNav('vendor', function vendor() { return 'Google Inc.'; });
+        }
+
+        // Authentic desktop Chrome window.chrome surface (replaces empty { runtime: {} } stub)
+        if (typeof win === 'object' && (!win.chrome || !win.chrome.app)) {
+          try {
+            var perf = win.performance;
+            var navStartMs = perf && typeof perf.timeOrigin === 'number'
+              ? Math.round(perf.timeOrigin)
+              : Date.now();
+            var startSec = navStartMs / 1000;
+            var chromeObj = win.chrome && typeof win.chrome === 'object' ? win.chrome : {};
+            if (!chromeObj.app) {
+              chromeObj.app = {
+                isInstalled: false,
+                InstallState: { DISABLED: 'disabled', INSTALLED: 'installed', NOT_INSTALLED: 'not_installed' },
+                RunningState: { CANNOT_RUN: 'cannot_run', READY_TO_RUN: 'ready_to_run', RUNNING: 'running' },
+                getDetails: asNative(function getDetails() { return null; }, 'getDetails'),
+                getIsInstalled: asNative(function getIsInstalled() { return false; }, 'getIsInstalled'),
+                runningState: asNative(function runningState() { return 'cannot_run'; }, 'runningState')
+              };
+            }
+            if (typeof chromeObj.csi !== 'function') {
+              chromeObj.csi = asNative(function csi() {
+                var elapsed = perf && typeof perf.now === 'function' ? perf.now() : 120;
+                return {
+                  startE: navStartMs,
+                  onloadT: navStartMs + Math.round(elapsed),
+                  pageT: Math.round(elapsed * 1000) / 1000,
+                  tran: 15
+                };
+              }, 'csi');
+            }
+            if (typeof chromeObj.loadTimes !== 'function') {
+              chromeObj.loadTimes = asNative(function loadTimes() {
+                return {
+                  requestTime: startSec,
+                  startLoadTime: startSec,
+                  commitLoadTime: startSec + 0.04,
+                  finishDocumentLoadTime: startSec + 0.12,
+                  finishLoadTime: startSec + 0.18,
+                  firstPaintTime: startSec + 0.09,
+                  firstPaintAfterLoadTime: 0,
+                  navigationType: 'Other',
+                  wasFetchedViaSpdy: true,
+                  wasNpnNegotiated: true,
+                  npnNegotiatedProtocol: 'h2',
+                  wasAlternateProtocolAvailable: false,
+                  connectionInfo: 'h2'
+                };
+              }, 'loadTimes');
+            }
+            if (!chromeObj.runtime) {
+              chromeObj.runtime = {
+                OnInstalledReason: {
+                  CHROME_UPDATE: 'chrome_update',
+                  INSTALL: 'install',
+                  SHARED_MODULE_UPDATE: 'shared_module_update',
+                  UPDATE: 'update'
+                },
+                OnRestartRequiredReason: {
+                  APP_UPDATE: 'app_update',
+                  OS_UPDATE: 'os_update',
+                  PERIODIC: 'periodic'
+                },
+                PlatformArch: {
+                  ARM: 'arm',
+                  ARM64: 'arm64',
+                  MIPS: 'mips',
+                  MIPS64: 'mips64',
+                  X86_32: 'x86-32',
+                  X86_64: 'x86-64'
+                },
+                PlatformNaclArch: {
+                  ARM: 'arm',
+                  MIPS: 'mips',
+                  MIPS64: 'mips64',
+                  X86_32: 'x86-32',
+                  X86_64: 'x86-64'
+                },
+                PlatformOs: {
+                  ANDROID: 'android',
+                  CROS: 'cros',
+                  FUCHSIA: 'fuchsia',
+                  LINUX: 'linux',
+                  MAC: 'mac',
+                  OPENBSD: 'openbsd',
+                  WIN: 'win'
+                },
+                RequestUpdateCheckStatus: {
+                  NO_UPDATE: 'no_update',
+                  THROTTLED: 'throttled',
+                  UPDATE_AVAILABLE: 'update_available'
+                },
+                id: undefined
+              };
+            }
+            Object.defineProperty(win, 'chrome', {
+              value: chromeObj,
+              writable: true,
+              enumerable: true,
+              configurable: true
+            });
+          } catch (_) {}
+        }
+
+        // Standard desktop Chrome built-in PDF plugins when Electron reports an empty PluginArray
+        try {
+          if (nav.plugins && nav.plugins.length === 0) {
+            var PluginProto = win.Plugin && win.Plugin.prototype ? win.Plugin.prototype : Object.prototype;
+            var MimeTypeProto = win.MimeType && win.MimeType.prototype ? win.MimeType.prototype : Object.prototype;
+            var PluginArrayProto = win.PluginArray && win.PluginArray.prototype ? win.PluginArray.prototype : Object.prototype;
+            var MimeTypeArrayProto = win.MimeTypeArray && win.MimeTypeArray.prototype ? win.MimeTypeArray.prototype : Object.prototype;
+
+            var pluginNames = [
+              'PDF Viewer',
+              'Chrome PDF Viewer',
+              'Chromium PDF Viewer',
+              'Microsoft Edge PDF Viewer',
+              'WebKit built-in PDF'
+            ];
+            var mimeSpecs = [
+              { type: 'application/pdf', suffixes: 'pdf', description: 'Portable Document Format' },
+              { type: 'text/pdf', suffixes: 'pdf', description: 'Portable Document Format' }
+            ];
+
+            var pluginsObj = Object.create(PluginArrayProto);
+            var mimeTypesObj = Object.create(MimeTypeArrayProto);
+            var pluginList = [];
+            var mimeList = [];
+
+            for (var p = 0; p < pluginNames.length; p++) {
+              var pluginObj = Object.create(PluginProto);
+              var pMimes = [];
+              for (var m = 0; m < mimeSpecs.length; m++) {
+                var spec = mimeSpecs[m];
+                var mt = Object.create(MimeTypeProto);
+                defineVal(mt, 'type', spec.type, false);
+                defineVal(mt, 'suffixes', spec.suffixes, false);
+                defineVal(mt, 'description', spec.description, false);
+                defineVal(mt, 'enabledPlugin', pluginObj, false);
+                pMimes.push(mt);
+                defineVal(pluginObj, m, mt, false);
+                defineVal(pluginObj, spec.type, mt, false);
+                if (p === 0) {
+                  mimeList.push(mt);
+                  defineVal(mimeTypesObj, m, mt, false);
+                  defineVal(mimeTypesObj, spec.type, mt, false);
+                }
+              }
+              defineVal(pluginObj, 'name', pluginNames[p], false);
+              defineVal(pluginObj, 'filename', 'internal-pdf-viewer', false);
+              defineVal(pluginObj, 'description', 'Portable Document Format', false);
+              defineVal(pluginObj, 'length', pMimes.length, false);
+              defineVal(pluginObj, 'item', (function(arr) { return function item(i) { return arr[i] || null; }; })(pMimes), false, 'item');
+              defineVal(pluginObj, 'namedItem', (function(arr) { return function namedItem(k) { for (var j = 0; j < arr.length; j++) if (arr[j].type === k) return arr[j]; return null; }; })(pMimes), false, 'namedItem');
+              pluginList.push(pluginObj);
+              defineVal(pluginsObj, p, pluginObj, false);
+              defineVal(pluginsObj, pluginNames[p], pluginObj, false);
+            }
+
+            defineVal(pluginsObj, 'length', pluginList.length, false);
+            defineVal(pluginsObj, 'item', function item(i) { return pluginList[i] || null; }, false, 'item');
+            defineVal(pluginsObj, 'namedItem', function namedItem(k) { for (var j = 0; j < pluginList.length; j++) if (pluginList[j].name === k) return pluginList[j]; return null; }, false, 'namedItem');
+            defineVal(pluginsObj, 'refresh', function refresh() {}, false, 'refresh');
+            if (typeof Symbol !== 'undefined' && Symbol.iterator) {
+              Object.defineProperty(pluginsObj, Symbol.iterator, {
+                value: asNative(function values() { return pluginList[Symbol.iterator](); }, 'values'),
+                enumerable: false,
+                configurable: true
+              });
+            }
+
+            defineVal(mimeTypesObj, 'length', mimeList.length, false);
+            defineVal(mimeTypesObj, 'item', function item(i) { return mimeList[i] || null; }, false, 'item');
+            defineVal(mimeTypesObj, 'namedItem', function namedItem(k) { for (var j = 0; j < mimeList.length; j++) if (mimeList[j].type === k) return mimeList[j]; return null; }, false, 'namedItem');
+            if (typeof Symbol !== 'undefined' && Symbol.iterator) {
+              Object.defineProperty(mimeTypesObj, Symbol.iterator, {
+                value: asNative(function values() { return mimeList[Symbol.iterator](); }, 'values'),
+                enumerable: false,
+                configurable: true
+              });
+            }
+
+            defineOnNav('plugins', function plugins() { return pluginsObj; });
+            defineOnNav('mimeTypes', function mimeTypes() { return mimeTypesObj; });
+            defineOnNav('pdfViewerEnabled', function pdfViewerEnabled() { return true; });
+          } else if (nav.pdfViewerEnabled === false) {
+            defineOnNav('pdfViewerEnabled', function pdfViewerEnabled() { return true; });
+          }
+        } catch (_) {}
+
+        // Consistent notification permission state
+        try {
+          if (nav.permissions && typeof nav.permissions.query === 'function' && win.Notification) {
+            var origPermQuery = nav.permissions.query.bind(nav.permissions);
+            var wrappedPermQuery = asNative(function query(params) {
+              if (params && params.name === 'notifications') {
+                return origPermQuery(params).then(function(status) {
+                  if (status && status.state === 'denied' && win.Notification.permission === 'default') {
+                    return Object.create(Object.getPrototypeOf(status), {
+                      state: { get: asNative(function state() { return 'prompt'; }, 'get state'), enumerable: true }
+                    });
+                  }
+                  return status;
+                });
+              }
+              return origPermQuery(params);
+            }, 'query');
+            Object.defineProperty(nav.permissions, 'query', {
+              value: wrappedPermQuery,
+              writable: true,
+              enumerable: true,
+              configurable: true
+            });
+          }
+        } catch (_) {}
+
+        // Non-zero desktop outer dimensions
+        try {
+          if (win.outerWidth === 0 && typeof win.innerWidth === 'number' && win.innerWidth > 0) {
+            Object.defineProperty(win, 'outerWidth', {
+              get: asNative(function outerWidth() { return win.innerWidth; }, 'get outerWidth'),
+              enumerable: true,
+              configurable: true
+            });
+          }
+          if (win.outerHeight === 0 && typeof win.innerHeight === 'number' && win.innerHeight > 0) {
+            Object.defineProperty(win, 'outerHeight', {
+              get: asNative(function outerHeight() { return win.innerHeight + 85; }, 'get outerHeight'),
+              enumerable: true,
+              configurable: true
+            });
+          }
+        } catch (_) {}
+
+        var origUaData = nav.userAgentData;
+        var patchedUaData;
+        try {
+          var protoObj = origUaData && typeof origUaData === 'object' ? Object.getPrototypeOf(origUaData) : Object.prototype;
+          patchedUaData = Object.create(protoObj || Object.prototype);
+        } catch (_) {
+          patchedUaData = {};
+        }
+
+        defineVal(patchedUaData, 'brands', function brands() { return BRANDS.map(function(b) { return { brand: b.brand, version: b.version }; }); }, true, 'brands');
+        defineVal(patchedUaData, 'mobile', function mobile() { return false; }, true, 'mobile');
+        defineVal(patchedUaData, 'platform', function platform() { return UA_PLATFORM; }, true, 'platform');
+        defineVal(patchedUaData, 'toJSON', function toJSON() {
+          return {
+            brands: BRANDS.map(function(b) { return { brand: b.brand, version: b.version }; }),
+            mobile: false,
+            platform: UA_PLATFORM
+          };
+        }, false, 'toJSON');
+        defineVal(patchedUaData, 'getHighEntropyValues', function getHighEntropyValues(requestedHints) {
+          var list = Array.isArray(requestedHints) ? requestedHints : [];
+          var basePromise;
+          try {
+            if (origUaData && typeof origUaData.getHighEntropyValues === 'function') {
+              basePromise = Promise.resolve(origUaData.getHighEntropyValues(list)).catch(function() { return {}; });
+            } else {
+              basePromise = Promise.resolve({});
+            }
+          } catch (_) {
+            basePromise = Promise.resolve({});
+          }
+          return basePromise.then(function(base) {
+            var out = Object.assign({}, base || {}, {
+              brands: BRANDS.map(function(b) { return { brand: b.brand, version: b.version }; }),
+              mobile: false,
+              platform: UA_PLATFORM
+            });
+            if (list.indexOf('architecture') >= 0) out.architecture = UA_ARCH;
+            if (list.indexOf('bitness') >= 0) out.bitness = UA_BITNESS;
+            if (list.indexOf('model') >= 0) out.model = '';
+            if (list.indexOf('platformVersion') >= 0) out.platformVersion = UA_PLATFORM_VER;
+            if (list.indexOf('wow64') >= 0) out.wow64 = false;
+            if (list.indexOf('formFactors') >= 0) out.formFactors = ['Desktop'];
+            if (list.indexOf('fullVersionList') >= 0) {
+              out.fullVersionList = FULL_LIST.map(function(b) { return { brand: b.brand, version: b.version }; });
+            }
+            if (list.indexOf('uaFullVersion') >= 0) {
+              out.uaFullVersion = UA_FULL;
+            }
+            return out;
+          });
+        }, false, 'getHighEntropyValues');
+
+        defineOnNav('userAgentData', function userAgentData() { return patchedUaData; });
+        installIframeGuard(nextParentMeta);
+      } catch (_) {}
+    };
+
+    var rootWin = typeof window !== 'undefined' ? window : (typeof globalThis !== 'undefined' ? globalThis : null);
+    patchRealm(rootWin, null);
   } catch (_) {}
 })();`
 }
@@ -630,7 +1075,7 @@ export function installGoogleOAuthHeaderGuard(
               details.requestHeaders,
               opts?.chromeVersion,
               opts?.platform,
-              { firefoxCompat: firefoxCompatSessions.has(ses) }
+              { firefoxCompat: isGoogleFirefoxCompatMode(ses) && isGoogleAuthHostUrl(details.url) }
             )
           })
         }

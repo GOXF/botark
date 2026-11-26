@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
+import { asObj, str } from '@shared/parse'
 import { EmptyLine, Section } from '@/components/info/Section'
 import { RefreshButton } from '@/components/muse/RefreshButton'
 import { getBridge } from '@/lib/bridge'
@@ -18,14 +19,6 @@ type SharedAgentRow = {
   id: string
   name: string
   state?: string
-}
-
-function asObj(v: unknown): Record<string, unknown> | null {
-  return v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : null
-}
-
-function str(v: unknown): string {
-  return typeof v === 'string' ? v : typeof v === 'number' ? String(v) : ''
 }
 
 function parseCaps(raw: unknown): Caps {
@@ -63,12 +56,17 @@ function parseList(raw: unknown): SharedAgentRow[] {
   for (const row of list.slice(0, 25)) {
     const o = asObj(row)
     if (!o) continue
-    const id = str(o['shared_agent_id'] || o['sharedAgentId'] || o['id'])
+    const rawId = o['shared_agent_id'] || o['sharedAgentId'] || o['id']
+    if (typeof rawId !== 'string' && typeof rawId !== 'number') continue
+    const id = str(rawId)
     if (!id) continue
+    const rawName = o['display_name'] || o['displayName'] || o['name'] || id
+    const rawState = o['state'] || o['status']
+    const state = typeof rawState === 'string' || typeof rawState === 'number' ? str(rawState) : undefined
     out.push({
       id,
-      name: str(o['display_name'] || o['displayName'] || o['name'] || id),
-      state: str(o['state'] || o['status']) || undefined
+      name: typeof rawName === 'string' || typeof rawName === 'number' ? str(rawName) : '',
+      state: state || undefined
     })
   }
   return out

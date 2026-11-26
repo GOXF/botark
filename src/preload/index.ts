@@ -10,6 +10,7 @@ import {
   ANTIGRAVITY_CHANNELS,
   CUE_CHANNELS,
   DOT_CHANNELS,
+  DS_BOT_CHANNELS,
   GROK_CHANNELS,
   HARK_CHANNELS,
   HERMES_CHANNELS,
@@ -20,6 +21,7 @@ import {
   type AntigravityMainEvent,
   type CueMainEvent,
   type DotMainEvent,
+  type DsBotMainEvent,
   type GrokMainEvent,
   type HarkMainEvent,
   type HermesMainEvent,
@@ -108,7 +110,8 @@ const bridge: BotHubBridge = {
     assignProxyPool: (accountIds, keepIds, limit) =>
       ipcRenderer.invoke(MUSE_CHANNELS.assignProxyPool, accountIds, keepIds, limit),
     testProxy: (target) => ipcRenderer.invoke(MUSE_CHANNELS.testProxy, target),
-    getSystemProxy: () => ipcRenderer.invoke(MUSE_CHANNELS.getSystemProxy)
+    getSystemProxy: () => ipcRenderer.invoke(MUSE_CHANNELS.getSystemProxy),
+    testProxyPool: (ids) => ipcRenderer.invoke(MUSE_CHANNELS.testProxyPool, ids)
   },
   updates: {
     check: () => ipcRenderer.invoke(UPDATE_CHANNELS.check),
@@ -243,6 +246,7 @@ const bridge: BotHubBridge = {
   antigravity: {
     openLogin: (request) => ipcRenderer.invoke(ANTIGRAVITY_CHANNELS.openLogin, request),
     cancelLogin: (accountId) => ipcRenderer.invoke(ANTIGRAVITY_CHANNELS.cancelLogin, accountId),
+    importCredentials: (request) => ipcRenderer.invoke(ANTIGRAVITY_CHANNELS.importCredentials, request),
     clearAuth: (accountId) => ipcRenderer.invoke(ANTIGRAVITY_CHANNELS.clearAuth, accountId),
     authStatus: (accountId) => ipcRenderer.invoke(ANTIGRAVITY_CHANNELS.authStatus, accountId),
     sendMessage: (request) => ipcRenderer.invoke(ANTIGRAVITY_CHANNELS.sendMessage, request),
@@ -266,6 +270,19 @@ const bridge: BotHubBridge = {
       const handler = (_event: unknown, payload: CueMainEvent) => listener(payload)
       ipcRenderer.on(CUE_CHANNELS.event, handler)
       return () => ipcRenderer.removeListener(CUE_CHANNELS.event, handler)
+    }
+  },
+  dsBot: {
+    configure: (request) => ipcRenderer.invoke(DS_BOT_CHANNELS.configure, request),
+    detectLocal: () => ipcRenderer.invoke(DS_BOT_CHANNELS.detectLocal),
+    authStatus: (accountId) => ipcRenderer.invoke(DS_BOT_CHANNELS.authStatus, accountId),
+    listAccounts: () => ipcRenderer.invoke(DS_BOT_CHANNELS.listAccounts),
+    clearAuth: (accountId) => ipcRenderer.invoke(DS_BOT_CHANNELS.clearAuth, accountId),
+    rpc: (request) => ipcRenderer.invoke(DS_BOT_CHANNELS.rpc, request),
+    onEvent: (listener) => {
+      const handler = (_event: unknown, payload: DsBotMainEvent) => listener(payload)
+      ipcRenderer.on(DS_BOT_CHANNELS.event, handler)
+      return () => ipcRenderer.removeListener(DS_BOT_CHANNELS.event, handler)
     }
   },
   slack: {

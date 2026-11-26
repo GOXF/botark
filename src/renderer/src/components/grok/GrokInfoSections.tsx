@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ComponentType } from 'react'
 import type { GrokServiceId } from '@shared/ipc'
+import { asObj, str } from '@shared/parse'
 import { adapterRegistry } from '@adapters/registry'
 import { EmptyLine, Section } from '@/components/info/Section'
 import { Button } from '@/components/ui/Button'
@@ -47,14 +48,6 @@ function scopeInspector<Props extends { accountId: string; agentId?: string; con
     const scopedProps = { ...props, connected } as Props
     return <Inspector key={JSON.stringify([props.accountId, props.agentId, identity, connected])} {...scopedProps} />
   }
-}
-
-function asObj(v: unknown): Record<string, unknown> | null {
-  return v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : null
-}
-
-function str(v: unknown): string {
-  return typeof v === 'string' ? v : v == null ? '' : String(v)
 }
 
 /**

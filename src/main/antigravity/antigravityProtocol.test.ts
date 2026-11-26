@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
+  ANTIGRAVITY_COOKIE_ORIGINS,
   ANTIGRAVITY_ORIGIN,
+  antigravityAuthUserFromUrl,
   buildSapisidAuthHeader,
   buildSendUserCascadeMessageReq,
   buildStartCascadeReq,
@@ -20,13 +22,29 @@ import {
   parseUserProfile,
   type AntigravityParsedStep
 } from './antigravityProtocol'
+import { ANTIGRAVITY_AUTH_USER_HOST } from './antigravityClient'
 
-const fetchRpc = vi.hoisted(() => vi.fn<(_url: string, _opts: RequestInit) => Promise<Response>>())
+const { fetchRpc, getUserAgent, setUserAgent, getCookies, savedAuthUsers } = vi.hoisted(() => ({
+  fetchRpc: vi.fn<(_url: string, _opts: RequestInit) => Promise<Response>>(),
+  getUserAgent: vi.fn(() => ''),
+  setUserAgent: vi.fn(),
+  getCookies: vi.fn(async (_filter: { url: string }) => [{ name: 'SAPISID', value: 'fixture-cookie' }]),
+  savedAuthUsers: new Map<string, { name: string; value: string }>()
+}))
 vi.mock('electron', () => ({
-  session: { fromPartition: () => ({
+  session: { fromPartition: (partition: string) => ({
     fetch: fetchRpc,
-    getUserAgent: () => '', setUserAgent: () => undefined,
-    cookies: { get: async () => [{ name: 'SAPISID', value: 'fixture-cookie' }] }
+    getUserAgent, setUserAgent,
+    cookies: {
+      get: async (filter: { url: string }) => {
+        if (new URL(filter.url).hostname !== ANTIGRAVITY_AUTH_USER_HOST) return getCookies(filter)
+        const saved = savedAuthUsers.get(partition)
+        return saved ? [saved] : []
+      },
+      set: async (details: { name: string; value: string }) => {
+        savedAuthUsers.set(partition, { name: details.name, value: details.value })
+      }
+    }
   }) }
 }))
 vi.mock('../muse/accountProxy', () => ({ applyProxyToPartition: async () => undefined }))
@@ -74,6 +92,24 @@ describe('antigravityProtocol auth & URL helpers', () => {
     expect(cleaned).not.toContain('Electron/')
     expect(cleaned).not.toContain('BotArk/')
     expect(cleaned).toContain('Chrome/136.0.0.0')
+  })
+
+  it.each([
+    ['win32', 'Windows NT 10.0; Win64; x64'],
+    ['darwin', 'Macintosh; Intel Mac OS X 10_15_7'],
+    ['linux', 'X11; Linux x86_64']
+  ] as const)('uses desktop Chrome on %s when Firefox compatibility is active', (platform, os) => {
+    const ua = cleanAntigravityChromeUserAgent('Mozilla/5.0 Gecko/20100101 Firefox/140.0', '147.0.0.0', platform)
+    expect(ua).toContain(`(${os})`)
+    expect(ua).toContain('Chrome/147.0.0.0')
+    expect(ua).not.toContain('Firefox')
+  })
+
+  it('reads numeric Google account indices only on Antigravity URLs', () => {
+    expect(antigravityAuthUserFromUrl(`${ANTIGRAVITY_ORIGIN}/?authuser=2`)).toBe('2')
+    expect(antigravityAuthUserFromUrl(`${ANTIGRAVITY_ORIGIN}/u/1/`)).toBe('1')
+    expect(antigravityAuthUserFromUrl(`${ANTIGRAVITY_ORIGIN}/?authuser=test@example.com`)).toBeUndefined()
+    expect(antigravityAuthUserFromUrl('https://example.com/?authuser=2')).toBeUndefined()
   })
 })
 
@@ -150,6 +186,17 @@ describe('antigravityProtocol JSPB builders & parsers', () => {
       stepCount: 12,
       statusLabel: 'idle'
     })
+  })
+
+  it('requires a recognizable user profile when the email is absent', () => {
+    expect(parseUserProfile([null, ['pro', 'Google AI Pro']])).toEqual({
+      email: undefined,
+      planId: 'pro',
+      planDisplayName: 'Google AI Pro'
+    })
+    expect(parseUserProfile(['', []])).toBeNull()
+    expect(parseUserProfile([0, 'OK'])).toBeNull()
+    expect(parseUserProfile({})).toBeNull()
   })
 
   it('merges trajectory steps and extracts transcript & live turn progress', () => {
@@ -247,6 +294,59 @@ describe('JspbStreamBodyParser', () => {
     const oversized = new JspbStreamBodyParser(16)
     oversized.push('[[["partial')
     expect(() => oversized.push(' frame spilling over the limit')).toThrow('size limit')
+  })
+})
+
+describe('Antigravity session probing', () => {
+  afterEach(() => {
+    fetchRpc.mockReset()
+    getUserAgent.mockReset()
+    setUserAgent.mockReset()
+    getCookies.mockReset()
+    savedAuthUsers.clear()
+  })
+
+  it.each(ANTIGRAVITY_COOKIE_ORIGINS)('reads auth cookies scoped to %s without changing the session User-Agent', async (origin) => {
+    const { probeAntigravitySession } = await import('./antigravityClient')
+    getUserAgent.mockReturnValue('Mozilla/5.0 Gecko/20100101 Firefox/140.0')
+    getCookies.mockImplementation(async (filter) =>
+      filter.url === origin ? [{ name: 'SAPISID', value: 'origin-only-cookie' }] : []
+    )
+    fetchRpc.mockResolvedValueOnce(Response.json(['test@example.com']))
+
+    await expect(probeAntigravitySession('scoped-cookies')).resolves.toMatchObject({ signedIn: true })
+
+    const headers = new Headers(fetchRpc.mock.lastCall?.[1].headers)
+    expect(headers.get('Authorization')).toMatch(/^SAPISIDHASH /)
+    expect(headers.get('User-Agent')).toContain('Chrome/')
+    expect(headers.get('User-Agent')).not.toContain('Firefox/')
+    expect(setUserAgent).not.toHaveBeenCalled()
+    expect(fetchRpc.mock.lastCall?.[1]).toMatchObject({ credentials: 'include', redirect: 'error' })
+  })
+
+  it('tries the second account after an unauthorized first account and uses the verified index for subsequent RPCs', async () => {
+    const { callAntigravityRpc, probeAntigravitySession } = await import('./antigravityClient')
+    fetchRpc
+      .mockResolvedValueOnce(Response.json([16, 'Unauthenticated'], { status: 401 }))
+      .mockResolvedValueOnce(Response.json([null, ['pro', 'Google AI Pro']]))
+      .mockResolvedValueOnce(Response.json([]))
+
+    await expect(probeAntigravitySession('multi-account')).resolves.toMatchObject({
+      signedIn: true, profile: { planId: 'pro' }
+    })
+    await callAntigravityRpc('multi-account', 'ListAvailableModels')
+    expect(fetchRpc.mock.calls.map(([, request]) => new Headers(request.headers).get('X-Goog-AuthUser'))).toEqual(['0', '1', '1'])
+  })
+
+  it('preserves an explicitly selected account even if another index might sign in', async () => {
+    const { probeAntigravitySession } = await import('./antigravityClient')
+    fetchRpc.mockResolvedValueOnce(Response.json([]))
+
+    await expect(probeAntigravitySession('explicit-account', '3')).resolves.toMatchObject({
+      signedIn: false, reason: 'unauthorized', message: expect.stringContaining('未返回可验证的用户资料')
+    })
+    expect(fetchRpc).toHaveBeenCalledOnce()
+    expect(new Headers(fetchRpc.mock.lastCall?.[1].headers).get('X-Goog-AuthUser')).toBe('3')
   })
 })
 

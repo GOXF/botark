@@ -6,7 +6,8 @@ import { cn } from '@/lib/cn'
 import { getBridge } from '@/lib/bridge'
 import { getBotAccounts } from '@/lib/selectors'
 import { useConversationTitles } from '@/services/workspaceSync'
-import { harkHistory, useBotStore } from '@/store/botStore'
+import { useBotStore } from '@/store/botStore'
+import { harkHistory } from '@/store/historyNormalizers'
 import type { Bot, ChatMessage } from '@/types'
 
 /**

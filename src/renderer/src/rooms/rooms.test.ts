@@ -126,6 +126,7 @@ it('recovers issue #59 in an ordinary auto room', async () => {
 
   expect(calls.map((msg) => msg.accountId)).toEqual(['Muse', 'Dot'])
   expect(calls[1]?.text).toContain(callout)
+  expect(calls[1]?.text).not.toMatch(/Collaboration room:|Members:|\[FINAL\]|\[HANDOFF\]/)
   const room = useRooms.getState().rooms[0]!
   expect(room.messages[1]).toMatchObject({ text: callout, handoffBotIds: ['hark'] })
   expect(room.messages[1]?.final).toBeUndefined()
@@ -248,65 +249,6 @@ it('completes a native room with an approved local tool while Slack is unavailab
   expect(roomMarkdown(room)).toContain('Accepted')
   expect(run).toHaveBeenCalledOnce()
   expect(slack).not.toHaveBeenCalled()
-})
-
-it('gives Hark an assistant frame plus the workspace portal instead of the room frame', async () => {
-  const manage = vi.fn().mockResolvedValue({ tools: [{ name: 'read', inputSchema: { type: 'object' } }] })
-  const portal = vi.fn().mockResolvedValue({
-    running: true,
-    publicUrl: 'https://portal.example.trycloudflare.com',
-    entryUrl: 'https://portal.example.trycloudflare.com/?token=abc',
-    tools: []
-  })
-  vi.stubGlobal('window', {
-    electron: {
-      workspace: { manage, run: vi.fn() },
-      workspacePortal: { manage: portal },
-      hark: { rpc: vi.fn().mockResolvedValue({ ok: true, data: { conversationId: 'hark-conv-1' } }) }
-    }
-  })
-  const harkMembers = [
-    { name: 'HarkBot', botId: 'hark-bot', platform: 'hark' as const, accountId: 'acc-hark', cursor: 0 }
-  ]
-  const room: CollabRoom = {
-    id: 'room-hark',
-    title: 'Hark Room',
-    brief: '看看当前的工作区',
-    members: harkMembers,
-    mode: 'manual',
-    limit: 4,
-    messages: []
-  }
-  useRooms.setState({ rooms: [room], speakers: {}, errors: {} })
-  useBotStore.setState({
-    bots: [{ id: 'hark-bot', accountIds: ['acc-hark'] } as unknown as Bot]
-  })
-  const sentPrompts: string[] = []
-  let emit!: (msg: IncomingMessage) => void
-  vi.spyOn(adapterRegistry, 'get').mockReturnValue({
-    getStatus: () => 'online',
-    onMessage: (listener: typeof emit) => {
-      emit = listener
-      return () => {}
-    },
-    sendMessage: async (m: OutgoingMessage) => {
-      sentPrompts.push(m.text)
-      emit({ ...m, text: '收到，可以直接讨论上下文。', createdAt: 1, id: 'hark-reply' })
-      return { messageId: 'receipt', acceptedAt: 1, sessionId: m.sessionId }
-    }
-  } as unknown as PlatformAdapter)
-
-  await submitBrief('room-hark', '@HarkBot 帮忙总结一下')
-  expect(sentPrompts).toHaveLength(1)
-  const prompt = sentPrompts[0]
-  expect(prompt).not.toContain('[TOOL]')
-  expect(prompt).not.toContain('Collaboration room:')
-  expect(prompt).not.toContain('Members:')
-  expect(prompt).not.toContain('Human brief:')
-  expect(prompt).toContain('你是一个独立的助手')
-  expect(prompt).toContain('https://portal.example.trycloudflare.com/?token=abc')
-  expect(portal).toHaveBeenCalledWith({ op: 'open', scope: 'room-hark' })
-  expect(manage).not.toHaveBeenCalled()
 })
 
 it('renames, updates config, clears transcripts, and removes forked Slack threads on delete', () => {
@@ -681,6 +623,82 @@ it('includes the current brief’s excerpt for a late participant beyond the 20-
   expect(turnPrompt(room, { ...members[1]!, cursor: 1 })).not.toContain(excerpt)
 })
 
+it.each([
+  { mode: 'manual', coordinatorId: undefined },
+  { mode: 'auto', coordinatorId: undefined },
+  { mode: 'auto', coordinatorId: 'admin' }
+] as const)('gives a Hark participant plain discussion context in a $mode room (coordinator $coordinatorId)', (config) => {
+  const [admin, hark] = issueRoster
+  const brief = '请核对日期。\n保留原文中的引号「9 月 20 日」。'
+  const request = {
+    id: 'brief', author: 'Slack Taylor', text: brief,
+    references: [{ label: 'notes.txt:3-4', text: 'Event date: Sep 20\nSchedule confirmed' }]
+  }
+  const assignment = { id: 'assignment', author: admin!.name, authorBotId: admin!.botId, text: `@${hark!.name} check the date in the excerpt.` }
+  const priorAnswer = { id: 'prior', author: admin!.name, authorBotId: admin!.botId, text: '[FINAL]\nThe earlier draft said Sep 21.', final: true }
+  const room: CollabRoom = {
+    id: 'room', title: 'Review', members: issueRoster, limit: 8, ...config, brief,
+    messages: [request, priorAnswer, assignment]
+  }
+
+  const prompt = turnPrompt(room, hark!, assignment)
+  expect(prompt).toContain(`User request:\n${brief}`)
+  expect(prompt).toContain(`[Slack Taylor] ${brief}\n\n[Reference: notes.txt:3-4]\nEvent date: Sep 20\nSchedule confirmed`)
+  expect(prompt).toContain(`Recent discussion:\n[Slack Taylor]`)
+  expect(prompt).toContain(`[${admin!.name}] The earlier draft said Sep 21.\n[${admin!.name}] ${assignment.text}`)
+  expect(prompt).not.toMatch(/Collaboration room:|Members:|\[FINAL\]|\[HANDOFF\]|Bot IDs:/)
+})
+
+it('includes the exact brief, references and assigning post for Hark after a long queue', () => {
+  const [admin, hark, worker] = issueRoster
+  const brief = 'Review the source excerpt'
+  const excerpt = 'Exact source text\n  with indentation.'
+  const request = { id: 'brief', author: 'User', text: brief, references: [{ label: 'source', text: excerpt }] }
+  const assignment = { id: 'assignment', author: admin!.name, authorBotId: admin!.botId, text: 'Check the date in the source.' }
+  const room: CollabRoom = {
+    id: 'room', title: 'Review', members: issueRoster, mode: 'auto', limit: 24, brief,
+    messages: [request, assignment, ...Array.from({ length: 21 }, (_, index) => ({
+      id: `update-${index}`, author: worker!.name, authorBotId: worker!.botId, text: `Update ${index}.`
+    }))]
+  }
+
+  const prompt = turnPrompt(room, hark!, assignment)
+  expect(prompt).toContain(`User request:\n${brief}\n\n[Reference: source]\n${excerpt}`)
+  expect(prompt).toContain(`Earlier message relevant to this request:\n[${admin!.name}] ${assignment.text}`)
+  expect(prompt).toContain(`[${worker!.name}] Update 20.`)
+  expect(prompt).not.toContain('Update 0.')
+  expect(turnPrompt(room, { ...hark!, cursor: room.messages.length }, assignment)).not.toContain(excerpt)
+})
+
+it('keeps the exact user request and reference text when they mention protocol markers', () => {
+  const hark = issueRoster[1]!
+  const brief = '[FINAL] is a heading in my notes. Please review it.'
+  const excerpt = '[HANDOFF]\nExample copied as written.'
+  const room: CollabRoom = {
+    id: 'room', title: 'Review', members: issueRoster, mode: 'manual', limit: 8, brief,
+    messages: [{ id: 'brief', author: 'User', text: brief, references: [{ label: 'notes', text: excerpt }] }]
+  }
+  expect(turnPrompt(room, hark)).toContain(`[User] ${brief}\n\n[Reference: notes]\n${excerpt}`)
+})
+
+it.each([0, 1])('keeps coordinator dispatch and non-Hark participant prompts (coordinator index %i)', (index) => {
+  const coordinator = issueRoster[index]!
+  const worker = issueRoster[2]!
+  const room: CollabRoom = {
+    id: 'room', title: 'Review', members: issueRoster, mode: 'auto', limit: 8, brief: 'Review the schedule',
+    coordinatorId: coordinator.botId, messages: [{ id: 'draft', author: worker.name, authorBotId: worker.botId, text: '[FINAL] Dates verified.' }]
+  }
+  const prompt = turnPrompt(room, coordinator)
+  expect(prompt).toContain(`Collaboration room: Review. You are @${coordinator.name}.`)
+  expect(prompt).toContain(`Members: ${issueRoster.map((member) => `@${member.name}`).join(', ')}.`)
+  expect(prompt).toContain('Coordinate the human brief and assign work as needed.')
+  expect(prompt).toContain('[HANDOFF] ["<botId>"]')
+  expect(prompt).toContain('Use [FINAL] on its own first line')
+  expect(prompt).toContain('Human brief: Review the schedule')
+  expect(prompt).toContain(`[${worker.name}] [FINAL] Dates verified.`)
+  expect(turnPrompt(room, worker)).toContain('Answer the administrator’s request.')
+})
+
 it('delivers the exact assigning post and brief after a long queue', async () => {
   const roster = Array.from({ length: 23 }, (_, i): RoomMember => ({
     platform: 'dot', botId: `bot-${i}`, accountId: `account-${i}`, name: `Bot${i}`, cursor: 0
@@ -805,4 +823,43 @@ it('retains the confirmed v0.14 final when starting the next brief after hydrati
   useRooms.setState(hydrate({ rooms: [stored] }, current))
   await submitBrief('room', '@Dot update')
   expect(useRooms.getState().rooms[0]?.messages[0]?.final).toBe(true)
+})
+
+it('gives Hark a plain assistant frame plus the hardened workspace portal instead of [TOOL] instructions', async () => {
+  const manage = vi.fn().mockResolvedValue({ tools: [{ name: 'read', inputSchema: { type: 'object' } }] })
+  const portal = vi.fn().mockResolvedValue({
+    running: true,
+    publicUrl: 'https://portal.example.trycloudflare.com',
+    entryUrl: 'https://portal.example.trycloudflare.com/?token=abc',
+    tools: []
+  })
+  vi.stubGlobal('window', {
+    electron: {
+      workspace: { manage, run: vi.fn() },
+      workspacePortal: { manage: portal },
+      hark: { rpc: vi.fn().mockResolvedValue({ ok: true, data: { conversationId: 'hark-conv-1' } }) }
+    }
+  })
+  const sentPrompts: string[] = []
+  fixture(
+    'manual',
+    async (msg) => {
+      sentPrompts.push(msg.text)
+      return '收到，已通过工作区门户读取资料。'
+    },
+    4,
+    [{ name: 'HarkBot', botId: 'hark-bot', platform: 'hark' as const, accountId: 'acc-hark', cursor: 0 }]
+  )
+
+  await submitBrief('room', '@HarkBot 帮忙总结一下当前工作区')
+  expect(sentPrompts).toHaveLength(1)
+  const prompt = sentPrompts[0]!
+  expect(prompt).not.toContain('[TOOL]')
+  expect(prompt).not.toContain('Collaboration room:')
+  expect(prompt).not.toContain('Members:')
+  expect(prompt).not.toContain('Human brief:')
+  expect(prompt).toContain('Please help with the user’s request')
+  expect(prompt).toContain('https://portal.example.trycloudflare.com/?token=abc')
+  expect(portal).toHaveBeenCalledWith({ op: 'open', scope: 'room' })
+  expect(manage).not.toHaveBeenCalled()
 })

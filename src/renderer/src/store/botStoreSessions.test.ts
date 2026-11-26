@@ -2,9 +2,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { HermesAdapter } from '@adapters/hermes/HermesAdapter'
 import { adapterRegistry } from '@adapters/registry'
 import type { PlatformAdapter, PlatformId, SendReceipt } from '@adapters/types'
-import type { Bot, BotAccount, ChatMessage } from '@/types'
-import { flushWorkspacePersistence, useBotStore } from './botStore'
+import type { Bot, BotAccount, ChatMediaPart, ChatMessage } from '@/types'
+import { disambiguateGrokBotName, grokNamesForOtherAccounts, materializeAccounts, newCueBotName, syncedCueBotName, uniqueGroupName } from './botNaming'
+import { cancelPlatformTurn, flushWorkspacePersistence, poolAccountIds, PROXY_POOL_PLATFORMS, proxyPoolArgsForAccounts, uniqueBotName, useBotStore } from './botStore'
 import { SEND_HARD_TIMEOUT_MS, SEND_STILL_PENDING_TEXT, SEND_TIMEOUT_TEXT } from './delivery'
+import {
+  antigravityHistory, cueHistory, dotHistory, grokHistory, harkHistory, hermesHistory, mergeHydratedMessages,
+  mergeIncomingReply, mergeReplyDelta, museHistory, sameChatMessage
+} from './historyNormalizers'
 
 function deferred<T>() {
   let resolve!: (value: T) => void
@@ -30,8 +35,8 @@ const bot: Bot = {
 }
 
 const row = (id: string) => ({ id, role: 'user', text: id, createdAt: 1 })
-const hermesHistory = (id: string) => ({ ok: true, data: [row(id)] })
-const grokHistory = (id: string) => ({ ok: true, data: { hydrated: [row(id)] } })
+const hermesHistoryResponse = (id: string) => ({ ok: true, data: [row(id)] })
+const grokHistoryResponse = (id: string) => ({ ok: true, data: { hydrated: [row(id)] } })
 const store = useBotStore.getState
 
 function mockHermesSend(sendMessage: PlatformAdapter['sendMessage']) {
@@ -46,6 +51,210 @@ const chatMessage = (id: string, patch: Partial<ChatMessage> = {}): ChatMessage 
 })
 const connected = (platformId: PlatformId, id = bot.activeAccountId): BotAccount => ({
   id, platformId, displayName: id, handle: '', status: 'online'
+})
+
+describe('bot naming', () => {
+  it('uses case-insensitive suffixes and keeps the group and bot whitespace rules', () => {
+    const groups = [{ id: 'group-a', name: 'NEW SECTION' }, { id: 'group-b', name: ' New section 2 ' }]
+    expect(uniqueGroupName(groups)).toBe('New section 2')
+    expect(uniqueBotName([{ name: ' BOT ' }, { name: 'bot 2' }], '   ')).toBe('Bot 3')
+  })
+
+  it('qualifies cross-account Grok names against the current batch', () => {
+    const bots: Bot[] = [
+      { ...bot, platformId: 'grok', accountIds: ['other-account'], name: ' Editor ' },
+      { ...bot, platformId: 'grok', name: 'Local' }
+    ]
+    const otherNames = grokNamesForOtherAccounts(bots, 'account-a')
+    expect(disambiguateGrokBotName(bots, ' Local ', otherNames, 'work')).toBe('Local')
+    expect(disambiguateGrokBotName(bots, 'Editor', otherNames, 'work')).toBe('Editor (work)')
+    bots.push({ ...bot, platformId: 'grok', name: 'EDITOR (WORK)' })
+    expect(disambiguateGrokBotName(bots, 'Editor', otherNames, 'work')).toBe('Editor (work) 2')
+  })
+
+  it('names new and upgraded Cue bots while preserving custom names', () => {
+    const placeholder = { name: 'Cue · work', selectedAgentId: 'cue_default_account-a' }
+    const agent = { id: 'editor', name: ' Editor ' }
+    expect(newCueBotName([placeholder], ' Cue Bot ', 'work')).toBe('Cue · work 2')
+    expect(syncedCueBotName([{ name: 'cue · editor (work)' }], placeholder, agent, 'work')).toBe('Cue · Editor (work) 2')
+    expect(syncedCueBotName([], { ...placeholder, name: 'Custom' }, agent, 'work')).toBe('Custom')
+  })
+
+  it('reuses account partitions and assigns a platform name to unnamed drafts with a partition', () => {
+    const existing = connected('dot', 'existing')
+    const draft = { displayName: ' ', handle: ' ', accountId: existing.id }
+    const result = materializeAccounts('dot', [
+      { ...draft, key: 'first' },
+      { ...draft, key: 'duplicate' },
+      { ...draft, key: 'blank', accountId: undefined },
+      { ...draft, key: 'new', accountId: 'partition', importKey: 'fingerprint' }
+    ], { [existing.id]: existing })
+    expect(result).toEqual({
+      ids: ['existing', 'partition'],
+      created: { partition: { id: 'partition', platformId: 'dot', displayName: 'Dot', handle: '', status: 'offline', importKey: 'fingerprint' } }
+    })
+  })
+
+  it('preserves existing proxy slots during targeted assignment', () => {
+    const accounts = { dot: connected('dot', 'dot'), muse: connected('meta-muse', 'muse'), hermes: connected('hermes', 'hermes') }
+    expect([...PROXY_POOL_PLATFORMS]).toEqual(['meta-muse', 'grok', 'dot', 'hark', 'antigravity', 'cue'])
+    expect(poolAccountIds(accounts)).toMatchObject({ assignableIds: ['muse', 'dot'], keepIds: ['dot', 'hermes'] })
+    expect(proxyPoolArgsForAccounts(accounts, ['dot', 'new', 'dot', 'hermes'])).toEqual({
+      accountIds: ['dot', 'new'], keepIds: ['muse', 'hermes']
+    })
+  })
+})
+
+describe('history normalizers', () => {
+  const { id: botId, activeAccountId: accountId } = bot
+  const media: ChatMediaPart[] = [{ kind: 'image', path: 'image' }]
+  const tools: NonNullable<ChatMessage['tools']> = [{ id: 'tool', name: 'Search', status: 'completed' }]
+
+  it('maps Hark content, narration, and tool calls with stable role-specific IDs', () => {
+    const messages = harkHistory({ messages: [
+      { id: 'ask', role: 'USER', content: '  question ', createdAt: 0 },
+      { id: 'blank', role: 'assistant', content: ' ' },
+      { id: 'reply', role: 'assistant', narration: 'Searching', media, createdAt: '2026-01-01T00:00:00Z',
+        toolCalls: [{ dispatchId: 'tool', name: 'Search', status: 'failed' }] },
+      { id: 'thought', role: 'assistant', thought: 'x'.repeat(145), createdAt: 1 }
+    ] }, botId, accountId)
+    expect(messages).toMatchObject([
+      { id: 'hark_u_ask', role: 'user', text: 'question', createdAt: 0, delivery: 'sent' },
+      { id: 'hark_reply', role: 'bot', text: '', media, createdAt: Date.UTC(2026, 0, 1),
+        tools: [{ id: 'tool', name: 'Search', status: 'errored', summary: 'Searching' }] }
+    ])
+    // GOXF: Hark's private "thought" is never shown (Hark's web app hides it too), so a thought-only row is dropped.
+    expect(messages.some((m) => m.id === 'hark_thought')).toBe(false)
+  })
+
+  it('normalizes Dot prefixes and retains media-only rows', () => {
+    const messages = dotHistory([
+      { id: 'dot_dot_u_ask', role: 'user', text: ' question ', createdAtMs: 1 },
+      { id: 'dot_u_dot_reply', role: 'bot', text: ' ', createdAtMs: 2, media },
+      { id: 'blank', role: 'bot', text: ' ' }
+    ], botId, accountId)
+    expect(messages).toMatchObject([
+      { id: 'dot_u_ask', role: 'user', text: 'question', createdAt: 1, delivery: 'sent' },
+      { id: 'dot_reply', role: 'bot', text: '', createdAt: 2, media }
+    ])
+  })
+
+  it('keeps Cue zero timestamps and filters invalid rows', () => {
+    const messages = cueHistory([
+      null,
+      { id: 7, role: 'user', text: 'invalid' },
+      { id: 'unknown-role', role: 'assistant', text: 'invalid' },
+      { id: 'blank', role: 'bot', text: ' ' },
+      { id: 'valid', role: 'user', text: ' question ', createdAtMs: 0 }
+    ], botId, accountId, 'agent')
+    expect(messages).toEqual([
+      { id: 'valid', botId, accountId, agentId: 'agent', role: 'user', text: 'question', createdAt: 0, delivery: 'sent' }
+    ])
+  })
+
+  it('distinguishes missing Grok history from an empty transcript and preserves row coercions', () => {
+    expect(grokHistory({}, botId, accountId, 'agent')).toBeUndefined()
+    expect(grokHistory({ hydrated: [] }, botId, accountId, 'agent')).toEqual([])
+    expect(grokHistory({ hydrated: [{ role: 'user', text: false, createdAt: '20', media, tools: [] }] }, botId, accountId, 'agent')).toEqual([
+      { id: 'grok_h_0', botId, accountId, agentId: 'agent', role: 'user', text: 'false', createdAt: 20,
+        delivery: 'sent', media, tools: [] }
+    ])
+  })
+
+  it('keeps the distinct Muse, Hermes, and Antigravity attachment fields', () => {
+    const message = { id: 'reply', text: ' reply ', createdAt: 0, media, tools }
+    expect(museHistory([{ ...message, role: 'bot', widgets: [] }], botId, accountId)).toMatchObject([
+      { ...message, role: 'bot', widgets: [] }
+    ])
+    const rows = [{ ...message, role: 'assistant' }]
+    expect(hermesHistory(rows, botId, accountId)).toMatchObject([{ ...message, role: 'bot' }])
+    expect(antigravityHistory({ messages: rows }, botId, accountId)).toEqual([
+      { id: 'reply', botId, accountId, role: 'bot', text: ' reply ', createdAt: 0, delivery: undefined, tools }
+    ])
+  })
+
+  it('keeps an in-flight send ID and hydrates a live placeholder with a legacy Dot ID', () => {
+    const pending = chatMessage('msg_pending', { text: ' question ', delivery: 'no-reply', error: SEND_STILL_PENDING_TEXT })
+    const live = chatMessage('dot_dot_reply', { role: 'bot', text: '[消息内容较大…]', createdAt: 10, media })
+    const otherAccount = chatMessage('other', { accountId: 'another-account' })
+    const existing = [pending, live, otherAccount]
+    const hydrated = [
+      chatMessage('stored', { text: 'question', createdAt: 2, delivery: 'sent' }),
+      chatMessage('dot_reply', { role: 'bot', text: 'hydrated reply', createdAt: 11 })
+    ]
+    expect(mergeHydratedMessages(existing, [])).toBe(existing)
+    expect(mergeHydratedMessages(existing, hydrated, [pending, otherAccount])).toMatchObject([
+      { id: 'msg_pending', text: 'question', createdAt: 2, delivery: 'no-reply', error: SEND_STILL_PENDING_TEXT },
+      { id: 'dot_reply', text: 'hydrated reply', createdAt: 10, media }
+    ])
+  })
+
+  it('merges media by path and detects a shallowly identical final reply', () => {
+    const previous = chatMessage('reply', { role: 'bot', text: 'streamed', media: [{ kind: 'file', path: 'image', name: 'Original' }] })
+    const incoming = { id: 'reply', conversationId: botId, accountId, text: '[Message body omitted]', createdAt: 2,
+      media: [{ kind: 'image' as const, path: 'image', name: 'Replacement', mimeType: 'image/png' }] }
+    const reply = mergeIncomingReply(previous, incoming, bot, false)
+    expect(reply).toMatchObject({ text: 'streamed', createdAt: 1, media: [
+      { kind: 'image', path: 'image', name: 'Original', mimeType: 'image/png' }
+    ] })
+    const repeated = mergeIncomingReply(reply, incoming, bot, false)
+    expect(repeated.media).toBe(reply.media)
+    expect(sameChatMessage(reply, repeated)).toBe(true)
+    const final = mergeIncomingReply(reply, { ...incoming, text: '' }, bot, true)
+    expect(final.text).toBe('')
+    expect(mergeReplyDelta(final, { text: 'late snapshot', media: incoming.media }, true)).toBe(final)
+  })
+})
+
+describe('platform cancellation', () => {
+  afterEach(() => vi.unstubAllGlobals())
+
+  it.each([
+    ['Gateway refused to stop', 'Gateway refused to stop'],
+    ['', '未能确认停止 Hermes 运行']
+  ])('rejects an unconfirmed Hermes stop with %j', async (message, expected) => {
+    const rpc = vi.fn().mockResolvedValue({ ok: false, message })
+    vi.stubGlobal('window', { electron: { hermes: { rpc } } })
+    await expect(cancelPlatformTurn(bot)).rejects.toThrow(expected)
+    expect(rpc).toHaveBeenCalledExactlyOnceWith({ accountId: bot.activeAccountId, op: 'stopRun' })
+  })
+
+  it('passes the selected session to Muse and propagates its cancellation error', async () => {
+    const cancelChat = vi.fn().mockRejectedValue(new Error('Muse cancel failed'))
+    vi.stubGlobal('window', { electron: { muse: { cancelChat } } })
+    await expect(cancelPlatformTurn({ ...bot, platformId: 'meta-muse' })).rejects.toThrow('Muse cancel failed')
+    expect(cancelChat).toHaveBeenCalledExactlyOnceWith(bot.activeAccountId, bot.activeSessionId)
+  })
+
+  it('attempts both Hark cancellations even if one rejects', async () => {
+    const rpc = vi.fn().mockRejectedValueOnce(new Error('Pause failed')).mockResolvedValueOnce({ ok: true })
+    vi.stubGlobal('window', { electron: { hark: { rpc } } })
+    await expect(cancelPlatformTurn({ ...bot, platformId: 'hark' })).resolves.toBeUndefined()
+    expect(rpc.mock.calls.flat()).toEqual(['/messages/pause-agent', '/messages/stop-tool'].map((path) => ({
+      accountId: bot.activeAccountId, op: 'call', method: 'POST', path, body: { conversationId: bot.activeSessionId }
+    })))
+  })
+
+  it('ignores failed Grok, Dot, and Antigravity cancellation requests', async () => {
+    const failure = new Error('Already stopped')
+    const grok = vi.fn().mockRejectedValue(failure)
+    const dot = vi.fn().mockRejectedValue(failure)
+    const antigravity = vi.fn().mockRejectedValue(failure)
+    vi.stubGlobal('window', { electron: {
+      grok: { rpc: grok }, dot: { rpc: dot }, antigravity: { cancelRun: antigravity }
+    } })
+    await cancelPlatformTurn({ ...bot, platformId: 'grok' })
+    expect(grok).not.toHaveBeenCalled()
+    await expect(cancelPlatformTurn({ ...bot, platformId: 'grok', selectedAgentId: 'agent' })).resolves.toBeUndefined()
+    await expect(cancelPlatformTurn({ ...bot, platformId: 'dot' })).resolves.toBeUndefined()
+    await expect(cancelPlatformTurn({ ...bot, platformId: 'antigravity' })).resolves.toBeUndefined()
+    expect(grok).toHaveBeenCalledExactlyOnceWith({
+      accountId: bot.activeAccountId, op: 'call', method: 'InterruptGrokBotAgentRun',
+      params: { agent_id: 'agent', reason: 'user_interrupt', session_id: bot.activeSessionId }
+    })
+    expect(dot).toHaveBeenCalledExactlyOnceWith({ accountId: bot.activeAccountId, op: 'cancelTurn' })
+    expect(antigravity).toHaveBeenCalledExactlyOnceWith(bot.activeAccountId)
+  })
 })
 
 describe('session navigation', () => {
@@ -97,16 +306,16 @@ describe('session navigation', () => {
   })
 
   it('keeps the most recently selected Hermes history when requests finish out of order', async () => {
-    const first = deferred<ReturnType<typeof hermesHistory>>()
-    const second = deferred<ReturnType<typeof hermesHistory>>()
+    const first = deferred<ReturnType<typeof hermesHistoryResponse>>()
+    const second = deferred<ReturnType<typeof hermesHistoryResponse>>()
     const rpc = vi.fn().mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise)
     vi.stubGlobal('window', { electron: { hermes: { rpc } } })
 
     const firstLoad = store().switchHermesSession(bot.id, 'session-a')
     const secondLoad = store().switchHermesSession(bot.id, 'session-b')
-    second.resolve(hermesHistory('message-b'))
+    second.resolve(hermesHistoryResponse('message-b'))
     await secondLoad
-    first.resolve(hermesHistory('message-a'))
+    first.resolve(hermesHistoryResponse('message-a'))
     await firstLoad
 
     expect(store().bots[0]?.activeSessionId).toBe('session-b')
@@ -279,7 +488,7 @@ describe('session navigation', () => {
 
   it('does not let a pending Hermes creation undo a subsequent history selection', async () => {
     const pending = deferred<{ ok: boolean; data: { id: string } }>()
-    const rpc = vi.fn().mockReturnValueOnce(pending.promise).mockResolvedValueOnce(hermesHistory('kept'))
+    const rpc = vi.fn().mockReturnValueOnce(pending.promise).mockResolvedValueOnce(hermesHistoryResponse('kept'))
     vi.stubGlobal('window', { electron: { hermes: { rpc } } })
 
     const creating = store().startNewHermesSession(bot.id)
@@ -292,13 +501,13 @@ describe('session navigation', () => {
   })
 
   it('ignores history from before an account switch, even after switching back', async () => {
-    const pending = deferred<ReturnType<typeof hermesHistory>>()
+    const pending = deferred<ReturnType<typeof hermesHistoryResponse>>()
     vi.stubGlobal('window', { electron: { hermes: { rpc: () => pending.promise } } })
 
     const loading = store().switchHermesSession(bot.id, 'session-a')
     store().setActiveAccount(bot.id, 'account-b')
     store().setActiveAccount(bot.id, 'account-a')
-    pending.resolve(hermesHistory('stale'))
+    pending.resolve(hermesHistoryResponse('stale'))
     await loading
 
     expect(store().messages[bot.id]).toBeUndefined()
@@ -306,8 +515,8 @@ describe('session navigation', () => {
 
   it('ignores a Grok transcript from the first visit after returning to the same agent', async () => {
     useBotStore.setState({ bots: [{ ...bot, platformId: 'grok', selectedAgentId: 'initial-agent' }] })
-    const first = deferred<ReturnType<typeof grokHistory>>()
-    const latest = deferred<ReturnType<typeof grokHistory>>()
+    const first = deferred<ReturnType<typeof grokHistoryResponse>>()
+    const latest = deferred<ReturnType<typeof grokHistoryResponse>>()
     const rpc = vi.fn()
       .mockReturnValueOnce(first.promise)
       .mockResolvedValueOnce({ ok: false })
@@ -317,9 +526,9 @@ describe('session navigation', () => {
     store().setSelectedAgent(bot.id, 'agent-a')
     store().setSelectedAgent(bot.id, 'agent-b')
     store().setSelectedAgent(bot.id, 'agent-a')
-    latest.resolve(grokHistory('new-transcript'))
+    latest.resolve(grokHistoryResponse('new-transcript'))
     await latest.promise
-    first.resolve(grokHistory('stale-transcript'))
+    first.resolve(grokHistoryResponse('stale-transcript'))
     await first.promise
 
     expect(store().messages[bot.id]?.map((m) => m.id)).toEqual(['new-transcript'])

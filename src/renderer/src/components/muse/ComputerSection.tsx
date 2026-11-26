@@ -1,6 +1,7 @@
 import { parseComputerContext } from './computerContext'
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { Monitor, Play, RefreshCw, Square } from 'lucide-react'
+import { asObj, str } from '@shared/parse'
 import { Section } from '@/components/info/Section'
 import { Button } from '@/components/ui/Button'
 import { TextInput } from '@/components/ui/Field'
@@ -9,14 +10,6 @@ import { getBridge } from '@/lib/bridge'
 import { cleanSidebarError, isOnlineAccountStatus } from '@/lib/sidebarCompat'
 import { useBotStore } from '@/store/botStore'
 import { t } from '@/lib/i18n'
-
-function asObj(v: unknown): Record<string, unknown> | null {
-  return v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : null
-}
-
-function str(v: unknown): string {
-  return typeof v === 'string' ? v : v == null ? '' : String(v)
-}
 
 /**
  * Muse Computer & Remote Browser Tab (`computer.*` + `browser_task.*` + `browser.*`).
