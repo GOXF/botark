@@ -335,3 +335,5 @@ git clone <GOXF/botark> && cd botark && git checkout fix/hark-login-sync && npm 
 - 17:15 f806196: parallel Hark browsers — currentHarkBrowser adds browsers[] (2+ running); HarkBrowserCard Switcher tabs (1 · host) on card/side/full; switching resets screenshots.
 - 17:17 user verified dev.f806196: side live column + switching between two parallel browsers work ("可以了没有问题").
 - 17:27 a1c79d4: log hark-frames-98047eb6c80a.log shows POST /one-time-codes -> {codeId}; code form now sends tool-response value {codeId, secretId} (key inferred). Awaiting user test.
+- 17:50 6613e61: Hark add flow starts with chooser (usePlatformLogin CHOOSE_FIRST={'hark'}, LoginWaiting choosing → 在应用内登录 / 系统浏览器 / 粘贴凭据); sidebar 「额度用完」 badge (lib/harkQuota.ts: harkQuotaExhausted + store + 10-min /billing/summary watch per Hark account); F12 on embedded web contents opens detached DevTools (index.ts web-contents-created, f12Handled WeakSet).
+- 17:52 61d8726: add flow refuses a Hark account whose authStatus handle matches an existing Hark account (login.fail → platform list error). Existing duplicate "xia chen" must be removed by the user.
