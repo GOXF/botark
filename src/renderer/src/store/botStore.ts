@@ -164,6 +164,8 @@ export interface BotHubState {
   webSessionByBot: Record<string, boolean>
   /** Optional deep-link URL to open inside the embedded platform web session. */
   webSessionTargetUrl: string | null
+  /** GOXF: the web session opens as a column beside the chat (Hark's own page for its live browser). */
+  webSessionSide?: boolean
   /** Open the dedicated Grok Bot-style Settings view in the main pane. */
   settingsOpen: boolean
   settingsTab:
@@ -218,7 +220,7 @@ export interface BotHubState {
   setAddBotOpen: (open: boolean, initialPlatform?: PlatformId | null) => void
   setOnboardingOpen: (open: boolean) => void
   toggleWebSession: () => void
-  openWebSessionAt: (url?: string | null) => void
+  openWebSessionAt: (url?: string | null, opts?: { side?: boolean }) => void
   closeWebSession: () => void
   setSettingsOpen: (
     open: boolean,
@@ -1268,9 +1270,10 @@ export const useBotStore = create<BotHubState>()(
       }
     },
 
-    openWebSessionAt: (url) =>
+    openWebSessionAt: (url, opts) =>
       set((state) => ({
         webSessionOpen: true,
+        webSessionSide: Boolean(opts?.side),
         webSessionByBot: state.selectedBotId
           ? { ...(state.webSessionByBot ?? {}), [state.selectedBotId]: true }
           : (state.webSessionByBot ?? {}),
@@ -1282,6 +1285,7 @@ export const useBotStore = create<BotHubState>()(
       const selectedBotId = get().selectedBotId
       set((state) => ({
         webSessionOpen: false,
+        webSessionSide: false,
         webSessionByBot: state.selectedBotId
           ? { ...(state.webSessionByBot ?? {}), [state.selectedBotId]: false }
           : (state.webSessionByBot ?? {}),

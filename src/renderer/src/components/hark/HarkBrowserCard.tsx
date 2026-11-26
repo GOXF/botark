@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { HarkLiveView } from './HarkLiveView'
 import { createPortal } from 'react-dom'
-import { Check, ChevronUp, Download, ExternalLink, ListChecks, Loader2, Maximize2, Minimize2, Minus, X } from 'lucide-react'
+import { ArrowRight, Check, ChevronUp, Download, ExternalLink, ListChecks, Loader2, Maximize2, Minimize2, Minus, X } from 'lucide-react'
 import { harkRpc } from '@adapters/hark/harkRequests'
 import { harkBrowserLive, type HarkBrowserPreview } from '@shared/harkBrowserPreview'
 import { createId } from '@shared/id'
+import { harkBrowserOnlyUrl } from '@shared/harkProjects'
 import { getBridge } from '@/lib/bridge'
 import { cn } from '@/lib/cn'
 import { useBotStore } from '@/store/botStore'
@@ -209,6 +210,10 @@ export function HarkBrowserCard({ accountId, sessionId, attention = false }: { a
               className={cn('press flex h-7 shrink-0 items-center gap-1 rounded-full px-3 font-medium', plan ? 'border-[0.5px] border-line-strong bg-main text-ink shadow-float' : 'text-ink-secondary hover:bg-hover hover:text-ink')}>
               <ListChecks className="size-3.5" />计划
             </button>
+            <button type="button" onClick={() => openWeb(harkBrowserOnlyUrl(sessionId), { side: true })}
+              className="press flex h-7 shrink-0 items-center gap-1 rounded-full bg-ink px-3 font-medium text-main hover:opacity-90">
+              在 Hark 里看/控制<ArrowRight className="size-3.5" />
+            </button>
             <IconBtn label="全屏" onClick={() => setFull(true)}><Maximize2 className="size-3.5" /></IconBtn>
             <IconBtn label="收起" onClick={() => setMini(true)}><Minus className="size-3.5" /></IconBtn>
             <IconBtn label="关闭" onClick={() => setClosed(panel.label)}><X className="size-3.5" /></IconBtn>
@@ -235,7 +240,7 @@ export function HarkBrowserCard({ accountId, sessionId, attention = false }: { a
             {viewing && <Button size="sm" variant="primary" onClick={() => setViewing(null)}>回到实时</Button>}
             <button type="button" onClick={save} disabled={!shown}
               className="press inline-flex h-7 shrink-0 items-center gap-1.5 rounded-full bg-white/15 px-3 font-medium text-white hover:bg-white/25 disabled:opacity-40"><Download className="size-3.5" />保存截图</button>
-            <button type="button" onClick={() => { closeFull(); openWeb(null) }}
+            <button type="button" onClick={() => { closeFull(); openWeb(harkBrowserOnlyUrl(sessionId), { side: true }) }}
               className="press inline-flex h-7 shrink-0 items-center gap-1.5 rounded-full bg-white/15 px-3 font-medium text-white hover:bg-white/25">在网页里接管<ExternalLink className="size-3.5" /></button>
           </header>
           <div className="flex min-h-0 flex-1 gap-4 px-4">

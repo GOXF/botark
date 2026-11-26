@@ -91,3 +91,13 @@ export function prunePendingHarkProjects(
 export function shouldRefreshHarkProjects(lastFetchAt: number, now: number): boolean {
   return now - lastFetchAt >= HARK_PROJECTS_MIN_REFRESH_GAP_MS
 }
+
+/**
+ * GOXF: Hark's own page for a conversation (a project at /project/<id>, the main chat or a draft at /chat), marked so
+ * BotArk shows only its remote browser there (main/goxfHarkBrowserOnly.ts).
+ */
+export function harkBrowserOnlyUrl(sessionId?: string): string {
+  const id = harkProjectId(sessionId)
+  const page = id && id !== HARK_DRAFT_SESSION && /^[\w-]+$/.test(id) ? `https://app.hark.com/project/${id}` : 'https://app.hark.com/chat'
+  return `${page}#botark-browser`
+}
