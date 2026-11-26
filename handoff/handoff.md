@@ -303,3 +303,8 @@ git clone <GOXF/botark> && cd botark && git checkout fix/hark-login-sync && npm 
 ## 2026-11-26 14:10 quoted image reaches the bot as an attachment
 - Bug (user 13:55): quoting a picture whose bubble shows it from data:/blob: (auth-proxied platform media) sent only "> [图片]"; the bot said it could not see the image.
 - Fix: botStore.sendMessage converts a data:/blob: quote thumb into an image attachment (quoted-image.<ext>, dataBase64). http thumbs still go as the URL in the quote line. Test build follows this commit.
+
+## 2026-11-26 14:05 upstream PRs opened (user approved 13:52)
+- qybaihe/botark #78 (goxf/up-media-blob-preview bd08e81: frame-src blob: + plugins for PDF preview), #79 (goxf/up-hark-connect-button a76c954), #80 (goxf/up-rooms-no-reply b1abf24). All branched from upstream/main 5651f8e, one commit each.
+- asks dock (fe82973) not sent: upstream has no Hark asks feature. 5ee706d and the rest of 1060a0d (resend, late-reply watcher, 10-min timeout) stay fork-only.
+- No other upstream PRs without explicit instruction.
