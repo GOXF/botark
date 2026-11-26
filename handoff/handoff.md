@@ -275,3 +275,6 @@ git clone <GOXF/botark> && cd botark && git checkout fix/hark-login-sync && npm 
 
 ### 2026-11-25 18:50 侧栏未读角标 v15（选 C）
 - ecf77e6 BotListItem：行右侧一列 = 上「格N · 时间」，下蓝色圆形未读数（UnreadBadge 原样式）/完成点；悬停整列淡出换 ⋯。名字旁的浅蓝方块格号已去掉。效果图 work/mock/v15-badge.png。测试包 dev.ecf77e6 待用户确认。
+
+### 2026-11-26 11:30 Hark 连接按钮
+- MessageBubble text_with_button: hark:connect 拿不到 startUrl 时打开 app.hark.com/settings/connected-accounts，不再发英文「Connect github」；失败原因 console.warn。
