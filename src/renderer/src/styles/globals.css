@@ -1,4 +1,5 @@
 @import 'tailwindcss';
+@import './goxf-scale.css'; /* GOXF design scale */
 
 /*
  * BotHub design tokens (aligned with DeepSeek-Bot's light --bt-* system).

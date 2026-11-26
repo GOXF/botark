@@ -22,6 +22,7 @@
     "typecheck:web": "tsc --noEmit -p tsconfig.web.json",
     "typecheck": "npm run typecheck:node && npm run typecheck:web",
     "test": "vitest run",
+    "design:check": "node scripts/goxf-design-check.mjs",
     "postinstall": "install-electron",
     "dist": "npm run build && electron-builder --config electron-builder.config.cjs",
     "dist:mac": "npm run build && electron-builder --config electron-builder.config.cjs --mac",
