@@ -417,12 +417,14 @@ export function mergeHydratedMessages(
     const local = existingById.get(remote.id) ?? localByHistoryId.get(remote.id)
     if (!local) return remote
     const live = liveIds.has(local.id)
-    const delivering = local.delivery === 'sending' || local.delivery === 'accepted' ||
-      local.error === SEND_STILL_PENDING_TEXT
+    // GOXF: Hark already has this message, so a stale 「正在等待原发送完成」 no longer holds.
+    const delivering = local.delivery === 'sending' || local.delivery === 'accepted'
+    // The original send may still settle against its local id, so keep the id.
+    const keepId = delivering || local.error === SEND_STILL_PENDING_TEXT
     return {
       ...local,
       ...remote,
-      id: delivering || live ? local.id : remote.id,
+      id: keepId || live ? local.id : remote.id,
       text: live && local.text && !isOmittedPlaceholderText(local.text) ? local.text : remote.text,
       createdAt: live ? local.createdAt : remote.createdAt,
       widgets: live ? local.widgets ?? remote.widgets : remote.widgets ?? local.widgets,

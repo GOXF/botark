@@ -791,8 +791,14 @@ export const useBotStore = create<BotHubState>()(
     const applyError = (error: unknown, late = false) => {
       if (!isCurrent()) return
       if (error instanceof SendTimeoutError && isCurrentSession(bot, selection)) get().finishReply(botId)
-      const current = get().messages[botId]?.find((m) => m.id === messageId)
+      const list = get().messages[botId] ?? []
+      const current = list.find((m) => m.id === messageId)
       if (!current || current.delivery === 'sent') return
+      // GOXF: the send call timed out, but the bot already answered after this message: it was delivered.
+      if (list.some((m) => m.role === 'bot' && m.accountId === current.accountId && m.createdAt > current.createdAt && m.text?.trim())) {
+        updateMessage(botId, messageId, { delivery: 'sent', error: undefined })
+        return
+      }
       if (error instanceof SendTimeoutError) {
         updateMessage(botId, messageId, { delivery: 'no-reply', error: SEND_STILL_PENDING_TEXT })
       } else if (error instanceof AdapterError && error.code === 'no-reply') {
@@ -1560,9 +1566,10 @@ export const useBotStore = create<BotHubState>()(
           return accounts === state.accounts ? state : { accounts }
         }
         finalizedReplies.add(message)
-        const nextList = existingIdx >= 0
+        // GOXF: a reply (also one first streamed as deltas) proves the last message got through.
+        const nextList = clearNoReplyFlag(existingIdx >= 0
           ? list.map((m, i) => (i === existingIdx ? message : m))
-          : clearNoReplyFlag([...list, message], incoming.accountId)
+          : [...list, message], incoming.accountId)
         return withIncomingReply(state, targetBot, nextList, existingIdx < 0, accounts)
       }),
 

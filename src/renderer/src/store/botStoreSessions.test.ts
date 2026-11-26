@@ -184,7 +184,7 @@ describe('history normalizers', () => {
     ]
     expect(mergeHydratedMessages(existing, [])).toBe(existing)
     expect(mergeHydratedMessages(existing, hydrated, [pending, otherAccount])).toMatchObject([
-      { id: 'msg_pending', text: 'question', createdAt: 2, delivery: 'no-reply', error: SEND_STILL_PENDING_TEXT },
+      { id: 'msg_pending', text: 'question', createdAt: 2, delivery: 'sent', error: undefined },
       { id: 'dot_reply', text: 'hydrated reply', createdAt: 10, media }
     ])
   })
