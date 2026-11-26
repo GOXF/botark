@@ -278,3 +278,4 @@ git clone <GOXF/botark> && cd botark && git checkout fix/hark-login-sync && npm 
 
 ### 2026-11-26 11:30 Hark 连接按钮
 - MessageBubble text_with_button: hark:connect 拿不到 startUrl 时打开 app.hark.com/settings/connected-accounts，不再发英文「Connect github」；失败原因 console.warn。
+- 0073619: hark-frames.log 记录连接卡按钮(buttons)和 /connectors 调用结果，等用户点一次「连接 GitHub」后发 log 查原因。
