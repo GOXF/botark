@@ -3,6 +3,16 @@ export interface HarkBrowserPreview {
   status: string
   screenshotKey?: string
   screenshotUrl?: string
+  /** Hark's live stream page (/api/liveview/view?t=…), absolute on app.hark.com; token-authenticated. */
+  liveViewUrl?: string
+}
+
+/** Only Hark's own live view page, made absolute. */
+export function harkLiveViewUrl(raw?: string): string | undefined {
+  if (!raw || !URL.canParse(raw, 'https://app.hark.com')) return undefined
+  const url = new URL(raw, 'https://app.hark.com')
+  return url.protocol === 'https:' && url.hostname === 'app.hark.com' && url.pathname === '/api/liveview/view' && url.searchParams.get('t')
+    ? url.href : undefined
 }
 
 export const HARK_PREVIEW_MAX_BYTES = 8 * 1024 * 1024
@@ -32,7 +42,7 @@ export function currentHarkBrowser(panels: Panel[]): HarkBrowserPreview | null {
   const panel = pool.findLast((p) => harkBrowserLive(p.status)) ?? pool.at(-1)
   if (!panel) return null
   return {
-    label: panel.url || panel.title || panel.kind, status: panel.status,
+    label: panel.url || panel.title || panel.kind, status: panel.status, liveViewUrl: harkLiveViewUrl(panel.liveViewUrl),
     ...harkScreenshotReference(panel.screenshotKey, panel.screenshotUrl)
   }
 }

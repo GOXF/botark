@@ -132,6 +132,8 @@ export function HarkBrowserCard({ accountId, sessionId, attention = false }: { a
   if (!hark || hidden || !panel || (ended && !image && !key && !url)) return null
 
   const done = ended
+  // Hark's live stream while the browser runs or waits; screenshots stay as history and as the fallback.
+  const live = (active || waiting) && panel.liveViewUrl ? panel.liveViewUrl : ''
   const failed = done && FAILED.test(panel.status)
   const stepText = done ? endedLabel(panel.status) : step || (waiting ? '等你处理' : '正在用浏览器')
   const shown = viewing ?? (image ? { src: image, at: shotAt } : null)
@@ -192,7 +194,8 @@ export function HarkBrowserCard({ accountId, sessionId, attention = false }: { a
           </div>
           <button type="button" className="mx-3 mt-2 block w-[calc(100%-1.5rem)] overflow-hidden rounded-xl bg-sunken" onClick={() => setFull(true)}
             aria-label="全屏查看">
-            {image ? <img src={image} alt="Hark 远程浏览器截图" className="max-h-[38vh] w-full object-contain" />
+            {live && !full ? <iframe src={live} title="Hark 远程浏览器实时画面" className="pointer-events-none aspect-video max-h-[38vh] w-full border-0" sandbox="allow-scripts allow-same-origin" />
+              : image ? <img src={image} alt="Hark 远程浏览器截图" className="max-h-[38vh] w-full object-contain" />
               : <div className="grid h-40 place-items-center text-ink-muted">{error || (key || url ? '正在加载截图…' : '暂无截图')}</div>}
           </button>
           {plan && <div className="mx-3 mt-2 max-h-48 overflow-y-auto rounded-xl bg-sunken p-3"><StepList /></div>}
@@ -233,7 +236,8 @@ export function HarkBrowserCard({ accountId, sessionId, attention = false }: { a
           </header>
           <div className="flex min-h-0 flex-1 gap-4 px-4">
             <div className="relative grid min-w-0 flex-1 place-items-center overflow-hidden rounded-xl bg-white/[0.06]">
-              {shown ? <img src={shown.src} alt="Hark 远程浏览器截图" className="max-h-full max-w-full object-contain" />
+              {live && !viewing ? <iframe src={live} title="Hark 远程浏览器实时画面" className="aspect-video max-h-full w-full border-0" sandbox="allow-scripts allow-same-origin" />
+                : shown ? <img src={shown.src} alt="Hark 远程浏览器截图" className="max-h-full max-w-full object-contain" />
                 : <span className="text-white/55">{error || '暂无截图'}</span>}
             </div>
             <aside className="flex w-80 shrink-0 flex-col gap-4 overflow-y-auto rounded-xl bg-white/[0.08] p-4">

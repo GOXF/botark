@@ -35,6 +35,7 @@ import { hardenVaultFilePermissions, registerVaultIpc } from './securityVault'
 import { getAppWindowIcon } from './appIcon'
 import { hasPopouts, registerPopoutIpc, restorePopouts } from './goxfPopout'
 import { openInApp, registerInAppIpc } from './goxfInApp'
+import { allowHarkLiveViewFrames } from './goxfLiveView'
 
 try {
   app.commandLine?.appendSwitch?.('disable-blink-features', 'AutomationControlled')
@@ -316,6 +317,7 @@ app.on('before-quit', (event) => {
 })
 
 app.whenReady().then(async () => {
+  allowHarkLiveViewFrames()
   if (!gotLock) return
   hardenVaultFilePermissions()
   // Finish restoring the Chromium partitions before starting account clients.

@@ -14,6 +14,8 @@ export interface HarkAskView {
   secret?: { scope: string; label: string }
   /** Hark's own line under the title (where to find the value). */
   hint?: string
+  /** secure_screen one-time code: saved to the vault like a login (type one_time_code), then its id handed over. */
+  codeSecret?: { scope: string }
 }
 
 interface RawAsk {
@@ -37,10 +39,27 @@ export function askKind(hint = '', prompt = ''): HarkAskKind {
 }
 
 const str = (v: unknown): string => (typeof v === 'string' ? v : '')
+const obj = (v: unknown): Record<string, unknown> => (v && typeof v === 'object' ? (v as Record<string, unknown>) : {})
+
+/** Hark's secure_screen asks (2026-11-26) carry the form in request.screen: components + secret {scope, type}. */
+function screenOf(a: RawAsk): { secret: Record<string, unknown>; inputs: string[]; site: string } {
+  const req = obj(a.raw?.['request'] ?? a.raw?.['userInputRequest'] ?? a.raw)
+  const screen = obj(req['screen'])
+  const comps = Array.isArray(screen['components']) ? (screen['components'] as unknown[]).map(obj) : []
+  const inputs = comps.filter((c) => /input/i.test(str(c['type']))).map((c) => str(c['id'])).filter((n) => /^[\w.-]{1,40}$/.test(n))
+  return { secret: obj(screen['secret']), inputs, site: str(req['site']) }
+}
 
 /** A sign-in ask Hark's web app answers with a login secret: type login, scope = the site, fields username + password. */
 export function loginSpec(a: RawAsk, kind: HarkAskKind): HarkAskView['login'] {
   if (kind !== 'credential') return undefined
+  const sc = screenOf(a)
+  if (str(sc.secret['type'])) {
+    if (str(sc.secret['type']) !== 'login') return undefined
+    const scope = str(sc.secret['scope']) || sc.site || a.domain || ''
+    if (!scope) return undefined
+    return { scope, label: str(sc.secret['site_name']) || 'Login', fields: sc.inputs.length ? sc.inputs : ['username', 'password'] }
+  }
   const raw = a.raw ?? {}
   const req = ((raw['request'] ?? raw['userInputRequest'] ?? raw) || {}) as Record<string, unknown>
   const type = `${str(req['secretType'])} ${str(req['type'])} ${str(req['kind'])} ${a.displayHint ?? ''}`.toLowerCase()
@@ -57,7 +76,7 @@ export function loginSpec(a: RawAsk, kind: HarkAskKind): HarkAskView['login'] {
 
 /** A key or token ask: one hidden field. A card stays on the web form. */
 export function secretSpec(a: RawAsk, kind: HarkAskKind): HarkAskView['secret'] {
-  if (kind !== 'credential') return undefined
+  if (kind !== 'credential' || str(screenOf(a).secret['type'])) return undefined
   const req = ((a.raw?.['request'] ?? a.raw?.['userInputRequest'] ?? a.raw) || {}) as Record<string, unknown>
   const s = `${str(req['secretType'])} ${str(req['type'])} ${a.displayHint ?? ''} ${a.prompt ?? ''}`
   if (/card|payment|卡号|cvv|cvc/i.test(s) || !/api[-_ ]?key|token|secret|密钥|令牌|口令/i.test(s)) return undefined
@@ -66,23 +85,29 @@ export function secretSpec(a: RawAsk, kind: HarkAskKind): HarkAskView['secret'] 
 
 function askHint(a: RawAsk): string | undefined {
   const req = ((a.raw?.['request'] ?? a.raw?.['userInputRequest'] ?? a.raw) || {}) as Record<string, unknown>
-  const h = str(req['description']) || str(req['instructions']) || str(req['helpText']) || str(req['body'])
+  const screen = obj(req['screen'])
+  const comps = Array.isArray(screen['components']) ? (screen['components'] as unknown[]).map(obj) : []
+  const text = comps.find((c) => str(c['type']) === 'instructions')
+  const h = str(req['description']) || (text ? str(text['text']) : '') || str(req['instructions']) || str(req['helpText']) || str(req['body'])
   return h && h !== a.prompt ? h.slice(0, 300) : undefined
 }
 
 export function pendingHarkAsks(asks: RawAsk[] | undefined): HarkAskView[] {
   return (asks ?? []).filter((a) => !DONE.test(a.status)).map((a) => {
-    const kind = askKind(a.displayHint, a.prompt)
+    const sc = screenOf(a)
+    const secretType = str(sc.secret['type'])
+    const kind: HarkAskKind = secretType === 'one_time_code' ? 'code' : secretType ? 'credential' : askKind(a.displayHint, a.prompt)
     return {
       id: a.id,
       dispatchId: a.dispatchId,
       requestId: a.requestId,
       kind,
       prompt: (a.prompt || a.displayHint || 'Hark 需要你确认').slice(0, 200),
-      domain: a.domain,
+      domain: a.domain || sc.site || undefined,
       login: loginSpec(a, kind),
       secret: secretSpec(a, kind),
-      hint: askHint(a)
+      hint: askHint(a),
+      codeSecret: secretType === 'one_time_code' ? { scope: str(sc.secret['scope']) || sc.site || a.domain || '' } : undefined
     }
   })
 }

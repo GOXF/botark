@@ -90,6 +90,41 @@ export function HarkAskCards({ accountId, sessionId, asks, className = 'mx-5' }:
     }
   }
 
+  /**
+   * secure_screen code (secret.type one_time_code): save it like a login (type one_time_code) and hand over its id.
+   * Inferred from the login form, not observed; when the vault call is refused, the plain code goes instead.
+   */
+  const submitCode = async (ask: HarkAskView, value: string) => {
+    if (!ask.codeSecret || !ask.requestId) return submit(ask, value)
+    setBusy(ask.id)
+    setError((e) => ({ ...e, [ask.id]: '' }))
+    let secretId = ''
+    try {
+      const saved = await hark.rpc({
+        accountId, op: 'call', method: 'POST', path: '/secrets',
+        body: { type: 'one_time_code', scope: ask.codeSecret.scope, label: ask.prompt, conversationId: sessionId, fields: { code: value } }
+      })
+      const d = (saved.ok ? saved.data ?? {} : {}) as Record<string, unknown>
+      const inner = (d['secret'] ?? d['data'] ?? {}) as Record<string, unknown>
+      secretId = String(d['id'] ?? d['secretId'] ?? inner['id'] ?? inner['secretId'] ?? '')
+    } catch {
+      /* fall back to the plain code */
+    }
+    if (!secretId) return submit(ask, value)
+    try {
+      const res = await hark.rpc({
+        accountId, op: 'call', method: 'POST', path: '/messages/tool-response',
+        body: { conversationId: sessionId, requestId: ask.requestId, dispatchId: ask.dispatchId, type: 'user_input', value: JSON.stringify({ secretId }) }
+      })
+      if (!res.ok) throw new Error(res.message || '提交失败')
+      setSent((s) => ({ ...s, [ask.id]: true }))
+    } catch (err) {
+      setError((e) => ({ ...e, [ask.id]: `${err instanceof Error ? err.message : String(err)}，请在网页里填` }))
+    } finally {
+      setBusy(undefined)
+    }
+  }
+
   /** Same two calls as Hark's web form: save the login to the user's Hark vault, then hand its id to the waiting tool. */
   const submitLogin = async (ask: HarkAskView) => {
     const spec = ask.login
@@ -211,9 +246,9 @@ export function HarkAskCards({ accountId, sessionId, asks, className = 'mx-5' }:
               <TextInput value={code[ask.id] ?? ''} inputMode="numeric" autoComplete="one-time-code" placeholder="验证码"
                 aria-label="验证码" className="h-8 w-40 text-[13px]"
                 onChange={(e) => setCode((c) => ({ ...c, [ask.id]: e.target.value.trim() }))}
-                onKeyDown={(e) => { if (e.key === 'Enter' && code[ask.id]) void submit(ask, code[ask.id]!) }} />
+                onKeyDown={(e) => { if (e.key === 'Enter' && code[ask.id]) void submitCode(ask, code[ask.id]!) }} />
               <Button size="sm" variant="primary" disabled={!code[ask.id] || busy === ask.id}
-                onClick={() => void submit(ask, code[ask.id]!)}>提交</Button>
+                onClick={() => void submitCode(ask, code[ask.id]!)}>提交</Button>
             </>)}
             {ask.login && ask.requestId && (
               <form className="flex w-full max-w-sm flex-col gap-1.5" autoComplete="off"
