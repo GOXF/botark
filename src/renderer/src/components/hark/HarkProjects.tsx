@@ -4,6 +4,7 @@ import {
   ArchiveRestore,
   ExternalLink,
   Loader2,
+  Pencil,
   Plus,
   Trash2
 } from 'lucide-react'
@@ -20,6 +21,7 @@ import type { HarkRpcRequest } from '@shared/ipc'
 import { HARK_DRAFT_SESSION } from '@shared/harkProjects'
 import { Button } from '@/components/ui/Button'
 import { IconButton } from '@/components/ui/IconButton'
+import { InlineEdit } from '@/components/ui/InlineEdit'
 import { getBridge } from '@/lib/bridge'
 import { cn } from '@/lib/cn'
 import { useOverlayLock } from '@/lib/overlay'
@@ -297,6 +299,18 @@ export function HarkProjects({
       }
     })
 
+  // GOXF: rename (PATCH /conversations/:id, as Hark web's conversations.update); double-click the title or the pencil.
+  const [renaming, setRenaming] = useState<string>()
+  const renameProject = (p: HarkProject, title: string) =>
+    perform(async () => {
+      await rpc({
+        accountId, op: 'call', method: 'PATCH',
+        path: `/conversations/${encodeURIComponent(p.id)}`,
+        body: { title: title.trim(), autoTitle: false }
+      })
+      changed()
+    })
+
   // GOXF: delete a project for good (DELETE /conversations/:id, as Hark web does); second click confirms.
   const deleteProject = (p: HarkProject) => {
     if (confirmDelete !== p.id) {
@@ -356,20 +370,32 @@ export function HarkProjects({
                 className="flex min-w-0 flex-1 items-center gap-2 text-left outline-none"
               >
                 <WorkDot work={work?.[p.id]} current={isCurrent} />
-                <span
-                  className={cn(
-                    'min-w-0 flex-1 truncate text-[12.5px]',
-                    isCurrent ? 'font-semibold text-ink' : 'font-medium text-ink'
-                  )}
-                >
-                  {p.title}
-                </span>
+                {renaming === p.id ? (
+                  <span className="min-w-0 flex-1" onClick={(e) => e.stopPropagation()}>
+                    <InlineEdit value={p.title} label="项目名称" maxLength={80} className="text-[12.5px]"
+                      onCommit={(title) => void renameProject(p, title)} onDone={() => setRenaming(undefined)} />
+                  </span>
+                ) : (
+                  <span
+                    title={p.main ? undefined : '双击重命名'}
+                    onDoubleClick={(e) => { if (p.main) return; e.stopPropagation(); setRenaming(p.id) }}
+                    className={cn(
+                      'min-w-0 flex-1 truncate text-[12.5px]',
+                      isCurrent ? 'font-semibold text-ink' : 'font-medium text-ink'
+                    )}
+                  >
+                    {p.title}
+                  </span>
+                )}
                 <WorkLabel work={work?.[p.id]} />
                 {p.main && DEFAULT_TAG}
               </button>
 
               {!p.main && (
                 <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
+                  <IconButton size="sm" label="重命名" disabled={busy} onClick={() => setRenaming(p.id)}>
+                    <Pencil />
+                  </IconButton>
                   <IconButton size="sm" label="在线预览" disabled={busy} onClick={() => void openPreview(p.id)}>
                     <ExternalLink />
                   </IconButton>
