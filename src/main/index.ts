@@ -5,7 +5,7 @@ import { registerWorkspaceIpc, stopWorkspaces } from './mcp/hub'
 import { registerWorkspacePortalIpc, stopWorkspacePortals } from './mcp/workspacePortal'
 import { appendFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
-import { app, autoUpdater, BrowserWindow, shell, type Rectangle } from 'electron'
+import { app, autoUpdater, BrowserWindow, type Rectangle } from 'electron'
 import { attachWebViewManager, registerWebViewIpc } from './webViewIpc'
 import { attachMuseSessionManager, disposeAllMuseManagers, registerMuseIpc } from './muse/museIpc'
 // GOXF fork: fork-aware updater (upstream + portable prompts) instead of electron-updater.
@@ -34,6 +34,7 @@ import { closeAllLocalProxyBridges } from './localProxyBridge'
 import { hardenVaultFilePermissions, registerVaultIpc } from './securityVault'
 import { getAppWindowIcon } from './appIcon'
 import { hasPopouts, registerPopoutIpc, restorePopouts } from './goxfPopout'
+import { openInApp, registerInAppIpc } from './goxfInApp'
 
 try {
   app.commandLine?.appendSwitch?.('disable-blink-features', 'AutomationControlled')
@@ -203,9 +204,9 @@ function createMainWindow(): BrowserWindow {
     if (!isMac && !quitting && hasPopouts()) app.quit()
   })
 
-  // Never open new Electron windows from the renderer; hand http(s) links to the OS.
+  // GOXF: http(s) links from the chat open in a BotArk window (its menu moves them to the system browser).
   win.webContents.setWindowOpenHandler(({ url }) => {
-    if (/^https?:\/\//.test(url)) void shell.openExternal(url)
+    if (/^https?:\/\//.test(url)) void openInApp({ url })
     return { action: 'deny' }
   })
 
@@ -270,7 +271,7 @@ function createPopoutWindow(query: Record<string, string>, bounds?: Rectangle): 
     }
   })
   win.webContents.setWindowOpenHandler(({ url }) => {
-    if (/^https?:\/\//.test(url)) void shell.openExternal(url)
+    if (/^https?:\/\//.test(url)) void openInApp({ url })
     return { action: 'deny' }
   })
   win.webContents.on('will-navigate', (event) => event.preventDefault())
@@ -338,6 +339,7 @@ app.whenReady().then(async () => {
   registerWorkspacePortalIpc(() => mainWindow)
   registerSlackIpc(() => mainWindow)
   registerPopoutIpc(() => mainWindow, createPopoutWindow)
+  registerInAppIpc()
   mainWindow = createMainWindow()
   startPerfLog(mainWindow)
   readyForDeepLinks = true

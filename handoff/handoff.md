@@ -308,3 +308,11 @@ git clone <GOXF/botark> && cd botark && git checkout fix/hark-login-sync && npm 
 - qybaihe/botark #78 (goxf/up-media-blob-preview bd08e81: frame-src blob: + plugins for PDF preview), #79 (goxf/up-hark-connect-button a76c954), #80 (goxf/up-rooms-no-reply b1abf24). All branched from upstream/main 5651f8e, one commit each.
 - asks dock (fe82973) not sent: upstream has no Hark asks feature. 5ee706d and the rest of 1060a0d (resend, late-reply watcher, 10-min timeout) stay fork-only.
 - No other upstream PRs without explicit instruction.
+
+## 2026-11-26 14:50 links and Hark connect open in a BotArk window first
+- User 14:21: GitHub auth finished in the system browser but the chat never reacted; wants in-app first, browser as fallback.
+- New `src/main/goxfInApp.ts` + `src/shared/goxfInApp.ts` (IPC `goxf:inapp:open`, bridge `goxfInApp.open({url, accountId?, doneUrlPrefix?, external?})`). Window menu: 后退/前进/刷新/在浏览器打开 (Ctrl+Shift+O)/复制链接/关闭. Partition = the Hark account's (connect flows) or `persist:botark-links` (plain links). Popups stay in the same session.
+- Main and pop-out windows: renderer http(s) window.open → in-app window (was shell.openExternal). Link cards and markdown links follow.
+- Hark connect card: `HarkConnectButton.tsx` + `lib/harkConnect.ts`. link-sessions → in-app window → closes on return to app.hark.com/settings/connected-accounts → GET /connectors → card shows 「已连接 X ✓」(localStorage `botark:hark-connected-cards`) and sends 「X 已连接好了，继续吧。」 to resume Hark (no known resume API; onConnected.toolUseId is not used). Not connected → 「还没连上。改用浏览器打开」.
+- Settings 连接 also uses the in-app window and refreshes after.
+- Unverified on device: Google/other OAuth may refuse Electron (use 在浏览器打开).

@@ -14,6 +14,7 @@ import { Select } from '@/components/ui/Select'
 import { MarkdownText } from './MarkdownText'
 import { getMessageMedia, MediaPreview, UserAttachmentItem, WorkspaceImage } from './MediaPreview'
 import { SessionInteractiveCard } from './SessionInteractiveCard'
+import { HarkConnectButton } from './HarkConnectButton'
 import { type NativeDocumentTarget } from './NativeDocumentDialog'
 import { triggerShareConversation } from './ShareConversationDialog'
 import { t } from '@/lib/i18n'
@@ -480,43 +481,23 @@ function RichWidgets({
                         </a>
                       )
                     }
+                    if (harkProvider) {
+                      return (
+                        <HarkConnectButton
+                          key={`${b.label}-${i}`}
+                          botId={botId}
+                          accountId={accountId}
+                          provider={harkProvider}
+                          label={b.label}
+                          cardKey={`${w.widgetId}:${harkProvider}`}
+                        />
+                      )
+                    }
                     return (
                       <button
                         key={`${b.label}-${i}`}
                         type="button"
-                        onClick={async () => {
-                          if (harkProvider && getBridge()?.hark?.rpc) {
-                            try {
-                              const res = await getBridge()!.hark!.rpc({
-                                accountId,
-                                op: 'call',
-                                method: 'POST',
-                                path: '/connectors/link-sessions',
-                                body: {
-                                  provider: harkProvider,
-                                  returnUrl: 'https://app.hark.com/settings/connected-accounts',
-                                  origin: 'chat'
-                                }
-                              })
-                              if (res.ok && res.data && typeof res.data === 'object') {
-                                const d = res.data as Record<string, unknown>
-                                const startUrl = String(d['startUrl'] ?? d['url'] ?? d['authUrl'] ?? '')
-                                if (startUrl.startsWith('http')) {
-                                  await getBridge()?.muse?.openHttps?.(startUrl)
-                                  return
-                                }
-                              }
-                              console.warn('[hark] link-sessions gave no startUrl', res)
-                            } catch (err) {
-                              console.warn('[hark] link-sessions failed', err)
-                            }
-                          }
-                          // GOXF 2026-11-26: a connect button never posts "Connect xxx" into the chat;
-                          // without a start link, open Hark's connected-accounts page instead.
-                          if (harkProvider) {
-                            await getBridge()?.muse?.openHttps?.('https://app.hark.com/settings/connected-accounts')
-                            return
-                          }
+                        onClick={() => {
                           void sendMessage(botId, b.actionText || b.label)
                         }}
                         className="inline-flex items-center gap-1.5 rounded-full border border-line-strong bg-surface px-3 py-1 text-[12px] font-medium text-ink hover:bg-hover"

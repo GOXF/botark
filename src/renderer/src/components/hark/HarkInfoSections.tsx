@@ -1,4 +1,5 @@
 import { HarkProjects } from './HarkProjects'
+import { HARK_CONNECT_RETURN_URL } from '@/lib/harkConnect'
 import { HarkScreenshot } from './HarkScreenshot'
 import { HarkAskCards } from './HarkAskCard'
 import { pendingHarkAsks } from '@shared/harkAsks'
@@ -810,7 +811,13 @@ export function HarkConnectorsSection({ accountId }: { accountId: string }) {
       })
       const o = asObj(res) || {}
       const startUrl = str(o['startUrl'] ?? o['url'] ?? o['authUrl'] ?? c.setupUrl)
-      if (startUrl && /^https?:\/\//i.test(startUrl)) {
+      const inApp = getBridge()?.goxfInApp
+      if (startUrl && /^https?:\/\//i.test(startUrl) && inApp) {
+        // GOXF: auth page in a BotArk window on this account's session; refresh once it returns.
+        setHint(`已打开 ${c.displayName} 授权窗口，完成后会自动刷新`)
+        const r = await inApp.open({ url: startUrl, accountId, doneUrlPrefix: HARK_CONNECT_RETURN_URL })
+        setHint(r.result === 'external' ? `已在浏览器打开 ${c.displayName} 授权页，授权完成后点击刷新` : undefined)
+      } else if (startUrl && /^https?:\/\//i.test(startUrl)) {
         await getBridge()?.muse?.openHttps?.(startUrl)
         setHint(`已在浏览器打开 ${c.displayName} 授权页，授权完成后点击刷新`)
       } else if (c.setupUrl) {

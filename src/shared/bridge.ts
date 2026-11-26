@@ -1,6 +1,7 @@
 import type { GoxfUpdateBridge } from './goxfUpdate'
 import type { GoxfDownloadBridge } from './goxfDownload'
 import type { GoxfPopoutBridge } from './goxfPopout'
+import type { GoxfInAppBridge } from './goxfInApp'
 import type { SlackBridge } from './slack'
 import type { WorkspaceBridge } from './workspace'
 import type { PortalBridge } from './workspacePortal'
@@ -333,4 +334,6 @@ export interface BotHubBridge {
   readonly goxfDownloads?: GoxfDownloadBridge
   /** GOXF fork: session panes popped out into their own windows. */
   readonly goxfPopout?: GoxfPopoutBridge
+  /** GOXF fork: web pages in a BotArk window first, system browser on request. */
+  readonly goxfInApp?: GoxfInAppBridge
 }
