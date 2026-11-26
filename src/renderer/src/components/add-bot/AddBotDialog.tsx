@@ -59,6 +59,31 @@ function AddBotFlow({ open, wizardId }: { open: boolean; wizardId: number }) {
   const botId = useRef(createId('bot')).current
   const login = usePlatformLogin(botId)
   const listRef = useRef<HTMLUListElement>(null)
+  // GOXF: one Hark account signs in once. After sign-in, compare its handle with the Hark accounts already added.
+  const [dupChecked, setDupChecked] = useState('')
+  const failLogin = useRef(login.fail)
+  failLogin.current = login.fail
+  const signedInHark = login.phase.kind === 'signed-in' && login.phase.platformId === 'hark' ? login.accountId : ''
+  useEffect(() => {
+    if (!signedInHark || dupChecked === signedInHark) return
+    let current = true
+    const status = getBridge()?.hark?.authStatus
+    void (status ? status(signedInHark) : Promise.resolve(null)).catch(() => null).then((st) => {
+      if (!current) return
+      const handle = String((st as { handle?: string } | null)?.handle ?? '').trim().toLowerCase()
+      const state = useBotStore.getState()
+      const twin = handle && handle !== signedInHark.toLowerCase()
+        ? Object.values(state.accounts).find((a) => a.platformId === 'hark' && a.id !== signedInHark && a.handle?.trim().toLowerCase() === handle)
+        : undefined
+      if (twin) {
+        const bot = state.bots.find((b) => b.accountIds.includes(twin.id))
+        failLogin.current(`这个 Hark 账号（${handle}）已经登录在「${bot?.name ?? twin.label ?? twin.displayName}」里，不能重复添加。`)
+        return
+      }
+      setDupChecked(signedInHark)
+    })
+    return () => { current = false }
+  }, [signedInHark, dupChecked])
   const morph = useMorphHeight<HTMLDivElement>()
   const created = useRef(false)
   const grokSyncedRef = useRef(false)
@@ -418,7 +443,13 @@ function AddBotFlow({ open, wizardId }: { open: boolean; wizardId: number }) {
               )}
             </div>
           )}
-          {!batch && phase.kind === 'signed-in' && phase.platformId !== 'grok' && (
+          {!batch && phase.kind === 'signed-in' && phase.platformId === 'hark' && dupChecked !== login.accountId && (
+            <div className="flex flex-col items-center justify-center gap-3 py-8 text-center">
+              <RefreshCw className="size-5 animate-spin text-ink-secondary" />
+              <p className="text-[13.5px] text-ink-secondary">登录成功，正在确认这个账号没有重复添加…</p>
+            </div>
+          )}
+          {!batch && phase.kind === 'signed-in' && phase.platformId !== 'grok' && (phase.platformId !== 'hark' || dupChecked === login.accountId) && (
             <NameStep
               key="name"
               platformId={phase.platformId}

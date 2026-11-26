@@ -126,6 +126,11 @@ export function usePlatformLogin(botId: string) {
       if (accountId.current === id && pending.current) signedIn(pending.current)
     },
     discard,
+    /** Drop the half-made session and go back to the platform list with an error (e.g. a duplicate account). */
+    fail: (error: string) => {
+      discard()
+      setPhase({ kind: 'idle', error })
+    },
     keep
   }
 }
