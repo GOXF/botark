@@ -364,9 +364,11 @@ export function HarkProjects({
             >
               <button
                 type="button"
-                disabled={busy}
+                // Not disabled while busy: a disabled button swallows the second click, so double-click never fired.
+                aria-disabled={busy || undefined}
                 aria-current={isCurrent}
-                onClick={() => void select(p.id)}
+                onClick={() => { if (!busy) void select(p.id) }}
+                onDoubleClick={(e) => { if (p.main || renaming === p.id) return; e.preventDefault(); setRenaming(p.id) }}
                 className="flex min-w-0 flex-1 items-center gap-2 text-left outline-none"
               >
                 <WorkDot work={work?.[p.id]} current={isCurrent} />
@@ -378,7 +380,6 @@ export function HarkProjects({
                 ) : (
                   <span
                     title={p.main ? undefined : '双击重命名'}
-                    onDoubleClick={(e) => { if (p.main) return; e.stopPropagation(); setRenaming(p.id) }}
                     className={cn(
                       'min-w-0 flex-1 truncate text-[12.5px]',
                       isCurrent ? 'font-semibold text-ink' : 'font-medium text-ink'
