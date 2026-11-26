@@ -12,6 +12,7 @@ import { SegmentedControl } from '@/components/ui/SegmentedControl'
 import { TextInput } from '@/components/ui/Field'
 import { RefreshButton } from '@/components/muse/RefreshButton'
 import { getBridge } from '@/lib/bridge'
+import { harkQuotaExhausted, useHarkQuota } from '@/lib/harkQuota'
 import { harkRpc } from '@adapters/hark/harkRequests'
 import { createId } from '@shared/id'
 import { currentHarkBrowser, harkScreenshotReference } from '@shared/harkBrowserPreview'
@@ -231,10 +232,9 @@ export function HarkBillingSection({ accountId }: { accountId: string }) {
   const poolUsed = Number(harkTokens?.['poolUsed'] ?? 0)
   const poolLimit = Number(harkTokens?.['poolLimit'] ?? 0)
   const tokens = asObj(summary?.['tokens'])
-  const exhausted =
-    str(summary?.['state']) === 'exhausted' ||
-    (poolLimit > 0 && poolUsed >= poolLimit) ||
-    (dailyLimit > 0 && dailyUsed >= dailyLimit)
+  const exhausted = harkQuotaExhausted(summary)
+  const setQuota = useHarkQuota((st) => st.set)
+  useEffect(() => { if (summary) setQuota(accountId, exhausted) }, [summary, exhausted, accountId, setQuota])
   const planEnds = str(plan?.['source']) === 'gift' ? pickTime([plan], ['endsAt']) : null
   const nextPlan = str(asObj(plan?.['next'])?.['planId'])
   const dailyReset = pickTime(

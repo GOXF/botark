@@ -399,6 +399,7 @@ function AddBotFlow({ open, wizardId }: { open: boolean; wizardId: number }) {
               platformId={phase.platformId}
               accountId={login.accountId}
               windowClosed={phase.windowClosed}
+              choosing={phase.choosing}
               onReopen={login.reopen}
               onImported={login.markSignedIn}
             />
@@ -747,12 +748,15 @@ export function LoginWaiting({
   platformId,
   accountId,
   windowClosed,
+  choosing = false,
   onReopen,
   onImported
 }: {
   platformId: PlatformId
   accountId?: string
   windowClosed: boolean
+  /** GOXF: nothing opened yet; the user picks in-app window, system browser or paste. */
+  choosing?: boolean
   onReopen: () => void
   /** Called after a paste-import verified the session for `accountId`. */
   onImported?: () => void
@@ -922,18 +926,20 @@ export function LoginWaiting({
             '已在系统浏览器打开页面；如需完成账号安全验证或改用邮箱验证码，请在窗口内操作',
             'Opened in your system browser. Complete verification or use Email OTP in the sign-in window'
           )
-    : windowClosed
-      ? t('The sign-in window was closed')
-      : t('Waiting for you to sign in…')
+    : choosing
+      ? tr('选择登录方式', 'Choose how to sign in')
+      : windowClosed
+        ? t('The sign-in window was closed')
+        : t('Waiting for you to sign in…')
 
   return (
     <div className="flex animate-step-in flex-col items-center gap-4 pt-3 pb-2 text-center" role="status">
       <PlatformGlyph platform={platform} size="lg" />
       <p
-        key={windowClosed ? 'closed' : browserOpened ? 'browser' : 'waiting'}
+        key={choosing ? 'choose' : windowClosed ? 'closed' : browserOpened ? 'browser' : 'waiting'}
         className={cn(
           'animate-veil-in text-[14px] leading-5',
-          windowClosed && !browserOpened ? 'text-ink' : 'shimmer-text'
+          (windowClosed || choosing) && !browserOpened ? 'text-ink' : 'shimmer-text'
         )}
       >
         {waitingHeadline}
@@ -942,14 +948,14 @@ export function LoginWaiting({
       <div className="flex flex-wrap justify-center gap-2">
         <Button
           ref={actionRef}
-          variant={windowClosed && !browserOpened ? 'primary' : 'secondary'}
+          variant={(windowClosed || choosing) && !browserOpened ? 'primary' : 'secondary'}
           disabled={busy}
           onClick={() => {
             setBrowserOpened(false)
             onReopen()
           }}
         >
-          {windowClosed && !browserOpened ? t('Open again') : t('Show window')}
+          {choosing && !browserOpened ? tr('在应用内登录', 'Sign in here') : windowClosed && !browserOpened ? t('Open again') : t('Show window')}
         </Button>
 
         {platformId === 'grok' && accountId && (

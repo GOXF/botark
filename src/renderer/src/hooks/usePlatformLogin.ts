@@ -4,10 +4,12 @@ import type { AdapterEvent, ConnectionStatus, PlatformId } from '@adapters/types
 import { createId } from '@shared/id'
 
 const LIVE: ReadonlySet<ConnectionStatus> = new Set(['online', 'busy', 'attention'])
+/** GOXF: platforms whose sign-in starts with a choice (in-app window, system browser, paste) instead of the window. */
+const CHOOSE_FIRST: ReadonlySet<PlatformId> = new Set<PlatformId>(['hark'])
 
 export type LoginPhase =
   | { kind: 'idle'; error?: string }
-  | { kind: 'waiting'; platformId: PlatformId; windowClosed: boolean }
+  | { kind: 'waiting'; platformId: PlatformId; windowClosed: boolean; choosing?: boolean }
   | { kind: 'signed-in'; platformId: PlatformId }
 
 function errorMessage(error: unknown): string {
@@ -103,7 +105,8 @@ export function usePlatformLogin(botId: string) {
         signedIn(platformId)
       }
     })
-    void openWindow(platformId, id)
+    if (CHOOSE_FIRST.has(platformId)) setPhase({ kind: 'waiting', platformId, windowClosed: false, choosing: true })
+    else void openWindow(platformId, id)
   }
 
   const id = accountId.current

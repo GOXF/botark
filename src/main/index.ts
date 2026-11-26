@@ -45,6 +45,8 @@ try {
 
 const isMac = process.platform === 'darwin'
 let mainWindow: BrowserWindow | null = null
+/** Renderers whose window already toggles DevTools on F12. */
+const f12Handled = new WeakSet<Electron.WebContents>()
 let quitting = false
 let readyForDeepLinks = false
 const pendingCueCallbacks: string[] = []
@@ -178,6 +180,7 @@ function createMainWindow(): BrowserWindow {
   win.once('ready-to-show', showMainWindow)
   win.webContents.once('did-finish-load', showMainWindow)
   // GOXF: F12 toggles DevTools (Ctrl+Shift+I still works).
+  f12Handled.add(win.webContents)
   win.webContents.on('before-input-event', (event, input) => {
     if (input.type === 'keyDown' && input.key === 'F12' && !input.control && !input.alt && !input.meta && !input.shift) {
       event.preventDefault()
@@ -268,6 +271,7 @@ function createPopoutWindow(query: Record<string, string>, bounds?: Rectangle): 
       webviewTag: true
     }
   })
+  f12Handled.add(win.webContents)
   win.webContents.on('before-input-event', (event, input) => {
     if (input.type === 'keyDown' && input.key === 'F12' && !input.control && !input.alt && !input.meta && !input.shift) {
       event.preventDefault()
@@ -316,6 +320,19 @@ app.on('before-quit', (event) => {
   void Promise.race([cleanup, deadline]).finally(() => {
     shutdownFinished = true
     app.quit()
+  })
+})
+
+// GOXF 2026-11-26: F12 also inspects embedded pages (a platform's web session, Hark's live view, sign-in windows):
+// focus sits in their own web contents, which the main window's F12 handler never sees. Opens detached.
+app.on('web-contents-created', (_event, contents) => {
+  contents.on('before-input-event', (event, input) => {
+    if (input.type !== 'keyDown' || input.key !== 'F12' || input.control || input.alt || input.meta || input.shift) return
+    // The app windows' own handler covers their renderer.
+    if (f12Handled.has(contents)) return
+    event.preventDefault()
+    if (contents.isDevToolsOpened()) contents.closeDevTools()
+    else contents.openDevTools({ mode: 'detach' })
   })
 })
 

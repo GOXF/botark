@@ -12,6 +12,7 @@ import { useBotStore } from '@/store/botStore'
 import { usePanes } from '@/store/paneStore'
 import { leafBot, leaves } from '@/lib/paneTree'
 import { accountWork } from '@/lib/harkWork'
+import { useHarkQuotaWatch } from '@/lib/harkQuota'
 import { useHarkWork } from '@/services/harkWork'
 import type { Bot, BotActivity, ChatMessage } from '@/types'
 import { t } from '@/lib/i18n'
@@ -88,6 +89,7 @@ export const BotListItem = memo(function BotListItem({
   const togglePinBot = useBotStore((s) => s.togglePinBot)
   // GOXF: idle 10+ min, history unloaded to save memory; reloads when opened.
   const asleep = useBotStore((s) => s.trimmedBots[bot.id] === true)
+  const quotaOut = useHarkQuotaWatch(bot.activeAccountId, bot.platformId === 'hark')
   const [menuOpen, setMenuOpen] = useState(false)
   const [renaming, setRenaming] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
@@ -245,6 +247,12 @@ export const BotListItem = memo(function BotListItem({
             >
               {bot.name}
             </span>
+            {quotaOut && (
+              <span className={cn('shrink-0 self-center rounded-full bg-status-error/10 px-1.5 text-[10.5px] leading-4 text-status-error-ink', !(asleep && !typing && !live && work.working === 0) && 'mr-auto')}
+                title="这个 Hark 账号的额度已用完">
+                额度用完
+              </span>
+            )}
             {asleep && !typing && !live && work.working === 0 && (
               <span
                 className="mr-auto shrink-0 self-center rounded-full bg-ink/[0.06] px-1.5 text-[10.5px] leading-4 text-ink-faint"
