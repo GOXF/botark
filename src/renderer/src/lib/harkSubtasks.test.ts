@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { deriveSubtasks, deriveTasks } from './harkSubtasks'
+import { deriveSubtasks } from './harkSubtasks'
 
 describe('deriveSubtasks', () => {
   it('merges tool calls and panels by dispatchId, panel status wins', () => {
@@ -92,41 +92,5 @@ describe('deriveTasks: what waits on you', () => {
     }, now)
     const by = Object.fromEntries(tasks.map((t) => [t.id, t.state]))
     expect(by).toEqual({ a: 'done', b: 'done', c: 'open', d: 'working', e: 'done' })
-  })
-})
-
-describe('deriveTasks: day-old requests', () => {
-  const now = Date.parse('2026-11-27T19:00:00+08:00')
-  const old = '2026-11-10T10:00:00+08:00'
-  it('drops a day-old awaiting request with a stale ask out of 等你处理', () => {
-    const [t] = deriveTasks(
-      {
-        requests: { u1: { state: 'awaiting_input', awaitsPerson: true } },
-        messages: [
-          { id: 'u1', role: 'user', content: '不行，我要的是…', createdAt: old },
-          { id: 'a1', role: 'assistant', triggeredBy: 'u1', toolCalls: [{ dispatchId: 'd1' }] }
-        ],
-        panels: [{ dispatchId: 'd1', kind: 'tool', title: 'request_secret', status: 'running' }],
-        asks: [{ dispatchId: 'd1', status: 'pending' }]
-      } as never,
-      now
-    )
-    expect(t.state).toBe('done')
-    expect(t.subtasks[0].status).toBe('done')
-  })
-  it('keeps a day-old request whose dispatch is still in activeWork', () => {
-    const [t] = deriveTasks(
-      {
-        requests: { u1: { state: 'working' } },
-        messages: [
-          { id: 'u1', role: 'user', content: 'x', createdAt: old },
-          { id: 'a1', role: 'assistant', triggeredBy: 'u1', toolCalls: [{ dispatchId: 'd1' }] }
-        ],
-        panels: [{ dispatchId: 'd1', kind: 'browser', title: 'b', status: 'running' }],
-        activeWork: [{ dispatchId: 'd1', state: 'running' }]
-      } as never,
-      now
-    )
-    expect(t.state).toBe('working')
   })
 })

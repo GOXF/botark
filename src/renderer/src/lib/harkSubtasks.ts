@@ -94,8 +94,6 @@ export interface HarkTask {
  * request in `triggeredBy`, and `activeWork` lists the dispatches still running.
  */
 const STALE_MS = 30 * 60_000
-/** A request older than this with nothing actually running is over: Hark's asks expire, it never closes them. */
-const EXPIRE_MS = 24 * 60 * 60_000
 
 export function deriveTasks(snap: HarkSnapshotLike | null | undefined, now = Date.now()): HarkTask[] {
   const requests = snap?.requests ?? {}
@@ -169,16 +167,10 @@ export function deriveTasks(snap: HarkSnapshotLike | null | undefined, now = Dat
   const out = [...tasks.values()].filter((t) => t.title || t.subtasks.length)
   for (const t of out) {
     t.subtasks.sort((a, b) => ORDER[a.status] - ORDER[b.status] || (a.startedAt ?? 0) - (b.startedAt ?? 0))
-    const busy = t.subtasks.some((s) => s.status === 'running' || s.status === 'waiting')
-    if (t.state !== 'done' && busy) t.state = 'working'
+    const live = t.subtasks.some((s) => s.status === 'running' || s.status === 'waiting')
+    if (t.state !== 'done' && live) t.state = 'working'
     // "working" with nothing running and no word for 30 min: Hark has stopped on it.
-    else if (t.state === 'working' && !busy && (t.createdAt ?? 0) < now - STALE_MS && !/work/i.test(requests[t.id]?.state ?? '')) t.state = 'done'
-    // GOXF: a day-old request whose dispatches are not in activeWork is over, even if Hark still
-    // marks it awaiting input or keeps an unanswered ask on it (board showed 11月10日 cards in 等你处理).
-    if (t.state !== 'done' && t.createdAt && t.createdAt < now - EXPIRE_MS && !t.subtasks.some((s) => live.has(s.id))) {
-      t.state = 'done'
-      for (const s of t.subtasks) if (s.status === 'waiting' || s.status === 'running') s.status = 'done'
-    }
+    else if (t.state === 'working' && !live && (t.createdAt ?? 0) < now - STALE_MS && !/work/i.test(requests[t.id]?.state ?? '')) t.state = 'done'
     if (!t.title) t.title = '未命名任务'
   }
   const rank = { working: 0, open: 1, done: 2 } as const
