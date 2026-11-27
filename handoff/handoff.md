@@ -344,3 +344,5 @@ git clone <GOXF/botark> && cd botark && git checkout fix/hark-login-sync && npm 
 - 19:30 dd6e673 托盘修复：build/ 不进安装包，图标为空→没建托盘→关闭直接退出。改用 ?asset 打包图标；仍无图标时改为最小化。
 - 19:28 ddbde17 托盘图标去掉 Mac 透明边（build/tray-icon.png），16/24/32 多倍图；动 build/ 走完整打包。
 - 2026-11-27 11:32 c900827 Hark：只留实时状态，删掉仅 narration 的「Agent Activity」卡（historyNormalizers.ts）。用户 11:27 原话「我只需要下面那条实时状态就行」。
+- 11:41 e422b28 Hark 项目删除即时消失（乐观隐藏，失败恢复）。
+- 11:45 eb59b00 Hark 登录 ask 只填密码即可提交（loginReady），Hark /secrets 是否接受无用户名未验证。
