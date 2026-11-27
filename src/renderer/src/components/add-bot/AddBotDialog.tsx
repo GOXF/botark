@@ -1,3 +1,4 @@
+import { GeminiConnectForm } from '@/components/gemini/GeminiConnectForm'
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent, type RefObject } from 'react'
 import { getPlatform } from '@adapters/platforms'
 import { adapterRegistry } from '@adapters/registry'
@@ -95,9 +96,12 @@ function AddBotFlow({ open, wizardId }: { open: boolean; wizardId: number }) {
   const [batchBusy, setBatchBusy] = useState(false)
   const [grokAccountChoiceOpen, setGrokAccountChoiceOpen] = useState(false)
   const [grokSyncError, setGrokSyncError] = useState<string>()
+  const [geminiOpen, setGeminiOpen] = useState(false)
   const [hermesConnectOpen, setHermesConnectOpen] = useState(false)
   const [hermesReady, setHermesReady] = useState<{ handle: string; displayName: string } | null>(null)
   const [dsBotConnectOpen, setDsBotConnectOpen] = useState(false)
+  const activeGeminiAccount = useRef<string | null>(null)
+  activeGeminiAccount.current = geminiOpen ? login.accountId : null
   const { phase } = login
   const t = useT()
   const locale = usePrefsStore((s) => s.locale)
@@ -131,6 +135,9 @@ function AddBotFlow({ open, wizardId }: { open: boolean; wizardId: number }) {
       } else {
         login.start('grok')
       }
+    } else if (initialPlatform === 'gemini') {
+      autoStartedRef.current = true
+      setGeminiOpen(true)
     } else if (initialPlatform === 'hermes') {
       autoStartedRef.current = true
       setHermesConnectOpen(true)
@@ -189,6 +196,10 @@ function AddBotFlow({ open, wizardId }: { open: boolean; wizardId: number }) {
       setGrokAccountChoiceOpen(true)
       return
     }
+    if (platformId === 'gemini') {
+      setGeminiOpen(true)
+      return
+    }
     if (platformId === 'hermes') {
       setHermesConnectOpen(true)
       return
@@ -245,6 +256,7 @@ function AddBotFlow({ open, wizardId }: { open: boolean; wizardId: number }) {
   const platform = phase.kind === 'idle' ? undefined : getPlatform(phase.platformId)
   const title = batch
     ? t('Batch import Muse accounts')
+    : geminiOpen ? t('Configure Gemini connection')
     : hermesReady
       ? t('Set up your bot')
       : hermesConnectOpen && phase.kind === 'idle'
@@ -276,6 +288,10 @@ function AddBotFlow({ open, wizardId }: { open: boolean; wizardId: number }) {
             onClick={() => guardLeaveBatch(() => setBatch(false))}
             className="-ml-1"
           >
+            <ChevronLeft />
+          </IconButton>
+        ) : geminiOpen ? (
+          <IconButton label={t('Back')} size="sm" onClick={() => { login.discard(); setGeminiOpen(false) }}>
             <ChevronLeft />
           </IconButton>
         ) : hermesConnectOpen && !hermesReady && phase.kind === 'idle' ? (
@@ -364,6 +380,14 @@ function AddBotFlow({ open, wizardId }: { open: boolean; wizardId: number }) {
               }}
             />
           )}
+          {geminiOpen && <GeminiConnectForm accountId={login.accountId} onSaved={async () => {
+            if (!isCurrentWizard() ||
+                activeGeminiAccount.current !== login.accountId) {
+              await getBridge()?.gemini?.clearAuth(login.accountId)
+              return
+            }
+            finish('gemini', freshName('Google Gemini', bots.map((b) => b.name)), undefined)
+          }} />}
           {!batch && phase.kind === 'idle' && hermesConnectOpen && !hermesReady && (
             <HermesConnectStep
               key="hermes-connect"
@@ -407,7 +431,7 @@ function AddBotFlow({ open, wizardId }: { open: boolean; wizardId: number }) {
               />
             </div>
           )}
-          {!batch && phase.kind === 'idle' && !grokAccountChoiceOpen && !hermesConnectOpen && !hermesReady && !dsBotConnectOpen && (
+          {!batch && phase.kind === 'idle' && !grokAccountChoiceOpen && !geminiOpen && !hermesConnectOpen && !hermesReady && !dsBotConnectOpen && (
             <PlatformStep
               key="platform"
               listRef={listRef}

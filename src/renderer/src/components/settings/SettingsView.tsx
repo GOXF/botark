@@ -1,3 +1,4 @@
+import { GeminiAccountsSettingsPanel } from '@/components/gemini/GeminiAccountsSettingsPanel'
 import { useMemo, useRef, useState } from 'react'
 import { Activity, ArrowLeft, LayoutDashboard, Server, Settings, Smartphone, Sparkles, Users, type LucideIcon } from 'lucide-react'
 import type { PlatformId } from '@adapters/types'
@@ -101,6 +102,7 @@ export function SettingsView() {
     { id: 'dot-accounts', label: 'ChatGPT Dot', icon: Users, platformId: 'dot', count: accountCount('dot') },
     { id: 'grok-accounts', label: 'Grok Bot', icon: Users, platformId: 'grok', count: accountCount('grok') },
     { id: 'hark-accounts', label: 'Hark', icon: Users, platformId: 'hark', count: accountCount('hark') },
+    { id: 'gemini-accounts', label: 'Google Gemini', icon: Sparkles, platformId: 'gemini', count: accountCount('gemini') },
     { id: 'hermes-accounts', label: 'Hermes', icon: Server, platformId: 'hermes', count: accountCount('hermes') },
     {
       id: 'antigravity-accounts',
@@ -235,6 +237,7 @@ export function SettingsView() {
               proxyPool={proxyPool}
               dot={dot}
             />
+            {settingsTab === 'gemini-accounts' && <GeminiAccountsSettingsPanel />}
             {settingsTab === 'hermes-accounts' && <HermesAccountsSettingsPanel />}
             {settingsTab === 'ds-bot-accounts' && <DsBotAccountsSettingsPanel />}
             {settingsTab === 'mobile-sync' && <MobileSyncSettingsPanel />}

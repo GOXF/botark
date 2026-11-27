@@ -26,6 +26,7 @@ import { cancelAllAntigravityRuns } from './antigravity/antigravityClient'
 import { registerCueIpc } from './cue/cueIpc'
 import { findCueCallbackArg, handleCueDesktopCallbackUrl } from './cue/cueDesktopHandoff'
 import { stopCueAccountWatch } from './cue/cueWatchManager'
+import { registerGeminiIpc, disposeGeminiIpc } from './gemini/geminiIpc'
 import { registerDsBotIpc } from './dsbot/dsBotIpc'
 import { cancelAllDsBotRuns } from './dsbot/dsBotClient'
 import { registerMobileSyncIpc, stopMobileSyncServer } from './mobileSync/mobileSyncIpc'
@@ -307,6 +308,7 @@ app.on('before-quit', (event) => {
   cancelHarkWatch('*')
   cancelAllHermesRuns('*')
   cancelAllAntigravityRuns('*')
+  disposeGeminiIpc()
   cancelAllDsBotRuns('*')
   stopCueAccountWatch('*')
   disposeAllMuseManagers()
@@ -360,6 +362,7 @@ app.whenReady().then(async () => {
   registerHermesIpc()
   registerAntigravityIpc()
   registerCueIpc()
+  registerGeminiIpc(() => mainWindow)
   registerDsBotIpc()
   registerMobileSyncIpc()
   registerVaultIpc()

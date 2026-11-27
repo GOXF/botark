@@ -33,6 +33,7 @@ const LOGIN_CTA_LABEL: Record<PlatformId, string> = {
   grok: 'Sign in with Grok Bot',
   hark: 'Sign in with Hark',
   dot: 'Sign in with ChatGPT Dot',
+  gemini: 'Configure Gemini connection',
   hermes: 'Configure Hermes connection',
   antigravity: 'Sign in with Antigravity',
   cue: 'Sign in with Cue',
@@ -70,6 +71,9 @@ export function AccountList({ bot, accounts }: AccountListProps) {
         return void openHarkLogin(account.id)
       case 'dot':
         return void openDotLogin(account.id)
+      case 'gemini':
+        useBotStore.getState().setSettingsOpen(true, 'gemini-accounts')
+        return
       case 'hermes':
         useBotStore.getState().setSettingsOpen(true, 'hermes-accounts')
         return

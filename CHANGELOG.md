@@ -2,6 +2,14 @@
 
 All notable changes to **BotArk** (formerly BotHub) are documented in this file.
 
+## [0.17.0] - 2026-11-27
+
+### Added
+
+- **Native Google Gemini platform adapter** (#86, closes #72): full desktop integration for Google AI Studio API keys (with custom Base URL and per-account proxy support, encrypted vault storage, and isolated `gemini.google.com` WebSession), SSE streaming chat with signed `thoughtSignature` preservation and thought summaries, Google Search grounding citations & sandboxed search cards, multimodal image/PDF/audio/text attachments, dynamic model discovery & switching, per-turn token usage metadata, local SQLite (`0o600`) multi-session history, and independent Cancellation in Collaboration Rooms.
+- **Reusable Slash Prompt Templates & Prompt Library** (#85): type `/` or click the toolbar slash button in either direct chats or Collaboration Rooms to fuzzy-search and insert prompt templates at the caret with `{{date}}`, `{{bot}}`, `{{clipboard}}`, and `{{cursor}}` expansion, IME & `@mention` priority handling, 6 editable Chinese starter templates, pinning, usage-based ranking, and JSON import/export via a lazy-loaded library dialog (`⌘K` or General Settings).
+- **In-Conversation Find (`⌘F`), Collaboration Room Search (`⌘K`) & Multi-Format Local Export** (#84): added `⌘F`/`Ctrl+F` find bar with match counter, keyboard stepping, transient row highlight, and automatic older-window expansion across direct chats and Collaboration Rooms; extended `⌘K` Command Palette to search room posts by text or sender with direct jump-to-message; added scoped Markdown (`.md`) and sanitized JSON (`.json`, stripping inline binary/base64 payloads) exports alongside standalone HTML in `ShareConversationDialog` and room header menus.
+
 ## [0.16.1] - 2026-11-27
 
 ### Fixed
