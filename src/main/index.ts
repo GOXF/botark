@@ -12,6 +12,7 @@ import { attachMuseSessionManager, disposeAllMuseManagers, registerMuseIpc } fro
 import { exitIfUpdating, registerUpdaterIpc, startAutoUpdater } from './goxfUpdater'
 import { startPerfLog } from './goxfPerf'
 import { registerDownloadIpc } from './goxfDownload'
+import { registerImageIpc } from './goxfImage'
 import { flushSessionCookies, startSessionCookiePersistence } from './goxfSessionCookies'
 import { registerGrokIpc } from './grok/grokIpc'
 import { stopGrokAccountWatch } from './grok/grokWatchManager'
@@ -356,6 +357,7 @@ app.whenReady().then(async () => {
   registerMuseIpc()
   registerUpdaterIpc()
   registerDownloadIpc()
+  registerImageIpc()
   registerGrokIpc()
   registerHarkIpc()
   registerDotIpc()

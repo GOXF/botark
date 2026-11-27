@@ -1,4 +1,5 @@
 /** One image viewer for chat attachments and markdown images, plus the round button laid over a thumbnail. */
+import { copyImageSrc } from '@/lib/goxfCopyImage'
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { Check, ChevronLeft, ChevronRight, Copy, Download, X, ZoomIn, ZoomOut } from 'lucide-react'
@@ -75,7 +76,7 @@ export function ImageLightbox({
     el.scrollLeft = (el.scrollWidth - el.clientWidth) / 2
     el.scrollTop = (el.scrollHeight - el.clientHeight) / 2
   }, [zoom])
-  const [copiedImg, setCopiedImg] = useState(false)
+  const [copiedImg, setCopiedImg] = useState<false | 'ok' | 'fail'>(false)
   // Snapshot of the chat's images when the viewer opens; ←/→ step through them.
   const gallery = useMemo(() => {
     const items = collectGallery()
@@ -108,32 +109,10 @@ export function ImageLightbox({
   }, [onClose, count])
 
   const copyImageToClipboard = async () => {
-    try {
-      const res = await fetch(current.src)
-      const rawBlob = await res.blob()
-      const pngBlob =
-        rawBlob.type === 'image/png'
-          ? rawBlob
-          : await new Promise<Blob>((resolve, reject) => {
-              const img = new Image()
-              img.crossOrigin = 'anonymous'
-              img.onload = () => {
-                const canvas = document.createElement('canvas')
-                canvas.width = img.naturalWidth
-                canvas.height = img.naturalHeight
-                const ctx = canvas.getContext('2d')
-                ctx?.drawImage(img, 0, 0)
-                canvas.toBlob((b) => (b ? resolve(b) : reject(new Error('encode failed'))), 'image/png')
-              }
-              img.onerror = reject
-              img.src = current.src
-            })
-      await navigator.clipboard.write([new ClipboardItem({ 'image/png': pngBlob })])
-      setCopiedImg(true)
-      setTimeout(() => setCopiedImg(false), 1600)
-    } catch {
-      /* ignore if clipboard image API unavailable */
-    }
+    // GOXF: read via main (presigned links have no CORS) and say when it fails.
+    const ok = await copyImageSrc(current.src)
+    setCopiedImg(ok ? 'ok' : 'fail')
+    setTimeout(() => setCopiedImg(false), 1600)
   }
 
   // Portal: markdown images sit inside <p>, and a transformed ancestor would break `fixed`.
@@ -179,8 +158,8 @@ export function ImageLightbox({
             <ZoomIn />
           </IconButton>
           <Button size="sm" onClick={() => void copyImageToClipboard()} className="bg-on-overlay/15 text-on-overlay hover:bg-on-overlay/25 hover:text-on-overlay">
-            {copiedImg ? <Check className="text-status-online" /> : <Copy />}
-            {copiedImg ? '已复制' : '复制图片'}
+            {copiedImg === 'ok' ? <Check className="text-status-online" /> : <Copy />}
+            {copiedImg === 'ok' ? '已复制' : copiedImg === 'fail' ? '复制失败' : '复制图片'}
           </Button>
           <Button size="sm" onClick={save} className="bg-on-overlay/15 text-on-overlay hover:bg-on-overlay/25 hover:text-on-overlay">
             <Download /> 保存图片

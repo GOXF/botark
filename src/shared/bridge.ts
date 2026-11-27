@@ -3,6 +3,7 @@ import type { GoxfDownloadBridge } from './goxfDownload'
 import type { GoxfPopoutBridge } from './goxfPopout'
 import type { GoxfInAppBridge } from './goxfInApp'
 import type { GoxfTrayBridge } from './goxfTray'
+import type { GoxfImageBridge } from './goxfImage'
 import type { SlackBridge } from './slack'
 import type { WorkspaceBridge } from './workspace'
 import type { PortalBridge } from './workspacePortal'
@@ -340,4 +341,5 @@ export interface BotHubBridge {
   readonly goxfInApp?: GoxfInAppBridge
   /** GOXF fork: close button hides to the tray (Windows/Linux). */
   readonly goxfTray?: GoxfTrayBridge
+  readonly goxfImage?: GoxfImageBridge
 }

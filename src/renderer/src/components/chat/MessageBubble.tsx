@@ -1,4 +1,5 @@
 import { memo, useCallback, useMemo, useState } from 'react'
+import { copyImageSrc } from '@/lib/goxfCopyImage'
 import { AlertCircle, Check, Clock3, Copy, CornerDownRight, Download, ExternalLink, FileText, Globe, KeyRound, Loader2, Maximize2, RotateCw, Undo2, Wrench } from 'lucide-react'
 import { cn } from '@/lib/cn'
 import { formatClock } from '@/lib/format'
@@ -34,16 +35,6 @@ interface MessageBubbleProps {
   /** Shown in the meta line when a bot has several accounts. */
   accountLabel?: string
   onRetry?: (messageId: string) => void
-}
-
-/** Clipboard only takes PNG: re-encode other image types through a canvas. */
-async function toPng(blob: Blob): Promise<Blob> {
-  const bmp = await createImageBitmap(blob)
-  const canvas = document.createElement('canvas')
-  canvas.width = bmp.width
-  canvas.height = bmp.height
-  canvas.getContext('2d')!.drawImage(bmp, 0, 0)
-  return new Promise((resolve, reject) => canvas.toBlob((b) => (b ? resolve(b) : reject(new Error('encode failed'))), 'image/png'))
 }
 
 function DeliveryState({ message, onRetry }: Pick<MessageBubbleProps, 'message' | 'onRetry'>) {
@@ -1130,15 +1121,7 @@ const MessageBubbleBody = memo(function MessageBubbleBody({
     e.preventDefault()
     setCtx({ x: e.clientX, y: e.clientY, selection, img, link })
   }
-  const copyImage = async (src: string) => {
-    try {
-      const blob = await (await fetch(src)).blob()
-      const png = blob.type === 'image/png' ? blob : await toPng(blob)
-      await navigator.clipboard.write([new ClipboardItem({ 'image/png': png })])
-    } catch {
-      /* clipboard refused: nothing to do */
-    }
-  }
+  const copyImage = (src: string) => copyImageSrc(src)
   const quoteImage = (src: string) => {
     setReplyTarget(message.botId, {
       messageId: message.id,
