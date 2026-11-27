@@ -1,3 +1,4 @@
+import { desktopNotice, useDesktopLocale } from '@/lib/desktopCopy'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import {
@@ -170,6 +171,7 @@ function McpServerFormDialog({
     options: { previousName?: string; autoStart: boolean }
   ) => Promise<void>
 }) {
+  useDesktopLocale()
   const locale = usePrefsStore((s) => s.locale)
   const L = (zh: string, en: string) => (locale === 'en' ? en : zh)
 
@@ -460,7 +462,7 @@ function McpServerFormDialog({
 
         {formError && (
           <p role="alert" className="rounded-lg bg-status-error/10 px-2.5 py-1.5 text-[12px] text-status-error-ink">
-            {formError}
+            {desktopNotice(formError)}
           </p>
         )}
       </div>
@@ -481,6 +483,7 @@ function McpPasteJsonDialog({
   busy: boolean
   onImportJson: (rawJson: string, targetScope: McpConfigScope, autoStart: boolean) => Promise<void>
 }) {
+  useDesktopLocale()
   const locale = usePrefsStore((s) => s.locale)
   const L = (zh: string, en: string) => (locale === 'en' ? en : zh)
   const [rawJson, setRawJson] = useState('')
@@ -562,7 +565,7 @@ function McpPasteJsonDialog({
 
         {err && (
           <p role="alert" className="rounded-lg bg-status-error/10 px-2.5 py-1.5 text-[12px] text-status-error-ink">
-            {err}
+            {desktopNotice(err)}
           </p>
         )}
       </div>
@@ -719,6 +722,7 @@ function WorkspaceStudioBody({
   onClose?: () => void
   onModalOpenChange?: (open: boolean) => void
 }) {
+  useDesktopLocale()
   const locale = usePrefsStore((s) => s.locale)
   const L = (zh: string, en: string) => (locale === 'en' ? en : zh)
 
@@ -1344,10 +1348,10 @@ function WorkspaceStudioBody({
         })}
       />
 
-      {hint && <p className="text-[11px] text-status-online-ink">{hint}</p>}
+      {hint && <p className="text-[11px] text-status-online-ink">{desktopNotice(hint)}</p>}
       {error && (
         <p role="alert" className="text-[11px] text-status-error">
-          {error}
+          {desktopNotice(error)}
         </p>
       )}
 

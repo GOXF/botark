@@ -9,7 +9,7 @@ import {
 } from '@/components/ui/ArkGlyphs'
 import { GrokBotMark } from '@/components/ui/GrokBotMark'
 import { IconButton } from '@/components/ui/IconButton'
-import { t } from '@/lib/i18n'
+import { t, useT } from '@/lib/i18n'
 import { runtimePlatform } from '@/lib/bridge'
 import { cn } from '@/lib/cn'
 import { shortcutLabel } from '@/lib/shortcuts'
@@ -29,6 +29,7 @@ function BrandMark() {
 }
 
 export function Sidebar({ onAddBot }: SidebarProps) {
+  const tr = useT()
   const openPalette = useBotStore((s) => s.openPalette)
   const sidebarCollapsed = useBotStore((s) => s.sidebarCollapsed)
   const toggleSidebarCollapsed = useBotStore((s) => s.toggleSidebarCollapsed)
@@ -92,7 +93,7 @@ export function Sidebar({ onAddBot }: SidebarProps) {
             <IconButton
               round
               active={onboardingOpen}
-              label="打开操作指南"
+              label={tr("Open onboarding guide")}
               onClick={() => setOnboardingOpen(true)}
             >
               <ArkPromptSparkSvg />
@@ -107,7 +108,7 @@ export function Sidebar({ onAddBot }: SidebarProps) {
           <IconButton
             round
             active={settingsOpen}
-            label="设置与账号"
+            label={tr("Settings & accounts")}
             onClick={() => setSettingsOpen(!settingsOpen)}
           >
             <Settings />
@@ -159,13 +160,13 @@ export function Sidebar({ onAddBot }: SidebarProps) {
         >
           <BrandMark />
           <span className="min-w-0 flex-1 truncate text-[13px] font-semibold tracking-tight text-ink">
-            设置与账号
+            {tr("Settings & accounts")}
           </span>
           <Settings className="size-4 shrink-0 text-ink-secondary" aria-hidden />
         </button>
         <IconButton
           round
-          label="手机无线同步"
+          label={tr("Mobile sync")}
           onClick={() => setSettingsOpen(true, 'mobile-sync')}
         >
           <ArkMobileLinkSvg />
@@ -174,7 +175,7 @@ export function Sidebar({ onAddBot }: SidebarProps) {
           <IconButton
             round
             active={onboardingOpen}
-            label="打开操作指南"
+            label={tr("Open onboarding guide")}
             onClick={() => setOnboardingOpen(true)}
           >
             <ArkPromptSparkSvg />

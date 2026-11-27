@@ -1,3 +1,4 @@
+import { desktopCopy, desktopNotice, useDesktopLocale } from '@/lib/desktopCopy'
 import { usePromptSlashMenu } from '@/components/chat/PromptSlashMenu'
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
 import { getPlatform } from '@adapters/platforms'
@@ -97,6 +98,7 @@ const ROOM_SCENARIOS = [
 /* -------------------------------------------------------------------------- */
 
 function CreateRoom() {
+  useDesktopLocale()
   const bots = useBotStore((s) => s.bots)
   const accounts = useBotStore((s) => s.accounts)
   const selectBot = useBotStore((s) => s.selectBot)
@@ -141,8 +143,8 @@ function CreateRoom() {
 
   const placeholderTitle =
     selectedBots.length >= 2
-      ? `群聊名称（默认：${selectedBots.map((b) => b.name).join(' · ')}）`
-      : '群聊名称（选填）'
+      ? desktopCopy("群聊名称（默认：{0}）", "Group chat name (default: {0})", [(selectedBots.map((b) => b.name).join(' · '))])
+      : desktopCopy("群聊名称（选填）", "Group chat name (optional)")
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -187,14 +189,12 @@ function CreateRoom() {
                 </span>
               )}
             </div>
-            <h1 className="text-[18px] leading-6 font-semibold tracking-tight text-ink">
-              新建协作群聊
-            </h1>
+            <h1 className="text-[18px] leading-6 font-semibold tracking-tight text-ink">{desktopCopy("新建协作群聊", "New collaboration chat")}</h1>
           </div>
 
           {/* Clean Single Input */}
           <TextInput
-            aria-label="群聊名称"
+            aria-label={desktopCopy("群聊名称", "Group chat name")}
             value={title}
             onChange={(e) => setTitle(e.target.value)}
             placeholder={placeholderTitle}
@@ -204,15 +204,14 @@ function CreateRoom() {
           {/* Sculpted 2-Column Bot Cards */}
           <div className="flex flex-col gap-2">
             <div className="flex items-center justify-between px-0.5 text-[12px] text-ink-muted">
-              <span>选择 2–6 位成员</span>
+              <span>{desktopCopy("选择 2–6 位成员", "Choose 2–6 members")}</span>
               <span className="tabular-nums">{ids.length} / 6</span>
             </div>
 
             {bots.length === 0 ? (
               <div className="flex flex-col items-center gap-3 rounded-2xl border border-dashed border-line-strong py-8 text-center">
                 <Button size="sm" variant="primary" onClick={() => setAddBotOpen(true)}>
-                  <Plus /> 添加 Bot
-                </Button>
+                  <Plus />{desktopCopy(" 添加 Bot", " Add Bot")}</Button>
               </div>
             ) : (
               <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
@@ -307,7 +306,7 @@ function CreateRoom() {
                           }}
                           className="h-6.5 px-2.5 text-[11px]"
                         >
-                          {acc?.pending ? '连接中…' : '连接'}
+                          {acc?.pending ? desktopCopy("连接中…", "Connecting…") : desktopCopy("连接", "Connect")}
                         </Button>
                       )}
                     </div>
@@ -316,9 +315,7 @@ function CreateRoom() {
               </div>
             )}
             {hasDuplicateNames && (
-              <p className="px-0.5 text-[11.5px] text-ink-muted">
-                同名成员将在创建时自动编号或按账号区分
-              </p>
+              <p className="px-0.5 text-[11.5px] text-ink-muted">{desktopCopy("同名成员将在创建时自动编号或按账号区分", "Members with the same name are distinguished by number or account.")}</p>
             )}
           </div>
 
@@ -328,28 +325,28 @@ function CreateRoom() {
               value={mode}
               onValueChange={setMode}
               size="sm"
-              aria-label="发言模式"
+              aria-label={desktopCopy("发言模式", "Reply mode")}
               options={[
-                { value: 'auto', label: '自主接力', icon: <ArkPromptSparkSvg /> },
-                { value: 'manual', label: '手动 @' }
+                { value: 'auto', label: desktopCopy("自主接力", "Automatic handoff"), icon: <ArkPromptSparkSvg /> },
+                { value: 'manual', label: desktopCopy("手动 @", "Manual @mentions") }
               ]}
             />
             <div className="flex items-center gap-2">
-              <span className="text-[12px] text-ink-muted">上限</span>
+              <span className="text-[12px] text-ink-muted">{desktopCopy("上限", "Upper limit")}</span>
               <NumberStepper
                 value={limit}
                 onChange={setLimit}
                 min={1}
                 max={24}
-                suffix="轮"
-                aria-label="轮数上限"
+                suffix={desktopCopy("轮", " rounds")}
+                aria-label={desktopCopy("轮数上限", "Maximum number of rounds")}
               />
             </div>
           </div>
 
           {error && (
             <p role="alert" className="text-center text-[12.5px] text-status-error">
-              {error}
+              {desktopNotice(error)}
             </p>
           )}
 
@@ -360,9 +357,7 @@ function CreateRoom() {
               size="lg"
               disabled={ids.length < 2}
               className="min-w-44"
-            >
-              创建群聊
-            </Button>
+            >{desktopCopy("创建群聊", "Create group chat")}</Button>
           </div>
         </form>
       </div>
@@ -441,8 +436,9 @@ function ReferenceList({ references, onRemove }: {
   references: RoomReference[]
   onRemove?: (index: number) => void
 }) {
+  useDesktopLocale()
   return (
-    <ul aria-label="随附资料" className="grid gap-1">
+    <ul aria-label={desktopCopy("随附资料", "Attachments")} className="grid gap-1">
       {references.map((ref, index) => (
         <li key={index} className="flex items-start gap-2 rounded-md bg-sunken px-2 py-1 text-xs text-ink-secondary">
           <details className="min-w-0 flex-1">
@@ -450,7 +446,7 @@ function ReferenceList({ references, onRemove }: {
             <pre className="my-1 max-h-48 overflow-auto whitespace-pre-wrap break-words">{ref.text}</pre>
           </details>
           {onRemove && (
-            <button type="button" aria-label={`移除 ${ref.label}`} onClick={() => onRemove(index)}>
+            <button type="button" aria-label={desktopCopy("移除 {0}", "Remove {0}", [(ref.label)])} onClick={() => onRemove(index)}>
               <X className="size-4" />
             </button>
           )}
@@ -473,6 +469,7 @@ const RoomMessageRow = memo(function RoomMessageRow({
   onMentionReply: (memberName: string) => void
   onExport: (messageId: string) => void
 }) {
+  useDesktopLocale()
   const member = members.find((m) => message.authorBotId ? m.botId === message.authorBotId : m.name === message.author)
   const authorBotId = message.authorBotId ?? member?.botId
   const bot = useBotStore((s) => authorBotId ? s.bots.find((b) => b.id === authorBotId) : undefined)
@@ -525,14 +522,14 @@ const RoomMessageRow = memo(function RoomMessageRow({
           <div className="flex items-center justify-between gap-2 border-b border-status-online/15 px-4 py-2">
             <div className="flex min-w-0 items-center gap-2 text-[12.5px]">
               <ArkConsensusSealSvg className="size-4 text-status-online" />
-              <span className="font-semibold text-status-online-ink">共识定稿</span>
+              <span className="font-semibold text-status-online-ink">{desktopCopy("共识定稿", "Final answer")}</span>
               <span className="truncate text-ink-muted">· {message.author}</span>
             </div>
             <div className="flex items-center gap-0.5">
               <button
                 type="button"
                 onClick={copyBody}
-                title="复制定稿"
+                title={desktopCopy("复制定稿", "Copy final answer")}
                 className="press-icon grid size-7 place-items-center rounded-full text-ink-secondary hover:bg-hover hover:text-ink"
               >
                 {copied ? (
@@ -544,7 +541,7 @@ const RoomMessageRow = memo(function RoomMessageRow({
               <button
                 type="button"
                 onClick={() => onExport(message.id)}
-                title="导出 Markdown"
+                title={desktopCopy("导出 Markdown", "Export Markdown")}
                 className="press-icon grid size-7 place-items-center rounded-full text-ink-secondary hover:bg-hover hover:text-ink"
               >
                 <ArkExportDocSvg className="size-3.5" />
@@ -597,7 +594,7 @@ const RoomMessageRow = memo(function RoomMessageRow({
               className="press inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11.5px] text-ink-muted hover:bg-hover hover:text-ink"
             >
               {copied ? <Check className="size-3 text-status-online" /> : <Copy className="size-3" />}
-              {copied ? '已复制' : '复制'}
+              {copied ? desktopCopy("已复制", "Copied") : desktopCopy("复制", "Copy")}
             </button>
           )}
           <button
@@ -605,9 +602,7 @@ const RoomMessageRow = memo(function RoomMessageRow({
             onClick={() => onMentionReply(member?.name ?? message.author)}
             className="press inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11.5px] text-ink-muted hover:bg-hover hover:text-ink"
           >
-            <ArkMentionLoopSvg className="size-3" />
-            追问
-          </button>
+            <ArkMentionLoopSvg className="size-3" />{desktopCopy("追问", "Follow up")}</button>
         </div>
       </div>
     </article>
@@ -645,6 +640,7 @@ const MAX_COMPOSER_HEIGHT = 200
 const trailingMention = new RegExp(`${mentionStartPattern}([^@＠\\r\\n]*)$`, 'u')
 
 export function RoomView({ id }: { id: string }) {
+  useDesktopLocale()
   const t = useT()
   const room = useRooms((s) => s.rooms.find((r) => r.id === id))
   const speaker = useRooms((s) => s.speakers[id])
@@ -809,11 +805,10 @@ export function RoomView({ id }: { id: string }) {
               role="status"
               className="hidden min-w-0 truncate text-[12px] shimmer-text sm:inline"
             >
-              {progress ? `${progress.turn}/${progress.limit} · ` : ''}@{speaker} 思考中…
-            </span>
+              {progress ? `${progress.turn}/${progress.limit} · ` : ''}@{speaker}{desktopCopy(" 思考中…", " Thinking…")}</span>
           ) : slackLabel ? (
             <span
-              title={`已映射 Slack ${slackLabel}`}
+              title={desktopCopy("已映射 Slack {0}", "Linked Slack: {0}", [(slackLabel)])}
               className="hidden max-w-36 items-center gap-1 truncate rounded-full bg-hover px-2.5 py-1 text-[11.5px] text-ink-secondary lg:inline-flex"
             >
               <ArkSlackWeaveSvg className="size-3 text-accent-600" />
@@ -874,11 +869,11 @@ export function RoomView({ id }: { id: string }) {
           >
             {room.pinned ? <PinOff aria-hidden /> : <Pin aria-hidden />}
           </IconButton>
-          <IconButton label="新建群聊" onClick={() => selectBot(NEW_ROOM_ID)}>
+          <IconButton label={desktopCopy("新建群聊", "New group chat")} onClick={() => selectBot(NEW_ROOM_ID)}>
             <ArkComposeNewSvg />
           </IconButton>
           <IconButton
-            label={infoOpen ? '收起详情' : '打开详情'}
+            label={infoOpen ? desktopCopy("收起详情", "Collapse Details") : desktopCopy("打开详情", "Open Details")}
             shortcut={shortcutLabel('I')}
             active={infoOpen}
             onClick={toggleInfoPanel}
@@ -892,7 +887,7 @@ export function RoomView({ id }: { id: string }) {
       {error && (
         <div className="mx-auto mt-2 flex max-w-[780px] flex-wrap items-center gap-2 px-4">
           <p role="alert" className="text-[12.5px] text-status-error">
-            {error}
+            {desktopNotice(error)}
           </p>
           {!room.coordinatorId && room.mode === 'manual' &&
             room.members.map((m) => (
@@ -964,14 +959,12 @@ export function RoomView({ id }: { id: string }) {
                   size="sm"
                 />
                 <div className="inline-flex items-center gap-2.5 rounded-2xl bg-bubble px-4 py-2.5">
-                  <span className="text-[13px] shimmer-text">@{speaker} 正在回复…</span>
+                  <span className="text-[13px] shimmer-text">@{speaker}{desktopCopy(" 正在回复…", " Replying…")}</span>
                   <button
                     type="button"
                     onClick={() => stopRoom(id)}
                     className="press rounded-full bg-surface px-2 py-0.5 text-[11px] font-medium text-ink-secondary shadow-hairline hover:text-ink"
-                  >
-                    停止
-                  </button>
+                  >{desktopCopy("停止", "Stop")}</button>
                 </div>
               </div>
             )}
@@ -986,7 +979,7 @@ export function RoomView({ id }: { id: string }) {
           {mentionCandidates.length > 0 && (
             <div
               role="listbox"
-              aria-label="提及成员"
+              aria-label={desktopCopy("提及成员", "Mention members")}
               className={cn(
                 'absolute bottom-full left-2 z-30 mb-2 flex w-64 flex-col gap-0.5 p-1.5',
                 MENU_SURFACE,
@@ -1041,7 +1034,7 @@ export function RoomView({ id }: { id: string }) {
             )}
             <div className="flex items-end gap-0.5">
               <IconButton
-                label="提及成员 (@)"
+                label={desktopCopy("提及成员 (@)", "Mention members (@)")}
                 onClick={() => {
                   setText((prev) => `${prev}${prev && !prev.endsWith(' ') ? ' ' : ''}@`)
                   requestAnimationFrame(() => textareaRef.current?.focus())
@@ -1078,10 +1071,10 @@ export function RoomView({ id }: { id: string }) {
                 onKeyDown={onKeyDown}
                 placeholder={
                   !room.coordinatorId && room.mode === 'manual'
-                    ? '当前为手动 @ 模式，输入 @ 成员名点名回复…'
-                    : '发消息，或输入 @ 点名接力…'
+                    ? desktopCopy("当前为手动 @ 模式，输入 @ 成员名点名回复…", "Manual mode: @mention a member to get a reply…")
+                    : desktopCopy("发消息，或输入 @ 点名接力…", "Send a message or @mention a member…")
                 }
-                aria-label={`发消息到 ${room.title}`}
+                aria-label={desktopCopy("发消息到 {0}", "Message {0}", [(room.title)])}
                 className="block max-h-[200px] min-h-8 flex-1 resize-none bg-transparent px-1.5 py-[5px] text-[14px] leading-[22px] text-ink outline-none placeholder:text-ink-muted"
               />
 
@@ -1089,8 +1082,8 @@ export function RoomView({ id }: { id: string }) {
                 <button
                   type="button"
                   onClick={() => stopRoom(id)}
-                  aria-label="停止"
-                  title="停止"
+                  aria-label={desktopCopy("停止", "Stop")}
+                  title={desktopCopy("停止", "Stop")}
                   className="press-icon grid size-8 shrink-0 place-items-center rounded-full bg-ink text-canvas hover:bg-ink/85"
                 >
                   <Square className="size-3.5 fill-current" />
@@ -1100,8 +1093,8 @@ export function RoomView({ id }: { id: string }) {
                   type="button"
                   onClick={submit}
                   disabled={!canSend}
-                  aria-label="发送"
-                  title="发送（Enter）"
+                  aria-label={desktopCopy("发送", "Send")}
+                  title={desktopCopy("发送（Enter）", "Send (Enter)")}
                   className={cn(
                     'press-icon grid size-8 shrink-0 place-items-center rounded-full transition-colors',
                     canSend

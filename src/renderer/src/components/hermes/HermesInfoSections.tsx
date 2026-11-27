@@ -1,3 +1,4 @@
+import { desktopCopy, desktopNotice, useDesktopLocale } from '@/lib/desktopCopy'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   Clock,
@@ -63,6 +64,7 @@ function persistSavedHermesModel(modelId: string): string[] {
 }
 
 export function HermesServerSection({ accountId }: { accountId: string }) {
+  useDesktopLocale()
   const [status, setStatus] = useState<HermesAuthStatus | null>(null)
   const [models, setModels] = useState<Array<{ id: string; root?: string }>>([])
   const [customModels, setCustomModels] = useState<string[]>(() => loadSavedHermesModels())
@@ -148,13 +150,13 @@ export function HermesServerSection({ accountId }: { accountId: string }) {
       if (m.id) map.set(m.id, m)
     }
     if (status?.model && !map.has(status.model)) {
-      map.set(status.model, { id: status.model, root: '当前选定模型' })
+      map.set(status.model, { id: status.model, root: desktopCopy("当前选定模型", "Current Selected Model") })
     }
     for (const cm of customModels) {
-      if (!map.has(cm)) map.set(cm, { id: cm, root: '自定义模型' })
+      if (!map.has(cm)) map.set(cm, { id: cm, root: desktopCopy("自定义模型", "Custom Model") })
     }
     for (const preset of HERMES_COMMON_PRESETS) {
-      if (!map.has(preset.id)) map.set(preset.id, preset)
+      if (!map.has(preset.id)) map.set(preset.id, { ...preset, root: desktopNotice(preset.root) })
     }
     return [...map.values()]
   })()
@@ -164,7 +166,7 @@ export function HermesServerSection({ accountId }: { accountId: string }) {
       title={t('Hermes Gateway')}
       action={<RefreshButton loading={loading} onClick={() => void refresh()} />}
     >
-      {error && <p className="pb-1 text-[12px] text-status-error">{error}</p>}
+      {error && <p className="pb-1 text-[12px] text-status-error">{desktopNotice(error)}</p>}
       <div className="flex flex-col gap-2">
         <div className="flex items-center justify-between gap-2 rounded-lg border border-line bg-surface px-2.5 py-2 text-[12px]">
           <span className="flex min-w-0 items-center gap-1.5 text-ink-secondary">
@@ -202,9 +204,9 @@ export function HermesServerSection({ accountId }: { accountId: string }) {
             type="button"
             onClick={() => setCustomInputOpen((v) => !v)}
             className="shrink-0 rounded-full border border-line bg-surface px-2 py-0.5 text-[11px] font-medium text-ink-secondary hover:bg-hover hover:text-ink"
-            title="输入任意自定义模型 ID"
+            title={desktopCopy("输入任意自定义模型 ID", "Enter any custom model ID")}
           >
-            {customInputOpen ? '收起' : '+ 自定义'}
+            {customInputOpen ? desktopCopy("收起", "Collapse") : desktopCopy("+ 自定义", "+ Custom")}
           </button>
         </div>
 
@@ -216,7 +218,7 @@ export function HermesServerSection({ accountId }: { accountId: string }) {
               onKeyDown={(e) => {
                 if (e.key === 'Enter') void handleSaveCustomModel()
               }}
-              placeholder="如 anthropic/claude-opus-4 或 qwen3:32b"
+              placeholder={desktopCopy("如 anthropic/claude-opus-4 或 qwen3:32b", "e.g. anthropic/claude-opus-4 or qwen3:32b")}
               className="h-7 min-w-0 flex-1 rounded-lg border border-line bg-canvas px-2.5 font-mono text-[11.5px] text-ink outline-none placeholder:text-ink-muted focus:border-accent-600"
             />
             <Button
@@ -224,9 +226,7 @@ export function HermesServerSection({ accountId }: { accountId: string }) {
               variant="primary"
               disabled={savingModel || !customModelDraft.trim()}
               onClick={() => void handleSaveCustomModel()}
-            >
-              应用
-            </Button>
+            >{desktopCopy("应用", "Apply")}</Button>
           </div>
         )}
 
@@ -261,6 +261,7 @@ export function HermesSessionsSection({
   accountId: string
   botId: string
 }) {
+  useDesktopLocale()
   const [sessions, setSessions] = useState<HermesSessionSummary[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string>()
@@ -320,7 +321,7 @@ export function HermesSessionsSection({
         </div>
       }
     >
-      {error && <p className="pb-1 text-[12px] text-status-error">{error}</p>}
+      {error && <p className="pb-1 text-[12px] text-status-error">{desktopNotice(error)}</p>}
       {sessions.length === 0 ? (
         <EmptyLine>{t('No saved sessions yet')}</EmptyLine>
       ) : (
@@ -471,6 +472,7 @@ export function HermesJobsSection({ accountId }: { accountId: string }) {
 }
 
 export function HermesSkillsSection({ accountId }: { accountId: string }) {
+  useDesktopLocale()
   const [skills, setSkills] = useState<HermesSkillItem[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string>()
@@ -501,7 +503,7 @@ export function HermesSkillsSection({ accountId }: { accountId: string }) {
       count={skills.length || undefined}
       action={<RefreshButton loading={loading} onClick={() => void refresh()} />}
     >
-      {error && <p className="pb-1 text-[12px] text-status-error">{error}</p>}
+      {error && <p className="pb-1 text-[12px] text-status-error">{desktopNotice(error)}</p>}
       {skills.length === 0 ? (
         <EmptyLine>{t('No installed skills')}</EmptyLine>
       ) : (
@@ -533,6 +535,7 @@ export function HermesSkillsSection({ accountId }: { accountId: string }) {
 }
 
 export function HermesToolsetsSection({ accountId }: { accountId: string }) {
+  useDesktopLocale()
   const [toolsets, setToolsets] = useState<HermesToolsetItem[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string>()
@@ -563,7 +566,7 @@ export function HermesToolsetsSection({ accountId }: { accountId: string }) {
       count={toolsets.filter((ts) => ts.enabled).length || undefined}
       action={<RefreshButton loading={loading} onClick={() => void refresh()} />}
     >
-      {error && <p className="pb-1 text-[12px] text-status-error">{error}</p>}
+      {error && <p className="pb-1 text-[12px] text-status-error">{desktopNotice(error)}</p>}
       {toolsets.length === 0 ? (
         <EmptyLine>{t('No toolsets reported')}</EmptyLine>
       ) : (

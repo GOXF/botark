@@ -1,3 +1,4 @@
+import { nativeDisplayCopy } from '../nativeDisplayCopy'
 import { BrowserWindow, session as electronSession, shell, type WebContents } from 'electron'
 import { getAppWindowIcon } from '../appIcon'
 import {
@@ -101,7 +102,7 @@ export async function openDotLoginWindow(
     minWidth: 720,
     minHeight: 560,
     parent: parent && !parent.isDestroyed() ? parent : undefined,
-    title: '使用 ChatGPT Dot 登录 (chatgpt.com/dots)',
+    title: nativeDisplayCopy("使用 ChatGPT Dot 登录 (chatgpt.com/dots)", "Sign in to ChatGPT Dot (chatgpt.com/dots)"),
     backgroundColor: '#f7f7f8',
     autoHideMenuBar: true,
     ...(windowIcon ? { icon: windowIcon } : {}),
@@ -151,13 +152,13 @@ export async function openDotLoginWindow(
       }
       await wc.executeJavaScript(
         buildGoogleFallbackBannerScript({
-          title: 'Google 登录受限或需要通行密钥',
-          detail: '可尝试兼容模式重试，或在系统浏览器打开 chatgpt.com/dots 登录后粘贴 AT/RT 凭据导入。',
-          buttonLabel: '在系统浏览器打开',
+          title: nativeDisplayCopy("Google 登录受限或需要通行密钥", "Google sign-in is restricted or requires a passkey."),
+          detail: nativeDisplayCopy("可尝试兼容模式重试，或在系统浏览器打开 chatgpt.com/dots 登录后粘贴 AT/RT 凭据导入。", "Retry sign-in or sign in to ChatGPT Dot in your browser."),
+          buttonLabel: nativeDisplayCopy("在系统浏览器打开", "Open in browser"),
           actionUrl: 'botark-external://open',
           secondaryActions: [
-            { label: '尝试兼容模式重试', actionUrl: 'botark-action://retry-firefox-ua' },
-            { label: '返回 Dot 登录页', actionUrl: 'botark-action://back-to-login' }
+            { label: nativeDisplayCopy("尝试兼容模式重试", "Retry in compatibility mode"), actionUrl: 'botark-action://retry-firefox-ua' },
+            { label: nativeDisplayCopy("返回 Dot 登录页", "Back to Dot sign-in"), actionUrl: 'botark-action://back-to-login' }
           ]
         }),
         true
@@ -209,7 +210,7 @@ export async function openDotLoginWindow(
           overrideBrowserWindowOptions: {
             width: 540,
             height: 700,
-            title: 'ChatGPT Dot 安全登录',
+            title: nativeDisplayCopy("ChatGPT Dot 安全登录", "ChatGPT Dot secure sign-in"),
             autoHideMenuBar: true,
             ...(windowIcon ? { icon: windowIcon } : {}),
             parent: parentForChild.isDestroyed() ? undefined : parentForChild,

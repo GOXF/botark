@@ -1,3 +1,4 @@
+import { desktopCopy, useDesktopLocale } from '@/lib/desktopCopy'
 import { useEffect, useState } from 'react'
 import { Download, RefreshCw, X } from 'lucide-react'
 import type { UpdateStatusEvent } from '@shared/ipc'
@@ -14,6 +15,7 @@ type BannerState =
   | { kind: 'message'; text: string }
 
 export function UpdateBanner() {
+  useDesktopLocale()
   const [state, setState] = useState<BannerState>({ kind: 'hidden' })
   const [, setChecking] = useState(false)
 
@@ -44,7 +46,7 @@ export function UpdateBanner() {
           break
         case 'not-available':
           setChecking(false)
-          setState({ kind: 'message', text: `当前已是最新版本 (v${event.version})` })
+          setState({ kind: 'message', text: desktopCopy("当前已是最新版本 (v{0})", "You’re up to date (v{0})", [(event.version)]) })
           break
         case 'error':
           setChecking(false)
@@ -88,16 +90,12 @@ export function UpdateBanner() {
       {view.kind === 'available' && view.manualInstall && (
         <>
           <Download className="size-4 text-accent-600" aria-hidden />
-          <span className="text-ink">
-            新版本 {view.version} 已发布，请手动下载安装
-          </span>
+          <span className="text-ink">{desktopCopy("新版本 ", "New Version ")}{view.version}{desktopCopy(" 已发布，请手动下载安装", " is available. Download and install it manually.")}</span>
           <Button
             size="sm"
             variant="primary"
             onClick={() => void getBridge()?.updates.install()}
-          >
-            下载
-          </Button>
+          >{desktopCopy("下载", "Download")}</Button>
           <button
             type="button"
             className="press-icon grid size-7 place-items-center rounded-full text-ink-muted hover:bg-hover hover:text-ink"

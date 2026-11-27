@@ -1,3 +1,4 @@
+import { desktopCopy, desktopNotice, useDesktopLocale } from '@/lib/desktopCopy'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Download, File, FileCode, FileImage, FileText, Pin, PinOff, Search, Trash2 } from 'lucide-react'
 import type { MuseFileEntryView } from '@shared/ipc'
@@ -78,6 +79,7 @@ function decodeBase64Utf8(b64: string): string {
 }
 
 function InlineFilePreview({ accountId, file }: { accountId: string; file: MuseFileEntryView }) {
+  useDesktopLocale()
   const [loading, setLoading] = useState(false)
   const [preview, setPreview] = useState<{ mimeType: string; dataBase64?: string; text?: string; truncated?: boolean } | null>(null)
   const [err, setErr] = useState<string>()
@@ -188,9 +190,7 @@ function InlineFilePreview({ accountId, file }: { accountId: string; file: MuseF
               })
             }
             className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-medium text-accent-600 hover:bg-surface"
-          >
-            画布打开
-          </button>}
+          >{desktopCopy("画布打开", "Canvas is open")}</button>}
           <button
             type="button"
             disabled={downloading || !path}
@@ -234,6 +234,7 @@ export function FilesSection({ accountId }: { accountId: string }) {
 }
 
 function AccountFilesSection({ accountId }: { accountId: string }) {
+  useDesktopLocale()
   const [items, setItems] = useState<MuseFileEntryView[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string>()
@@ -370,7 +371,7 @@ function AccountFilesSection({ accountId }: { accountId: string }) {
           ))}
         </div>
       </div>
-      {error && <p className="px-3 pt-2 text-[12px] text-status-error">{error}</p>}
+      {error && <p className="px-3 pt-2 text-[12px] text-status-error">{desktopNotice(error)}</p>}
       {visible.length === 0 ? (
         <div className="px-3 py-2.5">
           <EmptyLine>

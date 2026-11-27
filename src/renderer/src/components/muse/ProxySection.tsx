@@ -1,3 +1,4 @@
+import { desktopCopy, desktopNotice, useDesktopLocale } from '@/lib/desktopCopy'
 import { useCallback, useEffect, useState } from 'react'
 import { Activity, CheckCircle2, Loader2, ShieldCheck, XCircle } from 'lucide-react'
 import type { MuseProxyMode, MuseProxyTestResult, MuseProxyView } from '@shared/ipc'
@@ -145,6 +146,7 @@ export function parseInlineProxyInput(
  * Password stored via OS Keychain (`safeStorage`) with fail-closed leak protection.
  */
 export function ProxySection({ accountId }: { accountId: string }) {
+  useDesktopLocale()
   const platformId = useBotStore((s) => s.accounts[accountId]?.platformId)
   const [view, setView] = useState<MuseProxyView | null>(null)
   const [mode, setMode] = useState<MuseProxyMode>('direct')
@@ -249,7 +251,7 @@ export function ProxySection({ accountId }: { accountId: string }) {
       setHint(
         platformId === 'meta-muse'
           ? t('Proxy saved — reconnect Muse to apply WSS fully')
-          : '独立代理已加密生效（钥匙串锁定异常时自动阻断直连防泄漏）'
+          : desktopCopy("独立代理已加密生效（钥匙串锁定异常时自动阻断直连防泄漏）", "Dedicated proxy is active. If saved credentials can’t be unlocked, direct connections are blocked.")
       )
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
@@ -271,11 +273,11 @@ export function ProxySection({ accountId }: { accountId: string }) {
       title={t('Account proxy')}
       action={<RefreshButton loading={loading} onClick={() => void refresh()} />}
     >
-      {error && <p className="pb-1 text-[12px] text-status-error">{error}</p>}
-      {hint && <p className="pb-1 text-[12px] text-ink-secondary">{hint}</p>}
+      {error && <p className="pb-1 text-[12px] text-status-error">{desktopNotice(error)}</p>}
+      {hint && <p className="pb-1 text-[12px] text-ink-secondary">{desktopNotice(hint)}</p>}
       <p className="mb-2 flex items-center gap-1 text-[11px] text-ink-muted">
         <ShieldCheck className="size-3 shrink-0 text-status-online-ink" aria-hidden />
-        <span>钥匙串加密存储 · 不可读时自动阻断直连</span>
+        <span>{desktopCopy("钥匙串加密存储 · 不可读时自动阻断直连", "Encrypted in Keychain. Direct connections are blocked if credentials can’t be read.")}</span>
       </p>
       <div className="flex flex-col gap-2">
         <div className="flex flex-col gap-1 text-[12px]">
@@ -299,7 +301,7 @@ export function ProxySection({ accountId }: { accountId: string }) {
                 <TextInput
                   value={host}
                   onChange={(e) => handleHostChange(e.target.value)}
-                  placeholder={mode === 'https' ? 'proxy.example.com 或粘贴完整代理链接' : '127.0.0.1 或粘贴完整代理链接'}
+                  placeholder={mode === 'https' ? desktopCopy("proxy.example.com 或粘贴完整代理链接", "Proxy.example.com or paste full proxy link") : desktopCopy("127.0.0.1 或粘贴完整代理链接", "127.0.0.1 or paste the full proxy link")}
                 />
               </label>
               <label className="flex flex-col gap-1 text-[12px]">
@@ -359,14 +361,14 @@ export function ProxySection({ accountId }: { accountId: string }) {
             <span className="min-w-0 break-words">
               {testResult.ok
                 ? [
-                    mode === 'direct' ? '直连可用' : '代理可用',
+                    mode === 'direct' ? desktopCopy("直连可用", "Direct connection available") : desktopCopy("代理可用", "Proxy Available"),
                     typeof testResult.latencyMs === 'number' ? `${testResult.latencyMs} ms` : null,
                     testResult.country,
                     testResult.exitIp
                   ]
                     .filter(Boolean)
                     .join(' · ')
-                : `不可用：${testResult.error || '连接失败'}`}
+                : `不可用：${testResult.error || desktopCopy("连接失败", "Connection failed")}`}
             </span>
           </div>
         )}
@@ -384,7 +386,7 @@ export function ProxySection({ accountId }: { accountId: string }) {
               ) : (
                 <Activity className="size-3.5" aria-hidden />
               )}
-              {testing ? '检测中…' : '测试延迟'}
+              {testing ? desktopCopy("检测中…", "Testing…") : desktopCopy("测试延迟", "Test delay")}
             </Button>
           )}
           <Button

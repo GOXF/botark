@@ -1,3 +1,4 @@
+import { desktopNotice, useDesktopLocale } from '@/lib/desktopCopy'
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import * as RadixDialog from '@radix-ui/react-dialog'
 import { Globe, PanelRight, Pin, Plus, RefreshCw, Search, ShieldCheck, Sparkles, Users, X } from 'lucide-react'
@@ -74,6 +75,7 @@ export function CommandPalette() {
 }
 
 function PaletteBody({ onClose }: { onClose: () => void }) {
+  useDesktopLocale()
   const t = useT()
   const seed = useBotStore((s) => s.paletteQuery)
   const bots = useBotStore((s) => s.bots)
@@ -388,7 +390,7 @@ function PaletteBody({ onClose }: { onClose: () => void }) {
                       {row.subtitle && <span className="truncate text-[12px] leading-4 text-ink-muted">{row.subtitle}</span>}
                     </span>
                     {row.badges}
-                    {row.hint && <span className="shrink-0 text-[12px] text-ink-muted tabular-nums">{row.hint}</span>}
+                    {row.hint && <span className="shrink-0 text-[12px] text-ink-muted tabular-nums">{desktopNotice(row.hint)}</span>}
                   </button>
                 )
               })}

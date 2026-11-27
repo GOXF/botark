@@ -1,3 +1,4 @@
+import { desktopCopy, desktopNotice, useDesktopLocale } from '@/lib/desktopCopy'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Check, Copy, Cpu, ExternalLink, FileText, Globe, Link2, RefreshCw, Sparkles } from 'lucide-react'
 import type { CueAuthStatus, CueRpcRequest } from '@shared/ipc'
@@ -194,6 +195,7 @@ function useCueAuthKind(accountId: string | undefined): CueAuthStatus['authKind'
  * 1. Cue Account Auth & Credential Import Card (parity with `GrokAccountAuthSection`).
  */
 export function CueAccountAuthSection({ accountId }: { accountId: string }) {
+  useDesktopLocale()
   const account = useBotStore((s) => s.accounts[accountId])
   const openCueLogin = useBotStore((s) => s.openCueLogin)
   const importCueCredentials = useBotStore((s) => s.importCueCredentials)
@@ -219,12 +221,12 @@ export function CueAccountAuthSection({ accountId }: { accountId: string }) {
       await importCueCredentials(accountId, rawCred.trim())
       const latest = useBotStore.getState().accounts[accountId]
       if (latest?.status === 'error') {
-        setErr(latest.statusDetail || '凭据验证失败')
+        setErr(latest.statusDetail || desktopCopy("凭据验证失败", "Couldn’t verify credentials"))
         return
       }
       setRawCred('')
       setShowPaste(false)
-      setHint('凭据已生效，已自动同步 Cue Agent')
+      setHint(desktopCopy("凭据已生效，已自动同步 Cue Agent", "Credentials verified. Cue agents synced."))
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e))
     } finally {
@@ -238,7 +240,7 @@ export function CueAccountAuthSection({ accountId }: { accountId: string }) {
     setHint(undefined)
     try {
       const total = await syncCueAccountBots(accountId)
-      setHint(`已同步 ${total} 个 Agent 到左侧列表`)
+      setHint(desktopCopy("已同步 {0} 个 Agent 到左侧列表", "Synced {0} agents to the sidebar.", [(total)]))
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e))
     } finally {
@@ -249,31 +251,28 @@ export function CueAccountAuthSection({ accountId }: { accountId: string }) {
   if (isOnline && !showPaste && !hint && !err) {
     return (
       <Section
-        title="Cue 账号"
+        title={desktopCopy("Cue 账号", "Cue Account")}
         action={
-          <Button size="sm" variant="ghost" disabled={busy} onClick={() => void handleSyncAll()}>
-            同步全部 Agent ({botCount})
+          <Button size="sm" variant="ghost" disabled={busy} onClick={() => void handleSyncAll()}>{desktopCopy("同步全部 Agent (", "Sync all agents (")}{botCount})
           </Button>
         }
       >
         <div className="flex items-center justify-between gap-2 text-[12.5px] text-ink-secondary">
           <span className="truncate font-mono text-[11.5px] text-ink">
-            {account?.handle || account?.displayName || '已连接'}
+            {account?.handle || account?.displayName || desktopCopy("已连接", "Connected")}
           </span>
           <button
             type="button"
             onClick={() => setShowPaste(true)}
             className="shrink-0 text-[11.5px] text-ink-muted hover:text-ink"
-          >
-            更换凭据
-          </button>
+          >{desktopCopy("更换凭据", "Replace credentials")}</button>
         </div>
       </Section>
     )
   }
 
   return (
-    <Section title="Cue 账号登录与导入">
+    <Section title={desktopCopy("Cue 账号登录与导入", "Sign in to Cue or import credentials")}>
       <div className="flex flex-col gap-2.5">
         <div className="flex flex-wrap gap-1.5">
           <Button
@@ -281,24 +280,20 @@ export function CueAccountAuthSection({ accountId }: { accountId: string }) {
             variant="primary"
             disabled={busy || account?.pending}
             onClick={() => void openCueLogin(accountId, false)}
-          >
-            登录窗口
-          </Button>
+          >{desktopCopy("登录窗口", "Sign-in window")}</Button>
           <Button
             size="sm"
             variant="secondary"
             disabled={busy || account?.pending}
             onClick={() => void openCueLogin(accountId, true)}
-          >
-            默认浏览器授权
-          </Button>
+          >{desktopCopy("默认浏览器授权", "Sign in with your browser")}</Button>
           <Button
             size="sm"
             variant="ghost"
             disabled={busy}
             onClick={() => setShowPaste((v) => !v)}
           >
-            {showPaste ? '收起' : '粘贴凭据'}
+            {showPaste ? desktopCopy("收起", "Collapse") : desktopCopy("粘贴凭据", "Paste credentials")}
           </Button>
         </div>
 
@@ -307,7 +302,7 @@ export function CueAccountAuthSection({ accountId }: { accountId: string }) {
             <textarea
               value={rawCred}
               onChange={(e) => setRawCred(e.target.value)}
-              placeholder="粘贴 Bearer JWT、Cookie (cue_session_id=...)、JSON 或 API Key…"
+              placeholder={desktopCopy("粘贴 Bearer JWT、Cookie (cue_session_id=...)、JSON 或 API Key…", "Paste Bearer JWT, Cookie (cue_session_id=...), JSON or API Key…")}
               rows={2}
               spellCheck={false}
               className="block w-full resize-none rounded-lg border border-line bg-surface p-2 font-mono text-[11.5px] text-ink outline-none focus:border-accent-600"
@@ -320,7 +315,7 @@ export function CueAccountAuthSection({ accountId }: { accountId: string }) {
                   disabled={busy || !rawCred.trim()}
                   onClick={() => void handleImport()}
                 >
-                  {busy ? '导入中…' : '导入并同步'}
+                  {busy ? desktopCopy("导入中…", "Importing…") : desktopCopy("导入并同步", "Import and sync")}
                 </Button>
               </div>
             )}
@@ -328,10 +323,10 @@ export function CueAccountAuthSection({ accountId }: { accountId: string }) {
         )}
 
         {account?.status === 'error' && account.statusDetail && !err && (
-          <p className="text-[12px] text-status-error">{account.statusDetail}</p>
+          <p className="text-[12px] text-status-error">{desktopNotice(account.statusDetail)}</p>
         )}
-        {err && <p className="text-[12px] text-status-error">{err}</p>}
-        {hint && <p className="text-[12px] text-status-online-ink">{hint}</p>}
+        {err && <p className="text-[12px] text-status-error">{desktopNotice(err)}</p>}
+        {hint && <p className="text-[12px] text-status-online-ink">{desktopNotice(hint)}</p>}
       </div>
     </Section>
   )
@@ -341,6 +336,7 @@ export function CueAccountAuthSection({ accountId }: { accountId: string }) {
  * 2. Overview Card: Server-side Cue Agent identity, quota & sync.
  */
 export function CueOverviewSection({ bot, account }: { bot: Bot; account?: BotAccount }) {
+  useDesktopLocale()
   const syncCueAccountBots = useBotStore((s) => s.syncCueAccountBots)
   const openWebSessionAt = useBotStore((s) => s.openWebSessionAt)
 
@@ -389,19 +385,18 @@ export function CueOverviewSection({ bot, account }: { bot: Bot; account?: BotAc
         <div className="flex items-center gap-2">
           <Sparkles className="size-4 text-accent-600" />
           <span className="text-[13px] font-semibold text-ink">
-            {agentMeta ? agentMeta.name : 'Cue Agent 概览'}
+            {agentMeta ? agentMeta.name : desktopCopy("Cue Agent 概览", "Cue Agent Overview")}
           </span>
         </div>
         <StatusBadge status={account.status} />
       </div>
       <div className="flex flex-col gap-1 text-[12px] text-ink-secondary">
         {agentMeta && (
-          <p>
-            Cue 服务端 Agent：<span className="font-medium text-ink">{agentMeta.name}</span>
+          <p>{desktopCopy("Cue 服务端 Agent：", "Agent:")}<span className="font-medium text-ink">{agentMeta.name}</span>
             {agentMeta.isManus === true
-              ? '（Cue 内置默认 Agent）'
+              ? desktopCopy("（Cue 内置默认 Agent）", "(Cue default agent)")
               : agentMeta.isManus === false
-                ? '（Cue 自定义 Agent）'
+                ? desktopCopy("（Cue 自定义 Agent）", "(Cue custom agent)")
                 : ''}
           </p>
         )}
@@ -411,42 +406,36 @@ export function CueOverviewSection({ bot, account }: { bot: Bot; account?: BotAc
           </p>
         )}
         {(agentMeta?.email || agentMeta?.phoneNumber) && (
-          <p className="break-all">
-            专属联络：
-            <span className="font-medium text-ink">
+          <p className="break-all">{desktopCopy("专属联络：", "Dedicated contact:")}<span className="font-medium text-ink">
               {[agentMeta.email, agentMeta.phoneNumber].filter(Boolean).join(' · ')}
             </span>
           </p>
         )}
         {displaySessionId && (
-          <p className="break-all">
-            会话 ID：<span className="font-mono text-[11px] text-ink">{displaySessionId}</span>
+          <p className="break-all">{desktopCopy("会话 ID：", "Session ID:")}<span className="font-mono text-[11px] text-ink">{displaySessionId}</span>
           </p>
         )}
         {agentMeta?.lastDisplayMessage && (
-          <p className="line-clamp-1" title={agentMeta.lastDisplayMessage}>
-            最近摘要：<span className="text-ink">{agentMeta.lastDisplayMessage}</span>
+          <p className="line-clamp-1" title={agentMeta.lastDisplayMessage}>{desktopCopy("最近摘要：", "Recent summary:")}<span className="text-ink">{agentMeta.lastDisplayMessage}</span>
           </p>
         )}
         {isApiKey && (
-          <p className="text-[11.5px] text-ink-muted">当前凭据为 Manus API Key（消耗 API 积分）</p>
+          <p className="text-[11.5px] text-ink-muted">{desktopCopy("当前凭据为 Manus API Key（消耗 API 积分）", "Using a Manus API key (uses API credits)")}</p>
         )}
         {!isApiKey && hasCreditNumbers && quota && (
-          <p>
-            Cue 周期剩余额度：
-            <span className="font-medium text-ink">
+          <p>{desktopCopy("Cue 周期剩余额度：", "Cue balance for the cycle:")}<span className="font-medium text-ink">
               {quota.weeklyRemainingCredits ?? '—'}
               {quota.limitCredits !== null ? ` / ${quota.limitCredits}` : ''}
               {quota.remainingPercent !== null ? ` (${quota.remainingPercent}%)` : ''}
             </span>
             {quota.purchasedRemainingCredits !== null
-              ? ` · 已购余额 ${quota.purchasedRemainingCredits}`
+              ? desktopCopy(" · 已购余额 {0}", " · Purchased balance: {0}", [(quota.purchasedRemainingCredits)])
               : ''}
           </p>
         )}
       </div>
       {account.statusDetail && (
-        <p className="text-[11.5px] text-status-error">{account.statusDetail}</p>
+        <p className="text-[11.5px] text-status-error">{desktopNotice(account.statusDetail)}</p>
       )}
       <div className="flex flex-wrap gap-1.5">
         <Button
@@ -460,18 +449,14 @@ export function CueOverviewSection({ bot, account }: { bot: Bot; account?: BotAc
             )
           }}
         >
-          <RefreshCw className={cn('size-3.5', syncing && 'animate-spin')} />
-          同步 Agent
-        </Button>
+          <RefreshCw className={cn('size-3.5', syncing && 'animate-spin')} />{desktopCopy("同步 Agent", "Sync agents")}</Button>
         {!isApiKey && (
           <Button
             size="sm"
             variant="ghost"
             onClick={() => openWebSessionAt(null)}
           >
-            <Globe className="size-3.5" />
-            内置网页视图
-          </Button>
+            <Globe className="size-3.5" />{desktopCopy("内置网页视图", "Built-in web view")}</Button>
         )}
       </div>
     </div>
@@ -482,6 +467,7 @@ export function CueOverviewSection({ bot, account }: { bot: Bot; account?: BotAc
  * 3. Sessions & Full History Control (parity with `GrokSessionsSection`).
  */
 export function CueSessionsSection({ accountId, bot }: { accountId: string; bot: Bot }) {
+  useDesktopLocale()
   const hydrateCueBotHistory = useBotStore((s) => s.hydrateCueBotHistory)
   const syncCueAccountBots = useBotStore((s) => s.syncCueAccountBots)
   const messageCount = useBotStore((s) => s.messages[bot.id]?.length ?? 0)
@@ -502,9 +488,9 @@ export function CueSessionsSection({ accountId, bot }: { accountId: string; bot:
       await syncCueAccountBots(accountId)
       const fetched = await hydrateCueBotHistory(bot.id)
       const total = useBotStore.getState().messages[bot.id]?.length ?? messageCount
-      setHint(fetched > 0 ? `已拉取并合并 ${fetched} 条历史记录（当前共 ${total} 条）` : `已同步（当前共 ${total} 条记录）`)
+      setHint(fetched > 0 ? desktopCopy("已拉取并合并 {0} 条历史记录（当前共 {1} 条）", "Fetched and merged {0} history items. Total: {1}.", [(fetched), (total)]) : desktopCopy("已同步（当前共 {0} 条记录）", "Synced. Total records: {0}.", [(total)]))
     } catch (err) {
-      setError(cleanSidebarError(err) || '拉取历史消息失败')
+      setError(cleanSidebarError(err) || desktopCopy("拉取历史消息失败", "Couldn’t fetch message history"))
     } finally {
       setBusy(false)
     }
@@ -512,20 +498,18 @@ export function CueSessionsSection({ accountId, bot }: { accountId: string; bot:
 
   return (
     <Section
-      title="会话与控制"
+      title={desktopCopy("会话与控制", "Session & Control")}
       count={messageCount || undefined}
       action={<RefreshButton loading={busy} onClick={() => void pullAllHistory()} />}
     >
       <div className="flex flex-col gap-2 text-[12px]">
-        {error && <p className="text-status-error">{error}</p>}
-        {hint && <p className="text-ink-secondary">{hint}</p>}
+        {error && <p className="text-status-error">{desktopNotice(error)}</p>}
+        {hint && <p className="text-ink-secondary">{desktopNotice(hint)}</p>}
         <div className="flex items-center justify-between gap-2 text-ink-secondary">
           <span className="truncate font-mono text-[11px]">
-            {bot.activeSessionId || '待同步会话 UID'}
+            {bot.activeSessionId || desktopCopy("待同步会话 UID", "Session ID to sync")}
           </span>
-          <Button size="sm" variant="secondary" disabled={busy} onClick={() => void pullAllHistory()}>
-            拉取全部历史
-          </Button>
+          <Button size="sm" variant="secondary" disabled={busy} onClick={() => void pullAllHistory()}>{desktopCopy("拉取全部历史", "Fetch all history")}</Button>
         </div>
         {lastMessage?.text && (
           <p className="line-clamp-2 rounded-md bg-muted/40 px-2 py-1 text-[11.5px] text-ink-muted">
@@ -541,6 +525,7 @@ export function CueSessionsSection({ accountId, bot }: { accountId: string; bot:
  * 4. Scheduled Tasks / Automations (parity with `GrokAutomationsSection`).
  */
 export function CueAutomationsSection({ accountId }: { accountId: string }) {
+  useDesktopLocale()
   const authKind = useCueAuthKind(accountId)
   const isApiKey = authKind === 'api-key'
   const { data: tasks, loading, error, refresh } = useCueSectionLoader<
@@ -562,7 +547,7 @@ export function CueAutomationsSection({ accountId }: { accountId: string }) {
           const id = readOptionalStr(r['id'] ?? r['taskId'] ?? r['task_id']) ?? `task_${idx}`
           const name = readOptionalStr(r['title'] ?? r['name'] ?? r['prompt']) ?? id
           const schedule =
-            readOptionalStr(r['cron'] ?? r['scheduleText'] ?? r['schedule_text']) ?? '定时触发'
+            readOptionalStr(r['cron'] ?? r['scheduleText'] ?? r['schedule_text']) ?? desktopCopy("定时触发", "Scheduled trigger")
           const enabled = r['enabled'] !== false && r['isEnabled'] !== false
           return { id, name, schedule, enabled }
         })
@@ -576,15 +561,15 @@ export function CueAutomationsSection({ accountId }: { accountId: string }) {
 
   return (
     <Section
-      title="定时任务"
+      title={desktopCopy("定时任务", "Scheduled tasks")}
       count={tasks.length || undefined}
       action={!isApiKey ? <RefreshButton loading={loading} onClick={() => void refresh()} /> : undefined}
     >
-      {error && <p className="mb-2 text-[12px] text-status-error">{error}</p>}
+      {error && <p className="mb-2 text-[12px] text-status-error">{desktopNotice(error)}</p>}
       {isApiKey ? (
-        <EmptyLine>Manus API Key 模式暂不支持定时任务列表，使用 Cue 账号网页登录后可查看</EmptyLine>
+        <EmptyLine>{desktopCopy("Manus API Key 模式暂不支持定时任务列表，使用 Cue 账号网页登录后可查看", "Sign in to Cue with an account to see scheduled tasks. Manus API keys don’t support this feature.")}</EmptyLine>
       ) : tasks.length === 0 ? (
-        <EmptyLine>暂无定时任务</EmptyLine>
+        <EmptyLine>{desktopCopy("暂无定时任务", "No scheduled tasks")}</EmptyLine>
       ) : (
         <ul className="flex flex-col gap-1.5">
           {tasks.map((task) => (
@@ -594,7 +579,7 @@ export function CueAutomationsSection({ accountId }: { accountId: string }) {
             >
               <span className="min-w-0 flex-1 truncate font-medium text-ink">{task.name}</span>
               <span className="shrink-0 text-[11px] text-ink-muted">
-                {task.enabled ? task.schedule : '已暂停'}
+                {task.enabled ? task.schedule : desktopCopy("已暂停", "Paused")}
               </span>
             </li>
           ))}
@@ -608,6 +593,7 @@ export function CueAutomationsSection({ accountId }: { accountId: string }) {
  * 5. Agent Skills (parity with `GrokMemoriesAndSkillsSection`).
  */
 export function CueSkillsSection({ accountId }: { accountId: string }) {
+  useDesktopLocale()
   const authKind = useCueAuthKind(accountId)
   const isApiKey = authKind === 'api-key'
   const { data: skills, loading, error, refresh } = useCueSectionLoader<
@@ -640,9 +626,9 @@ export function CueSkillsSection({ accountId }: { accountId: string }) {
               Boolean(x)
           )
       const merged = [
-        ...mapItems(userList, '自定义'),
-        ...mapItems(officialList, '官方'),
-        ...mapItems(fallbackList, '技能')
+        ...mapItems(userList, desktopCopy("自定义", "Custom")),
+        ...mapItems(officialList, desktopCopy("官方", "Official")),
+        ...mapItems(fallbackList, desktopCopy("技能", "Skills"))
       ]
       const seen = new Set<string>()
       return merged.filter((item) => {
@@ -657,15 +643,15 @@ export function CueSkillsSection({ accountId }: { accountId: string }) {
 
   return (
     <Section
-      title="记忆与技能"
+      title={desktopCopy("记忆与技能", "Memory and skills")}
       count={skills.length || undefined}
       action={!isApiKey ? <RefreshButton loading={loading} onClick={() => void refresh()} /> : undefined}
     >
-      {error && <p className="mb-2 text-[12px] text-status-error">{error}</p>}
+      {error && <p className="mb-2 text-[12px] text-status-error">{desktopNotice(error)}</p>}
       {isApiKey ? (
-        <EmptyLine>Manus API Key 模式暂不支持技能列表，使用 Cue 账号网页登录后可查看</EmptyLine>
+        <EmptyLine>{desktopCopy("Manus API Key 模式暂不支持技能列表，使用 Cue 账号网页登录后可查看", "Sign in to Cue with an account to see skills. Manus API keys don’t support this feature.")}</EmptyLine>
       ) : skills.length === 0 ? (
-        <EmptyLine>暂无已配置技能</EmptyLine>
+        <EmptyLine>{desktopCopy("暂无已配置技能", "No skills configured")}</EmptyLine>
       ) : (
         <ul className="flex flex-col gap-1">
           {skills.slice(0, 12).map((sk) => (
@@ -697,6 +683,7 @@ export function CueFilesSection({
   accountId: string
   sessionId?: string
 }) {
+  useDesktopLocale()
   const authKind = useCueAuthKind(accountId)
   const isApiKey = authKind === 'api-key'
   const { data: files, loading, error, refresh } = useCueSectionLoader<
@@ -743,15 +730,15 @@ export function CueFilesSection({
 
   return (
     <Section
-      title="会话文件与资料库"
+      title={desktopCopy("会话文件与资料库", "Session files and library")}
       count={files.length || undefined}
       action={!isApiKey ? <RefreshButton loading={loading} onClick={() => void refresh()} /> : undefined}
     >
-      {error && <p className="mb-2 text-[12px] text-status-error">{error}</p>}
+      {error && <p className="mb-2 text-[12px] text-status-error">{desktopNotice(error)}</p>}
       {isApiKey ? (
-        <EmptyLine>Manus API Key 模式暂不支持会话资料库，使用 Cue 账号网页登录后可浏览</EmptyLine>
+        <EmptyLine>{desktopCopy("Manus API Key 模式暂不支持会话资料库，使用 Cue 账号网页登录后可浏览", "Sign in to Cue with an account to browse the session library. Manus API keys don’t support this feature.")}</EmptyLine>
       ) : files.length === 0 ? (
-        <EmptyLine>暂无会话文件</EmptyLine>
+        <EmptyLine>{desktopCopy("暂无会话文件", "No session files")}</EmptyLine>
       ) : (
         <ul className="flex flex-col gap-1">
           {files.map((f) => (
@@ -771,7 +758,7 @@ export function CueFilesSection({
                     target="_blank"
                     rel="noreferrer"
                     className="text-ink-muted hover:text-ink"
-                    title="打开文件"
+                    title={desktopCopy("打开文件", "Open File")}
                   >
                     <ExternalLink className="size-3.5" />
                   </a>
@@ -797,6 +784,7 @@ export function CueComputerSection({
   agentId?: string
   sessionId?: string
 }) {
+  useDesktopLocale()
   const authKind = useCueAuthKind(accountId)
   const isApiKey = authKind === 'api-key'
   const { data: runtime, loading, error, refresh } = useCueSectionLoader<{
@@ -843,36 +831,31 @@ export function CueComputerSection({
 
   return (
     <Section
-      title="云电脑与沙盒"
+      title={desktopCopy("云电脑与沙盒", "Cloud computers and sandboxes")}
       action={!isApiKey ? <RefreshButton loading={loading} onClick={() => void refresh()} /> : undefined}
     >
-      {error && <p className="mb-2 text-[12px] text-status-error">{error}</p>}
+      {error && <p className="mb-2 text-[12px] text-status-error">{desktopNotice(error)}</p>}
       {isApiKey ? (
-        <EmptyLine>Manus API Key 模式暂不支持云电脑状态查询，使用 Cue 账号网页登录后可查看</EmptyLine>
+        <EmptyLine>{desktopCopy("Manus API Key 模式暂不支持云电脑状态查询，使用 Cue 账号网页登录后可查看", "Sign in to Cue with an account to see cloud computer status. Manus API keys don’t support this feature.")}</EmptyLine>
       ) : (
         <div className="flex flex-col gap-1.5 text-[12px] text-ink-secondary">
           <div className="flex items-center justify-between gap-2">
             <span className="flex items-center gap-1.5">
-              <Cpu className="size-3.5 text-ink-muted" />
-              运行环境状态
-            </span>
+              <Cpu className="size-3.5 text-ink-muted" />{desktopCopy("运行环境状态", "Environment status")}</span>
             <span className="font-mono text-[11.5px] text-ink">
               {runtime.sandboxStatus || 'STANDBY'}
             </span>
           </div>
           {runtime.pcId && (
-            <p className="break-all">
-              绑定云电脑：<span className="font-mono text-[11px] text-ink">{runtime.pcId}</span>
+            <p className="break-all">{desktopCopy("绑定云电脑：", "Linked cloud computer:")}<span className="font-mono text-[11px] text-ink">{runtime.pcId}</span>
             </p>
           )}
           {runtime.sandboxId && runtime.sandboxId !== runtime.pcId && (
-            <p className="break-all">
-              沙盒实例：<span className="font-mono text-[11px] text-ink">{runtime.sandboxId}</span>
+            <p className="break-all">{desktopCopy("沙盒实例：", "Sandbox instance:")}<span className="font-mono text-[11px] text-ink">{runtime.sandboxId}</span>
             </p>
           )}
           {runtime.sessionUid && (
-            <p className="break-all">
-              关联会话：<span className="font-mono text-[11px] text-ink">{runtime.sessionUid}</span>
+            <p className="break-all">{desktopCopy("关联会话：", "Linked session:")}<span className="font-mono text-[11px] text-ink">{runtime.sessionUid}</span>
             </p>
           )}
         </div>
@@ -885,6 +868,7 @@ export function CueComputerSection({
  * 8. Cue Connectors & Integrations (parity with `GrokConnectorsAndMcpSection`).
  */
 export function CueConnectorsSection({ accountId }: { accountId: string }) {
+  useDesktopLocale()
   const authKind = useCueAuthKind(accountId)
   const isApiKey = authKind === 'api-key'
   const { data: connectors, loading, error, refresh } = useCueSectionLoader<
@@ -915,15 +899,15 @@ export function CueConnectorsSection({ accountId }: { accountId: string }) {
 
   return (
     <Section
-      title="连接器与集成"
+      title={desktopCopy("连接器与集成", "Connectors and integrations")}
       count={connectors.length || undefined}
       action={!isApiKey ? <RefreshButton loading={loading} onClick={() => void refresh()} /> : undefined}
     >
-      {error && <p className="mb-2 text-[12px] text-status-error">{error}</p>}
+      {error && <p className="mb-2 text-[12px] text-status-error">{desktopNotice(error)}</p>}
       {isApiKey ? (
-        <EmptyLine>Manus API Key 模式暂不支持连接器列表，使用 Cue 账号网页登录后可查看</EmptyLine>
+        <EmptyLine>{desktopCopy("Manus API Key 模式暂不支持连接器列表，使用 Cue 账号网页登录后可查看", "Sign in to Cue with an account to see connectors. Manus API keys don’t support this feature.")}</EmptyLine>
       ) : connectors.length === 0 ? (
-        <EmptyLine>暂无已配置连接器</EmptyLine>
+        <EmptyLine>{desktopCopy("暂无已配置连接器", "No connectors configured")}</EmptyLine>
       ) : (
         <ul className="flex flex-col gap-1">
           {connectors.map((c) => (
@@ -936,7 +920,7 @@ export function CueConnectorsSection({ accountId }: { accountId: string }) {
                 <span className="truncate">{c.name}</span>
               </span>
               <span className="shrink-0 text-[11px] text-ink-muted">
-                {c.connected ? '已连接' : '未启用'}
+                {c.connected ? desktopCopy("已连接", "Connected") : desktopCopy("未启用", "Not Enabled")}
               </span>
             </li>
           ))}
@@ -958,6 +942,7 @@ export function CueAgentsSection({
   agentId?: string
   botId: string
 }) {
+  useDesktopLocale()
   const bots = useBotStore((s) => s.bots)
   const selectBot = useBotStore((s) => s.selectBot)
   const setSelectedAgent = useBotStore((s) => s.setSelectedAgent)
@@ -972,7 +957,7 @@ export function CueAgentsSection({
       const cue = getBridge()?.cue
       if (!cue?.rpc) return []
       const res = await readCueRpc({ accountId, op: 'listAgents' })
-      if (!res.ok) throw new Error(res.message || '加载 Cue Agent 列表失败')
+      if (!res.ok) throw new Error(res.message || desktopCopy("加载 Cue Agent 列表失败", "Failed to load Cue Agent list"))
       return parseCueAgentList(res.data)
     },
     [],
@@ -1000,7 +985,7 @@ export function CueAgentsSection({
 
   return (
     <Section
-      title="Agent 列表与切换"
+      title={desktopCopy("Agent 列表与切换", "Agents")}
       count={agents.length || undefined}
       action={<RefreshButton loading={loading} onClick={() => void refresh()} />}
     >
@@ -1009,7 +994,7 @@ export function CueAgentsSection({
           <TextInput
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="搜索 Cue Agent 名称或邮箱…"
+            placeholder={desktopCopy("搜索 Cue Agent 名称或邮箱…", "Search by Cue agent name or email…")}
             className="flex-1 text-[12px]"
           />
           <Button
@@ -1022,13 +1007,11 @@ export function CueAgentsSection({
                 setSyncing(false)
               )
             }}
-          >
-            同步全部
-          </Button>
+          >{desktopCopy("同步全部", "Sync all")}</Button>
         </div>
-        {error && <p className="text-[12px] text-status-error">{error}</p>}
+        {error && <p className="text-[12px] text-status-error">{desktopNotice(error)}</p>}
         {filtered.length === 0 ? (
-          <EmptyLine>暂无匹配的 Cue Agent</EmptyLine>
+          <EmptyLine>{desktopCopy("暂无匹配的 Cue Agent", "No matching Cue agents")}</EmptyLine>
         ) : (
           <ul className="flex flex-col gap-1">
             {filtered.map((item) => {
@@ -1049,7 +1032,7 @@ export function CueAgentsSection({
                       {item.name}
                     </span>
                     <span className="shrink-0 text-[11px] text-ink-muted">
-                      {item.isManus ? '内置' : '自定义'}
+                      {item.isManus ? desktopCopy("内置", "Built in") : desktopCopy("自定义", "Custom")}
                     </span>
                   </button>
                 </li>
@@ -1074,6 +1057,7 @@ export function CueAgentContactsSection({
   agentId?: string
   sessionId?: string
 }) {
+  useDesktopLocale()
   const [copiedKey, setCopiedKey] = useState<string>()
   const authKind = useCueAuthKind(accountId)
   const isApiKey = authKind === 'api-key'
@@ -1127,25 +1111,25 @@ export function CueAgentContactsSection({
   }
 
   const rows = [
-    detail.agent?.email ? { key: 'email', label: '专属邮箱', value: detail.agent.email } : null,
+    detail.agent?.email ? { key: 'email', label: desktopCopy("专属邮箱", "Dedicated mailbox"), value: detail.agent.email } : null,
     detail.agent?.phoneNumber
-      ? { key: 'phone', label: '专属手机', value: detail.agent.phoneNumber }
+      ? { key: 'phone', label: desktopCopy("专属手机", "Dedicated phone"), value: detail.agent.phoneNumber }
       : null,
     agentId ? { key: 'agent', label: 'Agent ID', value: agentId } : null,
     detail.agent?.sessionId || sessionId
-      ? { key: 'session', label: '会话 ID', value: detail.agent?.sessionId || sessionId! }
+      ? { key: 'session', label: desktopCopy("会话 ID", "Session ID"), value: detail.agent?.sessionId || sessionId! }
       : null
   ].filter((x): x is { key: string; label: string; value: string } => Boolean(x))
 
   return (
     <Section
-      title="联络与协作"
+      title={desktopCopy("联络与协作", "Contacts and collaboration")}
       count={detail.collaborators.length || undefined}
       action={<RefreshButton loading={loading} onClick={() => void refresh()} />}
     >
       <div className="flex flex-col gap-2 text-[12px]">
         {rows.length === 0 ? (
-          <EmptyLine>暂无专属联络信息</EmptyLine>
+          <EmptyLine>{desktopCopy("暂无专属联络信息", "No dedicated contact information")}</EmptyLine>
         ) : (
           <ul className="flex flex-col gap-1.5">
             {rows.map((row) => (
@@ -1161,7 +1145,7 @@ export function CueAgentContactsSection({
                   type="button"
                   onClick={() => void copyValue(row.key, row.value)}
                   className="shrink-0 rounded p-1 text-ink-muted hover:bg-hover/60 hover:text-ink"
-                  title="复制"
+                  title={desktopCopy("复制", "Copy")}
                 >
                   {copiedKey === row.key ? (
                     <Check className="size-3.5 text-status-online-ink" />
@@ -1175,7 +1159,7 @@ export function CueAgentContactsSection({
         )}
         {detail.collaborators.length > 0 && (
           <div className="pt-1">
-            <div className="mb-1 text-[11px] text-ink-muted">协作者</div>
+            <div className="mb-1 text-[11px] text-ink-muted">{desktopCopy("协作者", "Collaborator")}</div>
             <ul className="flex flex-col gap-1">
               {detail.collaborators.map((c) => (
                 <li key={c.id} className="truncate text-[11.5px] text-ink-secondary">

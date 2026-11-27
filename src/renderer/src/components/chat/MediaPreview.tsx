@@ -1,3 +1,4 @@
+import { desktopCopy, useDesktopLocale } from '@/lib/desktopCopy'
 import { memo, useEffect, useMemo, useState } from 'react'
 import { Check, Copy, Download, FileText, Film, Image as ImageIcon, Maximize2, Music, X, ZoomIn, ZoomOut } from 'lucide-react'
 import { getBridge } from '@/lib/bridge'
@@ -302,6 +303,7 @@ function ImageLightbox({
   filename: string
   onClose: () => void
 }) {
+  useDesktopLocale()
   const [zoom, setZoom] = useState(1)
   const [copiedImg, setCopiedImg] = useState(false)
 
@@ -362,7 +364,7 @@ function ImageLightbox({
           <button
             type="button"
             onClick={() => setZoom((z) => Math.max(0.5, Number((z - 0.25).toFixed(2))))}
-            title="缩小 (-)"
+            title={desktopCopy("缩小 (-)", "Zoom out (-)")}
             className="grid size-8 place-items-center rounded-full bg-white/15 text-white hover:bg-white/25"
           >
             <ZoomOut className="size-3.5" />
@@ -370,7 +372,7 @@ function ImageLightbox({
           <button
             type="button"
             onClick={() => setZoom(1)}
-            title="重置缩放 (0)"
+            title={desktopCopy("重置缩放 (0)", "Reset Zoom")}
             className="rounded-full bg-white/15 px-2.5 py-1 text-[11.5px] font-medium tabular-nums text-white hover:bg-white/25"
           >
             {Math.round(zoom * 100)}%
@@ -378,7 +380,7 @@ function ImageLightbox({
           <button
             type="button"
             onClick={() => setZoom((z) => Math.min(3, Number((z + 0.25).toFixed(2))))}
-            title="放大 (+)"
+            title={desktopCopy("放大 (+)", "Zoom in (+)")}
             className="grid size-8 place-items-center rounded-full bg-white/15 text-white hover:bg-white/25"
           >
             <ZoomIn className="size-3.5" />
@@ -389,18 +391,17 @@ function ImageLightbox({
             className="inline-flex items-center gap-1.5 rounded-full bg-white/15 px-3 py-1.5 text-[12px] font-medium text-white hover:bg-white/25"
           >
             {copiedImg ? <Check className="size-3.5 text-status-online" /> : <Copy className="size-3.5" />}
-            {copiedImg ? '已复制' : '复制图片'}
+            {copiedImg ? desktopCopy("已复制", "Copied") : desktopCopy("复制图片", "Copy Picture")}
           </button>
           <button
             type="button"
             onClick={() => saveDataOrUrlToDisk(src, filename)}
             className="inline-flex items-center gap-1.5 rounded-full bg-white/15 px-3 py-1.5 text-[12px] font-medium text-white hover:bg-white/25"
           >
-            <Download className="size-3.5" /> 保存图片
-          </button>
+            <Download className="size-3.5" />{desktopCopy(" 保存图片", " Save Picture")}</button>
           <button
             type="button"
-            aria-label="关闭预览"
+            aria-label={desktopCopy("关闭预览", "Close Preview")}
             onClick={onClose}
             className="grid size-8 place-items-center rounded-full bg-white/15 text-white hover:bg-white/25"
           >
@@ -427,6 +428,7 @@ export function WorkspaceImage({
   part: ChatMediaPart
   accountId?: string
 }) {
+  useDesktopLocale()
   const initialDirectSrc =
     /^data:image\//i.test(part.path) || (isHttp(part.path) && !needsAuthProxyHttpUrl(part.path))
       ? part.path
@@ -489,7 +491,7 @@ export function WorkspaceImage({
             type="button"
             onClick={() => setLightboxOpen(true)}
             className="block w-full cursor-zoom-in text-left"
-            title="点击放大查看"
+            title={desktopCopy("点击放大查看", "Click to zoom in")}
           >
             <img
               src={src}
@@ -510,7 +512,7 @@ export function WorkspaceImage({
             <button
               type="button"
               onClick={() => setLightboxOpen(true)}
-              title="放大查看"
+              title={desktopCopy("放大查看", "Zoom In")}
               className="pointer-events-auto grid size-7 place-items-center rounded-full bg-black/55 text-white backdrop-blur-sm hover:bg-black/75"
             >
               <ZoomIn className="size-3.5" />
@@ -518,7 +520,7 @@ export function WorkspaceImage({
             <button
               type="button"
               onClick={() => saveDataOrUrlToDisk(src, filename, part.mimeType)}
-              title="保存图片"
+              title={desktopCopy("保存图片", "Save Picture")}
               className="pointer-events-auto grid size-7 place-items-center rounded-full bg-black/55 text-white backdrop-blur-sm hover:bg-black/75"
             >
               <Download className="size-3.5" />
@@ -556,9 +558,7 @@ export function WorkspaceImage({
             setRetryNonce((n) => n + 1)
           }}
           className="shrink-0 rounded-full bg-hover px-2 py-0.5 text-[11px] font-medium text-accent-600 hover:bg-active"
-        >
-          重试
-        </button>
+        >{desktopCopy("重试", "Try again")}</button>
       )}
     </div>
   )
@@ -573,6 +573,7 @@ function WorkspaceAV({
   accountId?: string
   kind: 'audio' | 'video'
 }) {
+  useDesktopLocale()
   const { path, name, mimeType, imageId, kind: mediaKind } = part
   const directSrc = /^data:(?:audio|video)\//i.test(path) || (isHttp(path) && !needsAuthProxyHttpUrl(path)) ? path : null
   const [retryNonce, setRetryNonce] = useState(0)
@@ -646,10 +647,9 @@ function WorkspaceAV({
             type="button"
             onClick={() => saveDataOrUrlToDisk(src, filename, part.mimeType)}
             className="inline-flex shrink-0 items-center gap-1 rounded-full bg-hover px-2 py-0.5 text-[11px] font-medium text-ink-secondary hover:bg-active hover:text-ink"
-            title="下载保存"
+            title={desktopCopy("下载保存", "Save download")}
           >
-            <Download className="size-3" /> 保存
-          </button>
+            <Download className="size-3" />{desktopCopy(" 保存", " Save")}</button>
         </div>
         {kind === 'audio' ? (
           <audio controls preload="metadata" src={src} onError={handleMediaError} className="w-full max-w-md" />
@@ -682,9 +682,7 @@ function WorkspaceAV({
           type="button"
           onClick={() => setRetryNonce((n) => n + 1)}
           className="shrink-0 rounded-full bg-hover px-2 py-0.5 text-[11px] font-medium text-accent-600 hover:bg-active"
-        >
-          重试
-        </button>
+        >{desktopCopy("重试", "Try again")}</button>
       )}
     </div>
   )
@@ -699,6 +697,7 @@ export const MediaPreview = memo(function MediaPreview({
   accountId?: string
   onOpenDoc?: (target: NativeDocumentTarget) => void
 }) {
+  useDesktopLocale()
   const [downloadingKey, setDownloadingKey] = useState<string | null>(null)
   const [downloadError, setDownloadError] = useState<string | null>(null)
   if (!parts.length) return null
@@ -755,7 +754,7 @@ export const MediaPreview = memo(function MediaPreview({
       {parts.map((part) => {
         const isHttpUrl = isHttp(part.path)
         const subtitle = isHttpUrl
-          ? part.mimeType || '可预览 / 下载文件'
+          ? part.mimeType || desktopCopy("可预览 / 下载文件", "Files you can preview or download")
           : part.path
         const key = part.path || part.name || 'part'
         return (
@@ -812,15 +811,14 @@ export const MediaPreview = memo(function MediaPreview({
                     }}
                     className="inline-flex items-center gap-1 rounded-full bg-hover px-2 py-0.5 text-[11px] font-medium text-accent-600 hover:bg-active"
                   >
-                    <Maximize2 className="size-3" /> 预览
-                  </button>
+                    <Maximize2 className="size-3" />{desktopCopy(" 预览", " Preview")}</button>
                   <button
                     type="button"
                     disabled={downloadingKey === key}
                     onClick={() => void handleDirectDownload(part)}
                     className="inline-flex items-center gap-1 rounded-full bg-accent-600 px-2.5 py-0.5 text-[11px] font-medium text-white hover:bg-accent-700 disabled:opacity-50"
                   >
-                    <Download className="size-3" /> {downloadingKey === key ? '下载中…' : '下载'}
+                    <Download className="size-3" /> {downloadingKey === key ? desktopCopy("下载中…", "Downloading…") : desktopCopy("下载", "Download")}
                   </button>
                 </div>
               </div>

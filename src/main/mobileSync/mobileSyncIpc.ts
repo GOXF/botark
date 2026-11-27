@@ -1,3 +1,4 @@
+import { nativeDisplayCopy } from '../nativeDisplayCopy'
 import { writeFileSync } from 'node:fs'
 import { randomUUID } from 'node:crypto'
 import { app, BrowserWindow, dialog, ipcMain, type WebContents } from 'electron'
@@ -172,12 +173,12 @@ export function registerMobileSyncIpc(): void {
     const defaultName = `BotArk-Sync-${fingerprint}.botark-sync`
     const result = win
       ? await dialog.showSaveDialog(win, {
-          title: '导出加密同步包（可通过隔空投送发送到 iPhone）',
+          title: nativeDisplayCopy("导出加密同步包（可通过隔空投送发送到 iPhone）", "Export encrypted sync package (can AirDrop to iPhone)"),
           defaultPath: defaultName,
           filters: [{ name: 'BotArk Sync Bundle', extensions: ['botark-sync', 'json'] }]
         })
       : await dialog.showSaveDialog({
-          title: '导出加密同步包（可通过隔空投送发送到 iPhone）',
+          title: nativeDisplayCopy("导出加密同步包（可通过隔空投送发送到 iPhone）", "Export encrypted sync package (can AirDrop to iPhone)"),
           defaultPath: defaultName,
           filters: [{ name: 'BotArk Sync Bundle', extensions: ['botark-sync', 'json'] }]
         })

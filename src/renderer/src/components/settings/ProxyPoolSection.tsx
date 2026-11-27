@@ -1,3 +1,4 @@
+import { desktopCopy, useDesktopLocale } from '@/lib/desktopCopy'
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type RefObject } from 'react'
 import { Activity, FileUp, Loader2, Shuffle, Trash2 } from 'lucide-react'
 import type { MuseProxyMode, MuseProxyPoolItemView, MuseProxyTestResult, MuseProxyView } from '@shared/ipc'
@@ -118,6 +119,7 @@ interface ProxyPoolSectionProps {
 export function ProxyPoolSection({
   active, credentialRevision, museAccountCount, botsByAccountId, activity, proxyPool
 }: ProxyPoolSectionProps) {
+  useDesktopLocale()
   const tr = useT()
   const accounts = useBotStore((s) => s.accounts)
   const { busy, setBusy, setError, setHint } = activity
@@ -172,8 +174,8 @@ export function ProxyPoolSection({
             : null
         setHint(
           avgMs !== null
-            ? `代理检测完成：${okValues.length} / ${values.length} 可用（平均延迟 ${avgMs} ms）`
-            : `代理检测完成：0 / ${values.length} 可用`
+            ? desktopCopy("代理检测完成：{0} / {1} 可用（平均延迟 {2} ms）", "Proxy testing complete: {0} / {1} available (average delay {2} ms)", [(okValues.length), (values.length), (avgMs)])
+            : desktopCopy("代理检测完成：0 / {0} 可用", "Proxy testing completed: 0 / {0} Available", [(values.length)])
         )
       }
     } catch (err) {
@@ -206,7 +208,7 @@ export function ProxyPoolSection({
         for (const id of failedIds) delete copy[id]
         return copy
       })
-      setHint(`已移除 ${failedIds.length} 个失效代理`)
+      setHint(desktopCopy("已移除 {0} 个失效代理", "Removed {0} unavailable proxies.", [(failedIds.length)]))
     } catch (err) {
       setError(errorMessage(err))
     } finally {
@@ -261,7 +263,7 @@ export function ProxyPoolSection({
     const next = await muse.clearProxyPool()
     setPool(next)
     setTestResults({})
-    setHint('已清空代理池')
+    setHint(desktopCopy("已清空代理池", "Cleared the proxy pool."))
   }
 
   return (
@@ -269,9 +271,7 @@ export function ProxyPoolSection({
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h2 className="text-[17px] font-semibold tracking-tight text-ink">{tr('Proxy pool')}</h2>
-          <p className="mt-1 text-[13px] text-ink-secondary">
-            批量导入代理并按「一号一代理」自动分配，本地钥匙串加密保存。
-          </p>
+          <p className="mt-1 text-[13px] text-ink-secondary">{desktopCopy("批量导入代理并按「一号一代理」自动分配，本地钥匙串加密保存。", "Import proxies in bulk. Each assigned account gets its own proxy; credentials are encrypted.")}</p>
         </div>
         {pool.length > 0 && museAccountCount > 0 && (
           <Button variant="primary" size="sm" disabled={busy} onClick={() => void assignMuseProxies()}>
@@ -283,10 +283,10 @@ export function ProxyPoolSection({
       {/* Proxy Pool Importer Card */}
       <div className="rounded-2xl border border-line bg-surface p-4 shadow-soft">
         <div className="mb-2 flex items-center justify-between">
-          <span className="text-[13px] font-medium text-ink">批量粘贴或导入代理</span>
+          <span className="text-[13px] font-medium text-ink">{desktopCopy("批量粘贴或导入代理", "Paste or import proxies")}</span>
           <div className="flex items-center gap-2">
             <div className="flex items-center gap-1.5 text-[12px] text-ink-secondary">
-              <span>无协议前缀时默认：</span>
+              <span>{desktopCopy("无协议前缀时默认：", "Default when no protocol prefix:")}</span>
               <Select
                 size="xs"
                 variant="pill"
@@ -295,7 +295,7 @@ export function ProxyPoolSection({
                 className="w-40"
                 options={[
                   { value: 'socks5', label: 'SOCKS5' },
-                  { value: 'socks5h', label: 'SOCKS5H (远程 DNS)' },
+                  { value: 'socks5h', label: desktopCopy("SOCKS5H (远程 DNS)", "SOCKS5H (remote DNS)") },
                   { value: 'http', label: 'HTTP' },
                   { value: 'https', label: 'HTTPS (TLS)' }
                 ]}
@@ -306,8 +306,7 @@ export function ProxyPoolSection({
               onClick={() => fileRef.current?.click()}
               className="inline-flex h-7 items-center gap-1 rounded-lg border border-line bg-canvas px-2.5 text-[12px] text-ink-secondary hover:bg-hover hover:text-ink"
             >
-              <FileUp className="size-3.5" /> 从 .txt 导入
-            </button>
+              <FileUp className="size-3.5" />{desktopCopy(" 从 .txt 导入", " Import from .txt")}</button>
             <input
               ref={fileRef}
               type="file"
@@ -328,30 +327,26 @@ export function ProxyPoolSection({
         <textarea
           value={rawProxyText}
           onChange={(e) => setRawProxyText(e.target.value)}
-          placeholder={PROXY_PLACEHOLDER}
+          placeholder={desktopCopy(PROXY_PLACEHOLDER, PROXY_PLACEHOLDER.replace('# 支持每行一个代理（自动识别格式）：', '# One proxy per line (format detected automatically):'))}
           rows={5}
           spellCheck={false}
           className="block w-full resize-none rounded-xl border border-line bg-canvas p-3 font-mono text-[12px] leading-5 text-ink outline-none placeholder:text-ink-muted focus:border-accent-600"
         />
         <div className="mt-3 flex items-center justify-between">
-          <span className="text-[12px] text-ink-muted">
-            导入后会自动为尚未绑定代理的账号一对一分配
-          </span>
+          <span className="text-[12px] text-ink-muted">{desktopCopy("导入后会自动为尚未绑定代理的账号一对一分配", "Assigns imported proxies to accounts that don’t have one.")}</span>
           <Button
             variant="primary"
             size="sm"
             disabled={busy || !rawProxyText.trim()}
             onClick={() => void handleImportPool()}
-          >
-            导入代理池并自动匹配
-          </Button>
+          >{desktopCopy("导入代理池并自动匹配", "Import and assign proxies")}</Button>
         </div>
       </div>
 
       {/* Current Pool List */}
       <div className="overflow-hidden rounded-2xl border border-line bg-surface shadow-soft">
         <div className="flex flex-wrap items-center justify-between gap-2 border-b border-line bg-sunken/40 px-4 py-2.5 text-[12px] font-medium text-ink-secondary">
-          <span>代理池列表 ({pool.length})</span>
+          <span>{desktopCopy("代理池列表 (", "Proxies (")}{pool.length})</span>
           {pool.length > 0 && (
             <div className="flex flex-wrap items-center gap-1.5">
               {getBridge()?.muse?.testProxyPool && (
@@ -366,7 +361,7 @@ export function ProxyPoolSection({
                   ) : (
                     <Activity className="size-3.5" aria-hidden />
                   )}
-                  {testingAll ? '测速中…' : '全部测速'}
+                  {testingAll ? desktopCopy("测速中…", "Testing latency…") : desktopCopy("全部测速", "Test all proxies")}
                 </Button>
               )}
               {failedIds.length > 0 && (
@@ -375,18 +370,15 @@ export function ProxyPoolSection({
                   variant="ghost"
                   disabled={busy || testingAll}
                   onClick={() => void handleRemoveFailed()}
-                >
-                  移除失效 ({failedIds.length})
+                >{desktopCopy("移除失效 (", "Remove unavailable proxies (")}{failedIds.length})
                 </Button>
               )}
-              <Button size="sm" variant="ghost" disabled={busy || testingAll} onClick={() => void handleClearPool()}>
-                清空代理池
-              </Button>
+              <Button size="sm" variant="ghost" disabled={busy || testingAll} onClick={() => void handleClearPool()}>{desktopCopy("清空代理池", "Clear proxy pool")}</Button>
             </div>
           )}
         </div>
         {pool.length === 0 ? (
-          <p className="py-8 text-center text-[13px] text-ink-muted">代理池为空，请在上方粘贴导入代理</p>
+          <p className="py-8 text-center text-[13px] text-ink-muted">{desktopCopy("代理池为空，请在上方粘贴导入代理", "No proxies yet. Paste or import them above.")}</p>
         ) : (
           <ul className="divide-y divide-line">
             {pool.map((item, idx) => {
@@ -399,13 +391,13 @@ export function ProxyPoolSection({
               const probeTooltip = probe
                 ? probe.ok
                   ? [
-                      typeof probe.latencyMs === 'number' ? `延迟 ${probe.latencyMs} ms` : null,
-                      probe.country ? `地区 ${probe.country}` : null,
-                      probe.exitIp ? `出口 IP ${probe.exitIp}` : null
+                      typeof probe.latencyMs === 'number' ? desktopCopy("延迟 {0} ms", "Latency: {0} ms", [(probe.latencyMs)]) : null,
+                      probe.country ? desktopCopy("地区 {0}", "Region {0}", [(probe.country)]) : null,
+                      probe.exitIp ? desktopCopy("出口 IP {0}", "Exit IP: {0}", [(probe.exitIp)]) : null
                     ]
                       .filter(Boolean)
                       .join(' · ')
-                  : probe.error || '代理不可用'
+                  : probe.error || desktopCopy("代理不可用", "Proxy is not available")
                 : undefined
               return (
                 <li key={item.id} className="flex items-center justify-between gap-3 px-4 py-2.5 text-[13px]">
@@ -422,35 +414,28 @@ export function ProxyPoolSection({
                   <div className="flex shrink-0 items-center gap-2">
                     {isTestingItem ? (
                       <span className="inline-flex items-center gap-1 rounded-full bg-sunken px-2 py-0.5 text-[11px] text-ink-muted">
-                        <Loader2 className="size-3 animate-spin" aria-hidden />
-                        检测中…
-                      </span>
+                        <Loader2 className="size-3 animate-spin" aria-hidden />{desktopCopy("检测中…", "Testing…")}</span>
                     ) : probe ? (
                       probe.ok ? (
                         <span
                           title={probeTooltip}
                           className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 font-mono text-[11px] font-medium ${latencyBadgeClass(probe.latencyMs)}`}
                         >
-                          {typeof probe.latencyMs === 'number' ? `${probe.latencyMs} ms` : '可用'}
+                          {typeof probe.latencyMs === 'number' ? `${probe.latencyMs} ms` : desktopCopy("可用", "Available")}
                           {probe.country ? ` · ${probe.country}` : ''}
                         </span>
                       ) : (
                         <span
                           title={probeTooltip}
                           className="inline-flex items-center rounded-full bg-status-error/10 px-2 py-0.5 text-[11px] font-medium text-status-error"
-                        >
-                          不可用
-                        </span>
+                        >{desktopCopy("不可用", "Not Available")}</span>
                       )
                     ) : null}
                     {assignedAcc || ownerBot ? (
-                      <span className="inline-flex items-center gap-1.5 rounded-full bg-status-online/10 px-2.5 py-0.5 text-[11.5px] font-medium text-status-online-ink">
-                        已绑定 → {ownerBot?.name || assignedAcc?.displayName || item.assignedAccountId}
+                      <span className="inline-flex items-center gap-1.5 rounded-full bg-status-online/10 px-2.5 py-0.5 text-[11.5px] font-medium text-status-online-ink">{desktopCopy("已绑定 → ", "Assigned to → ")}{ownerBot?.name || assignedAcc?.displayName || item.assignedAccountId}
                       </span>
                     ) : (
-                      <span className="rounded-full bg-sunken px-2.5 py-0.5 text-[11.5px] text-ink-muted">
-                        空闲待分配
-                      </span>
+                      <span className="rounded-full bg-sunken px-2.5 py-0.5 text-[11.5px] text-ink-muted">{desktopCopy("空闲待分配", "Unassigned")}</span>
                     )}
                     {getBridge()?.muse?.testProxyPool && (
                       <button
@@ -458,7 +443,7 @@ export function ProxyPoolSection({
                         disabled={isTestingItem || testingAll}
                         onClick={() => void handleTestPool([item.id])}
                         className="rounded p-1 text-ink-muted hover:bg-hover hover:text-ink disabled:opacity-40"
-                        title="测试可用性与延迟"
+                        title={desktopCopy("测试可用性与延迟", "Test availability and latency")}
                       >
                         <Activity className="size-3.5" />
                       </button>
@@ -467,7 +452,7 @@ export function ProxyPoolSection({
                       type="button"
                       onClick={() => void handleRemovePoolItem(item.id)}
                       className="rounded p-1 text-ink-muted hover:bg-hover hover:text-status-error"
-                      title="移除代理"
+                      title={desktopCopy("移除代理", "Remove Proxy")}
                     >
                       <Trash2 className="size-3.5" />
                     </button>

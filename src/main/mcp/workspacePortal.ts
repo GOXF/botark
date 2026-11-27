@@ -1,3 +1,4 @@
+import { nativeDisplayCopy } from '../nativeDisplayCopy'
 import { spawn, type ChildProcessByStdio } from 'node:child_process'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import { randomBytes, timingSafeEqual } from 'node:crypto'
@@ -191,7 +192,7 @@ function readBody(req: IncomingMessage): Promise<string> {
 
 function page(title: string, body: string): string {
   return `<!doctype html>
-<html lang="zh"><head><meta charset="utf-8"><title>${escapeHtml(title)}</title></head>
+<html lang="${nativeDisplayCopy("zh", "en")}"><head><meta charset="utf-8"><title>${escapeHtml(title)}</title></head>
 <body>${body}</body></html>`
 }
 
@@ -231,13 +232,13 @@ function indexPage(session: PortalSession, entries: string[]): string {
   return page(
     'Workspace',
     `<h1>Workspace</h1>
-<p>本机工作区的根目录。下面每一行是一个条目，后面是可直接打开的完整地址（敏感凭据和 .git 目录已自动隐藏）。</p>
+<p>${nativeDisplayCopy("本机工作区的根目录。下面每一行是一个条目，后面是可直接打开的完整地址（敏感凭据和 .git 目录已自动隐藏）。", "Workspace root. Each entry links to its contents. Sensitive credentials and .git folders are hidden.")}</p>
 <ul>
 ${rows}
 </ul>
-<p>读文件：打开上面的 /raw 地址，返回的是纯文本原文。</p>
-<p>按文件名搜索：打开 /search?q=关键词&amp;token=…（例如：${escapeHtml(searchSample)}）。</p>
-<p>改文件：打开上面的 /write 地址，页面里有一个输入框，填好内容后点 Save 提交（提交前会有人工确认）。</p>`
+<p>${nativeDisplayCopy("读文件：打开上面的 /raw 地址，返回的是纯文本原文。", "Open a raw file link to read the original text.")}</p>
+<p>${nativeDisplayCopy("按文件名搜索（例如：", "Search by filename (example: ")}${escapeHtml(searchSample)}${nativeDisplayCopy("）。", ").")}</p>
+<p>${nativeDisplayCopy("改文件：打开上面的 /write 地址，页面里有一个输入框，填好内容后点 Save 提交（提交前会有人工确认）。", "Open the edit form to submit changes for approval. Saving requires confirmation.")}</p>`
   )
 }
 
@@ -253,12 +254,12 @@ function browsePage(session: PortalSession, relDir: string, entries: string[]): 
 function searchPage(session: PortalSession, relDir: string, query: string, entries: string[]): string {
   const cleanDir = normalizePortalRelPath(relDir)
   const rows = formatEntryRows(session, entries)
-  const listHtml = rows ? `<ul>\n${rows}\n</ul>` : '<p>没有找到匹配的文件。</p>'
+  const listHtml = rows ? `<ul>\n${rows}\n</ul>` : nativeDisplayCopy('<p>没有找到匹配的文件。</p>', '<p>No matching files.</p>')
   return page(
     `Search ${query}`,
-    `<h1>搜索：${escapeHtml(query)}（范围：${escapeHtml(cleanDir)}）</h1>
+    `<h1>${nativeDisplayCopy("搜索：{0}（范围：{1}）", "Search: {0} (in {1})", [escapeHtml(query), escapeHtml(cleanDir)])}</h1>
 ${listHtml}
-<p>根目录：${portalUrl(session, '/browse', { path: '.' })}</p>`
+<p>${nativeDisplayCopy("根目录：", "Workspace root: ")}${portalUrl(session, '/browse', { path: '.' })}</p>`
   )
 }
 
@@ -266,12 +267,12 @@ function writePage(session: PortalSession, path: string, content: string): strin
   const cleanPath = normalizePortalRelPath(path)
   return page(
     `Edit ${cleanPath}`,
-    `<h1>编辑文件</h1>
+    `<h1>${nativeDisplayCopy("编辑文件", "Edit file")}</h1>
 <form method="POST" action="/write">
-<p>文件路径（相对工作区根目录，可改成任意新文件名来新建文件）：</p>
+<p>${nativeDisplayCopy("文件路径（相对工作区根目录，可改成任意新文件名来新建文件）：", "File path relative to the workspace root. Enter a new path to create a file.")}</p>
 <input type="text" name="path" size="70" value="${escapeHtml(cleanPath === '.' ? '' : cleanPath)}"><br>
 <input type="hidden" name="token" value="${escapeHtml(session.token)}">
-<p>内容：</p>
+<p>${nativeDisplayCopy("内容：", "Contents:")}</p>
 <textarea name="text" rows="24" cols="90">${escapeHtml(content)}</textarea><br>
 <button type="submit">Save</button>
 </form>
@@ -326,7 +327,7 @@ async function handlePortalRequest(
     form?.get('token') ??
     undefined
   if (!tokensMatch(supplied, session.token)) {
-    html(res, 401, page('Unauthorized', '<h1>需要有效 token</h1>'))
+    html(res, 401, page('Unauthorized', nativeDisplayCopy('<h1>需要有效 token</h1>', '<h1>A valid token is required</h1>')))
     return
   }
 
@@ -355,7 +356,7 @@ async function handlePortalRequest(
   }
   if (pathname === '/browse' && req.method === 'GET') {
     if (isSensitivePortalPath(rel)) {
-      html(res, 403, page('Forbidden', '<h1>出于安全原因，工作区门户禁止访问敏感凭据或版本库目录。</h1>'))
+      html(res, 403, page('Forbidden', nativeDisplayCopy('<h1>出于安全原因，工作区门户禁止访问敏感凭据或版本库目录。</h1>', '<h1>Access to sensitive credentials and version control folders is blocked</h1>')))
       return
     }
     const listing = await workspaceFile(session.root, 'list', { path: rel })
@@ -366,11 +367,11 @@ async function handlePortalRequest(
   if (pathname === '/search' && req.method === 'GET') {
     const query = (requestUrl.searchParams.get('q') ?? '').trim()
     if (!query) {
-      html(res, 400, page('Bad Request', '<h1>请提供搜索关键词参数 q</h1>'))
+      html(res, 400, page('Bad Request', nativeDisplayCopy('<h1>请提供搜索关键词参数 q</h1>', '<h1>Enter a search term</h1>')))
       return
     }
     if (isSensitivePortalPath(rel)) {
-      html(res, 403, page('Forbidden', '<h1>出于安全原因，工作区门户禁止访问敏感凭据或版本库目录。</h1>'))
+      html(res, 403, page('Forbidden', nativeDisplayCopy('<h1>出于安全原因，工作区门户禁止访问敏感凭据或版本库目录。</h1>', '<h1>Access to sensitive credentials and version control folders is blocked</h1>')))
       return
     }
     const listing = await workspaceFile(session.root, 'search', { path: rel, query })
@@ -380,7 +381,7 @@ async function handlePortalRequest(
   }
   if (pathname === '/raw' && req.method === 'GET') {
     if (isSensitivePortalPath(rel)) {
-      html(res, 403, page('Forbidden', '<h1>出于安全原因，工作区门户禁止读取敏感凭据或私钥文件。</h1>'))
+      html(res, 403, page('Forbidden', nativeDisplayCopy('<h1>出于安全原因，工作区门户禁止读取敏感凭据或私钥文件。</h1>', '<h1>Sensitive credentials and private keys cannot be read here</h1>')))
       return
     }
     const content = await workspaceFile(session.root, 'read', { path: rel })
@@ -389,7 +390,7 @@ async function handlePortalRequest(
   }
   if (pathname === '/write' && req.method === 'GET') {
     if (isSensitivePortalPath(rel)) {
-      html(res, 403, page('Forbidden', '<h1>出于安全原因，工作区门户禁止编辑敏感凭据或私钥文件。</h1>'))
+      html(res, 403, page('Forbidden', nativeDisplayCopy('<h1>出于安全原因，工作区门户禁止编辑敏感凭据或私钥文件。</h1>', '<h1>Sensitive credentials and private keys cannot be edited here</h1>')))
       return
     }
     let content = ''
@@ -408,7 +409,7 @@ async function handlePortalRequest(
       html(
         res,
         403,
-        page('Forbidden', '<h1>保存失败</h1><pre>文件路径无效或属于受保护的敏感文件。</pre>')
+        page('Forbidden', nativeDisplayCopy('<h1>保存失败</h1><pre>文件路径无效或属于受保护的敏感文件。</pre>', '<h1>Couldn’t save the file</h1><pre>The path is invalid or points to a protected file.</pre>'))
       )
       return
     }
@@ -421,15 +422,15 @@ async function handlePortalRequest(
       page(
         ok ? 'Saved' : 'Failed',
         ok
-          ? `<h1>已保存 ${escapeHtml(cleanTarget)}</h1><p>原文：${portalUrl(session, '/raw', {
+          ? `<h1>${nativeDisplayCopy("已保存 {0}", "Saved {0}", [escapeHtml(cleanTarget)])}</h1><p>${nativeDisplayCopy("原文：", "File contents: ")}${portalUrl(session, '/raw', {
               path: cleanTarget
-            })}</p><p>目录：${portalUrl(session, '/browse', { path: '.' })}</p>`
-          : `<h1>保存失败</h1><pre>${escapeHtml(result)}</pre>`
+            })}</p><p>${nativeDisplayCopy("目录：", "Directory: ")}${portalUrl(session, '/browse', { path: '.' })}</p>`
+          : `<h1>${nativeDisplayCopy("保存失败", "Couldn’t save the file")}</h1><pre>${escapeHtml(result)}</pre>`
       )
     )
     return
   }
-  html(res, 404, page('Not found', '<h1>没有这个页面</h1>'))
+  html(res, 404, page('Not found', nativeDisplayCopy('<h1>没有这个页面</h1>', '<h1>Page not found</h1>')))
 }
 
 async function runPortalTool(
@@ -444,9 +445,9 @@ async function runPortalTool(
     const byteLen = typeof args['text'] === 'string' ? Buffer.byteLength(args['text'], 'utf-8') : 0
     const choice = await dialog.showMessageBox(owner, {
       type: 'question',
-      message: `工作区门户请求保存文件：${targetPath}`,
-      detail: `工作区：${session.root}\n目标文件：${targetPath}\n内容大小：${byteLen} 字节\n\n确认允许本次写入？`,
-      buttons: ['取消', '允许一次'],
+      message: nativeDisplayCopy("工作区门户请求保存文件：{0}", "The workspace portal is requesting permission to save a file: {0}", [(targetPath)]),
+      detail: nativeDisplayCopy("工作区：{0}\n目标文件：{1}\n内容大小：{2} 字节\n\n确认允许本次写入？", "Workspace: {0}\nTarget file: {1}\nSize: {2} bytes\n\nAllow this write?", [(session.root), (targetPath), (byteLen)]),
+      buttons: [nativeDisplayCopy("取消", "Cancel"), nativeDisplayCopy("允许一次", "Allow once")],
       defaultId: 0,
       cancelId: 0,
       noLink: true
@@ -464,14 +465,14 @@ async function confirmPublicTunnel(owner: BrowserWindow, root: string): Promise<
   const idleMinutes = Math.max(1, Math.round(idleTimeoutMs / 60_000))
   const choice = await dialog.showMessageBox(owner, {
     type: 'question',
-    message: '发布临时工作区门户供 Hark 访问？',
+    message: nativeDisplayCopy("发布临时工作区门户供 Hark 访问？", "Publish a temporary workspace portal for Hark?"),
     detail:
-      `目录：${root}\n\n` +
-      'Hark 不支持外部 [TOOL] 协议。开启后将通过临时 HTTPS 隧道（trycloudflare.com）发布带随机口令的网页门户：\n' +
-      '• 默认屏蔽 .env、私钥和 .git 目录\n' +
-      '• 所有写入操作仍需你逐次点击确认\n' +
-      `• 空闲 ${idleMinutes} 分钟后或关闭/更换工作区时自动停止`,
-    buttons: ['暂不发布（仅纯对话）', '发布临时门户'],
+      nativeDisplayCopy("目录：{0}\n\n", "Folder: {0}\n\n", [(root)]) +
+      nativeDisplayCopy("Hark 不支持外部 [TOOL] 协议。开启后将通过临时 HTTPS 隧道（trycloudflare.com）发布带随机口令的网页门户：\n", "Hark does not support the external [TOOL] protocol. This publishes a password-protected web portal through a temporary public HTTPS tunnel (trycloudflare.com).\n") +
+      nativeDisplayCopy("• 默认屏蔽 .env、私钥和 .git 目录\n", "• .env files, private keys, and .git folders are blocked by default.\n") +
+      nativeDisplayCopy("• 所有写入操作仍需你逐次点击确认\n", "• You must confirm each write.\n") +
+      nativeDisplayCopy("• 空闲 {0} 分钟后或关闭/更换工作区时自动停止", "• The portal closes after {0} minutes of inactivity or when you close or switch workspaces.", [(idleMinutes)]),
+    buttons: [nativeDisplayCopy("暂不发布（仅纯对话）", "Don’t publish (chat only)"), nativeDisplayCopy("发布临时门户", "Publish temporary portal")],
     defaultId: 0,
     cancelId: 0,
     noLink: true
@@ -582,7 +583,7 @@ async function openPortalInternal(scopeId: string, owner: BrowserWindow): Promis
         500,
         page(
           'Error',
-          `<h1>出错了</h1><pre>${escapeHtml(error instanceof Error ? error.message : String(error))}</pre>`
+          `<h1>${nativeDisplayCopy("出错了", "Something went wrong")}</h1><pre>${escapeHtml(error instanceof Error ? error.message : String(error))}</pre>`
         )
       )
     })

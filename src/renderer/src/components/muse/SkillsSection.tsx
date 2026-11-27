@@ -1,3 +1,4 @@
+import { desktopNotice, useDesktopLocale } from '@/lib/desktopCopy'
 import { useCallback, useEffect, useState } from 'react'
 import { EmptyLine, Section } from '@/components/info/Section'
 import { Button } from '@/components/ui/Button'
@@ -39,6 +40,7 @@ function asSkills(raw: unknown): SkillRow[] {
 }
 
 export function SkillsSection({ accountId }: { accountId: string }) {
+  useDesktopLocale()
   const [items, setItems] = useState<SkillRow[]>([])
   const [loading, setLoading] = useState(false)
   const [busyId, setBusyId] = useState<string>()
@@ -101,7 +103,7 @@ export function SkillsSection({ accountId }: { accountId: string }) {
       flush={items.length > 0}
       action={<RefreshButton loading={loading} onClick={() => void refresh()} />}
     >
-      {error && <p className="px-3 pt-2 text-[12px] text-status-error">{error}</p>}
+      {error && <p className="px-3 pt-2 text-[12px] text-status-error">{desktopNotice(error)}</p>}
       {unavailable && items.length === 0 ? (
         <div className="px-3 pb-2">
           <EmptyLine>{t('Skills unavailable')}</EmptyLine>

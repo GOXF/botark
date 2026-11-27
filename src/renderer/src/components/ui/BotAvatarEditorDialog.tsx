@@ -1,3 +1,4 @@
+import { desktopCopy, useDesktopLocale } from '@/lib/desktopCopy'
 import { useLayoutEffect, useRef, useState } from 'react'
 import { Sparkles } from 'lucide-react'
 import { Dialog } from '@/components/ui/Dialog'
@@ -31,6 +32,7 @@ interface BotAvatarEditorDialogProps {
  * - Photo tab: upload custom image or switch back to animated Bot
  */
 export function BotAvatarEditorDialog({ bot, open, onOpenChange }: BotAvatarEditorDialogProps) {
+  useDesktopLocale()
   const t = useT()
   const setBotAvatar = useBotStore((s) => s.setBotAvatar)
   const setBotCharacter = useBotStore((s) => s.setBotCharacter)
@@ -98,14 +100,14 @@ export function BotAvatarEditorDialog({ bot, open, onOpenChange }: BotAvatarEdit
         renameBot(bot.id, `Muse · ${identity.displayName}`)
       }
       if (identity.avatarDataUrl) {
-        setMuseSyncHint(`已导入 Muse 虚拟形象${identity.displayName ? `（${identity.displayName}）` : ''}`)
+        setMuseSyncHint(desktopCopy("已导入 Muse 虚拟形象{0}", "Imported Muse avatar{0}", [(identity.displayName ? `（${identity.displayName}）` : '')]))
       } else if (identity.displayName) {
-        setMuseSyncHint(`已同步 Muse 角色名「${identity.displayName}」（当前账号未设置自定义头像图片）`)
+        setMuseSyncHint(desktopCopy("已同步 Muse 角色名「{0}」（当前账号未设置自定义头像图片）", "Synced the Muse name “{0}”. This account has no custom avatar.", [(identity.displayName)]))
       } else {
-        setMuseSyncHint('当前 Muse 账号暂未配置自定义虚拟形象图片')
+        setMuseSyncHint(desktopCopy("当前 Muse 账号暂未配置自定义虚拟形象图片", "This Muse account has no custom avatar yet."))
       }
     } catch {
-      if (selectionId.current === selection) setMuseSyncHint('无法读取 Muse 虚拟形象，请确认账号在线后重试')
+      if (selectionId.current === selection) setMuseSyncHint(desktopCopy("无法读取 Muse 虚拟形象，请确认账号在线后重试", "Couldn’t load the Muse avatar. Make sure the account is online and try again."))
     } finally {
       if (selectionId.current === selection) setSyncingMuse(false)
     }
@@ -171,7 +173,7 @@ export function BotAvatarEditorDialog({ bot, open, onOpenChange }: BotAvatarEdit
             className="w-full justify-center"
           >
             <Sparkles className="size-3.5 text-accent-600" aria-hidden />
-            {syncingMuse ? '正在同步 Muse 虚拟形象…' : '一键导入 Muse 虚拟形象'}
+            {syncingMuse ? desktopCopy("正在同步 Muse 虚拟形象…", "Syncing Muse avatar…") : desktopCopy("一键导入 Muse 虚拟形象", "Import Muse avatar")}
           </Button>
           {museSyncHint && <p className="text-center text-[11.5px] text-ink-secondary">{museSyncHint}</p>}
         </div>

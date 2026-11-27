@@ -21,7 +21,7 @@ import { IconButton } from '@/components/ui/IconButton'
 import { PlatformGlyph } from '@/components/ui/PlatformGlyph'
 import { runtimePlatform } from '@/lib/bridge'
 import { cn } from '@/lib/cn'
-import { t, useT } from '@/lib/i18n'
+import { useT } from '@/lib/i18n'
 import { useOverlayLock } from '@/lib/overlay'
 import { shortcutLabel } from '@/lib/shortcuts'
 import { useBotStore } from '@/store/botStore'
@@ -32,9 +32,9 @@ export { hasSeenOnboarding, markOnboardingSeen }
 type StepId = 'workspace' | 'accounts' | 'workbench'
 
 const STEPS: Array<{ id: StepId; indexLabel: string; title: string }> = [
-  { id: 'workspace', indexLabel: '01', title: '工作台布局' },
-  { id: 'accounts', indexLabel: '02', title: '导入与管理账号' },
-  { id: 'workbench', indexLabel: '03', title: '右侧操作台' }
+  { id: 'workspace', indexLabel: '01', title: "Workspace layout" },
+  { id: 'accounts', indexLabel: '02', title: "Import and manage accounts" },
+  { id: 'workbench', indexLabel: '03', title: "Right-side workbench" }
 ]
 
 interface PlatformGuideItem {
@@ -63,13 +63,13 @@ const PLATFORM_GUIDE_ITEMS: PlatformGuideItem[] = [
     id: 'grok',
     title: 'Grok Bot',
     settingsTab: 'grok-accounts',
-    accountRule: '1 个账号对应多个 Bot —— 登录一次，账号下的全部 Bot 自动展开在左侧列表',
-    importMethods: '支持弹窗登录、默认浏览器一键授权、粘贴 Token / Cookie 导入',
+    accountRule: "One sign-in lists every bot in the account in the sidebar.",
+    importMethods: "Sign in in a pop-up or browser, or import existing credentials.",
     workbenchCards: [
-      { title: '会话与子代理任务', summary: '查看历史对话、后台运行的子任务与自动触发器' },
-      { title: '记忆与技能库', summary: '直接编辑当前 Bot 的长期记忆与专属技能' },
-      { title: '沙盒电脑与文件', summary: '浏览 Bot 生成的文档产物、云端沙盒终端与连接器' },
-      { title: '管理全部 Bot', summary: '在同一账号下直接新建、克隆 Bot 或创建多 Bot 群聊房间' }
+      { title: "Sessions and subagent tasks", summary: "Review past chats, background tasks, and automations." },
+      { title: "Memory and skills library", summary: "Edit the current bot’s long-term memory and skills." },
+      { title: "Sandbox computer and files", summary: "Browse generated files, the cloud sandbox, and connectors." },
+      { title: "Manage all bots", summary: "Create or clone bots, or start a group chat under the same account." }
     ],
     shape: 'blob',
     color: 'blue',
@@ -79,13 +79,13 @@ const PLATFORM_GUIDE_ITEMS: PlatformGuideItem[] = [
     id: 'meta-muse',
     title: 'Meta Muse',
     settingsTab: 'muse-accounts',
-    accountRule: '支持接入多个独立 Muse 账号，并支持邮箱列表批量自动导入',
-    importMethods: '支持弹窗登录、邮箱验证码批量导入、代理池自动分配',
+    accountRule: "Connect separate Muse accounts and import a list of email addresses in bulk.",
+    importMethods: "Sign in in a pop-up, import using email codes, or assign a proxy from the pool.",
     workbenchCards: [
-      { title: '额度与动作审批', summary: '实时查看账号额度，处理待确认的操作请求' },
-      { title: '多会话与定时任务', summary: '切换历史会话或管理周期执行的自动化任务' },
-      { title: '文件库与云电脑', summary: '预览下载工作区文件，随时打开内置网页视图' },
-      { title: '目标与长期记忆', summary: '维护当前助手的目标设定、记忆条目与外部连接器' }
+      { title: "Usage and action approvals", summary: "Check usage and review requests that need approval." },
+      { title: "Sessions and scheduled tasks", summary: "Switch between past sessions and manage recurring tasks." },
+      { title: "File library and cloud computer", summary: "Preview or download files and open the built-in web view." },
+      { title: "Goals and long-term memory", summary: "Manage the assistant’s goals, memory, and connectors." }
     ],
     shape: 'sparkle',
     color: 'violet',
@@ -95,13 +95,13 @@ const PLATFORM_GUIDE_ITEMS: PlatformGuideItem[] = [
     id: 'hark',
     title: 'Hark',
     settingsTab: 'hark-accounts',
-    accountRule: '每个 Hark 账号对应独立助手，可同时管理多个工作账号',
-    importMethods: '支持 Google / 邮箱窗口登录，或直接粘贴 Session Cookie 导入',
+    accountRule: "Each Hark account has its own assistant. Connect more than one work account.",
+    importMethods: "Sign in with Google or email, or import a session cookie.",
     workbenchCards: [
-      { title: '主页卡片与历史会话', summary: '快速切换历史任务流与推荐工作流卡片' },
-      { title: '定时巡检任务', summary: '查看和管理自动运行的周期任务' },
-      { title: '云端浏览器画面', summary: '实时查看云端浏览器执行进度与生成的文件库' },
-      { title: '服务连接器', summary: '管理已授权的工作区应用与登录设备' }
+      { title: "Home cards and past sessions", summary: "Jump to past tasks and suggested workflows." },
+      { title: "Scheduled checks", summary: "View and manage recurring checks." },
+      { title: "Cloud browser activity", summary: "Follow browser activity and view generated files." },
+      { title: "Service connectors", summary: "Manage authorized workspace apps and devices." }
     ],
     shape: 'crystal',
     color: 'cyan',
@@ -111,12 +111,12 @@ const PLATFORM_GUIDE_ITEMS: PlatformGuideItem[] = [
     id: 'dot',
     title: 'ChatGPT Dot',
     settingsTab: 'dot-accounts',
-    accountRule: '支持单条或多行批量导入多个 ChatGPT Dot 账号并随时切换',
-    importMethods: '支持弹窗网页登录，或粘贴 AT / RT / JSON 批量导入',
+    accountRule: "Import or switch between ChatGPT Dot accounts individually or in bulk.",
+    importMethods: "Sign in in a browser window or import token or JSON records.",
     workbenchCards: [
-      { title: '账号状态与角色切换', summary: '一键切换当前账号下的 Orbit 角色与对话模式' },
-      { title: '核心目标与记忆迁移', summary: '编辑核心目标，换号时可将记忆一键迁移到新账号' },
-      { title: 'Pages 页面与文件库', summary: '浏览和管理对话中沉淀的文档页面与生成图片' }
+      { title: "Account status and role switching", summary: "Switch roles and chat modes under the current account." },
+      { title: "Goals and memory transfer", summary: "Edit goals and transfer memory when switching accounts." },
+      { title: "Pages and file library", summary: "Browse and manage pages and images from conversations." }
     ],
     shape: 'star',
     color: 'orange',
@@ -126,11 +126,11 @@ const PLATFORM_GUIDE_ITEMS: PlatformGuideItem[] = [
     id: 'gemini',
     title: 'Google Gemini',
     settingsTab: 'gemini-accounts',
-    accountRule: '每个账号独立保存 API Key、模型设置和本地会话',
-    importMethods: '在 Google AI Studio 获取 API Key，测试连接后选择对话模型',
+    accountRule: "API keys, models, and local chats are saved separately for each account.",
+    importMethods: "Get an API key from Google AI Studio, test the connection, and choose a model.",
     workbenchCards: [
-      { title: '多模态与搜索', summary: '发送图片、PDF、音频或文本附件，启用 Google 搜索查看引用来源' },
-      { title: '会话与用量', summary: '切换本地会话，查看最近一轮的输入、输出和思考 token 数' }
+      { title: "Multimodal chat and search", summary: "Attach images, PDFs, audio, or text and see citations from Google Search." },
+      { title: "Sessions and usage", summary: "Switch local sessions and inspect token usage for the last turn." }
     ],
     shape: 'sparkle',
     color: 'blue',
@@ -140,12 +140,12 @@ const PLATFORM_GUIDE_ITEMS: PlatformGuideItem[] = [
     id: 'hermes',
     title: 'Hermes',
     settingsTab: 'hermes-accounts',
-    accountRule: '支持同时接入多个本机或远程服务器上的开源 Hermes Agent 实例',
-    importMethods: '自动检测本机 ~/.hermes 服务，或填写服务器地址与 API_SERVER_KEY 加密接入',
+    accountRule: "Connect more than one local or remote Hermes Agent instance.",
+    importMethods: "Detect a local Hermes service or enter a server URL and API key.",
     workbenchCards: [
-      { title: '实时流式对话与工具追踪', summary: '原生 Session SSE 实时展示流式回复、工具调用状态与多模态图片' },
-      { title: '危险命令安全审批', summary: '触发高风险命令时在右侧直接一键放行（单次/本次会话/永久）或拒绝' },
-      { title: '会话、定时任务与技能库', summary: '管理持久化历史会话、Cron 定时任务、已安装 Skills 与 Toolsets' }
+      { title: "Streaming chat and tool activity", summary: "Follow streamed replies, tool calls, and images in the session." },
+      { title: "Safety approvals", summary: "Review and approve or deny requests for high-risk commands." },
+      { title: "Sessions, schedules, and skills", summary: "Manage chat history, scheduled jobs, installed skills, and toolsets." }
     ],
     shape: 'clover',
     color: 'green',
@@ -155,12 +155,12 @@ const PLATFORM_GUIDE_ITEMS: PlatformGuideItem[] = [
     id: 'antigravity',
     title: 'Antigravity',
     settingsTab: 'antigravity-accounts',
-    accountRule: '每个 Google 账号独立隔离分区，支持多账号并行调度云端 Antigravity Agent',
-    importMethods: '内置安全浏览器直接 Google 登录 antigravity.google.com，无需手动抓包或粘贴 Cookie',
+    accountRule: "Connect Google accounts in separate profiles.",
+    importMethods: "Sign in to Antigravity with Google in the built-in browser.",
     workbenchCards: [
-      { title: '实时 Cascade 流式对话', summary: '直连 Google gRPC-Web 流式接口，实时展示推理、工具调用与云端执行进度' },
-      { title: '模型与配额实时切换', summary: '查看账号订阅套餐与可用 Gemini 模型配额，一键切换目标模型' },
-      { title: '云端会话、沙盒与 Agents', summary: '同步管理所有云端 Cascades 会话、Capsules 沙盒工作区与自定义云端 Agents' }
+      { title: "Live Cascade chat", summary: "Follow replies, tool calls, and cloud task progress." },
+      { title: "Models and quotas", summary: "See plan limits and switch between available Gemini models." },
+      { title: "Cloud sessions, sandboxes, and agents", summary: "Manage Cascade sessions, Capsules workspaces, and custom agents." }
     ],
     shape: 'crystal',
     color: 'blue',
@@ -170,12 +170,12 @@ const PLATFORM_GUIDE_ITEMS: PlatformGuideItem[] = [
     id: 'cue',
     title: 'Cue',
     settingsTab: 'cue-accounts',
-    accountRule: '1 个 Cue 账号自动展开全部个人与自定义 Agent，支持原生桌面协议与 Manus API Key 双模式',
-    importMethods: '支持内置隔离窗口登录、系统浏览器一键回传授权，或粘贴 Cookie / Token / Manus API Key',
+    accountRule: "A Cue account lists its agents and supports a desktop session or Manus API key.",
+    importMethods: "Sign in in the app or browser, or import existing credentials.",
     workbenchCards: [
-      { title: '实时流式对话与工具进度', summary: '直连 Cue 原生 WebSocket 流式收发，支持中途停止、图片附件与后台新消息实时推送' },
-      { title: '历史会话、定时任务与技能', summary: '全量拉取历史对话记录，查看周期定时任务与已配置的 Agent 技能' },
-      { title: '会话文件、云电脑与内置网页', summary: '浏览文件库、沙盒电脑与连接器，随时一键切换内置隔离网页查看云电脑画面' }
+      { title: "Streaming chat and tool progress", summary: "Follow live replies and updates, attach images, and stop a response." },
+      { title: "Past sessions, schedules, and skills", summary: "Review chat history, recurring tasks, and agent skills." },
+      { title: "Session files, cloud computer, and web view", summary: "Browse files and connectors or open the cloud computer in the web view." }
     ],
     shape: 'sparkle',
     color: 'violet',
@@ -185,12 +185,12 @@ const PLATFORM_GUIDE_ITEMS: PlatformGuideItem[] = [
     id: 'ds-bot',
     title: 'DS Bot',
     settingsTab: 'ds-bot-accounts',
-    accountRule: '1 个 DS Bot 实例自动展开团队内全部 Bot 成员与群聊，并可参与跨平台协作室',
-    importMethods: '支持 MCP Token（本机/远程）、Noise_IK 加密配对链接与 DSH Web / Docker 直连',
+    accountRule: "A DS Bot instance lists the team’s bots and group chats.",
+    importMethods: "Connect with an MCP token, an encrypted pairing link, or DSH Web or Docker.",
     workbenchCards: [
-      { title: '实时流式对话与多 Bot 同步', summary: '原生直连 DS Bot 团队，支持 1v1 Bot 与群聊对话同步及图片发送' },
-      { title: '交互式工具审批与问题回复', summary: '在侧栏直接批准或拒绝危险操作、回答 ask_user 提问卡片' },
-      { title: '长期记忆、定时任务与用量', summary: '读写 MEMORY.md 长期记忆、管理定时自动化任务并查看 Token 统计' }
+      { title: "Streaming chat and bot sync", summary: "Chat one-on-one or in groups and send images." },
+      { title: "Tool approvals and questions", summary: "Review action requests and answer questions in the sidebar." },
+      { title: "Memory, schedules, and usage", summary: "Manage long-term memory, recurring tasks, and token usage." }
     ],
     shape: 'blob',
     color: 'blue',
@@ -205,6 +205,7 @@ function FullScreenGuideBody({
   isOverlay: boolean
   onClose?: () => void
 }) {
+  const tr = useT()
   const setAddBotOpen = useBotStore((s) => s.setAddBotOpen)
   const setSettingsOpen = useBotStore((s) => s.setSettingsOpen)
   const setOnboardingOpen = useBotStore((s) => s.setOnboardingOpen)
@@ -294,11 +295,11 @@ function FullScreenGuideBody({
               sizePx={24}
             />
           </button>
-          <span className="text-[14px] font-semibold tracking-tight text-ink">BotArk 操作指南</span>
+          <span className="text-[14px] font-semibold tracking-tight text-ink">{tr("BotArk guide")}</span>
         </div>
 
         {/* Step Pills */}
-        <nav className="no-drag flex items-center gap-1 rounded-full bg-sunken p-1" aria-label="指南步骤">
+        <nav className="no-drag flex items-center gap-1 rounded-full bg-sunken p-1" aria-label={tr("Guide steps")}>
           {STEPS.map((item) => {
             const active = item.id === step
             return (
@@ -317,7 +318,7 @@ function FullScreenGuideBody({
                 )}
               >
                 <span className="font-mono text-[11px] opacity-60">{item.indexLabel}</span>
-                <span>{item.title}</span>
+                <span>{tr(item.title)}</span>
               </button>
             )
           })}
@@ -325,12 +326,12 @@ function FullScreenGuideBody({
 
         <div className="no-drag flex items-center gap-2">
           {onClose ? (
-            <IconButton label="关闭指南" onClick={onClose}>
+            <IconButton label={tr("Close guide")} onClick={onClose}>
               <X />
             </IconButton>
           ) : (
             <Button size="sm" variant="primary" onClick={() => dismissAndAddBot('grok')}>
-              <Plus className="size-3.5" /> 添加账号
+              <Plus className="size-3.5" /> {tr("Add account")}
             </Button>
           )}
         </div>
@@ -345,10 +346,10 @@ function FullScreenGuideBody({
               <div className="flex flex-col gap-6">
                 <div className="inline-flex w-fit items-center gap-2 rounded-full bg-surface px-3 py-1 text-[12.5px] font-medium text-ink-secondary ring-1 ring-line">
                   <ArkPromptSparkSvg className="size-3.5 text-accent-600" />
-                  第 1 步 · 三栏协同工作台
+                  {tr("Step 1 · The three-panel workspace")}
                 </div>
                 <h1 className="text-[28px] leading-[1.25] font-semibold tracking-tight text-ink sm:text-[32px]">
-                  单聊与多 Agent 群聊合一，按需展开专属操作台
+                  {tr("Chat with one bot or a group and open the workbench when you need it.")}
                 </h1>
                 <div className="flex flex-col gap-3.5 text-[14px] leading-6 text-ink-secondary">
                   <div className="flex items-start gap-3">
@@ -356,8 +357,8 @@ function FullScreenGuideBody({
                       1
                     </span>
                     <p>
-                      <strong className="font-semibold text-ink">左侧统一编排</strong>
-                      ：置顶常用 Bot、按分组管理，并可随时组建跨平台多 Agent 协作群聊。
+                      <strong className="font-semibold text-ink">{tr("Organize bots on the left")}</strong>
+                      {tr(": Pin your favorite bots, organize them into sections, and start cross-platform group chats.")}
                     </p>
                   </div>
                   <div className="flex items-start gap-3">
@@ -365,8 +366,8 @@ function FullScreenGuideBody({
                       2
                     </span>
                     <p>
-                      <strong className="font-semibold text-ink">中间纯净对话流</strong>
-                      ：支持流式接力、共识定稿卡片，以及白名单目录与本地 MCP 上下文注入。
+                      <strong className="font-semibold text-ink">{tr("Chat in the center")}</strong>
+                      {tr(": Follow streaming replies and use approved workspace or tool context.")}
                     </p>
                   </div>
                   <div className="flex items-start gap-3">
@@ -374,8 +375,8 @@ function FullScreenGuideBody({
                       3
                     </span>
                     <p>
-                      <strong className="font-semibold text-ink">右侧专属抽屉</strong>
-                      ：按 <kbd className="rounded border border-line bg-surface px-1.5 py-0.5 font-mono text-[12px] text-ink">{shortcutLabel('I')}</kbd> 随时开关当前 Bot 或群聊的深度控制面板。
+                      <strong className="font-semibold text-ink">{tr("Open the workbench on the right")}</strong>
+                      {tr(": Press ")}<kbd className="rounded border border-line bg-surface px-1.5 py-0.5 font-mono text-[12px] text-ink">{shortcutLabel('I')}</kbd>{tr(" to show or hide controls for the current bot or group.")}
                     </p>
                   </div>
                 </div>
@@ -388,7 +389,7 @@ function FullScreenGuideBody({
                   <div className="flex flex-col justify-between rounded-xl border border-line bg-surface p-2.5">
                     <div className="flex flex-col gap-1.5">
                       <div className="flex items-center justify-between px-1 pb-1">
-                        <span className="text-[11px] font-semibold text-ink-muted">左侧 · Bot 列表</span>
+                        <span className="text-[11px] font-semibold text-ink-muted">{tr("Left · Bot list")}</span>
                         <span className="grid size-5 place-items-center rounded-full bg-accent-50 text-[12px] font-bold text-accent-600">
                           +
                         </span>
@@ -416,11 +417,11 @@ function FullScreenGuideBody({
                     <div className="flex flex-col gap-1">
                       <div className="flex items-center gap-1.5 rounded-lg px-2 py-1 text-[11px] font-medium text-ink-secondary">
                         <ArkRelayOrbSvg className="size-3.5 text-accent-600" />
-                        <span>协作群聊</span>
+                        <span>{tr("Collaboration room")}</span>
                       </div>
                       <div className="flex items-center gap-1.5 rounded-lg bg-sunken px-2 py-1.5 text-[11.5px] font-medium text-ink">
                         <Settings className="size-3.5 text-ink-secondary" />
-                        <span>设置与账号</span>
+                        <span>{tr("Settings & accounts")}</span>
                       </div>
                     </div>
                   </div>
@@ -440,26 +441,26 @@ function FullScreenGuideBody({
                         followPointer
                         sizePx={56}
                       />
-                      <span className="text-[13px] font-medium text-ink">中间 · 流式对话主屏</span>
+                      <span className="text-[13px] font-medium text-ink">{tr("Center · Live chat")}</span>
                     </div>
                     <div className="flex h-9 items-center rounded-xl border border-line bg-surface px-3 text-[12px] text-ink-muted">
-                      输入消息开始对话…
+                      {tr("Type a message to start…")}
                     </div>
                   </div>
 
                   {/* Mock Right Workbench */}
                   <div className="flex flex-col gap-2 rounded-xl border border-accent/35 bg-accent-50/20 p-2.5">
-                    <span className="px-1 text-[11px] font-semibold text-accent-600">右侧 · 专属操作台</span>
+                    <span className="px-1 text-[11px] font-semibold text-accent-600">{tr("Right · Workbench")}</span>
                     <div className="grid grid-cols-2 gap-1 rounded-lg bg-surface p-1 text-center text-[11px] font-medium text-ink">
-                      <span className="rounded bg-sunken py-1">概览</span>
-                      <span className="py-1 text-ink-muted">文件库</span>
+                      <span className="rounded bg-sunken py-1">{tr("Overview")}</span>
+                      <span className="py-1 text-ink-muted">{tr("File library")}</span>
                     </div>
-                    {['会话记录', '子代理任务', '记忆与技能', '全部 Bot 管理'].map((card) => (
+                    {["Session history", "Subagent tasks", "Memory and skills", "All bots"].map((card) => (
                       <div
                         key={card}
                         className="rounded-lg border border-line bg-surface px-2.5 py-2 text-[11.5px] font-medium text-ink"
                       >
-                        {card}
+                        {tr(card)}
                       </div>
                     ))}
                   </div>
@@ -473,10 +474,10 @@ function FullScreenGuideBody({
               <div className="flex flex-col gap-2.5">
                 <div className="inline-flex w-fit items-center gap-2 rounded-full bg-surface px-3 py-1 text-[12px] font-medium text-ink-secondary ring-1 ring-line">
                   <ArkRelayOrbSvg className="size-3.5 text-accent-600" />
-                  第 2 步 · 账号接入与编排
+                  {tr("Step 2 · Connect and organize accounts")}
                 </div>
                 <h1 className="text-[26px] leading-[1.25] font-semibold tracking-tight text-ink sm:text-[30px]">
-                  两个入口接入账号，统一调度六大平台
+                  {tr("Connect accounts from either of two places.")}
                 </h1>
               </div>
 
@@ -492,13 +493,13 @@ function FullScreenGuideBody({
                   </div>
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center justify-between gap-2">
-                      <h3 className="text-[14.5px] font-semibold text-ink">左上角「＋ 新建」</h3>
+                      <h3 className="text-[14.5px] font-semibold text-ink">{tr("Top left: + New")}</h3>
                       <kbd className="rounded-md border border-line bg-canvas px-1.5 py-0.5 font-mono text-[11px] text-ink-secondary">
                         {shortcutLabel('N')}
                       </kbd>
                     </div>
                     <p className="mt-0.5 truncate text-[12.5px] text-ink-secondary">
-                      一键登录、浏览器授权、粘贴凭据或组建协作群聊
+                      {tr("Sign in, authorize in your browser, import credentials, or create a group chat.")}
                     </p>
                   </div>
                 </button>
@@ -513,11 +514,11 @@ function FullScreenGuideBody({
                   </div>
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center justify-between gap-2">
-                      <h3 className="text-[14.5px] font-semibold text-ink">左下角「设置与账号」</h3>
+                      <h3 className="text-[14.5px] font-semibold text-ink">{tr("Bottom left: Settings & accounts")}</h3>
                       <ArrowRight className="size-4 text-ink-muted transition-transform group-hover:translate-x-0.5" />
                     </div>
                     <p className="mt-0.5 truncate text-[12.5px] text-ink-secondary">
-                      全平台健康总览、批量导入、代理池与手机无线同步
+                      {tr("See account health, import accounts, and manage the proxy pool and mobile sync.")}
                     </p>
                   </div>
                 </button>
@@ -535,10 +536,10 @@ function FullScreenGuideBody({
                       <div className="flex flex-col gap-2">
                         <div className="flex items-center gap-2.5">
                           <PlatformGlyph platform={descriptor} size="md" />
-                          <span className="text-[14.5px] font-semibold text-ink">{item.title}</span>
+                          <span className="text-[14.5px] font-semibold text-ink">{tr(item.title)}</span>
                         </div>
                         <p className="line-clamp-2 text-[12.5px] leading-[18px] text-ink-secondary">
-                          {item.importMethods}
+                          {tr(item.importMethods)}
                         </p>
                       </div>
 
@@ -549,14 +550,14 @@ function FullScreenGuideBody({
                           className="flex-1"
                           onClick={() => dismissAndAddBot(item.id)}
                         >
-                          立即添加
+                          {tr("Add now")}
                         </Button>
                         <Button
                           size="sm"
                           variant="secondary"
                           onClick={() => dismissAndOpenSettings(item.settingsTab)}
                         >
-                          账号管理
+                          {tr("Account management")}
                         </Button>
                       </div>
                     </div>
@@ -572,13 +573,13 @@ function FullScreenGuideBody({
               <div className="flex flex-col gap-6">
                 <div className="inline-flex w-fit items-center gap-2 rounded-full bg-surface px-3 py-1 text-[12.5px] font-medium text-ink-secondary ring-1 ring-line">
                   <ArkDrawerToggleSvg active className="size-3.5 text-accent-600" />
-                  第 3 步 · 右侧操作台
+                  {tr("Step 3 · The right-side workbench")}
                 </div>
                 <h1 className="text-[28px] leading-[1.25] font-semibold tracking-tight text-ink sm:text-[32px]">
-                  操作台在右侧，随当前 Bot 自动切换能力面板
+                  {tr("The workbench adapts to the current bot.")}
                 </h1>
                 <p className="text-[14.5px] leading-6 text-ink-secondary">
-                  像 Grok Bot 一样，日常对话保持中间视野干净，需要切换会话、查看子任务、整理记忆、下载文件或管理账号下的其他 Bot 时，直接在右侧操作台完成。
+                  {tr("Use the workbench to switch chats, view subtasks, manage memory, download files, or manage other bots on the account.")}
                 </p>
 
                 {/* Interactive Platform Selector */}
@@ -601,7 +602,7 @@ function FullScreenGuideBody({
                         )}
                       >
                         <PlatformGlyph platform={getPlatform(item.id)} size="sm" />
-                        <span>{item.title}</span>
+                        <span>{tr(item.title)}</span>
                       </button>
                     )
                   })}
@@ -623,18 +624,18 @@ function FullScreenGuideBody({
                     />
                     <div>
                       <h3 className="text-[16px] font-semibold text-ink">{activeSpec.title}</h3>
-                      <p className="text-[12.5px] text-ink-secondary">在线 · 右侧操作台</p>
+                      <p className="text-[12.5px] text-ink-secondary">{tr("Online · Workbench")}</p>
                     </div>
                   </div>
 
                   <div className="flex items-center gap-1.5">
                     <span className="inline-flex h-7 items-center gap-1 rounded-lg border border-line bg-canvas px-2.5 text-[12px] font-medium text-ink">
                       <MessageSquare className="size-3.5 text-ink-secondary" />
-                      新对话
+                      {tr("New conversation")}
                     </span>
                     <span className="inline-flex h-7 items-center gap-1 rounded-lg border border-line bg-canvas px-2.5 text-[12px] font-medium text-ink">
                       <FolderOpen className="size-3.5 text-ink-secondary" />
-                      文件库
+                      {tr("File library")}
                     </span>
                   </div>
                 </div>
@@ -649,7 +650,7 @@ function FullScreenGuideBody({
                         idx === 0 ? 'bg-surface text-ink shadow-soft' : 'text-ink-secondary'
                       )}
                     >
-                      {t(tab.label)}
+                      {tr(tab.label)}
                     </div>
                   ))}
                 </div>
@@ -663,9 +664,9 @@ function FullScreenGuideBody({
                     >
                       <div className="flex items-center gap-1.5 text-[13.5px] font-semibold text-ink">
                         <Layers className="size-3.5 text-accent-600" />
-                        <span>{card.title}</span>
+                        <span>{tr(card.title)}</span>
                       </div>
-                      <p className="text-[12.5px] leading-5 text-ink-secondary">{card.summary}</p>
+                      <p className="text-[12.5px] leading-5 text-ink-secondary">{tr(card.summary)}</p>
                     </div>
                   ))}
                 </div>
@@ -686,11 +687,11 @@ function FullScreenGuideBody({
                 setPokeSignal((n) => n + 1)
               }}
             >
-              <ArrowLeft className="size-4" /> 上一步
+              <ArrowLeft className="size-4" /> {tr("Previous step")}
             </Button>
           ) : onClose ? (
             <Button variant="ghost" onClick={onClose}>
-              跳过指南
+              {tr("Skip guide")}
             </Button>
           ) : null}
         </div>
@@ -705,7 +706,7 @@ function FullScreenGuideBody({
                 setPokeSignal((n) => n + 1)
               }}
             >
-              下一步：{STEPS[stepIndex + 1]!.title}
+              {tr("Next: {step}", { step: tr(STEPS[stepIndex + 1]!.title) })}
               <ArrowRight className="size-4" />
             </Button>
           ) : (
@@ -715,14 +716,14 @@ function FullScreenGuideBody({
                 variant="secondary"
                 onClick={() => dismissAndOpenSettings('grok-accounts')}
               >
-                <Settings className="size-4" /> 打开账号管理
+                <Settings className="size-4" /> {tr("Open account management")}
               </Button>
               <Button
                 size="lg"
                 variant="primary"
                 onClick={() => (onClose ? onClose() : dismissAndAddBot('grok'))}
               >
-                {onClose ? '开始使用 BotArk' : '立即添加第一个账号'}
+                {onClose ? tr("Get started") : tr("Add your first account")}
               </Button>
             </>
           )}
