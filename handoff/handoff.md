@@ -380,3 +380,8 @@ git clone <GOXF/botark> && cd botark && git checkout fix/hark-login-sync && npm 
 - 配置文件：owner-only 临时文件，Mihomo 读完即删（Windows 环境变量 32K 上限，没用 CLASH_CONFIG_STRING）。
 - 沙箱验证：arm64 真内核 `mihomo -t` 通过生成的配置；真进程端到端（安装官方包→认证 socks5h 出网 204→错密码被拒→/delay→停止端口释放），见 src/main/goxfMihomo.test.ts（MIHOMO_ARCHIVE=… 才跑）。
 - 未在设备上验证：Windows 上下载/解压/启动、杀毒拦截、Chromium 分区经 bridge 走订阅节点、真实机场订阅（只测了样例）、select 分组无法在界面切换当前节点（默认第一个）、自动刷新只在应用开着时跑。效果图：真组件截图 mock `v20-proxy-sub-real`。
+
+## 2026-11-27 19:10 内核跟最新版、看板手动状态
+- a82e4fd：Mihomo 下载取官方 latest release（GitHub asset digest 校验，API 不通回退 1.19.33），装了旧版显示「更新到 vX」；本地导入接受任意版本的官方文件名。测试包 dev.b8c528b。
+- 用户否决「24 小时自动算完成」（fb845f9），已在 b8c528b 撤回。用户要自己决定卡片状态：v21 效果图（拖到任意列、右键/⋯「标为…」、右下角「手动」、「恢复自动」，只存本地）已发，等开工（约 2 小时）。
+- 9081321 复制图片走 main 取图（预签名链接无 CORS），未实测。
