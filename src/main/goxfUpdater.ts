@@ -33,7 +33,7 @@ import { tmpdir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import { Readable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
-import { app, BrowserWindow, dialog, ipcMain, net, shell } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, net, session, shell } from 'electron'
 import { UPDATE_CHANNELS, type UpdateStatusEvent } from '@shared/ipc'
 import {
   GOXF_UPDATE_CHANNELS,
@@ -63,6 +63,7 @@ import {
 import { writeJsonAtomic } from './jsonFile'
 import { PORTABLE_DATA_DIR, PORTABLE_DIR, PORTABLE_FILE } from './goxfPortable'
 import { flushSessionCookies } from './goxfSessionCookies'
+import { updaterPoolProxy } from './muse/accountProxy'
 
 const {
   appendFileSync,
@@ -182,11 +183,41 @@ function sendAll(channel: string, payload: unknown): void {
 const broadcast = (event: UpdateStatusEvent): void => sendAll(UPDATE_CHANNELS.event, event)
 const broadcastGoxf = (event: GoxfUpdateEvent): void => sendAll(GOXF_UPDATE_CHANNELS.event, event)
 
+/** In-memory partition the updater uses when it goes through the settings proxy pool. */
+const UPDATER_PARTITION = 'goxf-updater'
+let updaterRules: string | undefined
+
+/**
+ * GOXF: update checks and downloads go through the settings proxy pool (fastest
+ * tested entry) when it has one; a network failure there, or an empty pool,
+ * falls back to the system network (which follows the system proxy).
+ */
+async function updaterFetch(url: string, init: RequestInit): Promise<Response> {
+  const pick = await updaterPoolProxy().catch(() => null)
+  if (pick) {
+    try {
+      const ses = session.fromPartition(UPDATER_PARTITION)
+      if (updaterRules !== pick.rules) {
+        await ses.setProxy({ mode: 'fixed_servers', proxyRules: pick.rules, proxyBypassRules: '<local>' })
+        await ses.closeAllConnections().catch(() => undefined)
+        updaterRules = pick.rules
+      }
+      const res = await ses.fetch(url, init)
+      logUpdate(`${basename(new URL(url).pathname)} via proxy pool ${pick.label}`)
+      return res
+    } catch (error) {
+      if (init.signal?.aborted) throw error
+      logUpdate(`proxy pool ${pick.label} failed (${error instanceof Error ? error.message : String(error)}); using system network`)
+    }
+  }
+  return net.fetch(url, init)
+}
+
 type Fetched<T> = { ok: true; data: T | null } | { ok: false; message: string }
 
 async function getJson<T>(url: string): Promise<Fetched<T>> {
   try {
-    const res = await net.fetch(url, {
+    const res = await updaterFetch(url, {
       headers: { Accept: 'application/vnd.github+json', 'User-Agent': `BotArk/${currentVersion()}` },
       signal: AbortSignal.timeout(12_000)
     })
@@ -248,7 +279,7 @@ let lastProgress: { percent: number; totalMb?: number } = { percent: 0 }
 
 /** offset > 0: ask for the rest of a paused partial (Range); a server that ignores it rewrites dest from 0. */
 async function downloadTo(url: string, dest: string, expected?: number, signal?: AbortSignal, offset = 0): Promise<void> {
-  const res = await net.fetch(url, {
+  const res = await updaterFetch(url, {
     headers: {
       'User-Agent': `BotArk/${currentVersion()}`,
       Accept: 'application/octet-stream',
@@ -262,7 +293,7 @@ async function downloadTo(url: string, dest: string, expected?: number, signal?:
   const total = resume.append ? resume.total : Number(res.headers.get('content-length')) || expected || 0
   const totalMb = total ? Math.round((total / 1048576) * 10) / 10 : undefined
   if (offset) logUpdate(resume.append ? `resuming at ${offset} bytes` : `server did not resume (HTTP ${res.status}); restarting`)
-  logUpdate(`download ${basename(url)} ${totalMb ?? '?'} MB via system network`)
+  logUpdate(`download ${basename(url)} ${totalMb ?? '?'} MB`)
   let received = resume.append ? offset : 0
   let lastPct = -1
   const body = Readable.fromWeb(res.body as unknown as import('node:stream/web').ReadableStream<Uint8Array>)
@@ -294,7 +325,7 @@ function sha256File(path: string): Promise<string | null> {
 /** Files to replace when a delta fits this install, else null (→ full zip). Never throws. */
 async function planDeltaFor(dir: string, manifestUrl: string): Promise<Array<{ path: string; sha256: string }> | null> {
   try {
-    const res = await net.fetch(manifestUrl, {
+    const res = await updaterFetch(manifestUrl, {
       headers: { 'User-Agent': `BotArk/${currentVersion()}` },
       redirect: 'follow',
       signal: AbortSignal.timeout(30_000)

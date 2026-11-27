@@ -803,6 +803,24 @@ export async function testAccountProxy(
 }
 
 /**
+ * GOXF fork: the proxy-pool entry the updater goes through — the one that last
+ * tested fastest, then untested ones, failed ones last. Chromium proxy rules
+ * (authenticated / https proxies go through the loopback bridge), or null when
+ * the pool has no usable entry (updater then follows the system proxy).
+ */
+export async function updaterPoolProxy(): Promise<{ rules: string; label: string } | null> {
+  const rank = (p: StoredPoolItem): number =>
+    p.lastTest?.ok ? (p.lastTest.ms ?? 5_000) : p.lastTest ? 1e9 : 1e6
+  for (const item of [...readPoolStore()].sort((a, b) => rank(a) - rank(b))) {
+    const cfg = await decryptPoolItem(item)
+    if (!cfg || !isProxyMode(cfg.mode) || !cfg.host || !cfg.port) continue
+    const rules = await resolvePartitionProxyRules(cfg)
+    if (rules) return { rules, label: `${cfg.mode}://${formatHostForUrl(cfg.host)}:${cfg.port}` }
+  }
+  return null
+}
+
+/**
  * Test availability & latency for all (or selected) items in the encrypted proxy pool.
  */
 export async function testProxyPoolItems(
