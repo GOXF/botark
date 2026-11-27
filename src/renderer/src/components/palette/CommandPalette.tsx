@@ -15,6 +15,7 @@ import { shortcutLabel } from '@/lib/shortcuts'
 import { RoomAvatarCluster } from '@/rooms/RoomAvatarCluster'
 import { NEW_ROOM_ID } from '@/rooms/roomExport'
 import { useRooms } from '@/rooms/roomStore'
+import { usePromptStore } from '@/store/promptStore'
 import { useBotStore } from '@/store/botStore'
 import { plural, useT } from '@/lib/i18n'
 
@@ -194,6 +195,12 @@ function PaletteBody({ onClose }: { onClose: () => void }) {
     }
 
     const commands: Row[] = [
+      {
+        key: 'cmd:prompts',
+        title: t('Prompt library'),
+        lead: <CommandIcon><Sparkles /></CommandIcon>,
+        run: () => usePromptStore.getState().setLibraryOpen(true)
+      },
       {
         key: 'cmd:new',
         title: t('New bot'),
