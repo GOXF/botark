@@ -35,3 +35,27 @@ export function classifyRoom(s: { speaking: boolean; error: boolean }): BoardCol
   if (s.speaking) return 'run'
   return 'idle'
 }
+
+/** v21: the columns a user can put a card in by hand (空闲 is never a choice). */
+export const MANUAL_COLUMNS: ReadonlyArray<Exclude<BoardColumn, 'idle'>> = ['wait', 'run', 'fail', 'done']
+export type ManualColumn = (typeof MANUAL_COLUMNS)[number]
+
+export function isManualColumn(v: unknown): v is ManualColumn {
+  return typeof v === 'string' && (MANUAL_COLUMNS as readonly string[]).includes(v)
+}
+
+/**
+ * v21 (user 2026-11-27): the user decides a card's state. A manual column
+ * beats the derived one until they pick 恢复自动 — no expiry, no auto rules.
+ */
+export function effectiveColumn(derived: BoardColumn, manual: unknown): BoardColumn {
+  return isManualColumn(manual) ? manual : derived
+}
+
+/** Keep only well-formed overrides from persisted data. */
+export function sanitizeOverrides(raw: unknown): Record<string, ManualColumn> {
+  const out: Record<string, ManualColumn> = {}
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return out
+  for (const [k, v] of Object.entries(raw)) if (k && isManualColumn(v)) out[k] = v
+  return out
+}

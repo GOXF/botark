@@ -1,11 +1,13 @@
-import { useEffect, useRef, useState } from 'react'
-import { Loader2, X } from 'lucide-react'
+import { useEffect, useRef, useState, type DragEvent, type MouseEvent as ReactMouseEvent, type ReactNode } from 'react'
+import { Check, Loader2, MoreHorizontal, RotateCcw, X } from 'lucide-react'
 import { useShallow } from 'zustand/react/shallow'
 import { BotAvatar } from '@/components/ui/Avatar'
 import { Button } from '@/components/ui/Button'
 import { IconButton } from '@/components/ui/IconButton'
 import { activityPhrase, formatShortTime, previewText } from '@/components/sidebar/BotListItem'
-import { BOARD_COLUMNS, classifyBot, classifyRoom, type BoardColumn } from '@/lib/boardStatus'
+import { BOARD_COLUMNS, classifyBot, classifyRoom, effectiveColumn, isManualColumn, MANUAL_COLUMNS, type BoardColumn, type ManualColumn } from '@/lib/boardStatus'
+import { Menu, MenuContent, MenuItem, MenuLabel, MenuSeparator, MenuTrigger } from '@/components/ui/Menu'
+import { useBoardOverrides } from '@/store/boardOverrideStore'
 import { cn } from '@/lib/cn'
 import { accountWork } from '@/lib/harkWork'
 import { lastMessage } from '@/lib/selectors'
@@ -290,14 +292,23 @@ function TaskBoard({ botIds, roomIds, single }: { botIds: string[]; roomIds: str
   }, [current?.key])
 
   const withProjects = new Set(projects.map((p) => p.bot.id))
-  const plain = usePlainCards(botIds, roomIds, withProjects)
+  const overrides = useBoardOverrides((s) => s.overrides)
+  // v21: a column the user set by hand beats the derived one (counts, collapse and all).
+  const plain = usePlainCards(botIds, roomIds, withProjects).map((c) => ({ ...c, column: effectiveColumn(c.column, overrides[c.key]) }))
+  const [drag, setDrag] = useState<{ id: string; from: BoardColumn }>()
+  const [over, setOver] = useState<BoardColumn>()
+  const endDrag = () => {
+    setDrag(undefined)
+    setOver(undefined)
+  }
 
   const now = Date.now()
   const cards: TaskCard[] = []
   for (const p of projects) {
     for (const t of snaps[p.key] ?? []) {
       const waiting = t.subtasks.some((st) => st.status === 'waiting')
-      const column: BoardColumn = waiting || t.state === 'open' ? 'wait' : t.state === 'working' ? 'run' : 'done'
+      const derived: BoardColumn = waiting || t.state === 'open' ? 'wait' : t.state === 'working' ? 'run' : 'done'
+      const column = effectiveColumn(derived, overrides[`${p.key}:${t.id}`])
       cards.push({ ...t, conversationId: p.cid, column, projectKey: p.key, botId: p.bot.id })
     }
   }
@@ -362,7 +373,30 @@ function TaskBoard({ botIds, roomIds, single }: { botIds: string[]; roomIds: str
             const older = all.length - list.length
             const plainHere = shownPlain.filter((c) => c.column === col.id).sort((a, b) => b.time - a.time)
             return (
-              <section key={col.id} aria-label={col.label} className="flex min-w-55 flex-1 flex-col rounded-2xl bg-canvas/60">
+              <section
+                key={col.id}
+                aria-label={col.label}
+                onDragOver={(e) => {
+                  if (!drag || !e.dataTransfer.types.includes(BOARD_CARD_MIME)) return
+                  e.preventDefault()
+                  e.dataTransfer.dropEffect = 'move'
+                  if (over !== col.id) setOver(col.id)
+                }}
+                onDragLeave={(e) => {
+                  if (!e.currentTarget.contains(e.relatedTarget as Node | null) && over === col.id) setOver(undefined)
+                }}
+                onDrop={(e) => {
+                  const id = e.dataTransfer.getData(BOARD_CARD_MIME)
+                  if (!id || !drag) return
+                  e.preventDefault()
+                  if (drag.from !== col.id && isManualColumn(col.id)) useBoardOverrides.getState().setOverride(id, col.id)
+                  endDrag()
+                }}
+                className={cn(
+                  'flex min-w-55 flex-1 flex-col rounded-2xl bg-canvas/60 transition-colors',
+                  drag && over === col.id && drag.from !== col.id && 'bg-accent-50 ring-2 ring-accent-600/40'
+                )}
+              >
                 <header className="flex h-10 shrink-0 items-center gap-2 px-3">
                   <span className={cn('size-2 rounded-full', COLUMN_STYLE[col.id].dot)} />
                   <h3 className={cn('text-[13px] font-semibold', COLUMN_STYLE[col.id].head)}>{col.label}</h3>
@@ -370,7 +404,15 @@ function TaskBoard({ botIds, roomIds, single }: { botIds: string[]; roomIds: str
                 </header>
                 <ol className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto px-2 pb-2">
                   {list.map((t) => (
-                    <li key={`${t.projectKey}:${t.id}`}>
+                    <BoardCardShell
+                      key={`${t.projectKey}:${t.id}`}
+                      id={`${t.projectKey}:${t.id}`}
+                      column={col.id}
+                      manual={overrides[`${t.projectKey}:${t.id}`]}
+                      dragging={drag?.id === `${t.projectKey}:${t.id}`}
+                      onDragStart={() => setDrag({ id: `${t.projectKey}:${t.id}`, from: col.id })}
+                      onDragEnd={endDrag}
+                    >
                       <TaskCardView
                         task={t}
                         title={tagOf(t)}
@@ -380,12 +422,20 @@ function TaskBoard({ botIds, roomIds, single }: { botIds: string[]; roomIds: str
                           if (p) pick(p, t.id)
                         }}
                       />
-                    </li>
+                    </BoardCardShell>
                   ))}
                   {plainHere.map((c) => (
-                    <li key={c.key}>
+                    <BoardCardShell
+                      key={c.key}
+                      id={c.key}
+                      column={col.id}
+                      manual={overrides[c.key]}
+                      dragging={drag?.id === c.key}
+                      onDragStart={() => setDrag({ id: c.key, from: col.id })}
+                      onDragEnd={endDrag}
+                    >
                       <PlainCardView card={c} />
-                    </li>
+                    </BoardCardShell>
                   ))}
                   {list.length + plainHere.length === 0 && <li className="px-2 py-6 text-center text-[12px] text-ink-faint">没有</li>}
                   {older > 0 && (
@@ -402,6 +452,119 @@ function TaskBoard({ botIds, roomIds, single }: { botIds: string[]; roomIds: str
         </div>
       </div>
     </div>
+  )
+}
+
+const BOARD_CARD_MIME = 'application/x-botark-board-card'
+
+/**
+ * v21: one 看板 card the user can drag to another column, or right-click / ⋯
+ * → 标为…. A state set by hand shows 「手动」 until 恢复自动. Local only.
+ */
+function BoardCardShell({
+  id,
+  column,
+  manual,
+  dragging,
+  onDragStart,
+  onDragEnd,
+  children
+}: {
+  id: string
+  column: BoardColumn
+  manual?: ManualColumn
+  dragging: boolean
+  onDragStart: () => void
+  onDragEnd: () => void
+  children: ReactNode
+}) {
+  const [menuAt, setMenuAt] = useState<{ x: number; y: number }>()
+  const { setOverride, clearOverride } = useBoardOverrides.getState()
+  const openMenu = (e: ReactMouseEvent<HTMLElement>) => {
+    e.preventDefault()
+    const box = e.currentTarget.closest('li')!.getBoundingClientRect()
+    // Keyboard context-menu key: no pointer, so anchor at the top-right corner.
+    const keyboard = e.clientX === 0 && e.clientY === 0
+    setMenuAt(keyboard ? { x: box.width - 12, y: 12 } : { x: e.clientX - box.left, y: e.clientY - box.top })
+  }
+  const start = (e: DragEvent<HTMLLIElement>) => {
+    e.dataTransfer.setData(BOARD_CARD_MIME, id)
+    e.dataTransfer.effectAllowed = 'move'
+    // A slightly turned, lifted copy follows the pointer; the card itself turns into the placeholder.
+    const box = e.currentTarget.getBoundingClientRect()
+    const ghost = document.createElement('div')
+    ghost.className = 'pointer-events-none fixed left-0 p-3'
+    ghost.style.top = '-4000px'
+    const copy = (e.currentTarget.firstElementChild ?? e.currentTarget).cloneNode(true) as HTMLElement
+    copy.className = 'rotate-1 rounded-xl opacity-90 shadow-float'
+    copy.style.width = `${box.width}px`
+    ghost.appendChild(copy)
+    document.body.appendChild(ghost)
+    e.dataTransfer.setDragImage(ghost, e.clientX - box.left + 12, e.clientY - box.top + 12)
+    setTimeout(() => ghost.remove(), 0)
+    onDragStart()
+  }
+  return (
+    <li
+      draggable
+      onDragStart={start}
+      onDragEnd={onDragEnd}
+      onContextMenu={openMenu}
+      className={cn('group/card relative', dragging && 'rounded-xl border border-dashed border-line-strong')}
+    >
+      {/* Room for 「手动」 under the card's own last line. */}
+      <div className={cn(dragging && 'invisible', manual && '[&>*]:pb-9')}>{children}</div>
+      {!dragging && (
+        <>
+          <IconButton
+            label="标为…"
+            size="sm"
+            onClick={(e) => {
+              const box = e.currentTarget.closest('li')!.getBoundingClientRect()
+              const b = e.currentTarget.getBoundingClientRect()
+              setMenuAt({ x: b.left - box.left, y: b.bottom - box.top })
+            }}
+            className={cn(
+              'absolute top-2 right-2 bg-main opacity-0 shadow-soft group-hover/card:opacity-100 focus-visible:opacity-100',
+              menuAt && 'opacity-100'
+            )}
+          >
+            <MoreHorizontal aria-hidden />
+          </IconButton>
+          {manual && (
+            <span className="absolute right-3 bottom-3 rounded-full bg-accent-50 px-2 text-[11px] text-accent-700" title="你设的状态；菜单里可恢复自动">
+              手动
+            </span>
+          )}
+        </>
+      )}
+      <Menu open={Boolean(menuAt)} onOpenChange={(o) => !o && setMenuAt(undefined)} modal={false}>
+        <MenuTrigger asChild>
+          <span aria-hidden className="pointer-events-none absolute size-px" style={{ left: menuAt?.x ?? 0, top: menuAt?.y ?? 0 }} />
+        </MenuTrigger>
+        <MenuContent align="start" sideOffset={2} className="w-52"
+          onClick={(e) => e.stopPropagation()}
+          onContextMenu={(e) => {
+            e.preventDefault()
+            e.stopPropagation()
+          }}
+        >
+          <MenuLabel>标为…</MenuLabel>
+          {MANUAL_COLUMNS.map((c) => (
+            <MenuItem key={c} onSelect={() => setOverride(id, c)}>
+              <span className={cn('size-2 rounded-full', COLUMN_STYLE[c].dot)} />
+              {BOARD_COLUMNS.find((b) => b.id === c)!.label}
+              {column === c && <Check aria-label="当前" className="ml-auto" />}
+            </MenuItem>
+          ))}
+          <MenuSeparator />
+          <MenuItem disabled={!manual} onSelect={() => clearOverride(id)}>
+            <RotateCcw aria-hidden />
+            恢复自动
+          </MenuItem>
+        </MenuContent>
+      </Menu>
+    </li>
   )
 }
 
