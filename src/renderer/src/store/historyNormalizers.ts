@@ -32,7 +32,7 @@ export function harkHistory(data: unknown, botId: string, accountId: string): Ch
         (m) =>
           (m.content && m.content.trim()) ||
           // GOXF: the model's private "thought" is never shown (Hark's web app hides it too).
-          m.toolCalls?.length || m.narration ||
+          m.toolCalls?.length ||
           (m.media && m.media.length > 0) ||
           (m.richWidgets && m.richWidgets.length > 0)
       )
@@ -62,16 +62,8 @@ export function harkHistory(data: unknown, botId: string, accountId: string): Ch
                       : 'completed',
                 summary: tc.url || m.narration || undefined
               }))
-            : m.narration
-              ? [
-                  {
-                    id: `hark_thought_${m.id}`,
-                    name: 'Agent Activity',
-                    status: 'completed',
-                    summary: m.narration.slice(0, 140)
-                  }
-                ]
-              : undefined
+            : // GOXF: narration alone is the live status line (shown in the typing bubble), not a tool call.
+              undefined
         return {
           id: uiId(m),
           botId,
