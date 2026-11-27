@@ -66,6 +66,7 @@ export const ChatHeader = memo(function ChatHeader({ bot, showTranscriptSearch }
   const togglePinBot = useBotStore((s) => s.togglePinBot)
   const startNewMuseSession = useBotStore((s) => s.startNewMuseSession)
   const startNewGrokSession = useBotStore((s) => s.startNewGrokSession)
+  const startNewGeminiSession = useBotStore((s) => s.startNewGeminiSession)
   const startNewHermesSession = useBotStore((s) => s.startNewHermesSession)
   const startNewAntigravitySession = useBotStore((s) => s.startNewAntigravitySession)
   const connectAccount = useBotStore((s) => s.connectAccount)
@@ -82,6 +83,9 @@ export const ChatHeader = memo(function ChatHeader({ bot, showTranscriptSearch }
       switch (bot.platformId) {
         case 'meta-muse':
           await startNewMuseSession(bot.id)
+          break
+        case 'gemini':
+          await startNewGeminiSession(bot.id)
           break
         case 'hermes':
           await startNewHermesSession(bot.id)
