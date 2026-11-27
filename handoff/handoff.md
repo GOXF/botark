@@ -353,3 +353,7 @@ git clone <GOXF/botark> && cd botark && git checkout fix/hark-login-sync && npm 
 - Muse 文件（quota.ts、QuotaSection.tsx）整份取上游。version 0.16.1，goxfBuild 14。
 - ChatHeader 新增 showTranscriptSearch（分屏 compact 时隐藏按钮）；RoomView 消息同时带 data-room-message 与 data-room-message-id。
 - rooms.test 两条改为断言无 errors.room（fork 行为）。src/main/mcp/hub.test 在负载下偶发 3 失败，单跑通过。
+
+## 2026-11-27 17:45 合并上游 v0.17.0（29bdaae）
+- 上游 #86：原生 Google Gemini 账号 + 流式对话（src/main/gemini、adapters/gemini、components/gemini）。version 0.17.0，goxfBuild 15。
+- 5 处冲突：ChatHeader（只加 Gemini 新会话，Grok 已有）、mobileSyncBridge（先跳过 gemini，再保留 fork 的 approvals 预推）、botStore（startHarkDraft + Gemini 会话三方法并存）、botStoreSessions.test（两条测试都保留）。测试：renderer/shared/adapters 492、main 523 全过；design:check OK。
