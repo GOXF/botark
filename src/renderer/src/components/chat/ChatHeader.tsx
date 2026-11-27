@@ -5,6 +5,7 @@ import { memo, useEffect, useState } from 'react'
 import { PaneHeader } from '@/components/layout/PaneHeader'
 import { getPlatformInspector } from '@/components/info/platformInspector'
 import { ArkComposeNewSvg, ArkDrawerToggleSvg, ArkExportDocSvg } from '@/components/ui/ArkGlyphs'
+import { TranscriptSearchButton } from './TranscriptSearchBar'
 import { triggerShareConversation } from './ShareConversationDialog'
 import { BotAvatar } from '@/components/ui/Avatar'
 import { IconButton } from '@/components/ui/IconButton'
@@ -21,6 +22,8 @@ import { t } from '@/lib/i18n'
 
 interface ChatHeaderProps {
   bot: Bot
+  /** Upstream #84: show the find-in-conversation button. */
+  showTranscriptSearch?: boolean
   /** GOXF v13: a pane in a split keeps only "new conversation"; the pane's own buttons go in `extra`. */
   compact?: boolean
   extra?: ReactNode
@@ -71,7 +74,7 @@ function useEnsureGrokAgentBound(bot: Bot): void {
   }, [bot.id, bot.platformId, bot.selectedAgentId, account?.id, account?.status, setSelectedAgent])
 }
 
-export const ChatHeader = memo(function ChatHeader({ bot, compact = false, extra, merged = false, leading }: ChatHeaderProps) {
+export const ChatHeader = memo(function ChatHeader({ bot, showTranscriptSearch = false, compact = false, extra, merged = false, leading }: ChatHeaderProps) {
   const hasMessages = useBotStore((s) => (s.messages[bot.id]?.length ?? 0) > 0)
   const infoOpen = useBotStore((s) => s.infoPanelOpen)
   const toggleInfoPanel = useBotStore((s) => s.toggleInfoPanel)
@@ -208,6 +211,7 @@ export const ChatHeader = memo(function ChatHeader({ bot, compact = false, extra
             <RefreshCw className={cn(activeAccount?.pending && 'animate-spin')} />
           </IconButton>
         )}
+        {showTranscriptSearch && !compact && <TranscriptSearchButton />}
         {!compact && hasMessages && (
           <IconButton
             label="共享对话页面"

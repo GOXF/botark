@@ -21,7 +21,9 @@ import { startMobileSyncBridge } from '@/services/mobileSyncBridge'
 import { useBotStore } from '@/store/botStore'
 import { startPrefsSync, usePrefsStore } from '@/store/prefsStore'
 import { ChatArea } from '@/components/chat/ChatArea'
+import { usePromptStore } from '@/store/promptStore'
 
+const PromptLibraryDialog = lazy(() => import('@/components/chat/PromptLibraryDialog').then(({ PromptLibraryDialog }) => ({ default: PromptLibraryDialog })))
 const SettingsView = lazy(() => import('@/components/settings/SettingsView').then(({ SettingsView }) => ({ default: SettingsView })))
 const RoomView = lazy(() => import('@/rooms/RoomView').then(({ RoomView }) => ({ default: RoomView })))
 const RoomInspectorPanel = lazy(() =>
@@ -49,6 +51,7 @@ export default function App() {
   const settingsOpen = useBotStore((s) => s.settingsOpen)
   const addBotOpen = useBotStore((s) => s.addBotOpen)
   const onboardingOpen = useBotStore((s) => s.onboardingOpen)
+  const libraryOpen = usePromptStore((s) => s.libraryOpen)
   const paletteOpen = useBotStore((s) => s.paletteOpen)
   const selectedBotId = useBotStore((s) => s.selectedBotId)
   const selectedRoom = useRooms((s) => s.rooms.find((r) => r.id === selectedBotId))
@@ -293,6 +296,9 @@ export default function App() {
       </OnDemandDialog>
       <OnDemandDialog open={onboardingOpen}>
         <OnboardingDialog />
+      </OnDemandDialog>
+      <OnDemandDialog open={libraryOpen}>
+        <PromptLibraryDialog />
       </OnDemandDialog>
       <OnDemandDialog open={paletteOpen}>
         <CommandPalette />

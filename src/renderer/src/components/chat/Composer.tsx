@@ -1,3 +1,4 @@
+import { usePromptSlashMenu } from './PromptSlashMenu'
 import { WorkspaceTools } from '@/rooms/WorkspaceTools'
 import { useEffect, useRef, useState, type DragEvent, type KeyboardEvent } from 'react'
 import type { AttachmentMeta } from '@adapters/types'
@@ -223,6 +224,7 @@ export function Composer({ bot, account, typing = false, onSend, onCancel, onCon
   // Size the box for a restored draft.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { if (saved.text) requestAnimationFrame(resize) }, [])
+  const prompts = usePromptSlashMenu(textareaRef, text, setText, resize, bot.name)
 
   const submit = () => {
     const sendable = draft.forSend()
@@ -234,6 +236,7 @@ export function Composer({ bot, account, typing = false, onSend, onCancel, onCon
   }
 
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (prompts.handleKey(event)) return
     if (event.key === 'Escape' && replyTarget) {
       event.preventDefault()
       setReplyTarget(bot.id, null)
@@ -296,7 +299,7 @@ export function Composer({ bot, account, typing = false, onSend, onCancel, onCon
           onDragLeave={() => setDragging(false)}
           onDrop={onDrop}
           className={cn(
-            'border border-line-strong bg-surface p-[7px] shadow-card transition-[border-color,box-shadow,border-radius] duration-200',
+            'relative border border-line-strong bg-surface p-[7px] shadow-card transition-[border-color,box-shadow,border-radius] duration-200',
             expanded ? 'rounded-[18px]' : 'rounded-[22px]',
             'focus-within:border-ink/20',
             dragging && 'border-accent-600 ring-4 ring-accent-100'
@@ -315,6 +318,7 @@ export function Composer({ bot, account, typing = false, onSend, onCancel, onCon
               </button>
             </div>
           )}
+          {prompts.menu}
           {replyTarget && (
             <div className="mb-1.5 flex items-center justify-between gap-2 rounded-xl border border-line bg-sunken/50 px-2.5 py-1.5 text-[12px]">
               <div className="flex min-w-0 items-center gap-1.5">
@@ -351,6 +355,7 @@ export function Composer({ bot, account, typing = false, onSend, onCancel, onCon
             <IconButton label={t('Attach files')} onClick={() => fileInputRef.current?.click()}>
               <Plus />
             </IconButton>
+            {prompts.button}
             <WorkspaceTools
               key={bot.id + ':' + bot.activeAccountId}
               scope={bot.id + ':' + bot.activeAccountId}
@@ -366,10 +371,12 @@ export function Composer({ bot, account, typing = false, onSend, onCancel, onCon
               }}
             />
             <textarea
+              {...prompts.textareaProps}
               ref={textareaRef}
               value={text}
               rows={1}
               onChange={(event) => {
+                prompts.sync(event.currentTarget)
                 setText(event.target.value)
                 resize()
               }}

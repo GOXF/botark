@@ -1,9 +1,17 @@
 import { useEffect } from 'react'
 import { useBotStore } from '@/store/botStore'
 import { usePanes } from '@/store/paneStore'
+import { hasOpenOverlay } from './overlay'
 import { runtimePlatform } from './bridge'
 
 const isMac = runtimePlatform === 'darwin' || (runtimePlatform === 'web' && /Mac/.test(globalThis.navigator?.platform ?? ''))
+
+export const FIND_TRANSCRIPT_EVENT = 'botark:find-transcript'
+
+export function openTranscriptSearch(): boolean {
+  if (hasOpenOverlay()) return false
+  return !window.dispatchEvent(new Event(FIND_TRANSCRIPT_EVENT, { cancelable: true }))
+}
 
 /** "⌘K" on macOS, "Ctrl+K" elsewhere. */
 export function shortcutLabel(key: string, { alt = false }: { alt?: boolean } = {}): string {
@@ -17,7 +25,7 @@ function isEditable(target: EventTarget | null): boolean {
 
 /**
  * App-wide keys:
- * ⌘\\ / ⌘⇧\\ split pane · ⌘K search · ⌘N new bot · ⌘I details · ⌘1–9 jump to a bot · ⌥↑/⌥↓ previous/next bot.
+ * ⌘\\ / ⌘⇧\\ split pane · ⌘F find in conversation · ⌘K search · ⌘N new bot · ⌘I details · ⌘1–9 jump to a bot · ⌥↑/⌥↓ previous/next bot.
  * Dialogs own the keyboard while open. The palette can also close with ⌘K.
  */
 export function useGlobalShortcuts(): void {
@@ -48,7 +56,9 @@ export function useGlobalShortcuts(): void {
         return
       }
 
-      if (plainMod && key === 'n') {
+      if (plainMod && key === 'f') {
+        if (openTranscriptSearch()) event.preventDefault()
+      } else if (plainMod && key === 'n') {
         event.preventDefault()
         store.setAddBotOpen(true)
       } else if (plainMod && key === 'i') {

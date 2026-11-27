@@ -95,7 +95,7 @@ function mapHarkMedia(msg: HarkChatMessage): MuseMediaPartView[] | undefined {
   return out.length > 0 ? out : undefined
 }
 
-function mapHarkRichWidgets(msg: HarkChatMessage): MuseRichWidgetView[] | undefined {
+export function mapHarkRichWidgets(msg: HarkChatMessage): MuseRichWidgetView[] | undefined {
   const out: MuseRichWidgetView[] = []
   if (msg.links?.length) out.push({ kind: 'link_cards', widgetId: `hark_links_${msg.id}`, links: msg.links })
   if (!msg.actions || msg.actions.length === 0) return out.length ? out : undefined

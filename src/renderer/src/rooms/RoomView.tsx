@@ -1,3 +1,4 @@
+import { usePromptSlashMenu } from '@/components/chat/PromptSlashMenu'
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
 import { getPlatform } from '@adapters/platforms'
 import {
@@ -18,6 +19,9 @@ import {
   X,
   CheckCheck
 } from 'lucide-react'
+import { TranscriptSearchBar, TranscriptSearchButton } from '@/components/chat/TranscriptSearchBar'
+import { revealTranscriptRow } from '@/lib/transcriptFocus'
+import { focusRoomMessage, ROOM_FOCUS_EVENT, takeRoomMessageFocus } from './roomFocus'
 import { MarkdownText } from '@/components/chat/MarkdownText'
 import { ToolChips } from '@/components/chat/MessageBubble'
 import { MediaParts } from '@/components/chat/MediaPreview'
@@ -45,9 +49,7 @@ import { NumberStepper } from '@/components/ui/Controls'
 import { TextInput } from '@/components/ui/Field'
 import { GrokBotMark } from '@/components/ui/GrokBotMark'
 import { IconButton } from '@/components/ui/IconButton'
-import {
-  MENU_SURFACE
-} from '@/components/ui/Menu'
+import { Menu, MenuContent, MenuItem, MenuTrigger, MENU_SURFACE } from '@/components/ui/Menu'
 import { PlatformGlyph } from '@/components/ui/PlatformGlyph'
 import { SegmentedControl } from '@/components/ui/SegmentedControl'
 import { cn } from '@/lib/cn'
@@ -69,7 +71,7 @@ import {
   type RoomReference
 } from './model'
 import { RoomAvatarCluster } from './RoomAvatarCluster'
-import { exportRoomMarkdownFile, NEW_ROOM_ID } from './roomExport'
+import { exportRoomJsonFile, exportRoomMarkdownFile, NEW_ROOM_ID } from './roomExport'
 import {
   addRoom,
   NO_REPLY_ERROR,
@@ -788,8 +790,9 @@ const RoomTranscript = memo(function RoomTranscript({
 }) {
   const lastHumanId = messages.findLast((m) => isHumanRoomMessage(m) && !m.handoff)?.id
   return messages.map((message) => (
-    // data-room-message: a handed-over requirement scrolls to its message.
-    <div key={message.id} data-room-message={message.id}>
+    // data-room-message: a handed-over requirement scrolls to its message. data-room-message-id: upstream #84 search focus.
+    <div key={message.id} data-room-message={message.id} data-room-message-id={message.id} tabIndex={-1}
+      className="flex flex-col rounded-lg focus-visible:outline-2 focus-visible:outline-accent-600">
       <RoomMessageRow
         roomId={roomId}
         members={members}
@@ -833,6 +836,7 @@ export function RoomView({ id }: { id: string }) {
   const [multiline, setMultiline] = useState(false)
   const [mentionCursor, setMentionCursor] = useState(0)
   const transcriptRef = useRef<HTMLDivElement>(null)
+  const followLatest = useRef(true)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
 
   const resize = useCallback(() => {
@@ -847,10 +851,26 @@ export function RoomView({ id }: { id: string }) {
     resize()
   }, [id, text, resize])
 
+  useLayoutEffect(() => {
+    followLatest.current = true
+    const receiveFocus = () => {
+      const messageId = takeRoomMessageFocus(id)
+      if (!messageId) return
+      const row = transcriptRef.current?.querySelector<HTMLElement>(`[data-room-message-id="${CSS.escape(messageId)}"]`)
+      if (row) {
+        followLatest.current = false
+        revealTranscriptRow(row)
+      }
+    }
+    receiveFocus()
+    window.addEventListener(ROOM_FOCUS_EVENT, receiveFocus)
+    return () => window.removeEventListener(ROOM_FOCUS_EVENT, receiveFocus)
+  }, [id])
+
   useEffect(() => {
     const frame = requestAnimationFrame(() => {
       const transcript = transcriptRef.current
-      if (transcript) transcript.scrollTop = transcript.scrollHeight
+      if (transcript && followLatest.current) transcript.scrollTop = transcript.scrollHeight
     })
     return () => cancelAnimationFrame(frame)
   }, [id, room?.messages.length, speaker])
@@ -913,25 +933,27 @@ export function RoomView({ id }: { id: string }) {
     el?.animate([{ backgroundColor: 'var(--color-accent-50)' }, { backgroundColor: 'transparent' }], { duration: 1600 })
   }, [id])
 
-  if (!room) return <CreateRoom />
-
   const mentionMatch = trailingMention.exec(text)
   const rawQuery = mentionMatch?.[1] ?? ''
   const query = normalizeMentionName(rawQuery)
   const closeAfterExact =
     Boolean(mentionMatch) &&
     /\s$/.test(rawQuery) &&
-    room.members.some((m) => normalizeMentionName(m.name) === query) &&
+    room?.members.some((m) => normalizeMentionName(m.name) === query) &&
     !room.members.some((m) => {
       const name = normalizeMentionName(m.name)
       return name.startsWith(`${query} `) || name.startsWith(`${query}·`)
     })
   const mentionCandidates =
-    mentionMatch && !closeAfterExact
+    room && mentionMatch && !closeAfterExact
       ? room.members.filter((m) =>
           normalizeMentionName(m.name).includes(query)
         )
       : []
+
+  const recipient = room?.members.find((m) => m.botId === room.coordinatorId)?.name ?? room?.title ?? ''
+  const prompts = usePromptSlashMenu(textareaRef, text, setText, resize, recipient, mentionCandidates.length > 0)
+  if (!room) return <CreateRoom />
 
   const pictures = draft.forSend()
   const canSend = Boolean(pictures && (text.trim() || references.length || pictures.length))
@@ -945,6 +967,7 @@ export function RoomView({ id }: { id: string }) {
   }
 
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (prompts.handleKey(e)) return
     if (mentionCandidates.length > 0) {
       if (e.key === 'ArrowDown') {
         e.preventDefault()
@@ -1039,13 +1062,17 @@ export function RoomView({ id }: { id: string }) {
 
         {/* Quiet Icon-Only Right Actions */}
         <div className="no-drag flex min-w-0 flex-1 items-center justify-end gap-1">
+          <TranscriptSearchButton />
           {room.messages.length > 0 && (
-            <IconButton
-              label={room.finalId ? '导出共识 Markdown' : '导出讨论记录'}
-              onClick={() => exportRoomMarkdownFile(room)}
-            >
-              <ArkExportDocSvg />
-            </IconButton>
+            <Menu>
+              <MenuTrigger asChild>
+                <IconButton label={t('Export conversation')}><ArkExportDocSvg /></IconButton>
+              </MenuTrigger>
+              <MenuContent align="end">
+                <MenuItem onSelect={() => exportRoomMarkdownFile(room)}>{t('Download Markdown (.md)')}</MenuItem>
+                <MenuItem onSelect={() => exportRoomJsonFile(room)}>{t('Download JSON (.json)')}</MenuItem>
+              </MenuContent>
+            </Menu>
           )}
           <IconButton
             label={t(room.pinned ? 'Unpin from sidebar' : 'Pin to sidebar')}
@@ -1068,6 +1095,7 @@ export function RoomView({ id }: { id: string }) {
         </div>
       </PaneHeader>
 
+      <TranscriptSearchBar conversationId={id} messages={room.messages} focusMessage={focusRoomMessage} />
       {error && (
         <div className="mx-auto mt-2 flex max-w-[780px] flex-wrap items-center gap-2 px-4">
           <p role="alert" className="text-[12.5px] text-status-error">
@@ -1117,7 +1145,10 @@ export function RoomView({ id }: { id: string }) {
           </div>
         </div>
       ) : (
-        <div ref={transcriptRef} className="min-h-0 flex-1 overflow-y-auto px-6 py-5">
+        <div ref={transcriptRef} onScroll={(event) => {
+          const view = event.currentTarget
+          followLatest.current = view.scrollHeight - view.scrollTop - view.clientHeight < 120
+        }} className="min-h-0 flex-1 overflow-y-auto px-6 py-5">
           <div className="flex flex-col gap-5">
             <RoomTranscript
               roomId={room.id}
@@ -1169,6 +1200,7 @@ export function RoomView({ id }: { id: string }) {
       {/* Clean Grok Pill Composer */}
       <div className="shrink-0 px-6 pt-2 pb-5">
         <div className="relative mx-auto max-w-[820px] px-2">
+          {prompts.menu}
           {mentionCandidates.length > 0 && (
             <div
               role="listbox"
@@ -1257,6 +1289,7 @@ export function RoomView({ id }: { id: string }) {
                 <ArkMentionLoopSvg />
               </IconButton>
 
+              {prompts.button}
               <WorkspaceTools
                 scope={id}
                 recipient={roomRecipient(room, slackDestination ? `Slack ${slackDestination.channel}` : audience)}
@@ -1272,10 +1305,12 @@ export function RoomView({ id }: { id: string }) {
               />
 
               <textarea
+                {...prompts.textareaProps}
                 ref={textareaRef}
                 value={text}
                 rows={1}
                 onChange={(e) => {
+                  prompts.sync(e.currentTarget)
                   setText(e.target.value)
                   setMentionCursor(0)
                 }}
