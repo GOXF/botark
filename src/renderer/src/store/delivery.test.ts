@@ -284,8 +284,13 @@ describe('clearNoReplyFlag', () => {
     expect(out[0]).toMatchObject({ delivery: 'sent', error: undefined })
   })
 
-  it('leaves older flags alone when the latest user message is fine', () => {
+  it('clears every user message since the previous reply (one reply answers them together)', () => {
     const list = [msg({ id: '1', delivery: 'no-reply' }), msg({ id: '2', delivery: 'sent' }), msg({ id: '3', role: 'bot' })]
+    expect(clearNoReplyFlag(list)[0]).toMatchObject({ delivery: 'sent', error: undefined })
+  })
+
+  it('leaves flags from before the previous reply alone', () => {
+    const list = [msg({ id: '1', delivery: 'no-reply' }), msg({ id: '2', role: 'bot' }), msg({ id: '3', delivery: 'sent' }), msg({ id: '4', role: 'bot' })]
     expect(clearNoReplyFlag(list)).toBe(list)
   })
 })

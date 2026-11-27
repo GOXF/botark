@@ -768,9 +768,12 @@ export const useBotStore = create<BotHubState>()(
           (!loading || loading.sessionId !== bot.activeSessionId)) {
         patchBot(botId, () => ({ activeSessionId: receipt.sessionId }))
       }
-      const current = get().messages[botId]?.find((m) => m.id === messageId)
+      const list = get().messages[botId] ?? []
+      const current = list.find((m) => m.id === messageId)
+      // GOXF: Hark can report "no reply" for a message whose answer came with a later message's turn.
+      const answeredLater = Boolean(current && list.some((m) => m.role === 'bot' && m.accountId === current.accountId && m.createdAt > current.createdAt && m.text?.trim()))
       if (current?.delivery !== 'sent') {
-        updateMessage(botId, messageId, receipt.noReply
+        updateMessage(botId, messageId, receipt.noReply && !answeredLater
           ? { delivery: 'no-reply', error: NO_REPLY_TEXT }
           : { delivery: 'sent', error: undefined })
       }

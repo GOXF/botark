@@ -303,15 +303,23 @@ export function createSafeStorage(
  * did get an answer after all.
  */
 export function clearNoReplyFlag(list: ChatMessage[], accountId?: string): ChatMessage[] {
+  // GOXF: a reply answers every user message sent since the previous reply (people send a thought in
+  // pieces and Hark answers them together), so clear the flag on all of them, not only the newest.
+  let next = list
+  let sawUser = false
   for (let i = list.length - 1; i >= 0; i--) {
     const m = list[i]!
-    if (m.role !== "user" || (accountId !== undefined && m.accountId !== accountId)) continue
-    if (m.delivery !== "no-reply" && m.delivery !== "accepted") return list
-    const next = list.slice()
+    if (accountId !== undefined && m.accountId !== accountId) continue
+    if (m.role !== "user") {
+      if (sawUser) break
+      continue
+    }
+    sawUser = true
+    if (m.delivery !== "no-reply" && m.delivery !== "accepted") continue
+    if (next === list) next = list.slice()
     next[i] = { ...m, delivery: "sent", error: undefined }
-    return next
   }
-  return list
+  return next
 }
 
 /**
