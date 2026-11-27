@@ -343,3 +343,4 @@ git clone <GOXF/botark> && cd botark && git checkout fix/hark-login-sync && npm 
 - 19:25 6e4f386 托盘：main/goxfTray.ts（userData/goxf-tray.json closeBehavior tray|quit，默认 tray；托盘菜单 打开/退出；单击显隐；首次关闭系统通知），设置行 GoxfTrayRow（Mac 不显示），按 v17 开工。未在设备验证。
 - 19:30 dd6e673 托盘修复：build/ 不进安装包，图标为空→没建托盘→关闭直接退出。改用 ?asset 打包图标；仍无图标时改为最小化。
 - 19:28 ddbde17 托盘图标去掉 Mac 透明边（build/tray-icon.png），16/24/32 多倍图；动 build/ 走完整打包。
+- 2026-11-27 11:32 c900827 Hark：只留实时状态，删掉仅 narration 的「Agent Activity」卡（historyNormalizers.ts）。用户 11:27 原话「我只需要下面那条实时状态就行」。
