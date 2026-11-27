@@ -370,4 +370,4 @@ git clone <GOXF/botark> && cd botark && git checkout fix/hark-login-sync && npm 
 
 ## 2026-11-27 18:30 更新走代理池（208fad2）+ 订阅代理提案
 - goxfUpdater：updaterFetch 先走代理池里测速最快的条目（accountProxy.updaterPoolProxy，内存分区 goxf-updater），网络失败或池空时回退系统网络。测试包 v0.17.0-goxf.dev.208fad2，待用户试。
-- 用户问订阅链接：现在只支持 HTTP/HTTPS/SOCKS5。用户要参考 jlcodes99/cockpit-tools 的 Codex 代理（Mihomo 不内置，用户下载或本地导入）。已发提案：内核卡 + 订阅节点进代理池（本机 Mihomo 端口），第一版 = 内核安装/订阅导入/选节点/测延迟，效果图约 30 分钟，开工约 6 小时。等用户回复。cockpit 许可 CC BY-NC-SA，只借思路。
+- 用户问订阅链接：现在只支持 HTTP/HTTPS/SOCKS5。用户要参考 jlcodes99/cockpit-tools 的 Codex 代理（Mihomo 不内置，用户下载或本地导入）。已发提案：内核卡 + 订阅节点进代理池（本机 Mihomo 端口），第一版 = 内核安装/订阅导入/选节点/测延迟，效果图约 30 分钟，开工约 6 小时。等用户回复。2026-11-27 18:32 用户：已联系作者，可直接移植需要的代码（Rust → TS 翻译）。
