@@ -36,7 +36,7 @@ interface Card {
   project?: { botId: string; botName: string; accountId: string; conversationId: string; working: boolean }
 }
 
-const COLUMN_STYLE: Record<BoardColumn, { dot: string; head: string }> = {
+export const COLUMN_STYLE: Record<BoardColumn, { dot: string; head: string }> = {
   wait: { dot: 'bg-status-attention', head: 'text-status-attention-ink' },
   run: { dot: 'bg-status-busy', head: 'text-status-busy-ink' },
   fail: { dot: 'bg-status-error', head: 'text-status-error' },
@@ -218,7 +218,7 @@ const TASK_WORD: Record<HarkTask['state'], string> = { working: '进行中', ope
 const KIND_WORD: Record<HarkSubtask['kind'], string> = { browser: '浏览器', subagent: '子代理', other: '工具' }
 
 type PickedProject = NonNullable<Card['project']> & { title: string; taskId?: string }
-interface TaskCard extends HarkTask { conversationId: string; column: BoardColumn; projectKey: string; botId: string }
+export interface TaskCard extends HarkTask { conversationId: string; column: BoardColumn; projectKey: string; botId: string }
 const DAY = 24 * 60 * 60 * 1000
 
 /**
@@ -405,7 +405,7 @@ function TaskBoard({ botIds, roomIds, single }: { botIds: string[]; roomIds: str
   )
 }
 
-function TaskCardView({ task, title, selected, onClick }: { task: TaskCard; title: string; selected: boolean; onClick: () => void }) {
+export function TaskCardView({ task, title, selected, onClick }: { task: TaskCard; title: string; selected: boolean; onClick: () => void }) {
   const [open, setOpen] = useState(false)
   const subs = open ? task.subtasks : task.subtasks.slice(0, 3)
   const running = task.subtasks.filter((s) => s.status === 'running' || s.status === 'waiting').length
