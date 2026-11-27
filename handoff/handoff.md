@@ -385,3 +385,10 @@ git clone <GOXF/botark> && cd botark && git checkout fix/hark-login-sync && npm 
 - a82e4fd：Mihomo 下载取官方 latest release（GitHub asset digest 校验，API 不通回退 1.19.33），装了旧版显示「更新到 vX」；本地导入接受任意版本的官方文件名。测试包 dev.b8c528b。
 - 用户否决「24 小时自动算完成」（fb845f9），已在 b8c528b 撤回。用户要自己决定卡片状态：v21 效果图（拖到任意列、右键/⋯「标为…」、右下角「手动」、「恢复自动」，只存本地）已发，等开工（约 2 小时）。
 - 9081321 复制图片走 main 取图（预签名链接无 CORS），未实测。
+
+## 2026-11-27 19:25 v21 看板手动状态（60e2fb8）
+- 用户 19:19「开工」。测试包 v0.17.0-goxf.dev.60e2fb8（fast 补丁包，https://github.com/GOXF/botark/releases/tag/v0.17.0-goxf.dev.60e2fb8），待用户试。
+- BoardView：每张卡片（Hark 任务卡 + 普通卡）套 BoardCardShell：原生 HTML5 拖到别的列（目标列 bg-accent-50 + ring，原位虚线占位，拖影 rotate-1 + shadow-float，setDragImage 用克隆）；右键或悬停 ⋯ 打开 Menu「标为…」四状态（当前打勾）+「恢复自动」（仅手动时可点）；手动卡右下角「手动」。没加拖拽库。
+- store/boardOverrideStore.ts：zustand persist，localStorage `botark-board-overrides-v1`，key = Hark `${projectKey}:${taskId}`（projectKey = botId|accountId|conversationId）、普通卡 `b:<botId>` / `r:<roomId>`。无过期、无自动规则、不写 Hark。lib/boardStatus.ts 加 effectiveColumn / sanitizeOverrides。列计数、来源 chip 计数、刚完成一天折叠都按生效列。手动设到某列的空闲普通卡也会显示。
+- 测试：store/boardOverrideStore.test.ts；renderer 全过，design:check OK。真界面 mock `v21-board-drag-real`（假 Hark bridge），playwright 实测拖放、右键菜单、恢复自动都改对了 localStorage。
+- 未验证：Windows/Electron 里真实拖影样子（headless 不画拖影）、触控板拖动、键盘 ContextMenu 键打开菜单位置；任务消失后 override 不清理（按要求不过期）。
