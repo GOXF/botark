@@ -68,3 +68,29 @@ describe('deriveTasks helpers', () => {
     expect(t!.subtasks).toEqual([{ id: 'tu_1', kind: 'subagent', title: '子任务进行中', status: 'running' }])
   })
 })
+
+describe('deriveTasks: what waits on you', () => {
+  const now = 10_000_000
+  const at = (min: number) => now - min * 60_000
+  it('only awaitsPerson is 等你处理; an open request a follow-up continued is done', async () => {
+    const { deriveTasks } = await import('./harkSubtasks')
+    const tasks = deriveTasks({
+      requests: {
+        a: { state: 'open', title: '设置控制台', doneTitle: '已建令牌' },
+        b: { state: 'completed', title: '下一步', followsUp: 'a', lineage: '["a"]' },
+        c: { state: 'open', title: '要你选', awaitsPerson: true },
+        d: { state: 'open', title: '刚发的' },
+        e: { state: 'open', title: '昨天的' }
+      },
+      messages: [
+        { id: 'a', role: 'user', createdAt: at(60) },
+        { id: 'b', role: 'user', createdAt: at(50) },
+        { id: 'c', role: 'user', createdAt: at(40) },
+        { id: 'd', role: 'user', createdAt: at(2) },
+        { id: 'e', role: 'user', createdAt: at(24 * 60) }
+      ]
+    }, now)
+    const by = Object.fromEntries(tasks.map((t) => [t.id, t.state]))
+    expect(by).toEqual({ a: 'done', b: 'done', c: 'open', d: 'working', e: 'done' })
+  })
+})

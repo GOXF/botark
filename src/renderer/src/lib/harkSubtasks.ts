@@ -19,7 +19,7 @@ export interface HarkSnapshotLike {
   panels?: SnapPanel[]
   messages?: SnapMessage[]
   asks?: Array<{ dispatchId?: string; status?: string }>
-  requests?: Record<string, { state?: string; title?: string; doneTitle?: string; boundTo?: string }>
+  requests?: Record<string, { state?: string; title?: string; doneTitle?: string; boundTo?: string; followsUp?: string; lineage?: string[] | string; awaitsPerson?: boolean }>
   activeWork?: Array<{ dispatchId?: string; messageId?: string; state?: string; domain?: string }>
 }
 
@@ -93,7 +93,9 @@ export interface HarkTask {
  * a follow-up `boundTo` another request folds into it, each reply names its
  * request in `triggeredBy`, and `activeWork` lists the dispatches still running.
  */
-export function deriveTasks(snap: HarkSnapshotLike | null | undefined): HarkTask[] {
+const STALE_MS = 30 * 60_000
+
+export function deriveTasks(snap: HarkSnapshotLike | null | undefined, now = Date.now()): HarkTask[] {
   const requests = snap?.requests ?? {}
   const root = (id: string): string => {
     let cur = id
@@ -110,12 +112,28 @@ export function deriveTasks(snap: HarkSnapshotLike | null | undefined): HarkTask
     const t = id ? subtasks.get(id) : undefined
     if (t && t.status === 'done') t.status = 'running'
   }
+  // Hark keeps a request "open" until it sends a formal answer, even once the work moved on to a
+  // follow-up. Only `awaitsPerson` (or a live ask) means it waits on the user; an open request a
+  // later one continues (followsUp / lineage) is finished as far as the board goes.
+  const continued = new Set<string>()
+  for (const [id, r] of Object.entries(requests)) {
+    let lineage: unknown = r.lineage
+    if (typeof lineage === 'string') { try { lineage = JSON.parse(lineage) } catch { lineage = [] } }
+    for (const prev of [r.followsUp, ...(Array.isArray(lineage) ? lineage : [])]) {
+      if (typeof prev === 'string' && prev !== id) continued.add(prev)
+    }
+  }
   const tasks = new Map<string, HarkTask>()
   const task = (id: string): HarkTask => {
     let t = tasks.get(id)
     if (!t) {
       const r = requests[id] ?? {}
-      const state = /complete|done|answer|closed/i.test(r.state ?? '') ? 'done' : /work/i.test(r.state ?? '') ? 'working' : 'open'
+      const raw = r.state ?? ''
+      const state: HarkTask['state'] = /complete|done|answer|closed|cancel|expire|settle/i.test(raw) ? 'done'
+        : /work/i.test(raw) ? 'working'
+        : r.awaitsPerson || /input|await|need/i.test(raw) ? 'open'
+        : continued.has(id) || r.doneTitle ? 'done'
+        : 'working'
       t = { id, title: (state === 'done' && r.doneTitle) || r.title || '', state, subtasks: [] }
       tasks.set(id, t)
     }
@@ -149,7 +167,10 @@ export function deriveTasks(snap: HarkSnapshotLike | null | undefined): HarkTask
   const out = [...tasks.values()].filter((t) => t.title || t.subtasks.length)
   for (const t of out) {
     t.subtasks.sort((a, b) => ORDER[a.status] - ORDER[b.status] || (a.startedAt ?? 0) - (b.startedAt ?? 0))
-    if (t.state !== 'done' && t.subtasks.some((s) => s.status === 'running' || s.status === 'waiting')) t.state = 'working'
+    const live = t.subtasks.some((s) => s.status === 'running' || s.status === 'waiting')
+    if (t.state !== 'done' && live) t.state = 'working'
+    // "working" with nothing running and no word for 30 min: Hark has stopped on it.
+    else if (t.state === 'working' && !live && (t.createdAt ?? 0) < now - STALE_MS && !/work/i.test(requests[t.id]?.state ?? '')) t.state = 'done'
     if (!t.title) t.title = '未命名任务'
   }
   const rank = { working: 0, open: 1, done: 2 } as const
