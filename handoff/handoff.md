@@ -347,3 +347,9 @@ git clone <GOXF/botark> && cd botark && git checkout fix/hark-login-sync && npm 
 - 11:41 e422b28 Hark 项目删除即时消失（乐观隐藏，失败恢复）。
 - 11:45 eb59b00 Hark 登录 ask 只填密码即可提交（loginReady），Hark /secrets 是否接受无用户名未验证。
 - 16:15 fc4a69b 「已送达但没收到回复」误报：Hark 一次回复同时回答连发的两条，旧逻辑只清最新一条。clearNoReplyFlag 改为清上次回复以来所有用户消息；applyReceipt 若之后已有回复则不标 no-reply。
+
+## 2026-11-27 17:30 合并上游 v0.16.1（5b8c6be）
+- 上游新增：#84 会话内搜索（⌘F，TranscriptSearchBar）+ 本地导出；#85 「/」复用提示词（promptStore、PromptSlashMenu、PromptLibraryDialog）。我们的 #78/#79/#80 已被上游合并，冲突处保留 fork 版本（应用内打开连接、MessageBubble 胶囊样式、rooms 失败挂在消息下、无全局 error bar）。
+- Muse 文件（quota.ts、QuotaSection.tsx）整份取上游。version 0.16.1，goxfBuild 14。
+- ChatHeader 新增 showTranscriptSearch（分屏 compact 时隐藏按钮）；RoomView 消息同时带 data-room-message 与 data-room-message-id。
+- rooms.test 两条改为断言无 errors.room（fork 行为）。src/main/mcp/hub.test 在负载下偶发 3 失败，单跑通过。
