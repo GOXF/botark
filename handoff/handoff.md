@@ -357,3 +357,7 @@ git clone <GOXF/botark> && cd botark && git checkout fix/hark-login-sync && npm 
 ## 2026-11-27 17:45 合并上游 v0.17.0（29bdaae）
 - 上游 #86：原生 Google Gemini 账号 + 流式对话（src/main/gemini、adapters/gemini、components/gemini）。version 0.17.0，goxfBuild 15。
 - 5 处冲突：ChatHeader（只加 Gemini 新会话，Grok 已有）、mobileSyncBridge（先跳过 gemini，再保留 fork 的 approvals 预推）、botStore（startHarkDraft + Gemini 会话三方法并存）、botStoreSessions.test（两条测试都保留）。测试：renderer/shared/adapters 492、main 523 全过；design:check OK。
+
+## 2026-11-27 17:43 任务看板「等你处理」误报（d8bd1dd）
+- 原因：harkSubtasks.deriveTasks 把 Hark request state=open 全当「等你处理」。Hark 在正式答复前一直 open，即便工作已转到后续消息。
+- 现在：只有 awaitsPerson（或 input/await 状态、未完成的 ask）才进等你处理；被后续 followsUp/lineage 接续、或有 doneTitle 的 open 算完成；其余 open 算进行中，30 分钟无活动转完成。
