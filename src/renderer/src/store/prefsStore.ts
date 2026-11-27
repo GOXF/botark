@@ -11,12 +11,21 @@ interface PrefsState {
   setLocale: (locale: Locale) => void
 }
 
-/** UI preferences (local only). Light theme + Chinese by default. */
+/** Match the first supported system language; keep English as the fallback. */
+export function resolveInitialLocale(preferredLanguages: readonly string[]): Locale {
+  for (const tag of preferredLanguages) {
+    const language = tag.split(/[-_]/)[0]?.toLowerCase()
+    if (language === 'en' || language === 'zh') return language
+  }
+  return 'en'
+}
+
+/** Persist an explicit language selection without changing existing preferences. */
 export const usePrefsStore = create<PrefsState>()(
   persist(
     (set) => ({
       theme: 'light',
-      locale: 'zh',
+      locale: resolveInitialLocale(typeof navigator === 'undefined' ? [] : navigator.languages ?? [navigator.language]),
       setTheme: (theme) => set({ theme }),
       setLocale: (locale) => set({ locale })
     }),

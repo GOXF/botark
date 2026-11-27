@@ -22,10 +22,10 @@ struct AddBotPickerSheet: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 16) {
                         VStack(alignment: .leading, spacing: 4) {
-                            Text("添加独立智能体")
+                            Text(String(localized: "Add Standalone Agent"))
                                 .font(ArkFont.bold(20))
                                 .tracking(-0.4)
-                            Text("手机独立运行，每个账号独享隔离存储，不依赖电脑端。")
+                            Text(String(localized: "Runs on this device. Each account has separate storage and does not require the desktop app."))
                                 .font(ArkFont.regular(12.5))
                                 .foregroundStyle(.secondary)
                         }
@@ -52,7 +52,7 @@ struct AddBotPickerSheet: View {
                             HStack(spacing: 8) {
                                 Image(systemName: "qrcode.viewfinder")
                                     .font(.system(size: 14, weight: .semibold))
-                                Text("或扫码同步电脑端全部 Bot")
+                                Text(String(localized: "Or scan a code to sync all desktop bots"))
                                     .font(ArkFont.semibold(13.5))
                             }
                             .foregroundStyle(ArkTheme.onInk)
@@ -69,7 +69,7 @@ struct AddBotPickerSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("关闭") { dismiss() }
+                    Button(String(localized: "Close")) { dismiss() }
                         .font(ArkFont.medium(14))
                 }
             }
@@ -173,7 +173,7 @@ struct AddStandaloneWebBotSheet: View {
                     }
 
                     VStack(alignment: .leading, spacing: 6) {
-                        Text("名称")
+                        Text(String(localized: "Name"))
                             .font(ArkFont.medium(11.5))
                             .foregroundStyle(.secondary)
                             .padding(.leading, 4)
@@ -189,7 +189,7 @@ struct AddStandaloneWebBotSheet: View {
                             )
                     }
 
-                    Text("将在手机本地创建独立隔离分区，直接打开官方登录页，无需电脑在线。")
+                    Text(String(localized: "Opens the official sign-in page in a separate local session. The desktop app does not need to be online."))
                         .font(ArkFont.regular(12))
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)
@@ -211,7 +211,7 @@ struct AddStandaloneWebBotSheet: View {
                             HStack(spacing: 7) {
                                 Image(systemName: "arrow.up.right.circle.fill")
                                     .font(.system(size: 15, weight: .semibold))
-                                Text("创建并立即登录")
+                                Text(String(localized: "Create and Sign In"))
                                     .font(ArkFont.semibold(14.5))
                             }
                             .foregroundStyle(ArkTheme.onInk)
@@ -228,7 +228,7 @@ struct AddStandaloneWebBotSheet: View {
                                 onSwitchToQR()
                             }
                         } label: {
-                            Text("已有电脑端账号？扫码同步")
+                            Text(String(localized: "Already using the desktop app? Scan to sync"))
                                 .font(ArkFont.medium(12.5))
                                 .foregroundStyle(.secondary)
                                 .padding(.vertical, 6)
@@ -244,7 +244,7 @@ struct AddStandaloneWebBotSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("取消") { dismiss() }
+                    Button(String(localized: "Cancel")) { dismiss() }
                         .font(ArkFont.medium(14))
                 }
             }

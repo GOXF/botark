@@ -199,6 +199,14 @@ export default function App() {
   }, [])
 
   useEffect(() => startPrefsSync(), [])
+  useEffect(
+    () => window.electron?.onOpenSettings?.(() => {
+      const state = useBotStore.getState()
+      if (state.onboardingOpen) state.setOnboardingOpen(false)
+      state.setSettingsOpen(true)
+    }),
+    []
+  )
   useEffect(() => {
     // Only resume an explicitly connected bridge after a renderer reload.
     if (sessionStorage.getItem('botark.slack.connected') !== '1') return

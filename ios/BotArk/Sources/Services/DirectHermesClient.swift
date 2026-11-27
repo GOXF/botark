@@ -42,7 +42,7 @@ public enum DirectHermesError: LocalizedError {
 
     public var errorDescription: String? {
         switch self {
-        case .invalidUrl(let u): return "Hermes 服务地址无效：\(u)"
+        case .invalidUrl(let u): return String.localizedStringWithFormat(String(localized: "Invalid Hermes server URL: %@"), u)
         case .httpError(let code, let msg): return "Hermes HTTP \(code): \(msg)"
         }
     }
@@ -93,10 +93,10 @@ public actor DirectHermesClient {
         }
         let (data, resp) = try await session.data(for: req)
         guard let http = resp as? HTTPURLResponse else {
-            throw DirectHermesError.httpError(0, "无响应")
+            throw DirectHermesError.httpError(0, String(localized: "No Response"))
         }
         guard http.statusCode == 200 else {
-            throw DirectHermesError.httpError(http.statusCode, http.statusCode == 401 ? "API Key 无效" : "连接失败")
+            throw DirectHermesError.httpError(http.statusCode, http.statusCode == 401 ? String(localized: "Invalid API Key") : String(localized: "Connection Failed"))
         }
         var model = "hermes-agent"
         if let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -122,16 +122,16 @@ public actor DirectHermesClient {
         req.httpBody = try JSONSerialization.data(withJSONObject: body)
         let (data, resp) = try await session.data(for: req)
         guard let http = resp as? HTTPURLResponse else {
-            throw DirectHermesError.httpError(0, "无法创建会话")
+            throw DirectHermesError.httpError(0, String(localized: "Could Not Create Session"))
         }
         guard (200...299).contains(http.statusCode) else {
-            throw DirectHermesError.httpError(http.statusCode, "创建会话失败")
+            throw DirectHermesError.httpError(http.statusCode, String(localized: "Session Creation Failed"))
         }
         if let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
             if let sess = obj["session"] as? [String: Any], let id = sess["id"] as? String { return id }
             if let id = obj["id"] as? String { return id }
         }
-        throw DirectHermesError.httpError(502, "会话 ID 为空")
+        throw DirectHermesError.httpError(502, String(localized: "Missing Session ID"))
     }
 
     public func streamChat(
@@ -207,10 +207,10 @@ public actor DirectHermesClient {
 
         let (bytes, resp) = try await session.bytes(for: req)
         guard let http = resp as? HTTPURLResponse else {
-            throw DirectHermesError.httpError(0, "无响应")
+            throw DirectHermesError.httpError(0, String(localized: "No Response"))
         }
         guard http.statusCode == 200 else {
-            throw DirectHermesError.httpError(http.statusCode, "流式请求失败")
+            throw DirectHermesError.httpError(http.statusCode, String(localized: "Streaming Request Failed"))
         }
 
         var parser = HermesSseParser()
@@ -265,7 +265,7 @@ public actor DirectHermesClient {
                 let approval = SyncedApproval(
                     id: reqId,
                     status: "pending",
-                    title: cmd.isEmpty ? (desc.isEmpty ? "Hermes 命令审批" : desc) : "允许执行：\(cmd)",
+                    title: cmd.isEmpty ? (desc.isEmpty ? String(localized: "Hermes Command Approval") : desc) : String.localizedStringWithFormat(String(localized: "Allow command: %@"), cmd),
                     detail: desc.isEmpty ? cmd : desc,
                     approvalType: "hermes_command",
                     decisionOptions: ["allow_once", "allow_session", "deny"]
@@ -274,7 +274,7 @@ public actor DirectHermesClient {
             case "assistant.completed":
                 if let c = obj["content"] as? String, !c.isEmpty { completed = c }
             case "error":
-                let msg = (obj["message"] as? String) ?? "Hermes 运行出错"
+                let msg = (obj["message"] as? String) ?? String(localized: "Hermes Encountered an Error")
                 throw DirectHermesError.httpError(502, msg)
             default:
                 break
@@ -315,7 +315,7 @@ public actor DirectHermesClient {
         let (bytes, resp) = try await session.bytes(for: req)
         guard let http = resp as? HTTPURLResponse, http.statusCode == 200 else {
             let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
-            throw DirectHermesError.httpError(code, "OpenAI 兼容接口请求失败")
+            throw DirectHermesError.httpError(code, String(localized: "OpenAI-Compatible Request Failed"))
         }
 
         var parser = HermesSseParser()

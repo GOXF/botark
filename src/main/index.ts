@@ -3,7 +3,9 @@ import { registerWorkspaceIpc, stopWorkspaces } from './mcp/hub'
 import { registerWorkspacePortalIpc, stopWorkspacePortals } from './mcp/workspacePortal'
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
-import { app, autoUpdater, BrowserWindow, shell } from 'electron'
+import { app, autoUpdater, BrowserWindow, ipcMain, Menu, shell } from 'electron'
+import { SETTINGS_MENU_CHANNEL } from '@shared/settingsMenu'
+import { createSettingsRequestQueue, settingsMenuTemplate } from './settingsMenu'
 import { attachWebViewManager, registerWebViewIpc } from './webViewIpc'
 import { attachMuseSessionManager, disposeAllMuseManagers, registerMuseIpc } from './muse/museIpc'
 import { registerUpdaterIpc, startAutoUpdater } from './updater'
@@ -40,6 +42,27 @@ let mainWindow: BrowserWindow | null = null
 let quitting = false
 let readyForDeepLinks = false
 const pendingCueCallbacks: string[] = []
+const settingsRequests = createSettingsRequestQueue(() => {
+  if (!mainWindow || mainWindow.isDestroyed()) return
+  mainWindow.webContents.send(SETTINGS_MENU_CHANNEL.open)
+})
+
+function installSettingsMenu(): void {
+  ipcMain.on(SETTINGS_MENU_CHANNEL.ready, (event) => {
+    const contents = mainWindow?.webContents
+    if (contents && event.sender === contents && event.senderFrame === contents.mainFrame) {
+      settingsRequests.rendererReady()
+    }
+  })
+  Menu.setApplicationMenu(Menu.buildFromTemplate(settingsMenuTemplate(app.getName(), () => {
+    if (quitting) return
+    if (!mainWindow || mainWindow.isDestroyed()) mainWindow = createMainWindow()
+    if (mainWindow.isMinimized()) mainWindow.restore()
+    mainWindow.show()
+    mainWindow.focus()
+    settingsRequests.request()
+  }, app.getLocale())))
+}
 
 if (isMac) {
   autoUpdater.on('before-quit-for-update', () => {
@@ -147,6 +170,11 @@ function createMainWindow(): BrowserWindow {
     }
   })
 
+  settingsRequests.rendererUnavailable()
+  win.webContents.on('did-start-loading', () => {
+    if (win.webContents.isLoadingMainFrame()) settingsRequests.rendererUnavailable()
+  })
+
   // Embedded platform web sessions (hidden until the renderer attaches one).
   const views = attachWebViewManager(win)
   attachMuseSessionManager(win, views)
@@ -190,6 +218,7 @@ function createMainWindow(): BrowserWindow {
 
   // Self-heal if Chromium's renderer process crashes or runs out of memory.
   win.webContents.on('render-process-gone', (_event, details) => {
+    settingsRequests.rendererUnavailable()
     console.error('[bothub] renderer gone:', details.reason, 'exitCode=', details.exitCode)
     if (!quitting && !win.isDestroyed() && details.reason !== 'clean-exit') {
       setTimeout(() => {
@@ -274,6 +303,7 @@ app.whenReady().then(async () => {
   registerWorkspaceIpc(() => mainWindow)
   registerWorkspacePortalIpc(() => mainWindow)
   registerSlackIpc(() => mainWindow)
+  if (isMac) installSettingsMenu()
   mainWindow = createMainWindow()
   readyForDeepLinks = true
   const initialCueCallback = findCueCallbackArg(process.argv)

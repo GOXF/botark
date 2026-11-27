@@ -8,9 +8,9 @@ enum BotArkTab: Hashable, CaseIterable {
 
     var label: String {
         switch self {
-        case .chats: return "对话"
-        case .approvals: return "审批"
-        case .sync: return "同步"
+        case .chats: return String(localized: "Chats")
+        case .approvals: return String(localized: "Approvals")
+        case .sync: return String(localized: "Sync")
         }
     }
 

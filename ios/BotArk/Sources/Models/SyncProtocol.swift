@@ -65,18 +65,18 @@ public enum PlatformId: String, Codable, CaseIterable, Identifiable, Sendable {
 
     public var standaloneSubtitle: String {
         switch self {
-        case .antigravity: return "Google 云端 Agent"
-        case .metaMuse: return "Meta 个人智能体"
+        case .antigravity: return String(localized: "Google Cloud Agent")
+        case .metaMuse: return String(localized: "Meta Personal Agent")
         case .grok: return "xAI Grok"
         case .dot: return "OpenAI Dot"
-        case .hark: return "Hark 个人助手"
-        case .cue: return "Manus Cue 个人智能体"
-        case .hermes: return "开源 SSE 网关"
+        case .hark: return String(localized: "Hark Personal Assistant")
+        case .cue: return String(localized: "Manus Cue Personal Agent")
+        case .hermes: return String(localized: "Open-Source SSE Gateway")
         }
     }
 
     public var standaloneTag: String {
-        self == .hermes ? "原生直连" : "独立登录"
+        self == .hermes ? String(localized: "Direct Connection") : String(localized: "Standalone Sign-In")
     }
 
     public static let pickerOrder: [PlatformId] = [
@@ -97,11 +97,11 @@ public enum ConnectionStatus: String, Codable, Sendable {
 
     public var label: String {
         switch self {
-        case .online: return "在线"
-        case .busy: return "运行中"
-        case .attention: return "待审批"
-        case .offline: return "离线"
-        case .error: return "异常"
+        case .online: return String(localized: "Online")
+        case .busy: return String(localized: "Running")
+        case .attention: return String(localized: "Needs Approval")
+        case .offline: return String(localized: "Offline")
+        case .error: return String(localized: "Error")
         }
     }
 }

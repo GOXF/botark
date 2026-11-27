@@ -1,4 +1,5 @@
 import type { GeminiEvent } from '@shared/gemini'
+import { SETTINGS_MENU_CHANNEL } from '@shared/settingsMenu'
 import { SLACK_CHANNEL, SLACK_INBOUND, type SlackInbound } from '@shared/slack'
 import { WORKSPACE_CHANNEL } from '@shared/workspace'
 import { WORKSPACE_PORTAL_CHANNEL } from '@shared/workspacePortal'
@@ -37,6 +38,12 @@ import {
 
 const bridge: BotHubBridge = {
   platform: process.platform,
+  onOpenSettings: (listener) => {
+    const handler = () => listener()
+    ipcRenderer.on(SETTINGS_MENU_CHANNEL.open, handler)
+    ipcRenderer.send(SETTINGS_MENU_CHANNEL.ready)
+    return () => ipcRenderer.removeListener(SETTINGS_MENU_CHANNEL.open, handler)
+  },
   versions: {
     electron: process.versions.electron ?? '',
     chrome: process.versions.chrome ?? '',

@@ -83,7 +83,7 @@ export function SettingsView() {
       const targets = allAccounts.filter((a) => (onlyOffline ? a.status === 'offline' || a.status === 'error' : true))
       await Promise.all(targets.map((a) => connectAccount(a.id).catch(() => undefined)))
       await dot.refresh()
-      setHint(`已完成 ${targets.length} 个账号的连接巡检与会话同步`)
+      setHint(tr('Checked connections and synced sessions for {count} accounts', { count: targets.length }))
     } finally {
       setBusy(false)
     }
