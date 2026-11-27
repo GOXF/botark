@@ -4,6 +4,7 @@ import type { GoxfPopoutBridge } from './goxfPopout'
 import type { GoxfInAppBridge } from './goxfInApp'
 import type { GoxfTrayBridge } from './goxfTray'
 import type { GoxfImageBridge } from './goxfImage'
+import type { GoxfProxySubsBridge } from './goxfProxySubs'
 import type { SlackBridge } from './slack'
 import type { WorkspaceBridge } from './workspace'
 import type { PortalBridge } from './workspacePortal'
@@ -342,4 +343,6 @@ export interface BotHubBridge {
   /** GOXF fork: close button hides to the tray (Windows/Linux). */
   readonly goxfTray?: GoxfTrayBridge
   readonly goxfImage?: GoxfImageBridge
+  /** GOXF fork: proxy-pool subscriptions on a user-installed Mihomo kernel. */
+  readonly goxfProxySubs?: GoxfProxySubsBridge
 }

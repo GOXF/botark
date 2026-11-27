@@ -58,7 +58,9 @@ const {
   releaseProxyPoolAccount,
   setAccountProxy,
   testAccountProxy,
-  testProxyPoolItems
+  testProxyPoolItems,
+  addMihomoPoolItems,
+  setPoolRuntimeHook
 } = await import('./accountProxy')
 const { DIRECT_PROXY_URL } = await import('../proxyTransport')
 
@@ -348,5 +350,36 @@ describe('saved credentials and pool ownership', () => {
     expect(Object.values(poolRes).every((r) => r.ok)).toBe(true)
     expect(seenProxyUrls).toContain('socks5://u:p@10.0.0.1:1080')
     expect(seenProxyUrls).toContain('http://10.0.0.2:7890')
+  })
+})
+
+describe('GOXF: Mihomo-served pool entries', () => {
+  const snapshot = { kind: 'node' as const, target: 'n', nodes: [], groups: [] }
+  const meta = { key: 'k', sourceId: 's', sourceName: '某某云', name: '香港 01', protocol: 'vmess', snapshot }
+
+  it('starts the entry runtime before a partition uses it, and blocks the partition when it cannot start', async () => {
+    const ensure = vi.fn(async (_id: string) => undefined)
+    const removed = vi.fn()
+    setPoolRuntimeHook({ ensure, removed })
+    writeFileSync(join(dir, 'muse-account-proxy.json'), '{}')
+    await addMihomoPoolItems([() => ({ cfg: { mode: 'socks5h', host: '127.0.0.1', port: 23999, username: 'u', password: 'p' }, mihomo: meta })])
+    const [item] = await listProxyPool()
+    expect(item!.sub).toEqual({ name: '香港 01', protocol: 'vmess', source: '某某云', group: false })
+    await setAccountProxy('accM', { mode: 'system', poolId: item!.id })
+    expect(ensure).toHaveBeenCalledWith(item!.id)
+    expect(readJson('muse-account-proxy.json').accM.poolId).toBe(item!.id)
+
+    ensure.mockRejectedValueOnce(new Error('Mihomo 内核未安装'))
+    await expect(applyProxyToPartition('accM')).rejects.toThrow('Mihomo 内核未安装')
+    expect(appliedByPartition.get('persist:test-accM')).toMatchObject({ proxyRules: 'http://127.0.0.1:9' })
+
+    await removeProxyPoolItem(item!.id)
+    expect(removed).toHaveBeenCalledWith([item!.id])
+    setPoolRuntimeHook(null)
+  })
+
+  it('never keeps a Mihomo marker from a renderer-saved config', async () => {
+    await saveProxyConfig('accV', { mode: 'socks5', host: '127.0.0.1', port: 1080, via: 'px_forged' })
+    expect((await loadProxyConfig('accV')).via).toBeUndefined()
   })
 })

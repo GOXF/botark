@@ -310,7 +310,10 @@ export function ProxySection({ accountId }: { accountId: string }) {
               options={[
                 ...pool.map((p) => ({
                   value: p.id,
-                  label: `${p.host}:${p.port} · ${schemeLabel(p.mode)} · ${p.assignedAccountIds.length} 个账号`
+                  // GOXF v20: subscription entries show their node, not the local Mihomo port.
+                  label: p.sub
+                    ? `${p.sub.name} · ${p.sub.group ? '分组' : p.sub.protocol} · ${p.sub.source} · ${p.assignedAccountIds.length} 个账号`
+                    : `${p.host}:${p.port} · ${schemeLabel(p.mode)} · ${p.assignedAccountIds.length} 个账号`
                 })),
                 { value: CUSTOM, label: '自定义…' }
               ]}

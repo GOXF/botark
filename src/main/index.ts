@@ -13,6 +13,8 @@ import { exitIfUpdating, registerUpdaterIpc, startAutoUpdater } from './goxfUpda
 import { startPerfLog } from './goxfPerf'
 import { registerDownloadIpc } from './goxfDownload'
 import { registerImageIpc } from './goxfImage'
+// GOXF: subscription proxies (registers the Mihomo pool runtime before applyAllStoredProxies).
+import { registerProxySubsIpc, stopProxySubs } from './goxfProxySubs'
 import { flushSessionCookies, startSessionCookiePersistence } from './goxfSessionCookies'
 import { registerGrokIpc } from './grok/grokIpc'
 import { stopGrokAccountWatch } from './grok/grokWatchManager'
@@ -320,7 +322,8 @@ app.on('before-quit', (event) => {
     stopWorkspaces(),
     stopWorkspacePortals(),
     stopMobileSyncServer(),
-    closeAllLocalProxyBridges()
+    closeAllLocalProxyBridges(),
+    stopProxySubs() // GOXF: kill every Mihomo process
   ])
   const deadline = new Promise<void>((resolve) => {
     const timer = setTimeout(resolve, 2500)
@@ -374,6 +377,7 @@ app.whenReady().then(async () => {
   registerPopoutIpc(() => mainWindow, createPopoutWindow)
   registerInAppIpc()
   registerTrayIpc()
+  registerProxySubsIpc() // GOXF
   mainWindow = createMainWindow()
   startTray(() => mainWindow)
   startPerfLog(mainWindow)

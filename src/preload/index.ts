@@ -10,6 +10,7 @@ import { GOXF_POPOUT_CHANNELS, type PopoutPatch } from '@shared/goxfPopout'
 import { GOXF_INAPP_CHANNELS } from '@shared/goxfInApp'
 import { GOXF_TRAY_CHANNELS } from '@shared/goxfTray'
 import { GOXF_IMAGE_CHANNELS } from '@shared/goxfImage'
+import { GOXF_PROXYSUB_CHANNELS, type MihomoKernelEvent } from '@shared/goxfProxySubs'
 import {
   ANTIGRAVITY_CHANNELS,
   CUE_CHANNELS,
@@ -158,6 +159,24 @@ const bridge: BotHubBridge = {
   },
   goxfImage: {
     fetch: (url) => ipcRenderer.invoke(GOXF_IMAGE_CHANNELS.fetch, url)
+  },
+  goxfProxySubs: {
+    kernelStatus: () => ipcRenderer.invoke(GOXF_PROXYSUB_CHANNELS.kernelStatus),
+    kernelDownload: () => ipcRenderer.invoke(GOXF_PROXYSUB_CHANNELS.kernelDownload),
+    kernelImport: () => ipcRenderer.invoke(GOXF_PROXYSUB_CHANNELS.kernelImport),
+    onKernelEvent: (listener) => {
+      const handler = (_event: unknown, payload: MihomoKernelEvent) => listener(payload)
+      ipcRenderer.on(GOXF_PROXYSUB_CHANNELS.kernelEvent, handler)
+      return () => ipcRenderer.removeListener(GOXF_PROXYSUB_CHANNELS.kernelEvent, handler)
+    },
+    list: () => ipcRenderer.invoke(GOXF_PROXYSUB_CHANNELS.list),
+    importSource: (input) => ipcRenderer.invoke(GOXF_PROXYSUB_CHANNELS.importSource, input),
+    refreshSource: (id) => ipcRenderer.invoke(GOXF_PROXYSUB_CHANNELS.refreshSource, id),
+    removeSource: (id) => ipcRenderer.invoke(GOXF_PROXYSUB_CHANNELS.removeSource, id),
+    setAutoRefresh: (on) => ipcRenderer.invoke(GOXF_PROXYSUB_CHANNELS.setAutoRefresh, on),
+    testDelays: (sourceId, nodeIds) => ipcRenderer.invoke(GOXF_PROXYSUB_CHANNELS.testDelays, sourceId, nodeIds),
+    addToPool: (req) => ipcRenderer.invoke(GOXF_PROXYSUB_CHANNELS.addToPool, req),
+    poolCurrent: () => ipcRenderer.invoke(GOXF_PROXYSUB_CHANNELS.poolCurrent)
   },
   goxfTray: {
     get: () => ipcRenderer.invoke(GOXF_TRAY_CHANNELS.get),

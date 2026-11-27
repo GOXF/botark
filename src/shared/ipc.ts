@@ -332,6 +332,8 @@ export interface MuseProxyPoolItemView {
   hasPassword: boolean
   assignedAccountIds: string[]
   lastTest?: ProxyTestResult
+  /** GOXF: subscription node/group served by a local Mihomo process (host/port are 127.0.0.1). */
+  sub?: { name: string; protocol: string; source: string; group: boolean; current?: string }
 }
 
 export interface MuseProxyTestResult {

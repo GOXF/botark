@@ -5,6 +5,8 @@ import type { PlatformId } from '@adapters/types'
 import { getPlatform } from '@adapters/platforms'
 import { Button } from '@/components/ui/Button'
 import { NumberStepper } from '@/components/ui/Controls'
+import { IconButton } from '@/components/ui/IconButton'
+import { SegmentedControl } from '@/components/ui/SegmentedControl'
 import { Select } from '@/components/ui/Select'
 import { getBridge } from '@/lib/bridge'
 import { cn } from '@/lib/cn'
@@ -14,6 +16,17 @@ import { usePrefsStore } from '@/store/prefsStore'
 import type { Bot } from '@/types'
 import { errorMessage } from './PlatformAccountsSection'
 import type { SettingsActivity, SettingsTab } from './SettingsView'
+// GOXF v20: subscriptions on a user-installed Mihomo kernel.
+import {
+  Badge,
+  latencyClass,
+  MihomoKernelCard,
+  ProtoTag,
+  ProxySubSources,
+  SubscriptionImport,
+  useMihomoKernel,
+  useProxySubs
+} from './GoxfProxySubs'
 
 const PROXY_PLACEHOLDER = `# 支持每行一个代理（自动识别格式）：
 https://user:pass@proxy.example.com:443
@@ -104,10 +117,12 @@ interface ProxyPoolSectionProps {
   botsByAccountId: ReadonlyMap<string, Bot[]>
   activity: SettingsActivity
   proxyPool: ReturnType<typeof useProxyPool>
+  /** GOXF v20: which import tab opens first (mock screenshots). */
+  defaultImportTab?: 'list' | 'sub'
 }
 
 export function ProxyPoolSection({
-  active, credentialRevision, activity, proxyPool
+  active, credentialRevision, activity, proxyPool, defaultImportTab = 'list'
 }: ProxyPoolSectionProps) {
   const tr = useT()
   const accounts = useBotStore((s) => s.accounts)
@@ -128,6 +143,15 @@ export function ProxyPoolSection({
   const [testingIds, setTestingIds] = useState<Set<string>>(() => new Set())
   const [testingAll, setTestingAll] = useState(false)
   const fileRef = useRef<HTMLInputElement>(null)
+  // GOXF v20
+  const [importTab, setImportTab] = useState<'list' | 'sub'>(defaultImportTab)
+  const kernel = useMihomoKernel()
+  const subsState = useProxySubs()
+  const [groupNow, setGroupNow] = useState<Record<string, string>>({})
+  useEffect(() => {
+    if (!active || !pool.some((p) => p.sub?.group)) return
+    void getBridge()?.goxfProxySubs?.poolCurrent().then(setGroupNow, () => undefined)
+  }, [active, pool])
 
   useLayoutEffect(() => {
     setRawProxyText('')
@@ -141,11 +165,20 @@ export function ProxyPoolSection({
   const accountLabel = (accId: string) =>
     bots.find((b) => b.accountIds.includes(accId))?.name || accounts[accId]?.displayName || accId
 
-  const latencyBadgeClass = (ms: number | undefined): string => {
-    if (typeof ms !== 'number') return 'bg-status-online/10 text-status-online-ink'
-    if (ms < 300) return 'bg-status-online/10 text-status-online-ink'
-    if (ms < 800) return 'bg-amber-500/15 text-amber-600 dark:text-amber-400'
-    return 'bg-orange-500/15 text-orange-600 dark:text-orange-400'
+  // GOXF v20: palette colors converged to status tokens.
+  const latencyBadgeClass = latencyClass
+
+  const handleSubsAdded = async (added: number, skipped: number) => {
+    const assigned = await autoAssignProxyPool().catch(() => undefined)
+    const muse = getBridge()?.muse
+    if (assigned) setPool(assigned.items)
+    else if (muse?.listProxyPool) setPool(await muse.listProxyPool())
+    setHint(
+      `已加入 ${added} 个订阅节点到代理池` +
+        (skipped ? `（${skipped} 个已在池中）` : '') +
+        (assigned ? `，已为勾选平台的 ${assigned.assignedCount} 个账号分配代理` : '')
+    )
+    await refresh()
   }
 
   const handleTestPool = async (ids?: string[]) => {
@@ -274,7 +307,7 @@ export function ProxyPoolSection({
         <div>
           <h2 className="text-[17px] font-semibold tracking-tight text-ink">{tr('Proxy pool')}</h2>
           <p className="mt-1 text-[13px] text-ink-secondary">
-            批量导入代理，按勾选的平台和每个代理的账号上限自动分配；密码用系统钥匙串加密。
+            批量导入代理或订阅，按勾选的平台和每个代理的账号上限自动分配；密码用系统钥匙串加密。
           </p>
         </div>
         {pool.length > 0 && (
@@ -284,10 +317,24 @@ export function ProxyPoolSection({
         )}
       </div>
 
+      {/* GOXF v20: Mihomo kernel for subscription nodes */}
+      <MihomoKernelCard kernel={kernel} />
+
       {/* Proxy Pool Importer Card */}
       <div className="rounded-2xl border border-line bg-surface p-4 shadow-soft">
-        <div className="mb-2 flex items-center justify-between">
-          <span className="text-[13px] font-medium text-ink">导入代理</span>
+        <div className="mb-3 flex items-center justify-between gap-2">
+          <SegmentedControl
+            size="sm"
+            value={importTab}
+            onValueChange={setImportTab}
+            options={[
+              { value: 'list', label: '代理列表' },
+              { value: 'sub', label: '订阅' }
+            ]}
+          />
+          {importTab === 'sub' ? (
+            <span className="truncate text-[12px] text-ink-muted">支持 Clash / Mihomo 订阅，也可粘贴 ss:// vmess:// trojan:// 节点</span>
+          ) : (
           <div className="flex items-center gap-2">
             <div className="flex items-center gap-1.5 text-[12px] text-ink-secondary">
               <span>无协议前缀时默认：</span>
@@ -305,13 +352,9 @@ export function ProxyPoolSection({
                 ]}
               />
             </div>
-            <button
-              type="button"
-              onClick={() => fileRef.current?.click()}
-              className="inline-flex h-7 items-center gap-1 rounded-full border border-line bg-canvas px-2.5 text-[12px] text-ink-secondary hover:bg-hover hover:text-ink"
-            >
+            <Button size="sm" variant="secondary" onClick={() => fileRef.current?.click()}>
               <FileUp className="size-3.5" /> 从 .txt 导入
-            </button>
+            </Button>
             <input
               ref={fileRef}
               type="file"
@@ -328,7 +371,19 @@ export function ProxyPoolSection({
               }}
             />
           </div>
+          )}
         </div>
+        {importTab === 'sub' ? (
+          <SubscriptionImport
+            kernel={kernel}
+            subsState={subsState}
+            busy={busy}
+            setBusy={setBusy}
+            onError={setError}
+            onHint={setHint}
+          />
+        ) : (
+        <>
         <textarea
           value={rawProxyText}
           onChange={(e) => setRawProxyText(e.target.value)}
@@ -337,7 +392,7 @@ export function ProxyPoolSection({
           spellCheck={false}
           className="block w-full resize-none rounded-xl border border-line bg-canvas p-3 font-mono text-[12px] leading-5 text-ink outline-none placeholder:text-ink-muted focus:border-accent-600"
         />
-        <div className="mt-3 flex flex-wrap items-center gap-1.5 text-[12.5px]">
+        <div className="mt-3 flex flex-wrap items-center gap-1.5 text-[13px]">
           <span className="mr-1 text-ink-secondary">分配给</span>
           {accountPlatformIds.length === 0 && <span className="text-ink-muted">还没有账号</span>}
           {accountPlatformIds.map((pid) => {
@@ -361,7 +416,7 @@ export function ProxyPoolSection({
           })}
         </div>
         <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
-          <div className="flex items-center gap-2 text-[12.5px] text-ink-secondary">
+          <div className="flex items-center gap-2 text-[13px] text-ink-secondary">
             <span>每个代理最多</span>
             <NumberStepper
               value={proxyPerProxyLimit}
@@ -378,7 +433,11 @@ export function ProxyPoolSection({
             导入并分配
           </Button>
         </div>
+        </>
+        )}
       </div>
+
+      <ProxySubSources subsState={subsState} busy={busy} onAdded={handleSubsAdded} onError={setError} />
 
       {/* Current Pool List */}
       <div className="overflow-hidden rounded-2xl border border-line bg-surface shadow-soft">
@@ -418,7 +477,7 @@ export function ProxyPoolSection({
           )}
         </div>
         {pool.length === 0 ? (
-          <p className="py-8 text-center text-[13px] text-ink-muted">代理池为空，请在上方粘贴导入代理</p>
+          <p className="py-8 text-center text-[13px] text-ink-muted">代理池为空，请在上方导入代理或订阅节点</p>
         ) : (
           <ul className="divide-y divide-line">
             {pool.map((item, idx) => {
@@ -445,70 +504,73 @@ export function ProxyPoolSection({
                 <li key={item.id} className="flex items-center justify-between gap-3 px-4 py-2.5 text-[13px]">
                   <div className="flex min-w-0 items-center gap-2.5">
                     <span className="w-6 font-mono text-[11px] text-ink-muted">#{idx + 1}</span>
-                    <span className="rounded bg-sunken px-1.5 py-0.5 font-mono text-[11px] uppercase text-ink-secondary">
-                      {item.mode}
-                    </span>
-                    <span className="truncate font-mono text-[13px] text-ink">
-                      {item.username ? `${item.username}${item.hasPassword ? ':***' : ''}@` : ''}
-                      {item.host}:{item.port}
-                    </span>
+                    {item.sub ? (
+                      <>
+                        <ProtoTag p={item.sub.group ? 'group' : item.sub.protocol} />
+                        <span className="truncate text-ink">{item.sub.name}</span>
+                        <span className="truncate text-[11px] text-ink-muted">
+                          {item.sub.source}
+                          {groupNow[item.id] ? ` · 当前 ${groupNow[item.id]}` : ''}
+                        </span>
+                      </>
+                    ) : (
+                      <>
+                        <ProtoTag p={item.mode} />
+                        <span className="truncate font-mono text-[13px] text-ink">
+                          {item.username ? `${item.username}${item.hasPassword ? ':***' : ''}@` : ''}
+                          {item.host}:{item.port}
+                        </span>
+                      </>
+                    )}
                   </div>
                   <div className="flex shrink-0 items-center gap-2">
                     {isTestingItem ? (
-                      <span className="inline-flex items-center gap-1 rounded-full bg-sunken px-2 py-0.5 text-[11px] text-ink-muted">
+                      <Badge className="bg-sunken text-ink-muted">
                         <Loader2 className="size-3 animate-spin" aria-hidden />
                         检测中…
-                      </span>
+                      </Badge>
                     ) : probe ? (
                       probe.ok ? (
-                        <span
-                          title={probeTooltip}
-                          className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 font-mono text-[11px] font-medium ${latencyBadgeClass(probe.latencyMs)}`}
-                        >
+                        <Badge title={probeTooltip} className={latencyBadgeClass(probe.latencyMs)}>
                           {typeof probe.latencyMs === 'number' ? `${probe.latencyMs} ms` : '可用'}
                           {probe.country ? ` · ${probe.country}` : ''}
-                        </span>
+                        </Badge>
                       ) : (
-                        <span
-                          title={probeTooltip}
-                          className="inline-flex items-center rounded-full bg-status-error/10 px-2 py-0.5 text-[11px] font-medium text-status-error"
-                        >
+                        <Badge title={probeTooltip} className="bg-status-error/10 text-status-error-ink">
                           不可用
-                        </span>
+                        </Badge>
                       )
                     ) : null}
                     <span className="flex min-w-0 max-w-[320px] flex-wrap items-center justify-end gap-1">
                       {item.assignedAccountIds.map((accId) => (
-                        <span key={accId} className="max-w-[120px] truncate rounded-full bg-status-online/10 px-2 py-0.5 text-[11.5px] font-medium text-status-online-ink">
+                        <span key={accId} className="max-w-[120px] truncate rounded-full bg-status-online/10 px-2 py-0.5 text-[11px] font-medium text-status-online-ink">
                           {accountLabel(accId)}
                         </span>
                       ))}
                       {n === 0 ? (
-                        <span className="rounded-full bg-sunken px-2.5 py-0.5 text-[11.5px] text-ink-muted">空闲待分配</span>
+                        <span className="rounded-full bg-sunken px-2.5 py-0.5 text-[11px] text-ink-muted">空闲待分配</span>
                       ) : proxyPerProxyLimit > 0 ? (
-                        <span className="text-[11.5px] tabular-nums text-ink-muted">{`${n}/${proxyPerProxyLimit}`}</span>
+                        <span className="text-[11px] tabular-nums text-ink-muted">{`${n}/${proxyPerProxyLimit}`}</span>
                       ) : null}
                     </span>
                     {getBridge()?.muse?.testProxyPool && (
-                      <button
-                        type="button"
+                      <IconButton
+                        size="sm"
+                        label="测试可用性与延迟"
                         disabled={isTestingItem || testingAll}
                         onClick={() => void handleTestPool([item.id])}
-                        className="rounded-full p-1 text-ink-muted hover:bg-hover hover:text-ink disabled:opacity-40"
-                        title="测试可用性与延迟"
                       >
                         <Activity className="size-3.5" />
-                      </button>
+                      </IconButton>
                     )}
-                    <button
-                      type="button"
+                    <IconButton
+                      size="sm"
+                      label="移除代理（用它的账号改回跟随系统）"
+                      className="hover:text-status-error-ink"
                       onClick={() => void handleRemovePoolItem(item.id)}
-                      className="rounded-full p-1 text-ink-muted hover:bg-hover hover:text-status-error"
-                      title="移除代理（用它的账号改回跟随系统）"
-                      aria-label="移除代理"
                     >
                       <Trash2 className="size-3.5" />
-                    </button>
+                    </IconButton>
                   </div>
                 </li>
               )

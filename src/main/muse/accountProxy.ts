@@ -33,6 +33,8 @@ export interface MuseProxyConfig {
   port?: number
   username?: string
   password?: string
+  /** GOXF: served by the Mihomo process of this pool entry (127.0.0.1 mixed port); started on demand. */
+  via?: string
 }
 
 /**
@@ -155,8 +157,29 @@ function normalize(cfg: MuseProxyConfig | null | undefined): MuseProxyConfig {
     host,
     port,
     username: cfg.username?.trim() || undefined,
-    password: cfg.password || undefined
+    password: cfg.password || undefined,
+    // GOXF: Mihomo-served pool entry marker (only ever set from the pool store).
+    ...(typeof cfg.via === "string" && /^px_[\w-]+$/.test(cfg.via) ? { via: cfg.via } : {})
   }
+}
+
+/**
+ * GOXF: runtime for pool entries served by a local Mihomo process (subscription
+ * nodes). Registered by goxfProxySubs; `ensure` starts/reuses the process and
+ * throws when it cannot run, so callers fail closed instead of going direct.
+ */
+export interface PoolRuntimeHook {
+  ensure(poolId: string): Promise<void>
+  removed(poolIds: string[]): void
+}
+let poolRuntime: PoolRuntimeHook | null = null
+export function setPoolRuntimeHook(hook: PoolRuntimeHook | null): void {
+  poolRuntime = hook
+}
+async function ensureRuntime(cfg: MuseProxyConfig): Promise<void> {
+  if (!cfg.via) return
+  if (!poolRuntime) throw new Error("订阅节点的 Mihomo 运行时未就绪")
+  await poolRuntime.ensure(cfg.via)
 }
 
 function proxyIdentity(cfg: MuseProxyConfig): string {
@@ -229,6 +252,7 @@ export async function saveProxyConfig(accountId: string, input: MuseProxyConfig)
 
 async function saveProxyConfigUnlocked(accountId: string, input: MuseProxyConfig, poolId?: string): Promise<MuseProxyView> {
   const next = normalize(input)
+  if (!poolId) delete next.via // GOXF: only a pool binding may carry the Mihomo marker
   const store = readStore()
   if (!isProxyMode(next.mode)) {
     if (next.mode === "direct") store[accountId] = { mode: "direct" }
@@ -312,12 +336,14 @@ export function buildAccountProxyUrl(cfg: MuseProxyConfig): string | null {
  */
 export async function loadAccountProxyUrl(accountId: string): Promise<string | undefined> {
   const cfg = await loadProxyConfig(accountId)
+  await ensureRuntime(cfg) // GOXF
   return buildAccountProxyUrl(cfg) ?? undefined
 }
 
 /** Like `loadAccountProxyUrl`, but 真直连 yields `DIRECT_PROXY_URL` so `proxyFetch` skips the OS proxy too. */
 export async function loadAccountTransportProxyUrl(accountId: string): Promise<string | undefined> {
   const cfg = await loadProxyConfig(accountId)
+  await ensureRuntime(cfg) // GOXF
   return buildAccountProxyUrl(cfg) ?? (cfg.mode === "direct" ? DIRECT_PROXY_URL : undefined)
 }
 
@@ -325,6 +351,7 @@ export async function loadAccountTransportProxyUrl(accountId: string): Promise<s
 async function resolvePartitionProxyRules(cfg: MuseProxyConfig): Promise<string | null> {
   if (cfg.mode === "direct") return DIRECT_PROXY_URL
   if (!isProxyMode(cfg.mode) || !cfg.host || !cfg.port) return null
+  await ensureRuntime(cfg) // GOXF: Mihomo-served entry must be up (throws → partition blocked)
 
   const hasAuth = Boolean(cfg.username || cfg.password)
   // Chromium's session.setProxy neither supports RFC 1929 SOCKS5 auth nor extracts
@@ -397,6 +424,7 @@ export async function applyProxyToPartition(accountId: string, cfg?: MuseProxyCo
 /** Node `ws` / HTTPS agent for Noise WSS (session.setProxy does not cover Node ws). */
 export async function createProxyAgent(accountId: string): Promise<Agent | undefined> {
   const cfg = await loadProxyConfig(accountId)
+  await ensureRuntime(cfg) // GOXF
   const url = buildAccountProxyUrl(cfg)
   if (!url) return undefined
   if (cfg.mode === "http" || cfg.mode === "https") return new HttpsProxyAgent(url) as unknown as Agent
@@ -419,6 +447,27 @@ export interface MuseProxyPoolItemView {
   hasPassword: boolean
   assignedAccountIds: string[]
   lastTest?: ProxyTestResult
+  /** GOXF: a subscription node/group served by a local Mihomo process. */
+  sub?: MuseProxyPoolSubView
+}
+
+/** GOXF: what the pool list shows for a subscription entry (no secrets). */
+export interface MuseProxyPoolSubView {
+  name: string
+  protocol: string
+  source: string
+  group: boolean
+  current?: string
+}
+
+/** GOXF: encrypted extra fields of a Mihomo-served pool entry (snapshot of the subscription node/group). */
+export interface MihomoPoolMeta {
+  key: string
+  sourceId: string
+  sourceName: string
+  name: string
+  protocol: string
+  snapshot: import("../goxfMihomoConfig").MihomoTargetSnapshot
 }
 
 interface StoredPoolItem {
@@ -533,14 +582,95 @@ export function parseProxyLine(
 }
 
 async function decryptPoolItem(item: StoredPoolItem): Promise<MuseProxyConfig | null> {
+  return (await decryptPoolRaw(item))?.cfg ?? null
+}
+
+/** GOXF: the pool entry's config plus its Mihomo snapshot when it has one. */
+async function decryptPoolRaw(item: StoredPoolItem): Promise<{ cfg: MuseProxyConfig; mihomo?: MihomoPoolMeta } | null> {
   try {
     const available = await safeStorage.isAsyncEncryptionAvailable()
     if (!available) return null
     const dec = await safeStorage.decryptStringAsync(Buffer.from(item.enc, "base64"))
-    return normalize(JSON.parse(dec.result) as MuseProxyConfig)
+    const raw = JSON.parse(dec.result) as MuseProxyConfig & { mihomo?: MihomoPoolMeta }
+    const cfg = normalize(raw)
+    return raw.mihomo && cfg.via === item.id ? { cfg, mihomo: raw.mihomo } : { cfg }
   } catch {
     return null
   }
+}
+
+/** GOXF: one Mihomo-served pool entry (config + snapshot), for its runtime. */
+export async function readMihomoPoolEntry(id: string): Promise<{ cfg: MuseProxyConfig; mihomo: MihomoPoolMeta } | null> {
+  const item = readPoolStore().find((p) => p.id === id)
+  const raw = item && (await decryptPoolRaw(item))
+  return raw?.mihomo ? { cfg: raw.cfg, mihomo: raw.mihomo } : null
+}
+
+/** GOXF: keys (`sourceId|kind|name`) of subscription entries already in the pool. */
+export async function listMihomoPoolKeys(): Promise<Set<string>> {
+  const keys = new Set<string>()
+  for (const item of readPoolStore()) {
+    const raw = await decryptPoolRaw(item)
+    if (raw?.mihomo) keys.add(raw.mihomo.key)
+  }
+  return keys
+}
+
+/**
+ * GOXF: add subscription entries. `build(id)` returns the local endpoint config
+ * (127.0.0.1 port + random credentials, `via: id`) and the snapshot.
+ */
+export async function addMihomoPoolItems(
+  builds: Array<(id: string) => { cfg: MuseProxyConfig; mihomo: MihomoPoolMeta }>
+): Promise<number> {
+  const available = await safeStorage.isAsyncEncryptionAvailable()
+  if (!available) throw new Error("safeStorage encryption unavailable")
+  return withProxyStoreLock(async () => {
+    const pool = readPoolStore()
+    for (const build of builds) {
+      const id = `px_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`
+      const { cfg, mihomo } = build(id)
+      const enc = await safeStorage.encryptStringAsync(JSON.stringify({ ...cfg, via: id, mihomo }))
+      pool.push({ id, enc: enc.toString("base64"), assignedAccountIds: [] })
+    }
+    writePoolStore(pool)
+    return builds.length
+  })
+}
+
+/**
+ * GOXF startup: a Mihomo entry whose saved loopback port is now taken by another
+ * program gets a new port; the pool entry and every account bound to it are
+ * rewritten (nothing of ours is running yet at this point).
+ */
+async function movePortsOfBusyMihomoEntries(isFree: (port: number) => Promise<boolean>, freshPort: () => Promise<number>): Promise<void> {
+  await withProxyStoreLock(async () => {
+    const pool = readPoolStore()
+    let poolDirty = false
+    const store = readStore()
+    let storeDirty = false
+    for (const item of pool) {
+      const raw = await decryptPoolRaw(item)
+      if (!raw?.mihomo || !raw.cfg.port || (await isFree(raw.cfg.port))) continue
+      const cfg = { ...raw.cfg, port: await freshPort() }
+      item.enc = (await safeStorage.encryptStringAsync(JSON.stringify({ ...cfg, mihomo: raw.mihomo }))).toString("base64")
+      poolDirty = true
+      const accountEnc = (await safeStorage.encryptStringAsync(JSON.stringify(cfg))).toString("base64")
+      for (const [accountId, entry] of Object.entries(store)) {
+        if (entry.poolId === item.id) {
+          store[accountId] = { enc: accountEnc, poolId: item.id }
+          storeDirty = true
+        }
+      }
+    }
+    if (poolDirty) writePoolStore(pool)
+    if (storeDirty) writeStore(store)
+  })
+}
+let mihomoPortCheck: Parameters<typeof movePortsOfBusyMihomoEntries> | null = null
+/** GOXF: register the startup port check (goxfProxySubs). */
+export function setMihomoPortCheck(isFree: (port: number) => Promise<boolean>, freshPort: () => Promise<number>): void {
+  mihomoPortCheck = [isFree, freshPort]
 }
 
 /** Drop the account's config only if it came from `slot` (a 自定义 proxy is kept); it falls back to 跟随系统. */
@@ -561,9 +691,12 @@ export async function listProxyPool(): Promise<MuseProxyPoolItemView[]> {
   const list = readPoolStore()
   const out: MuseProxyPoolItemView[] = []
   for (const item of list) {
-    const cfg = await decryptPoolItem(item)
+    const raw = await decryptPoolRaw(item)
+    const cfg = raw?.cfg
     if (!cfg || !isProxyMode(cfg.mode) || !cfg.host || !cfg.port) continue
+    const m = raw.mihomo
     out.push({
+      ...(m ? { sub: { name: m.name, protocol: m.protocol, source: m.sourceName, group: m.snapshot.kind === "group" } } : {}),
       id: item.id,
       mode: cfg.mode,
       host: cfg.host,
@@ -681,6 +814,7 @@ export async function removeProxyPoolItem(
     const pool = readPoolStore()
     const left = pool.filter((x) => x.id !== id)
     writePoolStore(left)
+    poolRuntime?.removed([id]) // GOXF
     return reconcilePoolBindingsUnlocked(left, pool.filter((x) => x.id === id))
   })
   for (const accountId of reverted) await onReverted?.(accountId)
@@ -691,6 +825,7 @@ export async function clearProxyPool(onReverted?: (accountId: string) => Promise
   const reverted = await withProxyStoreLock(async () => {
     const pool = readPoolStore()
     writePoolStore([])
+    poolRuntime?.removed(pool.map((p) => p.id)) // GOXF
     return reconcilePoolBindingsUnlocked([], pool)
   })
   for (const accountId of reverted) await onReverted?.(accountId)
@@ -782,6 +917,7 @@ export async function testAccountProxy(
     let resolved: MuseProxyConfig
     if (draft) {
       resolved = normalize(draft)
+      delete resolved.via // GOXF
       if (resolved.mode !== "direct" && !resolved.password) {
         const prev = await loadProxyConfig(accountId).catch(() => null)
         if (prev?.password && proxyIdentity(prev) === proxyIdentity(resolved)) {
@@ -791,6 +927,7 @@ export async function testAccountProxy(
     } else {
       resolved = await loadProxyConfig(accountId)
     }
+    await ensureRuntime(resolved) // GOXF
     const proxyUrl = buildAccountProxyUrl(resolved) ?? undefined
     return await probeProxyUrl(proxyUrl, opts)
   } catch (err) {
@@ -814,7 +951,8 @@ export async function updaterPoolProxy(): Promise<{ rules: string; label: string
   for (const item of [...readPoolStore()].sort((a, b) => rank(a) - rank(b))) {
     const cfg = await decryptPoolItem(item)
     if (!cfg || !isProxyMode(cfg.mode) || !cfg.host || !cfg.port) continue
-    const rules = await resolvePartitionProxyRules(cfg)
+    // GOXF: a subscription entry whose Mihomo cannot start is skipped, not fatal.
+    const rules = await resolvePartitionProxyRules(cfg).catch(() => null)
     if (rules) return { rules, label: `${cfg.mode}://${formatHostForUrl(cfg.host)}:${cfg.port}` }
   }
   return null
@@ -841,6 +979,12 @@ export async function testProxyPoolItems(
           checkedAt: Date.now()
         } satisfies MuseProxyTestResult
       ] as const
+    }
+    // GOXF: start the entry's Mihomo first; a start failure is the test result.
+    try {
+      await ensureRuntime(cfg)
+    } catch (err) {
+      return [slot.id, { ok: false, error: err instanceof Error ? err.message : String(err), checkedAt: Date.now() } satisfies MuseProxyTestResult] as const
     }
     const proxyUrl = buildAccountProxyUrl(cfg) ?? undefined
     const result = await probeProxyUrl(proxyUrl, opts)
@@ -882,6 +1026,8 @@ export async function applyAllStoredProxies(log: (msg: string, err: unknown) => 
         .catch((err: unknown) => log(`[proxy] ${id} not blocked`, err))
     )
   )
+  // GOXF: Mihomo entries whose saved local port got taken move to a free one first.
+  if (mihomoPortCheck) await movePortsOfBusyMihomoEntries(...mihomoPortCheck).catch((err) => log("[proxy] mihomo ports not checked", err))
   await reconcilePoolBindings().catch((err) => log("[proxy] pool bindings not reconciled", err))
   await Promise.all(
     ids.map((id) => applyProxyToPartition(id).catch((err) => log(`[proxy] ${id} not applied`, err)))
@@ -928,7 +1074,11 @@ export async function testProxy(target: {
     const slot = readPoolStore().find((p) => p.id === poolId)
     const cfg = slot && (await decryptPoolItem(slot))
     if (!cfg) return { ok: false, error: "代理不存在或无法解密" }
-    const result = await measureEgress(await scratchSession(poolId, cfg))
+    // GOXF: a Mihomo entry that cannot start is a failed test, not an exception.
+    const result = await scratchSession(poolId, cfg).then(measureEgress, (err: unknown) => ({
+      ok: false,
+      error: err instanceof Error ? err.message : String(err)
+    }))
     await withProxyStoreLock(() =>
       writePoolStore(readPoolStore().map((p) => (p.id === poolId ? { ...p, lastTest: result } : p)))
     )
@@ -936,6 +1086,7 @@ export async function testProxy(target: {
   }
   if (target.draft && target.accountId) {
     const cfg = normalize(target.draft)
+    delete cfg.via // GOXF
     if (isProxyMode(cfg.mode) && !cfg.password) {
       cfg.password = (await loadProxyConfig(target.accountId).catch(() => null))?.password
     }
