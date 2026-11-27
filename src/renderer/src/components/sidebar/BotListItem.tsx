@@ -111,6 +111,8 @@ export const BotListItem = memo(function BotListItem({
         })
       : previewText(last, typing, activity)
   const isWorking = typing || live || projectsWorking
+  // GOXF: every working session gets the avatar's pulsing blue dot, not only ones whose account reports busy (Hark stays online while it works).
+  const avatarStatus: ConnectionStatus = isWorking && status === 'online' ? 'busy' : status
   const doneDot = done && bot.unread === 0 && (
     <StatusDot status="attention" className="absolute -top-0.5 -right-0.5 ring-2 ring-canvas" />
   )
@@ -163,7 +165,7 @@ export const BotListItem = memo(function BotListItem({
           avatarShape={bot.avatarShape}
           avatarColor={bot.avatarColor}
           platformId={bot.platformId}
-          status={status}
+          status={avatarStatus}
           isWorking={isWorking}
           gaze={gaze}
           pokeSignal={pokeSignal}
@@ -188,7 +190,7 @@ export const BotListItem = memo(function BotListItem({
         avatarShape={bot.avatarShape}
         avatarColor={bot.avatarColor}
         platformId={bot.platformId}
-        status={status}
+        status={avatarStatus}
         isWorking={isWorking}
         gaze={gaze}
         pokeSignal={pokeSignal}
@@ -209,7 +211,7 @@ export const BotListItem = memo(function BotListItem({
         avatarShape={bot.avatarShape}
         avatarColor={bot.avatarColor}
         platformId={bot.platformId}
-        status={status}
+        status={avatarStatus}
         isWorking={isWorking}
         gaze={gaze}
         pokeSignal={pokeSignal}
