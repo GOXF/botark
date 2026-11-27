@@ -96,6 +96,8 @@ export function HarkProjects({
   const [busy, setBusy] = useState(false)
   const [menuOpen, setMenuOpen] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState<string>()
+  // GOXF: deleted rows vanish at once; Hark's DELETE + list refresh takes seconds. Put back if it fails.
+  const [deleted, setDeleted] = useState<ReadonlySet<string>>(new Set())
   const [showArchived, setShowArchived] = useState(false)
   const [revision, setRevision] = useState(0)
   const lastFetchAt = useRef(0)
@@ -177,7 +179,7 @@ export function HarkProjects({
     }
   }, [accountId, connected, revision])
 
-  const projects = mergePendingHarkProjects(serverProjects, pending, Date.now())
+  const projects = mergePendingHarkProjects(serverProjects, pending, Date.now()).filter((p) => !deleted.has(p.id))
 
   // GOXF Issue #7: pane tabs label Hark tabs by project title.
   useEffect(() => {
@@ -318,14 +320,19 @@ export function HarkProjects({
       return
     }
     setConfirmDelete(undefined)
-    return perform(async () => {
-      await rpc({ accountId, op: 'call', method: 'DELETE', path: `/conversations/${encodeURIComponent(p.id)}` })
-      const main = projects.find((row) => row.main)
-      if (bot.activeSessionId === p.id && main) {
-        await useBotStore.getState().switchHarkSession(botId, main.id)
-      }
-      changed()
-    })
+    setDeleted((set) => new Set(set).add(p.id))
+    const main = projects.find((row) => row.main)
+    if (bot.activeSessionId === p.id && main) void useBotStore.getState().switchHarkSession(botId, main.id)
+    void rpc({ accountId, op: 'call', method: 'DELETE', path: `/conversations/${encodeURIComponent(p.id)}` })
+      .then(() => changed())
+      .catch((e: unknown) => {
+        setDeleted((set) => {
+          const next = new Set(set)
+          next.delete(p.id)
+          return next
+        })
+        setError(`删除失败：${e instanceof Error ? e.message : String(e)}`)
+      })
   }
 
   if (!connected) return null
