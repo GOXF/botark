@@ -364,3 +364,6 @@ git clone <GOXF/botark> && cd botark && git checkout fix/hark-login-sync && npm 
 
 ## 2026-11-27 17:52 侧栏「进行中」蓝点（60f2987）
 - 头像右下角蓝点原来只看账号状态（busy），Hark 干活时账号仍 online 所以不亮。BotListItem 现在 isWorking 时把 online 当 busy 传给 BotAvatar，所有在干活的会话都亮脉冲蓝点。没加新样式（v18 右侧圆点方案已放弃）。
+
+## 2026-11-27 18:14 状态点描边 + 完成改绿（2afda6c，v19）
+- 用户：点尺寸不变，加跟头像分开的描边；颜色要符合状态。头像状态点描边颜色 = 行底色（普通/悬停/菜单打开/选中/置顶卡片，用 --goxf-row-bg + color-mix），done（做完没看）= 绿色 status-online：头像右下角 + 右列 + 绿字。原 done 点在右上角改到右下角统一。design-check 加了一个例外（ring-[color:var(--goxf-row-bg…)]）。mock: src/renderer/src/mock/mocks/v19-status-dot.tsx。测试包 v0.17.0-goxf.dev.2afda6c，待用户试。
