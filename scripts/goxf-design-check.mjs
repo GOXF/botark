@@ -44,7 +44,8 @@ export const ALLOWED_SHADOW = new Set(['soft', 'float', 'hairline', 'card', 'pop
 export const ALLOWED_PALETTE = new Set(['black', 'white'])
 /** Individually reviewed exceptions (exact class, any variant). */
 export const ALLOWED_EXCEPTIONS = new Set([
-  'bg-[#0b0f14]' // ChatArea: dark backdrop of the embedded Hark browser side slot
+  'bg-[#0b0f14]', // ChatArea: dark backdrop of the embedded Hark browser side slot
+  'ring-[color:var(--goxf-row-bg,var(--color-canvas))]' // BotListItem: status-dot ring follows the row background (token mix)
 ])
 
 /**

@@ -72,6 +72,18 @@ export function previewText(
 
 const NO_WORK = { working: 0, doneAt: 0 }
 
+/*
+ * GOXF v19: avatar status dots get a cut-out ring in the row's own (opaque)
+ * background, so a dot stays separate from any avatar colour on idle, hover,
+ * open-menu and selected rows. Mixes mirror bg-hover (6%), bg-active (9%) and
+ * bg-ink/[0.035] over the canvas.
+ */
+const RING = 'ring-[color:var(--goxf-row-bg,var(--color-canvas))]'
+const ROW_HOVER = 'hover:[--goxf-row-bg:color-mix(in_srgb,var(--color-canvas)_94%,var(--color-ink))]'
+const ROW_OPEN = '[--goxf-row-bg:color-mix(in_srgb,var(--color-canvas)_94%,var(--color-ink))]'
+const ROW_ACTIVE = '[--goxf-row-bg:color-mix(in_srgb,var(--color-canvas)_91%,var(--color-ink))]'
+const ROW_TILE = '[--goxf-row-bg:color-mix(in_srgb,var(--color-canvas)_96.5%,var(--color-ink))]'
+
 export const BotListItem = memo(function BotListItem({
   bot,
   status,
@@ -113,9 +125,11 @@ export const BotListItem = memo(function BotListItem({
   const isWorking = typing || live || projectsWorking
   // GOXF: every working session gets the avatar's pulsing blue dot, not only ones whose account reports busy (Hark stays online while it works).
   const avatarStatus: ConnectionStatus = isWorking && status === 'online' ? 'busy' : status
-  const doneDot = done && bot.unread === 0 && (
-    <StatusDot status="attention" className="absolute -top-0.5 -right-0.5 ring-2 ring-canvas" />
-  )
+  // GOXF v19: "done, not looked at" is green (finished), in the avatar's status-dot slot when that slot is free.
+  const doneDot = (dot: string) =>
+    done &&
+    bot.unread === 0 &&
+    avatarStatus === 'online' && <StatusDot status="online" className={cn('absolute -right-0.5 -bottom-0.5', dot, RING)} />
   // GOXF v13: which split pane shows this bot (only with 2+ panes on 会话).
   const paneNo = usePanes((s) => {
     if (s.view !== 'sessions') return 0
@@ -170,12 +184,12 @@ export const BotListItem = memo(function BotListItem({
           gaze={gaze}
           pokeSignal={pokeSignal}
           size="xl"
-          ringClassName="ring-canvas"
+          ringClassName={RING}
         />
         {bot.unread > 0 && (
           <UnreadBadge count={bot.unread} className="absolute -top-0.5 -right-1 shadow-soft" />
         )}
-        {doneDot}
+        {doneDot('size-3.5 ring-[2.5px]')}
       </div>
       <span className="mt-1.5 block w-full truncate text-center text-[12px] leading-4 font-medium text-ink">
         {bot.name}
@@ -195,29 +209,32 @@ export const BotListItem = memo(function BotListItem({
         gaze={gaze}
         pokeSignal={pokeSignal}
         size="md"
-        ringClassName="ring-canvas"
+        ringClassName={RING}
       />
       {bot.unread > 0 && (
         <UnreadBadge count={bot.unread} max={9} className="absolute -top-1 -right-1" />
       )}
-      {doneDot}
+      {doneDot('size-2.5 ring-2')}
     </div>
   ) : (
     <>
-      <BotAvatar
-        emoji={bot.emoji}
-        seed={bot.id}
-        avatar={bot.avatar}
-        avatarShape={bot.avatarShape}
-        avatarColor={bot.avatarColor}
-        platformId={bot.platformId}
-        status={avatarStatus}
-        isWorking={isWorking}
-        gaze={gaze}
-        pokeSignal={pokeSignal}
-        size="md"
-        ringClassName="ring-canvas"
-      />
+      <span className="relative flex shrink-0">
+        <BotAvatar
+          emoji={bot.emoji}
+          seed={bot.id}
+          avatar={bot.avatar}
+          avatarShape={bot.avatarShape}
+          avatarColor={bot.avatarColor}
+          platformId={bot.platformId}
+          status={avatarStatus}
+          isWorking={isWorking}
+          gaze={gaze}
+          pokeSignal={pokeSignal}
+          size="md"
+          ringClassName={RING}
+        />
+        {doneDot('size-2.5 ring-2')}
+      </span>
       <span
         className={cn(
           'min-w-0 flex-1',
@@ -270,7 +287,7 @@ export const BotListItem = memo(function BotListItem({
           <span
             className={cn(
               'block min-w-0 flex-1 truncate text-[12.5px] leading-[17px]',
-              isWorking ? 'shimmer-text font-medium' : done ? 'font-medium text-status-attention-ink' : 'text-ink-secondary'
+              isWorking ? 'shimmer-text font-medium' : done ? 'font-medium text-status-online-ink' : 'text-ink-secondary'
             )}
           >
             {preview}
@@ -306,7 +323,7 @@ export const BotListItem = memo(function BotListItem({
           {bot.unread > 0 ? (
             <UnreadBadge count={bot.unread} />
           ) : (
-            done && <StatusDot status="attention" />
+            done && <StatusDot status="online" />
           )}
         </span>
       )}
@@ -316,18 +333,18 @@ export const BotListItem = memo(function BotListItem({
   const rowClass = isPinnedTile
     ? cn(
         'press flex w-full flex-col items-center justify-center rounded-2xl px-2 py-2.5 transition-colors duration-[120ms]',
-        selected ? 'bg-active shadow-hairline' : 'bg-ink/[0.035] hover:bg-hover',
-        menuOpen && !selected && 'bg-hover'
+        selected ? cn('bg-active shadow-hairline', ROW_ACTIVE) : cn('bg-ink/[0.035] hover:bg-hover', ROW_TILE, ROW_HOVER),
+        menuOpen && !selected && cn('bg-hover', ROW_OPEN)
       )
     : isCollapsedRail
       ? cn(
           'press flex size-11 items-center justify-center rounded-xl transition-colors duration-[120ms]',
-          selected ? 'bg-active' : 'hover:bg-hover'
+          selected ? cn('bg-active', ROW_ACTIVE) : cn('hover:bg-hover', ROW_HOVER)
         )
       : cn(
           'flex min-h-[54px] w-full items-center gap-2.5 rounded-[11px] p-2 pr-3 text-left transition-colors duration-[120ms]',
-          selected ? 'bg-active' : 'hover:bg-hover',
-          menuOpen && !selected && 'bg-hover'
+          selected ? cn('bg-active', ROW_ACTIVE) : cn('hover:bg-hover', ROW_HOVER),
+          menuOpen && !selected && cn('bg-hover', ROW_OPEN)
         )
 
   return (
