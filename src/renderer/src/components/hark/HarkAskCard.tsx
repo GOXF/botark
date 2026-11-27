@@ -24,6 +24,12 @@ function readDismissed(): string[] {
  * GOXF: asks the user closed stay closed (across restarts and pane switches),
  * so a stale sign-in or key request no longer sits over the composer forever.
  */
+/** GOXF: like Hark's web form, the password alone is enough (the site may already know the account); username-only too when there is no password field. */
+function loginReady(fields: readonly string[], vals: Record<string, string | undefined>): boolean {
+  const pw = fields.filter((f) => /pass/i.test(f))
+  return pw.length ? pw.every((f) => vals[f]?.trim()) : fields.some((f) => vals[f]?.trim())
+}
+
 export function dismissHarkAsks(ids: string[]) {
   if (!ids.length) return
   const next = [...new Set([...readDismissed(), ...ids])].slice(-DISMISSED_MAX)
@@ -134,7 +140,7 @@ export function HarkAskCards({ accountId, sessionId, asks, className = 'mx-5' }:
   const submitLogin = async (ask: HarkAskView) => {
     const spec = ask.login
     const vals = login[ask.id] ?? {}
-    if (!spec || !ask.requestId || spec.fields.some((f) => !vals[f])) return
+    if (!spec || !ask.requestId || !loginReady(spec.fields, vals)) return
     setBusy(ask.id)
     setError((e) => ({ ...e, [ask.id]: '' }))
     try {
@@ -278,7 +284,7 @@ export function HarkAskCards({ accountId, sessionId, asks, className = 'mx-5' }:
                 })}
                 <div className="flex items-center gap-1.5">
                   <Button type="submit" size="sm" variant="primary"
-                    disabled={busy === ask.id || ask.login.fields.some((f) => !login[ask.id]?.[f])}>
+                    disabled={busy === ask.id || !loginReady(ask.login.fields, login[ask.id] ?? {})}>
                     {busy === ask.id ? '提交中…' : '登录'}
                   </Button>
 
