@@ -371,3 +371,12 @@ git clone <GOXF/botark> && cd botark && git checkout fix/hark-login-sync && npm 
 ## 2026-11-27 18:30 更新走代理池（208fad2）+ 订阅代理提案
 - goxfUpdater：updaterFetch 先走代理池里测速最快的条目（accountProxy.updaterPoolProxy，内存分区 goxf-updater），网络失败或池空时回退系统网络。测试包 v0.17.0-goxf.dev.208fad2，待用户试。
 - 用户问订阅链接：现在只支持 HTTP/HTTPS/SOCKS5。用户要参考 jlcodes99/cockpit-tools 的 Codex 代理（Mihomo 不内置，用户下载或本地导入）。已发提案：内核卡 + 订阅节点进代理池（本机 Mihomo 端口），第一版 = 内核安装/订阅导入/选节点/测延迟，效果图约 30 分钟，开工约 6 小时。等用户回复。2026-11-27 18:32 用户：已联系作者，可直接移植需要的代码（Rust → TS 翻译）。
+
+## 2026-11-27 18:56 v20 代理池订阅（Mihomo 内核用户自装）（e535655）
+- 用户 18:36「开工」。测试包 v0.17.0-goxf.dev.e535655（fast 补丁包，https://github.com/GOXF/botark/releases/tag/v0.17.0-goxf.dev.e535655），待用户试。
+- 新文件：main/goxfSubParse.ts（订阅解析：Clash/Mihomo YAML、Base64、ss/vmess/trojan/vless/hysteria2/hy2/tuic/http/socks 链接 → 原生 Mihomo 节点；移植自 cockpit-tools，输出不含密钥的错误码）、goxfMihomoConfig.ts（每个池条目一份配置：127.0.0.1 mixed + 随机账号密码、回环 controller + 随机 secret、全部改名 n0/g0、只有 MATCH，DIRECT 永远剔除）、goxfMihomoAssets.ts（锁定 v1.19.33 官方资产 + SHA-256，zip/gz 解包）、goxfMihomo.ts（安装到 userData/mihomo/bin、进程管理、自动重启 3 次/2 分钟、延迟测试进程闲置 3 分钟关、退出全杀）、goxfProxySubs.ts（订阅存储 userData/goxf-proxy-subs.json safeStorage 加密、IPC、6 小时自动刷新）、goxfPoolFetch.ts（先代理池后系统网络）、shared/goxfProxySubs.ts、renderer settings/GoxfProxySubs.tsx。
+- accountProxy.ts（GOXF 标注）：MuseProxyConfig.via = 由该池条目的 Mihomo 提供；ensureRuntime 在 resolvePartitionProxyRules / loadAccount*Url / createProxyAgent / 测试前启动进程，起不来就抛错 → 分区走阻断规则，绝不直连。渲染层存的 via 一律丢弃。启动时端口被占的条目自动换端口并改写绑定账号。池列表多了 sub {name, protocol, source, group}。
+- 绑定是快照：刷新/删除订阅不改池里已有条目。skip-cert-verify 节点加入前要确认（Dialog），main 也强制。
+- 配置文件：owner-only 临时文件，Mihomo 读完即删（Windows 环境变量 32K 上限，没用 CLASH_CONFIG_STRING）。
+- 沙箱验证：arm64 真内核 `mihomo -t` 通过生成的配置；真进程端到端（安装官方包→认证 socks5h 出网 204→错密码被拒→/delay→停止端口释放），见 src/main/goxfMihomo.test.ts（MIHOMO_ARCHIVE=… 才跑）。
+- 未在设备上验证：Windows 上下载/解压/启动、杀毒拦截、Chromium 分区经 bridge 走订阅节点、真实机场订阅（只测了样例）、select 分组无法在界面切换当前节点（默认第一个）、自动刷新只在应用开着时跑。效果图：真组件截图 mock `v20-proxy-sub-real`。
