@@ -2,6 +2,17 @@
 
 All notable changes to **BotArk** (formerly BotHub) are documented in this file.
 
+## [0.16.1] - 2026-11-27
+
+### Fixed
+
+- **Muse `session.start` & `{ method, params }` envelope compatibility** (#83, fixes #81): sent `{ method: '/api/session/start', params: {} }` when creating new Muse conversations and added automatic `requiresParamsEnvelope` self-healing & caching in `MuseNativeGateway` for daemon endpoints requiring `{ method, params }`.
+- **Muse quota discovery & fallback UX** (#83, fixes #82): prioritized `/` over `/settings` for `fetchSubscriptionAction`, prevented `403` on stale hashes from aborting rediscovery, added minified Turbopack `(0,e.createServerReference)(...)` + nested lazy chunk scanning and inline RSC flight fallback, synced quota IPC event errors, and added a quick 「前往 Muse 查看」 link when usage is unavailable.
+- **Consecutive send error bar layout & IPC error cleanup** (#83, fixes #82): replaced fixed `h-5` with `min-h-5 flex-wrap` and `shrink-0 whitespace-nowrap` action controls on `MessageBubble` so long errors never crush buttons or overlap subsequent bubbles; stripped Electron `Error invoking remote method` prefixes and mapped `Muse turn superseded` to concise Chinese copy.
+- **Collaboration room delivery vs. silence distinction** (#80): separated delivered-but-silent turns from undelivered failures so users avoid accidental duplicate resends.
+- **Hark connect card OAuth links** (#79): opened the provider authorization link (with connected-accounts fallback) instead of posting literal `Connect <provider>` into chat.
+- **PDF preview rendering** (#78): allowed `frame-src 'self' blob:` in CSP and enabled the built-in PDF viewer (`plugins: true`) so PDF previews render instead of showing a blank frame.
+
 ## [0.16.0] - 2026-11-26
 
 ### Added
