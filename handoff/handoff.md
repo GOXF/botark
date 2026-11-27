@@ -346,3 +346,4 @@ git clone <GOXF/botark> && cd botark && git checkout fix/hark-login-sync && npm 
 - 2026-11-27 11:32 c900827 Hark：只留实时状态，删掉仅 narration 的「Agent Activity」卡（historyNormalizers.ts）。用户 11:27 原话「我只需要下面那条实时状态就行」。
 - 11:41 e422b28 Hark 项目删除即时消失（乐观隐藏，失败恢复）。
 - 11:45 eb59b00 Hark 登录 ask 只填密码即可提交（loginReady），Hark /secrets 是否接受无用户名未验证。
+- 16:15 fc4a69b 「已送达但没收到回复」误报：Hark 一次回复同时回答连发的两条，旧逻辑只清最新一条。clearNoReplyFlag 改为清上次回复以来所有用户消息；applyReceipt 若之后已有回复则不标 no-reply。
