@@ -1,3 +1,5 @@
+import { DISPLAY_LOCALE_CHANNEL } from '@shared/displayLocale'
+import { getNativeDisplayLocale, setNativeDisplayLocale } from './nativeDisplayCopy'
 import { registerSlackIpc, stopSlack } from './slack/slackIpc'
 import { registerWorkspaceIpc, stopWorkspaces } from './mcp/hub'
 import { registerWorkspacePortalIpc, stopWorkspacePortals } from './mcp/workspacePortal'
@@ -47,13 +49,7 @@ const settingsRequests = createSettingsRequestQueue(() => {
   mainWindow.webContents.send(SETTINGS_MENU_CHANNEL.open)
 })
 
-function installSettingsMenu(): void {
-  ipcMain.on(SETTINGS_MENU_CHANNEL.ready, (event) => {
-    const contents = mainWindow?.webContents
-    if (contents && event.sender === contents && event.senderFrame === contents.mainFrame) {
-      settingsRequests.rendererReady()
-    }
-  })
+function updateSettingsMenu(): void {
   Menu.setApplicationMenu(Menu.buildFromTemplate(settingsMenuTemplate(app.getName(), () => {
     if (quitting) return
     if (!mainWindow || mainWindow.isDestroyed()) mainWindow = createMainWindow()
@@ -61,7 +57,24 @@ function installSettingsMenu(): void {
     mainWindow.show()
     mainWindow.focus()
     settingsRequests.request()
-  }, app.getLocale())))
+  }, getNativeDisplayLocale())))
+}
+
+function registerDisplayIpc(): void {
+  ipcMain.on(DISPLAY_LOCALE_CHANNEL, (event, locale: unknown) => {
+    const contents = mainWindow?.webContents
+    if (!contents || !event.senderFrame || event.sender !== contents || event.senderFrame !== contents.mainFrame) return
+    if (setNativeDisplayLocale(locale) && isMac) updateSettingsMenu()
+  })
+  if (isMac) {
+    ipcMain.on(SETTINGS_MENU_CHANNEL.ready, (event) => {
+      const contents = mainWindow?.webContents
+      if (contents && event.senderFrame && event.sender === contents && event.senderFrame === contents.mainFrame) {
+        settingsRequests.rendererReady()
+      }
+    })
+    updateSettingsMenu()
+  }
 }
 
 if (isMac) {
@@ -303,7 +316,7 @@ app.whenReady().then(async () => {
   registerWorkspaceIpc(() => mainWindow)
   registerWorkspacePortalIpc(() => mainWindow)
   registerSlackIpc(() => mainWindow)
-  if (isMac) installSettingsMenu()
+  registerDisplayIpc()
   mainWindow = createMainWindow()
   readyForDeepLinks = true
   const initialCueCallback = findCueCallbackArg(process.argv)

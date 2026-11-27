@@ -1,3 +1,4 @@
+import { DISPLAY_LOCALE_CHANNEL, isDisplayLocale } from '@shared/displayLocale'
 import type { GeminiEvent } from '@shared/gemini'
 import { SETTINGS_MENU_CHANNEL } from '@shared/settingsMenu'
 import { SLACK_CHANNEL, SLACK_INBOUND, type SlackInbound } from '@shared/slack'
@@ -38,6 +39,9 @@ import {
 
 const bridge: BotHubBridge = {
   platform: process.platform,
+  setDisplayLocale: (locale) => {
+    if (isDisplayLocale(locale)) ipcRenderer.send(DISPLAY_LOCALE_CHANNEL, locale)
+  },
   onOpenSettings: (listener) => {
     const handler = () => listener()
     ipcRenderer.on(SETTINGS_MENU_CHANNEL.open, handler)

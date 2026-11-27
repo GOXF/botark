@@ -453,7 +453,7 @@ export async function openCueLoginWindow(
   // never hangs waiting for cue.im chunks + Turnstile.
   void (async () => {
     try {
-      await win.loadURL(CUE_LOADING_PAGE_URL)
+      await win.loadURL(cueLoadingPageUrl())
     } catch {
       /* ignore: the real page load below is what matters */
     }
@@ -464,14 +464,16 @@ export async function openCueLoginWindow(
   })()
 }
 
-const CUE_LOADING_PAGE_HTML = `<!doctype html><html lang="${nativeDisplayCopy("zh-CN", "en")}"><head><meta charset="utf-8"><title>${nativeDisplayCopy("使用 Cue 登录", "Sign in to Cue")}</title>
+function cueLoadingPageUrl(): string {
+  const html = `<!doctype html><html lang="${nativeDisplayCopy("zh-CN", "en")}"><head><meta charset="utf-8"><title>${nativeDisplayCopy("使用 Cue 登录", "Sign in to Cue")}</title>
 <style>html,body{margin:0;height:100%;background:#18181b;color:#e4e4e7;font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif}
 body{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px}
 .s{width:28px;height:28px;border-radius:50%;border:3px solid #3f3f46;border-top-color:#e4e4e7;animation:r .8s linear infinite}
 @keyframes r{to{transform:rotate(360deg)}}p{margin:0;color:#a1a1aa;font-size:13px}</style></head>
 <body><div class="s"></div><div>${nativeDisplayCopy("正在打开 Cue 登录页…", "Opening Cue sign-in…")}</div><p>${nativeDisplayCopy("首次连接 cue.im 可能需要几秒钟", "The first connection to Cue may take a few seconds.")}</p></body></html>`
 
-export const CUE_LOADING_PAGE_URL = `data:text/html;charset=utf-8,${encodeURIComponent(CUE_LOADING_PAGE_HTML)}`
+  return `data:text/html;charset=utf-8,${encodeURIComponent(html)}`
+}
 
 export async function cancelCueLogin(accountId: string): Promise<void> {
   revokeCueLoginNonce(accountId)

@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest'
-import { resolveInitialLocale } from './prefsStore'
+import { describe, expect, it, vi } from 'vitest'
+import { createLocaleSync, resolveInitialLocale } from './prefsStore'
 
 describe('initial display language', () => {
   it('matches supported system languages in preference order', () => {
@@ -11,5 +11,18 @@ describe('initial display language', () => {
   it('falls back to English for unsupported or absent preferences', () => {
     expect(resolveInitialLocale(['ko-KR', 'fr-FR'])).toBe('en')
     expect(resolveInitialLocale([])).toBe('en')
+  })
+})
+
+describe('native locale synchronization', () => {
+  it('sends the saved or initial preference and each language change, once', () => {
+    const send = vi.fn()
+    const sync = createLocaleSync(send)
+    sync('zh')
+    sync('zh')
+    sync('en')
+    sync('en')
+    sync('zh')
+    expect(send.mock.calls).toEqual([['zh'], ['en'], ['zh']])
   })
 })
