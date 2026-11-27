@@ -367,3 +367,7 @@ git clone <GOXF/botark> && cd botark && git checkout fix/hark-login-sync && npm 
 
 ## 2026-11-27 18:14 状态点描边 + 完成改绿（2afda6c，v19）
 - 用户：点尺寸不变，加跟头像分开的描边；颜色要符合状态。头像状态点描边颜色 = 行底色（普通/悬停/菜单打开/选中/置顶卡片，用 --goxf-row-bg + color-mix），done（做完没看）= 绿色 status-online：头像右下角 + 右列 + 绿字。原 done 点在右上角改到右下角统一。design-check 加了一个例外（ring-[color:var(--goxf-row-bg…)]）。mock: src/renderer/src/mock/mocks/v19-status-dot.tsx。测试包 v0.17.0-goxf.dev.2afda6c，待用户试。
+
+## 2026-11-27 18:30 更新走代理池（208fad2）+ 订阅代理提案
+- goxfUpdater：updaterFetch 先走代理池里测速最快的条目（accountProxy.updaterPoolProxy，内存分区 goxf-updater），网络失败或池空时回退系统网络。测试包 v0.17.0-goxf.dev.208fad2，待用户试。
+- 用户问订阅链接：现在只支持 HTTP/HTTPS/SOCKS5。用户要参考 jlcodes99/cockpit-tools 的 Codex 代理（Mihomo 不内置，用户下载或本地导入）。已发提案：内核卡 + 订阅节点进代理池（本机 Mihomo 端口），第一版 = 内核安装/订阅导入/选节点/测延迟，效果图约 30 分钟，开工约 6 小时。等用户回复。cockpit 许可 CC BY-NC-SA，只借思路。
