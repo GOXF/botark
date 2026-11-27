@@ -21,6 +21,8 @@ import { app } from 'electron'
 import { readJsonFile, writeJsonAtomic } from './jsonFile'
 import {
   anyPinnedAsset,
+  assetNamePattern,
+  compareVersions,
   extractMihomoBinary,
   matchPinnedAsset,
   mihomoBinaryName,
@@ -28,7 +30,8 @@ import {
   MIHOMO_VERSION,
   parseMihomoVersion,
   selectMihomoAsset,
-  sha256
+  sha256,
+  type MihomoDownload
 } from './goxfMihomoAssets'
 import { buildCatalogConfig, buildEntryConfig, type MihomoTargetSnapshot } from './goxfMihomoConfig'
 import type { MihomoKernelStatus, ProxySubDelay } from '@shared/goxfProxySubs'
@@ -54,14 +57,23 @@ function readRecord(): KernelRecord | null {
   return rec && typeof rec.binarySha256 === 'string' && typeof rec.version === 'string' ? rec : null
 }
 
+/** GOXF: newest official release for this OS/arch, as last checked (null = not checked / unavailable). */
+let latest: MihomoDownload | null = null
+export function setMihomoLatest(next: MihomoDownload | null): void {
+  latest = next
+}
+
 export function mihomoKernelStatus(): MihomoKernelStatus {
   const rec = readRecord()
   const asset = selectMihomoAsset()
+  const installed = Boolean(rec && existsSync(binPath()))
   return {
-    installed: Boolean(rec && existsSync(binPath())),
+    installed,
     ...(rec ? { version: rec.version } : {}),
     pinnedVersion: MIHOMO_VERSION,
-    asset: asset ? { file: asset.file, size: asset.size } : null,
+    ...(latest ? { latestVersion: latest.version } : {}),
+    updateAvailable: Boolean(installed && rec && latest && compareVersions(latest.version, rec.version) > 0),
+    asset: latest ? { file: latest.file, size: latest.size } : asset ? { file: asset.file, size: asset.size } : null,
     releasesPage: MIHOMO_RELEASES_PAGE,
     installing
   }
@@ -77,19 +89,30 @@ function execVersion(path: string): Promise<string> {
 }
 
 /**
- * Install from an archive the caller already holds (download or local file).
- * Only the pinned official asset for this OS/arch is accepted.
+ * Install from an archive the caller already holds.
+ * - `expect.sha256`: a download, checked against the digest GitHub published for that asset.
+ * - otherwise the pinned official asset (hash known), or a local file whose name is this
+ *   OS/arch's official asset name in any version (it must then run and report a version).
  */
-export async function installMihomoArchive(archive: Buffer): Promise<MihomoKernelStatus> {
+export async function installMihomoArchive(archive: Buffer, expect?: { file: string; sha256?: string; size?: number }): Promise<MihomoKernelStatus> {
   if (installing) throw new Error('内核正在安装')
-  const asset = matchPinnedAsset(archive)
+  const want = selectMihomoAsset()
+  let asset: { file: string } | null = null
+  if (expect?.sha256) {
+    if ((expect.size && archive.length !== expect.size) || sha256(archive) !== expect.sha256) {
+      throw new Error(`下载的 ${expect.file} 校验失败（SHA-256 和 GitHub 公布的不一致），请重试`)
+    }
+    asset = { file: expect.file }
+  } else {
+    asset = matchPinnedAsset(archive)
+    if (!asset && expect?.file && assetNamePattern()?.test(expect.file)) asset = { file: expect.file }
+  }
   if (!asset) {
     const other = anyPinnedAsset(archive)
-    const want = selectMihomoAsset()
     throw new Error(
       other
         ? `这是 ${other.file}，本机需要 ${want?.file ?? '（此系统没有官方构建）'}`
-        : `不是官方 Mihomo v${MIHOMO_VERSION} 压缩包（SHA-256 不匹配）。请下载 ${want?.file ?? '对应系统的官方压缩包'}`
+        : `认不出这个压缩包。请选本机对应的官方文件，文件名形如 ${want?.file ?? 'mihomo-<系统>-<架构>-v<版本>'}（不要改名）`
     )
   }
   installing = true

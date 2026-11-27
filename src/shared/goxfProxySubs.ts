@@ -1,6 +1,7 @@
 /** GOXF fork: proxy pool subscriptions served by a user-installed Mihomo kernel. */
 export const GOXF_PROXYSUB_CHANNELS = {
   kernelStatus: 'goxf:proxysub:kernel-status',
+  kernelCheck: 'goxf:proxysub:kernel-check',
   kernelDownload: 'goxf:proxysub:kernel-download',
   kernelImport: 'goxf:proxysub:kernel-import',
   kernelEvent: 'goxf:proxysub:kernel-event',
@@ -19,6 +20,10 @@ export interface MihomoKernelStatus {
   version?: string
   /** Pinned version this build downloads / accepts. */
   pinnedVersion: string
+  /** Newest official release found by the last check, when there was one. */
+  latestVersion?: string
+  /** Installed and an official release newer than it exists. */
+  updateAvailable?: boolean
   /** Official asset for this OS/arch, null when Mihomo has no build for it. */
   asset: { file: string; size: number } | null
   releasesPage: string
@@ -86,6 +91,8 @@ export interface ProxySubAddRequest {
 
 export interface GoxfProxySubsBridge {
   kernelStatus(): Promise<MihomoKernelStatus>
+  /** Look up the newest official release (GitHub API); returns the updated status. */
+  kernelCheck(): Promise<MihomoKernelStatus>
   /** Download the pinned official asset (proxy pool first, then system network) and install it. */
   kernelDownload(): Promise<MihomoKernelStatus>
   /** Pick an official .zip/.gz in a file dialog and install it. Null when cancelled. */

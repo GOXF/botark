@@ -12,7 +12,7 @@
  */
 import { randomBytes } from 'node:crypto'
 import { readFileSync, statSync } from 'node:fs'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import { app, BrowserWindow, dialog, ipcMain, safeStorage } from 'electron'
 import { readJsonFile, writeJsonAtomic } from './jsonFile'
 import {
@@ -32,11 +32,12 @@ import {
   mihomoDelays,
   mihomoEntryCurrent,
   mihomoKernelStatus,
+  setMihomoLatest,
   setMihomoRestartHook,
   stopAllMihomo,
   stopMihomoEntry
 } from './goxfMihomo'
-import { MIHOMO_RELEASE_BASE, selectMihomoAsset } from './goxfMihomoAssets'
+import { MIHOMO_RELEASE_BASE, pickReleaseAsset, selectMihomoAsset, type MihomoDownload } from './goxfMihomoAssets'
 import { buildEntryConfig, type MihomoTargetSnapshot } from './goxfMihomoConfig'
 import { poolThenSystemFetch, readCapped } from './goxfPoolFetch'
 import {
@@ -408,12 +409,40 @@ function broadcast(event: MihomoKernelEvent): void {
   }
 }
 
+const LATEST_API = 'https://api.github.com/repos/MetaCubeX/mihomo/releases/latest'
+let latestCheckedAt = 0
+
+/** GOXF: newest official release for this OS/arch (cached 6 h); null when GitHub can't be reached. */
+async function checkLatest(force = false): Promise<MihomoDownload | null> {
+  if (!force && latestCached && Date.now() - latestCheckedAt < 6 * 3600_000) return latestCached
+  try {
+    const res = await poolThenSystemFetch(LATEST_API, {
+      headers: { 'User-Agent': 'BotArk', Accept: 'application/vnd.github+json' },
+      signal: AbortSignal.timeout(15_000)
+    })
+    if (!res.ok) return latestCached
+    const next = pickReleaseAsset((await res.json()) as Parameters<typeof pickReleaseAsset>[0])
+    if (next) {
+      latestCached = next
+      latestCheckedAt = Date.now()
+      setMihomoLatest(next)
+    }
+  } catch {
+    /* offline: keep what we had */
+  }
+  return latestCached
+}
+let latestCached: MihomoDownload | null = null
+
 async function kernelDownload() {
-  const asset = selectMihomoAsset()
-  if (!asset) throw new Error(`Mihomo 没有 ${process.platform}-${process.arch} 的官方构建`)
+  // Newest official release (digest-checked); the pinned build when GitHub's API is unreachable.
+  const latest = await checkLatest(true)
+  const pinned = selectMihomoAsset()
+  const target = latest ?? (pinned ? { file: pinned.file, url: MIHOMO_RELEASE_BASE + pinned.file, size: pinned.size, sha256: pinned.sha256 } : null)
+  if (!target) throw new Error(`Mihomo 没有 ${process.platform}-${process.arch} 的官方构建`)
   let res: Response
   try {
-    res = await poolThenSystemFetch(MIHOMO_RELEASE_BASE + asset.file, {
+    res = await poolThenSystemFetch(target.url, {
       headers: { 'User-Agent': 'BotArk', Accept: 'application/octet-stream' },
       redirect: 'follow',
       signal: AbortSignal.timeout(10 * 60_000)
@@ -423,14 +452,14 @@ async function kernelDownload() {
   }
   if (!res.ok) throw new Error(`下载内核失败（HTTP ${res.status}）`)
   let last = -1
-  const data = await readCapped(res, asset.size + 1024, (received) => {
-    const percent = Math.floor((received / asset.size) * 100)
+  const data = await readCapped(res, target.size + 1024, (received) => {
+    const percent = Math.floor((received / target.size) * 100)
     if (percent !== last) {
       last = percent
-      broadcast({ type: 'progress', percent, totalMb: Math.round(asset.size / 104857.6) / 10 })
+      broadcast({ type: 'progress', percent, totalMb: Math.round(target.size / 104857.6) / 10 })
     }
   })
-  const status = await installMihomoArchive(data)
+  const status = await installMihomoArchive(data, { file: target.file, sha256: target.sha256, size: target.size })
   broadcast({ type: 'done', status })
   return status
 }
@@ -447,7 +476,7 @@ async function kernelImport(event: Electron.IpcMainInvokeEvent) {
   const file = picked.filePaths[0]
   if (picked.canceled || !file) return null
   if (statSync(file).size > 64 * 1024 * 1024) throw new Error('文件过大，不是官方内核压缩包')
-  const status = await installMihomoArchive(readFileSync(file))
+  const status = await installMihomoArchive(readFileSync(file), { file: basename(file) })
   broadcast({ type: 'done', status })
   return status
 }
@@ -480,6 +509,10 @@ export function registerProxySubsIpc(): void {
   scheduleAutoRefresh()
   void autoRefreshDue()
   ipcMain.handle(CH.kernelStatus, () => mihomoKernelStatus())
+  ipcMain.handle(CH.kernelCheck, async () => {
+    await checkLatest()
+    return mihomoKernelStatus()
+  })
   ipcMain.handle(CH.kernelDownload, () =>
     kernelDownload().catch((err: unknown) => {
       const message = err instanceof Error ? err.message : String(err)

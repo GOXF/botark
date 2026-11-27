@@ -44,7 +44,7 @@ const POOL: MuseProxyPoolItemView[] = [
   { id: 'p2', mode: 'socks5h', host: '127.0.0.1', port: 24561, hasPassword: true, assignedAccountIds: [ID('评价'), ID('品退')], lastTest: { ok: true, ms: 86 }, sub: { name: '香港 01', protocol: 'vmess', source: '某某云', group: false } },
   { id: 'p3', mode: 'socks5h', host: '127.0.0.1', port: 27103, hasPassword: true, assignedAccountIds: [], lastTest: { ok: true, ms: 112 }, sub: { name: '♻️ 自动选择', protocol: 'group', source: '某某云', group: true } }
 ]
-const KERNEL = { installed: true, version: '1.19.33', pinnedVersion: '1.19.33', asset: { file: 'mihomo-windows-amd64-v1-v1.19.33.zip', size: 22543530 }, releasesPage: '', installing: false }
+const KERNEL = { installed: true, version: '1.19.33', pinnedVersion: '1.19.33', latestVersion: '1.19.34', updateAvailable: true, asset: { file: 'mihomo-windows-amd64-v1-v1.19.33.zip', size: 22543530 }, releasesPage: '', installing: false }
 
 ;(window as unknown as { electron: unknown }).electron = {
   platform: 'win32',

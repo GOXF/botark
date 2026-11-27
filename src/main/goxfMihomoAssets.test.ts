@@ -3,6 +3,9 @@ import { deflateRawSync, gzipSync } from 'node:zlib'
 import { existsSync, readFileSync } from 'node:fs'
 import {
   anyPinnedAsset,
+  assetNamePattern,
+  compareVersions,
+  pickReleaseAsset,
   extractMihomoBinary,
   extractZipExe,
   matchPinnedAsset,
@@ -90,5 +93,31 @@ describe('goxf Mihomo assets', () => {
     const [platform, arch] = Object.entries(MIHOMO_ASSETS).find(([, a]) => a === asset)![0].split('-')
     expect(matchPinnedAsset(data, platform, arch)).toBe(asset)
     expect(extractMihomoBinary(data, asset!.file).length).toBeGreaterThan(1_000_000)
+  })
+})
+
+describe('latest release', () => {
+  const asset = (name: string, digest = `sha256:${'a'.repeat(64)}`) => ({
+    name,
+    browser_download_url: `https://github.com/MetaCubeX/mihomo/releases/download/v1.19.34/${name}`,
+    size: 123,
+    digest
+  })
+  it('picks this OS/arch asset of any version with its published digest', () => {
+    const rel = { tag_name: 'v1.19.34', assets: [asset('mihomo-windows-amd64-v1-v1.19.34.zip.deb'), asset('mihomo-windows-amd64-v1-v1.19.34.zip'), asset('mihomo-linux-arm64-v1.19.34.gz')] }
+    expect(pickReleaseAsset(rel, 'win32', 'x64')).toMatchObject({ version: '1.19.34', file: 'mihomo-windows-amd64-v1-v1.19.34.zip', sha256: 'a'.repeat(64) })
+    expect(pickReleaseAsset(rel, 'linux', 'arm64')?.file).toBe('mihomo-linux-arm64-v1.19.34.gz')
+  })
+  it('refuses an asset without a sha256 digest', () => {
+    expect(pickReleaseAsset({ assets: [asset('mihomo-linux-arm64-v1.19.34.gz', '')] }, 'linux', 'arm64')).toBeNull()
+  })
+  it('compares versions numerically', () => {
+    expect(compareVersions('1.19.34', '1.19.33')).toBe(1)
+    expect(compareVersions('1.19.9', '1.19.10')).toBe(-1)
+    expect(compareVersions('1.19.33', '1.19.33')).toBe(0)
+  })
+  it('recognises official names in any version, not renamed files', () => {
+    expect(assetNamePattern('win32', 'x64')!.test('mihomo-windows-amd64-v1-v1.20.0.zip')).toBe(true)
+    expect(assetNamePattern('win32', 'x64')!.test('mihomo.zip')).toBe(false)
   })
 })

@@ -162,6 +162,7 @@ const bridge: BotHubBridge = {
   },
   goxfProxySubs: {
     kernelStatus: () => ipcRenderer.invoke(GOXF_PROXYSUB_CHANNELS.kernelStatus),
+    kernelCheck: () => ipcRenderer.invoke(GOXF_PROXYSUB_CHANNELS.kernelCheck),
     kernelDownload: () => ipcRenderer.invoke(GOXF_PROXYSUB_CHANNELS.kernelDownload),
     kernelImport: () => ipcRenderer.invoke(GOXF_PROXYSUB_CHANNELS.kernelImport),
     onKernelEvent: (listener) => {

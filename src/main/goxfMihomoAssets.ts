@@ -31,6 +31,64 @@ export function selectMihomoAsset(platform: string = process.platform, arch: str
   return MIHOMO_ASSETS[`${platform}-${arch}`] ?? null
 }
 
+/** A release asset as GitHub's API lists it (`digest` is "sha256:<hex>"). */
+export interface MihomoReleaseAsset {
+  name: string
+  browser_download_url: string
+  size: number
+  digest?: string | null
+}
+
+/** A downloadable kernel: which file, where, and the hash it must have. */
+export interface MihomoDownload {
+  version: string
+  file: string
+  url: string
+  size: number
+  sha256: string
+}
+
+const escapeRe = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+
+/** This OS/arch's official asset name for any version (the pinned name with the version swapped). */
+export function assetNamePattern(platform: string = process.platform, arch: string = process.arch): RegExp | null {
+  const pinned = selectMihomoAsset(platform, arch)
+  if (!pinned) return null
+  const [head, tail] = pinned.file.split(MIHOMO_VERSION)
+  return new RegExp(`^${escapeRe(head ?? '')}(\\d+\\.\\d+\\.\\d+)${escapeRe(tail ?? '')}$`)
+}
+
+/**
+ * GOXF: the newest official release's asset for this OS/arch, trusted only with
+ * the SHA-256 digest GitHub publishes for it. Null when the release lacks one.
+ */
+export function pickReleaseAsset(
+  release: { tag_name?: string; assets?: MihomoReleaseAsset[] } | null | undefined,
+  platform: string = process.platform,
+  arch: string = process.arch
+): MihomoDownload | null {
+  const re = assetNamePattern(platform, arch)
+  if (!re || !release?.assets) return null
+  for (const a of release.assets) {
+    const m = re.exec(a.name)
+    const hash = /^sha256:([0-9a-f]{64})$/i.exec(a.digest ?? '')
+    if (!m || !hash || !/^https:\/\/github\.com\//.test(a.browser_download_url)) continue
+    return { version: m[1]!, file: a.name, url: a.browser_download_url, size: a.size, sha256: hash[1]!.toLowerCase() }
+  }
+  return null
+}
+
+/** Semver-ish compare of "1.19.34" style versions. */
+export function compareVersions(a: string, b: string): number {
+  const pa = a.split('.').map(Number)
+  const pb = b.split('.').map(Number)
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const d = (pa[i] ?? 0) - (pb[i] ?? 0)
+    if (d) return d < 0 ? -1 : 1
+  }
+  return 0
+}
+
 export const mihomoBinaryName = (platform: string = process.platform): string => (platform === 'win32' ? 'mihomo.exe' : 'mihomo')
 
 export const sha256 = (data: Buffer): string => createHash('sha256').update(data).digest('hex')

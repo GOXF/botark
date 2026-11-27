@@ -59,6 +59,8 @@ export function useMihomoKernel() {
     const api = subs()
     if (!api) return
     void api.kernelStatus().then(setStatus, () => undefined)
+    // Newest official release, so an installed kernel can offer 「更新到 vX」.
+    void api.kernelCheck?.().then(setStatus, () => undefined)
     return api.onKernelEvent((e) => {
       if (e.type === 'progress') setProgress(e.percent)
       else if (e.type === 'done') {
@@ -112,6 +114,9 @@ export function MihomoKernelCard({ kernel }: { kernel: ReturnType<typeof useMiho
                 ? '订阅节点由它在本机跑；只监听 127.0.0.1，带随机密码。'
                 : '用订阅里的 SS / VMess / Trojan 等节点需要它。不内置，装在数据目录里，不改系统代理。'}
             </p>
+            {installed && status.updateAvailable && (
+              <p className="mt-1 text-[12px] text-ink-secondary">官方已发布 v{status.latestVersion}，更新后正在用的节点会自动重启。</p>
+            )}
             {!installed && status.asset && (
               <p className="mt-1 font-mono text-[11px] text-ink-muted">
                 {status.asset.file} · 约 {Math.round(status.asset.size / 1048576)} MB · 校验 SHA-256
@@ -126,6 +131,10 @@ export function MihomoKernelCard({ kernel }: { kernel: ReturnType<typeof useMiho
               <Loader2 className="size-3 animate-spin" />
               {progress !== null ? `下载中 ${progress}%` : '安装中…'}
             </Badge>
+          ) : installed && status.updateAvailable ? (
+            <Button size="sm" variant="primary" onClick={() => void install('download')}>
+              <Download className="size-3.5" /> 更新到 v{status.latestVersion}
+            </Button>
           ) : installed ? (
             <Button size="sm" variant="ghost" disabled={!status.asset} onClick={() => void install('download')}>
               重新安装
