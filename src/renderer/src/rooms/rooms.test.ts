@@ -1,6 +1,6 @@
 import { afterEach, expect, it, vi } from 'vitest'
 import { adapterRegistry } from '@adapters/registry'
-import type { IncomingMessage, OutgoingMessage, PlatformAdapter, SendReceipt } from '@adapters/types'
+import { AdapterError, type IncomingMessage, type OutgoingMessage, type PlatformAdapter, type SendReceipt } from '@adapters/types'
 import type { Bot } from '@/types'
 import { useBotStore } from '@/store/botStore'
 import { mentions, roomMarkdown, splitMentionSegments, stripFinalPrefix, turnPrompt, type CollabRoom, type RoomMember } from './model'
@@ -468,12 +468,38 @@ it('continues queued participants after a failed turn without retrying the faile
   fixture('auto', async (msg) => {
     calls.push(msg.accountId)
     if (msg.accountId === 'Muse') throw new Error('transport timeout')
-    expect(msg.text).toContain('Muse 本轮未取得回复')
+    expect(msg.text).toContain('Muse 本轮未送达。')
     return '@Muse retry'
   })
   await submitBrief('room', '@Muse @Dot review')
   expect(calls).toEqual(['Muse', 'Dot'])
   expect(useRooms.getState().errors.room).toContain('transport timeout')
+})
+
+it('says a delivered turn without a reply was delivered instead of not sent', async () => {
+  fixture('manual', async () => '')
+  vi.spyOn(adapterRegistry, 'get').mockReturnValue({ getStatus: () => 'online',
+    onMessage: () => () => {},
+    sendMessage: async (m: OutgoingMessage): Promise<SendReceipt> => {
+      m.onAccepted?.()
+      return { messageId: 'receipt', acceptedAt: 1 }
+    }
+  } as unknown as PlatformAdapter)
+  await submitBrief('room', '@Muse review')
+  const room = useRooms.getState().rooms[0]!
+  expect(room.messages.at(-1)).toMatchObject({ notice: true, text: 'Muse 已收到消息，本轮还没有回复。' })
+  expect(useRooms.getState().errors.room).toBe('@Muse：已送达，但没有收到回复')
+})
+
+it('treats an adapter no-reply error as delivered', async () => {
+  fixture('manual', async () => '')
+  vi.spyOn(adapterRegistry, 'get').mockReturnValue({ getStatus: () => 'online',
+    onMessage: () => () => {},
+    sendMessage: async (): Promise<SendReceipt> => { throw new AdapterError('no-reply', 'Hark 回复失败') }
+  } as unknown as PlatformAdapter)
+  await submitBrief('room', '@Muse review')
+  expect(useRooms.getState().rooms[0]!.messages.at(-1)?.text).toBe('Muse 已收到消息，本轮还没有回复。')
+  expect(useRooms.getState().errors.room).toBe('@Muse：已送达，但没有回复（Hark 回复失败）')
 })
 
 it('returns a delegated failure to the administrator and records only its accepted final', async () => {
@@ -485,7 +511,7 @@ it('returns a delegated failure to the administrator and records only its accept
   })
   await submitBrief(id, 'Review')
   expect(calls.map((m) => m.accountId)).toEqual(['Muse', 'Dot', 'Muse'])
-  expect(calls[2]?.text).toContain('Dot 本轮未取得回复')
+  expect(calls[2]?.text).toContain('Dot 本轮未送达。')
   const room = useRooms.getState().rooms.find((r) => r.id === id)!
   expect(room.messages.at(-1)?.final).toBe(true)
   expect(roomMarkdown(room)).toContain('partial result')

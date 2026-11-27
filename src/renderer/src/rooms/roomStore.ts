@@ -1,7 +1,7 @@
 import { create } from 'zustand'
 import { persist, type PersistStorage } from 'zustand/middleware'
 import { adapterRegistry } from '@adapters/registry'
-import type { ConnectionStatus, SendReceipt } from '@adapters/types'
+import { AdapterError, type ConnectionStatus, type SendReceipt } from '@adapters/types'
 import { createId } from '@shared/id'
 import { getBridge } from '@/lib/bridge'
 import { cancelPlatformTurn, useBotStore } from '@/store/botStore'
@@ -614,6 +614,22 @@ async function openWorkspacePortal(scope: string): Promise<string> {
   }
 }
 
+/** A delivered turn that produced no reply: the member has the message, only the answer is missing. */
+export const NO_REPLY_ERROR = '已送达，但没有收到回复'
+
+/** A failed turn, and whether the member's platform had already taken the message. */
+export class RoomTurnError extends Error {
+  constructor(message: string, readonly delivered: boolean) {
+    super(message)
+    this.name = 'RoomTurnError'
+  }
+}
+
+/** The notice posted in the room when a member did not answer: delivered-but-silent reads differently from not delivered. */
+export function roomFailureNotice(name: string, delivered: boolean): string {
+  return delivered ? `${name} 已收到消息，本轮还没有回复。` : `${name} 本轮未送达。`
+}
+
 async function memberReply(room: CollabRoom, member: RoomMember, trigger: RoomMessage, signal: AbortSignal) {
   const adapter = adapterRegistry.get(member.platform)
   const bot = useBotStore
@@ -643,6 +659,7 @@ async function memberReply(room: CollabRoom, member: RoomMember, trigger: RoomMe
   }
   activeAccounts.add(lockKey)
   const conversationId = 'room-turn-' + createId('turn')
+  let accepted = false
   const replies = new Map<string, string>()
   const unsubscribe = adapter.onMessage((m) => {
     if (m.conversationId === conversationId && m.accountId === member.accountId && m.text.trim())
@@ -718,10 +735,12 @@ async function memberReply(room: CollabRoom, member: RoomMember, trigger: RoomMe
           agentId: member.agentId,
           hermesSessionKey,
           text: prompt,
+          onAccepted: () => { accepted = true },
           signal
         })
         .then(
           (res) => {
+            accepted = true
             signal.removeEventListener('abort', onAbort)
             resolve(res)
           },
@@ -733,8 +752,13 @@ async function memberReply(room: CollabRoom, member: RoomMember, trigger: RoomMe
     })
     signal.throwIfAborted()
     const text = [...replies.values()].join('\n\n')
-    if (!text) throw new Error(`@${member.name} 没有返回文字回复`)
+    if (!text) throw new RoomTurnError(NO_REPLY_ERROR, true)
     return { text, sessionId: receipt.sessionId || sessionId, hermesSessionKey }
+  } catch (error) {
+    if (signal.aborted || error instanceof RoomTurnError) throw error
+    // An adapter's 'no-reply' means the platform took the message even when onAccepted never fired.
+    const delivered = accepted || (error instanceof AdapterError && error.code === 'no-reply')
+    throw new RoomTurnError(error instanceof Error ? error.message : String(error), delivered)
   } finally {
     unsubscribe()
     activeAccounts.delete(lockKey)
@@ -827,10 +851,12 @@ export async function submitBrief(
         signal.throwIfAborted()
         if (isCoordinator) throw error
         failed.add(member.botId)
-        setError(id, `@${member.name}：${error instanceof Error ? error.message : String(error)}`)
+        const detail = error instanceof Error ? error.message : String(error)
+        const delivered = error instanceof RoomTurnError && error.delivered
+        setError(id, `@${member.name}：${delivered && detail !== NO_REPLY_ERROR ? `已送达，但没有回复（${detail}）` : detail}`)
         const notice: RoomMessage = {
           id: createId('post'), author: 'BotArk', notice: true,
-          text: `${member.name} 本轮未取得回复。`, createdAt: Date.now()
+          text: roomFailureNotice(member.name, delivered), createdAt: Date.now()
         }
         update(id, (r) => ({ ...r, messages: [...r.messages, notice] }))
         if (coordinator && !isQueued(coordinator.botId)) queue.push({ member: coordinator, trigger: notice })
