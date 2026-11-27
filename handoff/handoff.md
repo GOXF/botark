@@ -361,3 +361,6 @@ git clone <GOXF/botark> && cd botark && git checkout fix/hark-login-sync && npm 
 ## 2026-11-27 17:43 任务看板「等你处理」误报（d8bd1dd）
 - 原因：harkSubtasks.deriveTasks 把 Hark request state=open 全当「等你处理」。Hark 在正式答复前一直 open，即便工作已转到后续消息。
 - 现在：只有 awaitsPerson（或 input/await 状态、未完成的 ask）才进等你处理；被后续 followsUp/lineage 接续、或有 doneTitle 的 open 算完成；其余 open 算进行中，30 分钟无活动转完成。
+
+## 2026-11-27 17:52 侧栏「进行中」蓝点（60f2987）
+- 头像右下角蓝点原来只看账号状态（busy），Hark 干活时账号仍 online 所以不亮。BotListItem 现在 isWorking 时把 online 当 busy 传给 BotAvatar，所有在干活的会话都亮脉冲蓝点。没加新样式（v18 右侧圆点方案已放弃）。
