@@ -1,15 +1,14 @@
 import { memo, useMemo, useState, type KeyboardEvent } from 'react'
-import { ChevronRight, MoreHorizontal, Pencil, Plus, Trash2 } from 'lucide-react'
+import { Plus } from 'lucide-react'
 import { ArkProjectStackSvg } from '@/components/ui/ArkGlyphs'
-import { InlineEdit } from '@/components/ui/InlineEdit'
-import { Menu, MenuContent, MenuItem, MenuSeparator, MenuTrigger } from '@/components/ui/Menu'
 import { cn } from '@/lib/cn'
 import { getBotStatus, lastMessage } from '@/lib/selectors'
 import { useBotStore } from '@/store/botStore'
 import { applyDropOutOfRoom, BOT_DRAG_MIME, isRoomMemberDrag, showRoomDndNotice } from '@/rooms/roomDnd'
-import type { Bot, BotGroup } from '@/types'
+import type { Bot } from '@/types'
 import { BotListItem } from './BotListItem'
 import { ConfigureSectionsDialog } from './ConfigureSectionsDialog'
+import { GROUP_DRAG_MIME, SectionHeader } from './SectionHeader'
 import { t } from '@/lib/i18n'
 
 /** ↑/↓ move between rows; Enter opens the focused one. */
@@ -24,105 +23,6 @@ function moveBetweenRows(event: KeyboardEvent<HTMLElement>) {
     event.preventDefault()
     next.focus()
   }
-}
-
-function SectionHeader({
-  group,
-  botCount,
-  collapsed,
-  onToggle
-}: {
-  group: BotGroup
-  botCount: number
-  collapsed: boolean
-  onToggle: () => void
-}) {
-  const renameGroup = useBotStore((s) => s.renameGroup)
-  const removeGroup = useBotStore((s) => s.removeGroup)
-  const groups = useBotStore((s) => s.groups)
-  const [renaming, setRenaming] = useState(false)
-  const [menuOpen, setMenuOpen] = useState(false)
-  const only = groups.length <= 1
-  const listId = `group-${group.id}`
-
-  return (
-    <div className="group/section relative flex h-7 items-center gap-0.5">
-      {renaming ? (
-        <div className="flex min-w-0 flex-1 items-center px-1.5">
-          <InlineEdit
-            value={group.name === 'Workspace' ? t('Workspace') : group.name}
-            label={t('Section name')}
-            maxLength={40}
-            className="h-7 w-full text-[12px] font-medium"
-            onCommit={(name) => renameGroup(group.id, name)}
-            onDone={() => setRenaming(false)}
-          />
-        </div>
-      ) : (
-        <button
-          type="button"
-          onClick={onToggle}
-          aria-expanded={!collapsed}
-          aria-controls={listId}
-          className="flex h-7 min-w-0 flex-1 items-center gap-1 rounded-md px-1.5 text-left text-ink-muted transition-colors hover:bg-hover hover:text-ink-secondary"
-        >
-          <span
-            id={`${listId}-label`}
-            className="truncate text-[12px] font-medium tracking-tight"
-            title={t('Double-click to rename')}
-            onDoubleClick={(e) => {
-              e.stopPropagation()
-              setRenaming(true)
-            }}
-          >
-            {group.name === 'Workspace' ? t('Workspace') : group.name || t('Unallocated')}
-          </span>
-          <span className="ml-auto flex shrink-0 items-center gap-1 pr-0.5">
-            {collapsed && botCount > 0 && (
-              <span className="text-[11px] tabular-nums opacity-70">{botCount}</span>
-            )}
-            <ChevronRight
-              aria-hidden
-              className={cn(
-                'size-3.5 shrink-0 transition-transform duration-150',
-                !collapsed ? 'rotate-90 opacity-0 group-hover/section:opacity-80' : 'opacity-70'
-              )}
-            />
-          </span>
-        </button>
-      )}
-
-      {!renaming && (
-        <Menu open={menuOpen} onOpenChange={setMenuOpen}>
-          <MenuTrigger
-            aria-label={`Section actions for ${group.name}`}
-            className={cn(
-              'press-icon grid size-6 shrink-0 place-items-center rounded-full text-ink-muted',
-              'opacity-0 group-hover/section:opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100',
-              'hover:bg-hover hover:text-ink data-[state=open]:bg-hover'
-            )}
-          >
-            <MoreHorizontal className="size-3.5" />
-          </MenuTrigger>
-          <MenuContent align="start" side="bottom" className="min-w-44">
-            <MenuItem onSelect={() => setRenaming(true)}>
-              <Pencil aria-hidden /> {t('Rename')}
-            </MenuItem>
-            <MenuSeparator />
-            <MenuItem
-              danger
-              disabled={only}
-              onSelect={() => {
-                if (!only) removeGroup(group.id)
-              }}
-            >
-              <Trash2 aria-hidden /> {only ? t('Keep one section') : t('Delete section')}
-            </MenuItem>
-          </MenuContent>
-        </Menu>
-      )}
-    </div>
-  )
 }
 
 export const BotRow = memo(function BotRow({ bot, layout }: { bot: Bot; layout: 'collapsed' | 'pinned' | 'expanded' }) {
@@ -147,6 +47,10 @@ export function BotList() {
   const toggleGroup = useBotStore((s) => s.toggleGroup)
   const addGroup = useBotStore((s) => s.addGroup)
   const reorderBot = useBotStore((s) => s.reorderBot)
+  const reorderGroup = useBotStore((s) => s.reorderGroup)
+  const [dragGroup, setDragGroup] = useState<string | null>(null)
+  /** Section drop slot: insert before this group id (null = after the last section). */
+  const [groupDropBefore, setGroupDropBefore] = useState<string | null | undefined>(undefined)
   const [dragId, setDragId] = useState<string | null>(null)
   const [dropAt, setDropAt] = useState<string | null>(null)
   const [memberOver, setMemberOver] = useState(false)
@@ -214,8 +118,20 @@ export function BotList() {
           松开即可将该 Bot 移出群聊
         </div>
       )}
-      <div className="min-h-0 flex-1 overflow-y-auto" onKeyDown={moveBetweenRows}>
-        <div className="flex flex-col gap-2.5 px-0 pt-0.5">
+      {/* -ml-2 pl-2: room for the hover grip left of section headers without moving them */}
+      <div className="-ml-2 min-h-0 flex-1 overflow-y-auto pl-2" onKeyDown={moveBetweenRows}>
+        <div
+          className="flex flex-col gap-2.5 px-0 pt-0.5"
+          // Section drops land here too, so releasing in the gap on the insertion line still counts.
+          onDragOver={(e) => dragGroup && e.preventDefault()}
+          onDrop={(e) => {
+            if (!dragGroup) return
+            e.preventDefault()
+            if (groupDropBefore !== undefined) reorderGroup(dragGroup, groupDropBefore)
+            setDragGroup(null)
+            setGroupDropBefore(undefined)
+          }}
+        >
           {/* Grok Bot Pinned Tiles Grid (`sand-pinned-grid`) */}
           {pinnedBots.length > 0 && (
             <section aria-label={t('Pinned')} className="px-0.5 pb-1">
@@ -246,14 +162,32 @@ export function BotList() {
             </section>
           )}
 
-          {sections.map(({ group, bots: groupBots }) => {
+          {sections.map(({ group, bots: groupBots }, index) => {
             const isCollapsed = collapsed[group.id] === true
             const listId = `group-${group.id}`
+            const nextId = sections[index + 1]?.group.id ?? null
             return (
               <section
                 key={group.id}
                 aria-labelledby={`${listId}-label`}
-                onDragOver={(e) => dragId && e.preventDefault()}
+                className={cn(
+                  'relative',
+                  dragGroup === group.id && 'opacity-40',
+                  dragGroup && groupDropBefore === group.id &&
+                    cn('before:absolute before:inset-x-1 before:h-0.5 before:rounded-full before:bg-accent-600',
+                      index === 0 ? 'before:-top-0.5' : 'before:-top-1.5'),
+                  dragGroup && groupDropBefore === null && !nextId &&
+                    'after:absolute after:inset-x-1 after:-bottom-1.5 after:h-0.5 after:rounded-full after:bg-accent-600'
+                )}
+                onDragOver={(e) => {
+                  if (dragGroup && e.dataTransfer.types.includes(GROUP_DRAG_MIME)) {
+                    e.preventDefault()
+                    const rect = e.currentTarget.getBoundingClientRect()
+                    setGroupDropBefore(e.clientY < rect.top + Math.min(rect.height / 2, 28) ? group.id : nextId)
+                    return
+                  }
+                  if (dragId) e.preventDefault()
+                }}
                 onDrop={(e) => {
                   if (!dragId || e.defaultPrevented) return
                   e.preventDefault()
@@ -267,6 +201,11 @@ export function BotList() {
                   botCount={groupBots.length}
                   collapsed={isCollapsed}
                   onToggle={() => toggleGroup(group.id)}
+                  onDragStart={() => setDragGroup(group.id)}
+                  onDragEnd={() => {
+                    setDragGroup(null)
+                    setGroupDropBefore(undefined)
+                  }}
                 />
                 {!isCollapsed && (
                   <ul id={listId} className="mt-0.5 flex flex-col gap-0.5">

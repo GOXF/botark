@@ -1,10 +1,12 @@
 import { useState } from 'react'
-import { Plus, Trash2 } from 'lucide-react'
+import { GripVertical, Plus, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/Button'
 import { Dialog } from '@/components/ui/Dialog'
 import { IconButton } from '@/components/ui/IconButton'
+import { cn } from '@/lib/cn'
 import { useBotStore } from '@/store/botStore'
 import { t } from '@/lib/i18n'
+import { GROUP_DRAG_MIME } from './SectionHeader'
 
 interface ConfigureSectionsDialogProps {
   open: boolean
@@ -21,6 +23,14 @@ export function ConfigureSectionsDialog({ open, onOpenChange }: ConfigureSection
   const renameGroup = useBotStore((s) => s.renameGroup)
   const removeGroup = useBotStore((s) => s.removeGroup)
   const addGroup = useBotStore((s) => s.addGroup)
+  const reorderGroup = useBotStore((s) => s.reorderGroup)
+  const [dragId, setDragId] = useState<string | null>(null)
+  /** Insert before this group id (null = end). */
+  const [dropBefore, setDropBefore] = useState<string | null | undefined>(undefined)
+  const endDrag = () => {
+    setDragId(null)
+    setDropBefore(undefined)
+  }
   const [drafts, setDrafts] = useState<Record<string, string>>({})
 
   const openChange = (next: boolean) => {
@@ -37,7 +47,7 @@ export function ConfigureSectionsDialog({ open, onOpenChange }: ConfigureSection
       open={open}
       onOpenChange={openChange}
       title={t('Configure sections')}
-      description="Organize bots into sidebar sections. Local to this workspace."
+      description={t('Drag the handle to reorder.')}
       showDescription
       className="max-w-[380px]"
       footer={
@@ -60,11 +70,50 @@ export function ConfigureSectionsDialog({ open, onOpenChange }: ConfigureSection
       }
     >
       <ul className="flex flex-col gap-2">
-        {groups.map((group) => {
+        {groups.map((group, index) => {
           const count = bots.filter((b) => b.groupId === group.id).length
           const only = groups.length <= 1
+          const nextId = groups[index + 1]?.id ?? null
           return (
-            <li key={group.id} className="flex items-center gap-2 rounded-xl border border-line bg-surface px-2.5 py-2">
+            <li
+              key={group.id}
+              className={cn(
+                'relative flex items-center gap-2 rounded-xl border border-line bg-surface px-2.5 py-2',
+                dragId === group.id && 'opacity-40',
+                dragId && dropBefore === group.id &&
+                  'before:absolute before:inset-x-1 before:-top-[5px] before:h-0.5 before:rounded-full before:bg-accent-600',
+                dragId && dropBefore === null && !nextId &&
+                  'after:absolute after:inset-x-1 after:-bottom-[5px] after:h-0.5 after:rounded-full after:bg-accent-600'
+              )}
+              onDragOver={(e) => {
+                if (!dragId || !e.dataTransfer.types.includes(GROUP_DRAG_MIME)) return
+                e.preventDefault()
+                const rect = e.currentTarget.getBoundingClientRect()
+                setDropBefore(e.clientY < rect.top + rect.height / 2 ? group.id : nextId)
+              }}
+              onDrop={(e) => {
+                if (!dragId) return
+                e.preventDefault()
+                if (dropBefore !== undefined) reorderGroup(dragId, dropBefore)
+                endDrag()
+              }}
+            >
+              {/* Only the grip is draggable, so the name input keeps normal text selection. */}
+              <span
+                draggable
+                aria-hidden
+                className="-ml-1 grid h-6 w-4 shrink-0 cursor-grab place-items-center text-ink-muted"
+                onDragStart={(e) => {
+                  const row = e.currentTarget.parentElement
+                  e.dataTransfer.effectAllowed = 'move'
+                  e.dataTransfer.setData(GROUP_DRAG_MIME, group.id)
+                  if (row) e.dataTransfer.setDragImage(row, 16, row.offsetHeight / 2)
+                  setDragId(group.id)
+                }}
+                onDragEnd={endDrag}
+              >
+                <GripVertical className="size-4" />
+              </span>
               <input
                 value={drafts[group.id] ?? group.name}
                 aria-label={`Section name for ${group.name}`}

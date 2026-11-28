@@ -209,6 +209,8 @@ export interface BotHubState {
   renameGroup: (groupId: string, name: string) => void
   /** Drop a section; its bots move to another section. Keeps at least one. */
   removeGroup: (groupId: string) => void
+  /** Move a section before `beforeGroupId` (or to the end when null). */
+  reorderGroup: (groupId: string, beforeGroupId: string | null) => void
   moveBotToGroup: (botId: string, groupId: string) => void
   togglePinBot: (botId: string) => void
   /** Local drag-reorder: place `botId` before `beforeId` (or at end) inside `groupId`. */
@@ -1173,6 +1175,16 @@ export const useBotStore = create<BotHubState>()(
           bots: state.bots.map((b) => (b.groupId === groupId ? { ...b, groupId: fallback.id } : b)),
           collapsedGroups
         }
+      }),
+
+    reorderGroup: (groupId, beforeGroupId) =>
+      set((state) => {
+        const group = state.groups.find((g) => g.id === groupId)
+        if (!group || groupId === beforeGroupId) return state
+        const rest = state.groups.filter((g) => g.id !== groupId)
+        const at = beforeGroupId ? rest.findIndex((g) => g.id === beforeGroupId) : -1
+        rest.splice(at < 0 ? rest.length : at, 0, group)
+        return rest.every((g, i) => g === state.groups[i]) ? state : { groups: rest }
       }),
 
     moveBotToGroup: (botId, groupId) =>
