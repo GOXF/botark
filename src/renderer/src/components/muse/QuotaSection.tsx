@@ -68,10 +68,10 @@ export function QuotaSection({ accountId }: { accountId: string }) {
 
   return (
     <Section title="额度管理" action={<RefreshButton loading={loading} onClick={() => void refresh()} />}>
-      {error && <p className="pb-1 text-[12px] text-status-error">{error}</p>}
+      {error && snap?.errorCode !== 'action_not_found' && <p className="pb-1 text-[12px] text-status-error">{error}</p>}
       {!sub ? (
         <div className="flex items-center justify-between gap-2">
-          <EmptyLine>{loading ? t('Loading usage…') : online ? t('Usage unavailable') : '请先登录 Muse 账号'}</EmptyLine>
+          <EmptyLine>{loading ? t('Loading usage…') : online ? (snap?.errorCode === 'action_not_found' ? 'Muse 改版了，暂时读不到额度' : t('Usage unavailable')) : '请先登录 Muse 账号'}</EmptyLine>
           {!loading && online && (
             <button
               type="button"

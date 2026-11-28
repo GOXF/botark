@@ -95,12 +95,15 @@ interface SectionProps {
   className?: string
   /** Override the inherited default open state. */
   defaultOpen?: boolean
+  /** GOXF: always first in a sortable list and not draggable (e.g. 协作调度, which every platform shares). */
+  pinned?: boolean
 }
 
 /** Collapsible titled card — the details panel's only building block. Open state persists per title. */
-export function Section({ title, count, tag, action, children, flush = false, className, defaultOpen }: SectionProps) {
+export function Section({ title, count, tag, action, children, flush = false, className, defaultOpen, pinned = false }: SectionProps) {
   const inherited = useContext(DefaultOpen)
-  const sortable = useContext(Sortable)
+  const inSortable = useContext(Sortable)
+  const sortable = inSortable && !pinned
   const index = useSectionOrder((st) => (sortable ? st.order.indexOf(title) : -1))
   const [open, setOpen] = useState(() => readOpen(title, defaultOpen ?? inherited))
   const [dropAt, setDropAt] = useState<'before' | 'after' | null>(null)
@@ -134,7 +137,7 @@ export function Section({ title, count, tag, action, children, flush = false, cl
   return (
     <section
       data-section-title={sortable ? title : undefined}
-      style={sortable && index >= 0 ? { order: index + 1 } : undefined}
+      style={inSortable && pinned ? { order: -1 } : sortable && index >= 0 ? { order: index + 1 } : undefined}
       className={cn(
         'relative px-3 pt-2.5',
         dropAt === 'before' && 'before:absolute before:inset-x-3 before:top-0.5 before:h-0.5 before:rounded-full before:bg-accent-500',

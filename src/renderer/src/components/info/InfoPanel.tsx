@@ -335,7 +335,7 @@ function OpenInfoPanel({
         <div key={`${bot.id}:${activeTab}`} className="animate-veil-in">
           {activeTab === 'overview' ? (
             <SortableSections>
-              <Section title="协作调度">
+              <Section title="协作调度" pinned>
                 <label className="flex items-center gap-2 text-[13px]">
                   <input type="checkbox" checked={Boolean(coordinationRoomId)}
                     onChange={(e) => setRoomAdministrator(bot.id, e.target.checked)} />
