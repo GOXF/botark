@@ -2,6 +2,14 @@
 
 All notable changes to **BotArk** (formerly BotHub) are documented in this file.
 
+## [0.17.1] - 2026-11-28
+
+### Changed
+
+- Expanded English and Simplified Chinese across the desktop workspace and iOS companion ([PR 88](https://github.com/qybaihe/botark/pull/88)). New desktop profiles use the first supported system language; existing profiles keep their saved preference. Native account dialogs and the macOS Settings menu follow the app language.
+- Open Settings on macOS from the BotArk menu or with `⌘,`. An active modal keeps focus, so opening Settings cannot silently discard an in-progress dialog. On iOS, the built-in standalone group follows the current language without renaming custom groups.
+- Clarified browser sign-in handoffs and local MCP consent in English, including which program, arguments and working directory are being approved. Known delivery and IPC errors are translated at display time; conversation text, provider messages outside the catalog, and stored protocol values are left alone.
+
 ## [0.17.0] - 2026-11-27
 
 ### Added
