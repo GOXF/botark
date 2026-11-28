@@ -22,6 +22,7 @@ import {
   type RoomReference
 } from './model'
 import { requestedTool } from './toolRequests'
+import { snapshotMembers, teamStatusBlock } from './adminContext'
 
 export interface RoomTurnProgress {
   turn: number
@@ -792,6 +793,11 @@ async function memberReply(room: CollabRoom, member: RoomMember, trigger: RoomMe
       }))
     const contextMember = member.sessionId || hermesSessionKey ? member : { ...member, cursor: 0 }
     let prompt = turnPrompt(room, contextMember, trigger)
+    // GOXF: the administrator sees what each teammate is doing, so it can summarise and reassign.
+    if (member.botId === room.coordinatorId) {
+      const team = teamStatusBlock(snapshotMembers(room.members, member.botId))
+      if (team) prompt += '\n\n' + team
+    }
     if (refusesRoomFrame(member.platform)) {
       // Hark refuses another app's tool protocol: upstream's plain-language frame (in turnPrompt)
       // plus the hardened workspace portal it can reach with its own web tools.
