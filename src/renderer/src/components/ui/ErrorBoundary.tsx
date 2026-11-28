@@ -1,3 +1,4 @@
+import { desktopCopy } from '@/lib/desktopCopy'
 import { Component, type ErrorInfo, type ReactNode } from 'react'
 import { AlertTriangle, RotateCcw } from 'lucide-react'
 
@@ -48,10 +49,10 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
         </div>
         <div className="max-w-xs space-y-1">
           <p className="text-[14px] font-semibold text-ink">
-            {this.props.surface ? `${this.props.surface}渲染异常` : '界面出现异常'}
+            {this.props.surface ? desktopCopy("{0}渲染异常", "Couldn’t display {0}", [(this.props.surface)]) : desktopCopy("界面出现异常", "Something went wrong")}
           </p>
           <p className="truncate text-[12px] text-ink-muted">
-            {this.state.error.message || '发生了意外错误，可一键恢复'}
+            {this.state.error.message || desktopCopy("发生了意外错误，可一键恢复", "Something went wrong. Try again or reload the window.")}
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -60,17 +61,13 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
             onClick={this.handleReset}
             className="press inline-flex h-8 items-center gap-1.5 rounded-full bg-ink px-3.5 text-[12.5px] font-medium text-surface shadow-soft hover:opacity-90"
           >
-            <RotateCcw className="size-3.5" aria-hidden />
-            重试恢复
-          </button>
+            <RotateCcw className="size-3.5" aria-hidden />{desktopCopy("重试恢复", "Retry")}</button>
           {!this.props.surface && (
             <button
               type="button"
               onClick={() => window.location.reload()}
               className="press inline-flex h-8 items-center rounded-full border border-line bg-surface px-3.5 text-[12.5px] font-medium text-ink hover:bg-hover"
-            >
-              刷新窗口
-            </button>
+            >{desktopCopy("刷新窗口", "Refresh Window")}</button>
           )}
         </div>
       </div>

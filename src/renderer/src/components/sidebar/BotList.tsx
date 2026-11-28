@@ -1,3 +1,4 @@
+import { desktopCopy, useDesktopLocale } from '@/lib/desktopCopy'
 import { memo, useMemo, useState, type KeyboardEvent } from 'react'
 import { Plus } from 'lucide-react'
 import { ArkProjectStackSvg } from '@/components/ui/ArkGlyphs'
@@ -40,6 +41,7 @@ export const BotRow = memo(function BotRow({ bot, layout }: { bot: Bot; layout: 
 })
 
 export function BotList() {
+  useDesktopLocale()
   const groups = useBotStore((s) => s.groups)
   const bots = useBotStore((s) => s.bots)
   const collapsed = useBotStore((s) => s.collapsedGroups)
@@ -114,9 +116,7 @@ export function BotList() {
       }}
     >
       {memberOver && (
-        <div className="pointer-events-none absolute inset-x-2 top-1 z-10 rounded-lg bg-status-error/90 px-2 py-1 text-center text-[11.5px] font-medium text-white shadow">
-          松开即可将该 Bot 移出群聊
-        </div>
+        <div className="pointer-events-none absolute inset-x-2 top-1 z-10 rounded-lg bg-status-error/90 px-2 py-1 text-center text-[11.5px] font-medium text-white shadow">{desktopCopy("松开即可将该 Bot 移出群聊", "Drop here to remove this bot from the group chat")}</div>
       )}
       {/* -ml-2 pl-2: room for the hover grip left of section headers without moving them */}
       <div className="-ml-2 min-h-0 flex-1 overflow-y-auto pl-2" onKeyDown={moveBetweenRows}>

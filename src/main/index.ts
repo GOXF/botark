@@ -1,11 +1,15 @@
 // GOXF fork: must stay the first import (moves userData next to a portable exe before anything reads it).
 import { isPortable } from './goxfPortable'
+import { DISPLAY_LOCALE_CHANNEL } from '@shared/displayLocale'
+import { getNativeDisplayLocale, setNativeDisplayLocale } from './nativeDisplayCopy'
 import { registerSlackIpc, stopSlack } from './slack/slackIpc'
 import { registerWorkspaceIpc, stopWorkspaces } from './mcp/hub'
 import { registerWorkspacePortalIpc, stopWorkspacePortals } from './mcp/workspacePortal'
 import { appendFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
-import { app, autoUpdater, BrowserWindow, type Rectangle } from 'electron'
+import { app, autoUpdater, BrowserWindow, ipcMain, Menu, type Rectangle } from 'electron'
+import { SETTINGS_MENU_CHANNEL } from '@shared/settingsMenu'
+import { createSettingsRequestQueue, settingsMenuTemplate } from './settingsMenu'
 import { attachWebViewManager, registerWebViewIpc } from './webViewIpc'
 import { attachMuseSessionManager, disposeAllMuseManagers, registerMuseIpc } from './muse/museIpc'
 // GOXF fork: fork-aware updater (upstream + portable prompts) instead of electron-updater.
@@ -55,6 +59,38 @@ const f12Handled = new WeakSet<Electron.WebContents>()
 let quitting = false
 let readyForDeepLinks = false
 const pendingCueCallbacks: string[] = []
+const settingsRequests = createSettingsRequestQueue(() => {
+  if (!mainWindow || mainWindow.isDestroyed()) return
+  mainWindow.webContents.send(SETTINGS_MENU_CHANNEL.open)
+})
+
+function updateSettingsMenu(): void {
+  Menu.setApplicationMenu(Menu.buildFromTemplate(settingsMenuTemplate(app.getName(), () => {
+    if (quitting) return
+    if (!mainWindow || mainWindow.isDestroyed()) mainWindow = createMainWindow()
+    if (mainWindow.isMinimized()) mainWindow.restore()
+    mainWindow.show()
+    mainWindow.focus()
+    settingsRequests.request()
+  }, getNativeDisplayLocale())))
+}
+
+function registerDisplayIpc(): void {
+  ipcMain.on(DISPLAY_LOCALE_CHANNEL, (event, locale: unknown) => {
+    const contents = mainWindow?.webContents
+    if (!contents || !event.senderFrame || event.sender !== contents || event.senderFrame !== contents.mainFrame) return
+    if (setNativeDisplayLocale(locale) && isMac) updateSettingsMenu()
+  })
+  if (isMac) {
+    ipcMain.on(SETTINGS_MENU_CHANNEL.ready, (event) => {
+      const contents = mainWindow?.webContents
+      if (contents && event.senderFrame && event.sender === contents && event.senderFrame === contents.mainFrame) {
+        settingsRequests.rendererReady()
+      }
+    })
+    updateSettingsMenu()
+  }
+}
 
 if (isMac) {
   autoUpdater.on('before-quit-for-update', () => {
@@ -174,6 +210,11 @@ function createMainWindow(): BrowserWindow {
     }
   })
 
+  settingsRequests.rendererUnavailable()
+  win.webContents.on('did-start-loading', () => {
+    if (win.webContents.isLoadingMainFrame()) settingsRequests.rendererUnavailable()
+  })
+
   // Embedded platform web sessions (hidden until the renderer attaches one).
   const views = attachWebViewManager(win)
   attachMuseSessionManager(win, views)
@@ -232,6 +273,7 @@ function createMainWindow(): BrowserWindow {
 
   // Self-heal if Chromium's renderer process crashes or runs out of memory.
   win.webContents.on('render-process-gone', (_event, details) => {
+    settingsRequests.rendererUnavailable()
     console.error('[bothub] renderer gone:', details.reason, 'exitCode=', details.exitCode)
     if (!quitting && !win.isDestroyed() && details.reason !== 'clean-exit') {
       setTimeout(() => {
@@ -378,6 +420,7 @@ app.whenReady().then(async () => {
   registerInAppIpc()
   registerTrayIpc()
   registerProxySubsIpc() // GOXF
+  registerDisplayIpc()
   mainWindow = createMainWindow()
   startTray(() => mainWindow)
   startPerfLog(mainWindow)

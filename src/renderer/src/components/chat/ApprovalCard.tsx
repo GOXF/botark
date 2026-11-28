@@ -1,3 +1,4 @@
+import { desktopNotice, useDesktopLocale } from '@/lib/desktopCopy'
 import { memo, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { ChevronDown } from 'lucide-react'
 import { adapterRegistry } from '@adapters/registry'
@@ -181,6 +182,7 @@ export const ChatApprovals = memo(function ChatApprovals({ accountId, platformId
 })
 
 function AccountApprovals({ accountId, platformId, agentId }: ChatApprovalsProps & { platformId: NonNullable<ChatApprovalsProps['platformId']> }) {
+  useDesktopLocale()
   const active = useBotStore((s) => {
     const account = s.accounts[accountId]
     return account?.platformId === platformId && account.status !== 'offline'
@@ -287,7 +289,7 @@ function AccountApprovals({ accountId, platformId, agentId }: ChatApprovalsProps
       {visiblePending.map((a) => (
         <Card key={a.id} approval={a} busy={busyId !== undefined} onDecide={(opt) => void decide(a.id, opt)} />
       ))}
-      {error && <p className="mx-auto mb-2 max-w-[720px] text-[12px] text-status-error">{error}</p>}
+      {error && <p className="mx-auto mb-2 max-w-[720px] text-[12px] text-status-error">{desktopNotice(error)}</p>}
     </div>
   )
 }

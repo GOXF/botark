@@ -19,7 +19,7 @@ struct QRScannerSheet: View {
                     scannerHero
 
                     VStack(alignment: .leading, spacing: 10) {
-                        Text("粘贴配对链接")
+                        Text(String(localized: "Paste Pairing Link"))
                             .font(.system(size: 13, weight: .semibold))
                             .foregroundStyle(.secondary)
 
@@ -42,7 +42,7 @@ struct QRScannerSheet: View {
                                     .frame(width: 38, height: 38)
                                     .background(ArkTheme.subtleFill, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
                             }
-                            .accessibilityLabel("粘贴")
+                            .accessibilityLabel(String(localized: "Paste"))
                         }
 
                         Button {
@@ -55,7 +55,7 @@ struct QRScannerSheet: View {
                                     Image(systemName: "bolt.horizontal.fill")
                                         .font(.system(size: 13, weight: .semibold))
                                 }
-                                Text(store.pairingBusy ? "配对中..." : "立即配对")
+                                Text(store.pairingBusy ? String(localized: "Pairing…") : String(localized: "Pair Now"))
                                     .font(.system(size: 14, weight: .semibold))
                             }
                             .foregroundStyle(.white)
@@ -90,11 +90,11 @@ struct QRScannerSheet: View {
                 .padding(16)
             }
             .background(ArkTheme.canvas.ignoresSafeArea())
-            .navigationTitle("扫码配对")
+            .navigationTitle(String(localized: "Scan to Pair"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("关闭") { dismiss() }
+                    Button(String(localized: "Close")) { dismiss() }
                 }
             }
             .onAppear {
@@ -135,9 +135,9 @@ struct QRScannerSheet: View {
                     Image(systemName: "qrcode.viewfinder")
                         .font(.system(size: 46, weight: .light))
                         .foregroundStyle(Color("AccentColor"))
-                    Text("当前设备未检测到后置摄像头")
+                    Text(String(localized: "No rear camera detected"))
                         .font(.subheadline.weight(.semibold))
-                    Text("若在 Xcode 模拟器中预览，请直接在下方粘贴电脑端生成的 botark://pair?... 链接，或使用系统 URL Scheme 唤起。")
+                    Text(String(localized: "In the Xcode simulator, paste the botark://pair?... link from the desktop app below, or open the link directly."))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)
@@ -158,7 +158,7 @@ struct QRScannerSheet: View {
 
             VStack {
                 Spacer()
-                Text("对准电脑端 BotArk 配对二维码")
+                Text(String(localized: "Point the camera at the BotArk desktop pairing code"))
                     .font(.caption.weight(.medium))
                     .foregroundStyle(.white)
                     .padding(.horizontal, 12)
@@ -171,10 +171,10 @@ struct QRScannerSheet: View {
 
     private var zeroServerTipsCard: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Label("100% 无服务器直连", systemImage: "lock.shield.fill")
+            Label(String(localized: "Direct Connection, No Relay"), systemImage: "lock.shield.fill")
                 .font(.footnote.weight(.semibold))
                 .foregroundStyle(.green)
-            Text("扫码后手机与电脑在同一 Wi-Fi、手机热点或 Tailscale 虚拟局域网内点对点加密握手，全程不经过任何第三方中转服务器。敏感凭据采用 AES-256-GCM 传输并写入 iOS Keychain。")
+            Text(String(localized: "Pair over the same Wi-Fi network, a hotspot, or Tailscale. Use a trusted network: the bridge itself uses HTTP and does not use a third-party relay."))
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }

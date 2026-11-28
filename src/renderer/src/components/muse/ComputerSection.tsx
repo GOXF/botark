@@ -1,3 +1,4 @@
+import { desktopCopy, desktopNotice, useDesktopLocale } from '@/lib/desktopCopy'
 import { parseComputerContext } from './computerContext'
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { Monitor, Play, RefreshCw, Square } from 'lucide-react'
@@ -105,6 +106,7 @@ function ComputerTask({
   webSessionOpen: boolean
   toggleWebSession: () => void
 }) {
+  useDesktopLocale()
   const [previewDataUrl, setPreviewDataUrl] = useState<string | null>(null)
   const [taskDetail, setTaskDetail] = useState<Record<string, unknown> | null>(null)
   const [busy, setBusy] = useState(false)
@@ -215,7 +217,7 @@ function ComputerTask({
         </div>
 
         {(error || contextError) && <p className="text-[12px] text-status-error">{error || contextError}</p>}
-        {hint && <p className="text-[12px] text-ink-secondary">{hint}</p>}
+        {hint && <p className="text-[12px] text-ink-secondary">{desktopNotice(hint)}</p>}
 
         {/* Browser / Computer Task Controls */}
         <div className="flex flex-col gap-1.5">
@@ -223,7 +225,7 @@ function ComputerTask({
             <TextInput
               value={manualTaskId}
               onChange={(e) => setManualTaskId(e.target.value)}
-              placeholder={contextTaskId || 'Task ID (可选)'}
+              placeholder={contextTaskId || desktopCopy("Task ID (可选)", "Task ID (optional)")}
               aria-label="Browser task ID"
               className="h-7 flex-1 font-mono text-[11.5px]"
             />
@@ -231,10 +233,9 @@ function ComputerTask({
               size="sm"
               variant="secondary"
               disabled={busy || !connected || editing}
-              onClick={() => void runTaskOp('browser.lease', '已请求浏览器租约')}
+              onClick={() => void runTaskOp('browser.lease', desktopCopy("已请求浏览器租约", "Browser lease requested"))}
             >
-              <Play className="size-3" /> 租用
-            </Button>
+              <Play className="size-3" />{desktopCopy(" 租用", " Request browser")}</Button>
           </div>
           {taskId && (
             <div className="mt-1 flex flex-wrap gap-1.5">
@@ -242,36 +243,30 @@ function ComputerTask({
                 size="sm"
                 variant="secondary"
                 disabled={busy || !connected || editing}
-                onClick={() => void runTaskOp('browser_task.get', '已刷新任务状态')}
-              >
-                查询状态
-              </Button>
+                onClick={() => void runTaskOp('browser_task.get', desktopCopy("已刷新任务状态", "Task status refreshed"))}
+              >{desktopCopy("查询状态", "Check status")}</Button>
               <Button
                 size="sm"
                 variant="secondary"
                 disabled={busy || !connected || editing}
                 onClick={() =>
-                  void runTaskOp('browser_task.refresh_environment', '已刷新浏览器环境')
+                  void runTaskOp('browser_task.refresh_environment', desktopCopy("已刷新浏览器环境", "Browser environment refreshed"))
                 }
               >
-                <RefreshCw className="size-3" /> 重置环境
-              </Button>
+                <RefreshCw className="size-3" />{desktopCopy(" 重置环境", " Reset Environment")}</Button>
               <Button
                 size="sm"
                 variant="ghost"
                 disabled={busy || !connected || editing}
-                onClick={() => void runTaskOp('browser_task.stop', '已停止浏览器任务')}
+                onClick={() => void runTaskOp('browser_task.stop', desktopCopy("已停止浏览器任务", "The browser task stopped"))}
               >
-                <Square className="size-3" /> 停止
-              </Button>
+                <Square className="size-3" />{desktopCopy(" 停止", " Stop")}</Button>
               <Button
                 size="sm"
                 variant="ghost"
                 disabled={busy || !connected || editing}
-                onClick={() => void runTaskOp('browser_task.release', '已释放浏览器租约')}
-              >
-                释放
-              </Button>
+                onClick={() => void runTaskOp('browser_task.release', desktopCopy("已释放浏览器租约", "Released browser lease"))}
+              >{desktopCopy("释放", "Release")}</Button>
             </div>
           )}
         </div>

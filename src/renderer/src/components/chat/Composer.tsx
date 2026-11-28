@@ -1,3 +1,4 @@
+import { desktopCopy, useDesktopLocale } from '@/lib/desktopCopy'
 import { usePromptSlashMenu } from './PromptSlashMenu'
 import { WorkspaceTools } from '@/rooms/WorkspaceTools'
 import { useEffect, useRef, useState, type DragEvent, type KeyboardEvent } from 'react'
@@ -53,6 +54,7 @@ function ConnectionNotice({
   onAntigravityLogin?: () => void
   onCueLogin?: () => void
 }) {
+  useDesktopLocale()
   const isError = account.status === 'error'
   const isMuse = account.platformId === 'meta-muse'
   const isGrok = account.platformId === 'grok'
@@ -77,25 +79,25 @@ function ConnectionNotice({
       )}
       <span className="min-w-0 flex-1 text-[13px]">
         {isError
-          ? (account.statusDetail ?? '连接出错')
+          ? (account.statusDetail ?? desktopCopy("连接出错", "Connection failed"))
           : isMuse
-            ? '登录 Muse 后即可发消息'
+            ? desktopCopy("登录 Muse 后即可发消息", "Sign in to Muse to send messages.")
             : isGrok
-              ? '登录 Grok Bot 后即可发消息'
+              ? desktopCopy("登录 Grok Bot 后即可发消息", "Sign in to Grok Bot to send messages.")
               : isHark
-                ? '登录 Hark 后即可发消息'
+                ? desktopCopy("登录 Hark 后即可发消息", "Sign in to Hark to send messages.")
                 : isDot
-                  ? '登录 ChatGPT Dot 或在右侧导入 AT / RT 后即可发消息'
+                  ? desktopCopy("登录 ChatGPT Dot 或在右侧导入 AT / RT 后即可发消息", "Sign in to ChatGPT Dot or import credentials to send messages.")
                   : account.platformId === 'gemini' ? t('Connect a Gemini API key to send messages')
                   : isHermes
-                    ? '连接 Hermes API Server（hermes gateway）后即可发消息'
+                    ? desktopCopy("连接 Hermes API Server（hermes gateway）后即可发消息", "Connect a Hermes gateway to send messages.")
                     : isAntigravity
-                      ? '登录 Google Antigravity（antigravity.google.com）后即可发消息'
+                      ? desktopCopy("登录 Google Antigravity（antigravity.google.com）后即可发消息", "Sign in to Google Antigravity to send a message.")
                       : isCue
-                        ? '登录 Cue（cue.im）后即可发消息'
+                        ? desktopCopy("登录 Cue（cue.im）后即可发消息", "Sign in to Cue to send a message.")
                         : isDsBot
-                          ? '连接 DS Bot（MCP Token / 加密配对链接 / DSH Web）后即可发消息'
-                          : '账号未连接'}
+                          ? desktopCopy("连接 DS Bot（MCP Token / 加密配对链接 / DSH Web）后即可发消息", "Connect DS Bot to send messages.")
+                          : desktopCopy("账号未连接", "Account not connected")}
       </span>
       {account.platformId === 'gemini' ? (
         <Button size="sm" onClick={() => useBotStore.getState().setSettingsOpen(true, 'gemini-accounts')}>
@@ -105,66 +107,54 @@ function ConnectionNotice({
         <>
           <Button size="sm" variant="primary" onClick={onMuseLogin} disabled={account.pending}>
             {account.pending && <Loader2 className="animate-spin" aria-hidden />}
-            {account.pending ? '登录中…' : '使用 Muse 登录'}
+            {account.pending ? desktopCopy("登录中…", "Signing in…") : desktopCopy("使用 Muse 登录", "Sign in to Muse")}
           </Button>
-          <Button size="sm" variant="ghost" onClick={onConnect} disabled={account.pending}>
-            已完成登录
-          </Button>
+          <Button size="sm" variant="ghost" onClick={onConnect} disabled={account.pending}>{desktopCopy("已完成登录", "Signed in")}</Button>
         </>
       ) : isHark && onHarkLogin && !isError ? (
         <>
           <Button size="sm" variant="primary" onClick={onHarkLogin} disabled={account.pending}>
             {account.pending && <Loader2 className="animate-spin" aria-hidden />}
-            {account.pending ? (account.statusDetail ?? '处理中…') : '使用 Hark 登录'}
+            {account.pending ? (account.statusDetail ?? desktopCopy("处理中…", "Processing…")) : desktopCopy("使用 Hark 登录", "Sign in to Hark")}
           </Button>
-          <Button size="sm" variant="ghost" onClick={onConnect} disabled={account.pending}>
-            刷新会话
-          </Button>
+          <Button size="sm" variant="ghost" onClick={onConnect} disabled={account.pending}>{desktopCopy("刷新会话", "Refresh Session")}</Button>
         </>
       ) : isDot && onDotLogin && !isError ? (
         <>
           <Button size="sm" variant="primary" onClick={onDotLogin} disabled={account.pending}>
             {account.pending && <Loader2 className="animate-spin" aria-hidden />}
-            {account.pending ? '登录中…' : '使用 Dot 登录'}
+            {account.pending ? desktopCopy("登录中…", "Signing in…") : desktopCopy("使用 Dot 登录", "Sign in to Dot")}
           </Button>
-          <Button size="sm" variant="ghost" onClick={onConnect} disabled={account.pending}>
-            刷新连接
-          </Button>
+          <Button size="sm" variant="ghost" onClick={onConnect} disabled={account.pending}>{desktopCopy("刷新连接", "Refresh Connection")}</Button>
         </>
       ) : isAntigravity && onAntigravityLogin && !isError ? (
         <>
           <Button size="sm" variant="primary" onClick={onAntigravityLogin} disabled={account.pending}>
             {account.pending && <Loader2 className="animate-spin" aria-hidden />}
-            {account.pending ? '登录中…' : '使用 Antigravity 登录'}
+            {account.pending ? desktopCopy("登录中…", "Signing in…") : desktopCopy("使用 Antigravity 登录", "Sign in to Antigravity")}
           </Button>
-          <Button size="sm" variant="ghost" onClick={onConnect} disabled={account.pending}>
-            刷新会话
-          </Button>
+          <Button size="sm" variant="ghost" onClick={onConnect} disabled={account.pending}>{desktopCopy("刷新会话", "Refresh Session")}</Button>
         </>
       ) : isCue && onCueLogin && !isError ? (
         <>
           <Button size="sm" variant="primary" onClick={onCueLogin} disabled={account.pending}>
             {account.pending && <Loader2 className="animate-spin" aria-hidden />}
-            {account.pending ? (account.statusDetail ?? '登录中…') : '使用 Cue 登录'}
+            {account.pending ? (account.statusDetail ?? desktopCopy("登录中…", "Signing in…")) : desktopCopy("使用 Cue 登录", "Sign in to Cue")}
           </Button>
-          <Button size="sm" variant="ghost" onClick={onConnect} disabled={account.pending}>
-            刷新会话
-          </Button>
+          <Button size="sm" variant="ghost" onClick={onConnect} disabled={account.pending}>{desktopCopy("刷新会话", "Refresh Session")}</Button>
         </>
       ) : isGrok && onGrokLogin ? (
         <>
           <Button size="sm" variant="primary" onClick={onGrokLogin} disabled={account.pending}>
             {account.pending && <Loader2 className="animate-spin" aria-hidden />}
-            {account.pending ? '登录中…' : '使用 Grok Bot 登录'}
+            {account.pending ? desktopCopy("登录中…", "Signing in…") : desktopCopy("使用 Grok Bot 登录", "Sign in to Grok Bot")}
           </Button>
-          <Button size="sm" variant="ghost" onClick={onConnect} disabled={account.pending}>
-            刷新连接
-          </Button>
+          <Button size="sm" variant="ghost" onClick={onConnect} disabled={account.pending}>{desktopCopy("刷新连接", "Refresh Connection")}</Button>
         </>
       ) : (
         <Button size="sm" variant="secondary" onClick={onConnect} disabled={account.pending}>
           {account.pending && <Loader2 className="animate-spin" aria-hidden />}
-          {account.pending ? '连接中' : isError ? '重试' : '连接'}
+          {account.pending ? desktopCopy("连接中", "Connecting") : isError ? desktopCopy("重试", "Try again") : desktopCopy("连接", "Connect")}
         </Button>
       )}
     </div>
@@ -330,13 +320,13 @@ export function Composer({ bot, account, typing = false, onSend, onCancel, onCon
                 <CornerDownRight className="size-3.5 shrink-0 text-accent-600" aria-hidden />
                 {replyTarget.thumb && <img src={replyTarget.thumb} alt="" className="size-7 shrink-0 rounded-md object-cover" />}
                 <span className="shrink-0 font-medium text-ink-secondary">
-                  {replyTarget.role === 'user' ? '引用自己' : `引用 ${bot.name}`}：
+                  {replyTarget.role === 'user' ? desktopCopy("引用自己", "Quote yourself") : desktopCopy("引用 {0}", "Quote {0}", [(bot.name)])}：
                 </span>
                 <span className="truncate text-ink">{replyTarget.quote}</span>
               </div>
               <button
                 type="button"
-                aria-label="取消引用"
+                aria-label={desktopCopy("取消引用", "Cancel quote")}
                 onClick={() => setReplyTarget(bot.id, null)}
                 className="press-icon grid size-5 shrink-0 place-items-center rounded-full text-ink-muted hover:bg-active hover:text-ink"
               >

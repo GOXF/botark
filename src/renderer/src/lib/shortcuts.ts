@@ -1,6 +1,7 @@
 import { useEffect } from 'react'
 import { useBotStore } from '@/store/botStore'
 import { usePanes } from '@/store/paneStore'
+import { usePromptStore } from '@/store/promptStore'
 import { hasOpenOverlay } from './overlay'
 import { runtimePlatform } from './bridge'
 
@@ -11,6 +12,15 @@ export const FIND_TRANSCRIPT_EVENT = 'botark:find-transcript'
 export function openTranscriptSearch(): boolean {
   if (hasOpenOverlay()) return false
   return !window.dispatchEvent(new Event(FIND_TRANSCRIPT_EVENT, { cancelable: true }))
+}
+
+/** Native menu accelerators bypass DOM key handlers. Don't navigate under a modal or discard its draft. */
+export function openSettingsFromMenu(): void {
+  const state = useBotStore.getState()
+  if (state.addBotOpen || state.paletteOpen || usePromptStore.getState().libraryOpen) return
+  if (state.onboardingOpen) state.setOnboardingOpen(false)
+  else if (hasOpenOverlay()) return
+  state.setSettingsOpen(true)
 }
 
 /** "⌘K" on macOS, "Ctrl+K" elsewhere. */

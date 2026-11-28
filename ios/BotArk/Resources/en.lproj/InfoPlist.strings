@@ -1,0 +1,2 @@
+"NSCameraUsageDescription" = "Scan a QR code from BotArk on your computer to pair this device.";
+"NSLocalNetworkUsageDescription" = "BotArk uses your local network to connect to your paired computer.";

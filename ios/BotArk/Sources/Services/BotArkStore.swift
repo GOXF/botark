@@ -100,22 +100,22 @@ public final class BotArkStore {
 
     public func transportSummary(for bot: SyncedBot) -> String {
         if bot.isStandaloneWeb {
-            return "手机独立直连"
+            return String(localized: "Direct Connection from This Device")
         }
         if case .connected(let hostName, _) = connectionState {
-            return "经 \(hostName) 实时桥接"
+            return String.localizedStringWithFormat(String(localized: "Connected through %@"), hostName)
         }
         if directCredential(for: bot) != nil {
-            return "Hermes 脱机直连"
+            return String(localized: "Standalone Hermes")
         }
-        return "离线只读缓存（回到同一局域网自动重连）"
+        return String(localized: "Offline read-only cache. Reconnects when the desktop is reachable.")
     }
 
     // MARK: - Zero-Server QR Pairing
 
     public func pair(withUri rawUri: String) async {
         guard let payload = PairingPayload.parse(rawUri) else {
-            lastError = "二维码格式无效，请扫描 BotArk 电脑端「iOS 扫码同步」中的配对码。"
+            lastError = String(localized: "Invalid QR code. Scan the pairing code in BotArk’s desktop Mobile Sync settings.")
             return
         }
         pairingBusy = true
@@ -198,7 +198,7 @@ public final class BotArkStore {
     public func importOfflineBundle(fileData: Data, transferKey: String) throws {
         let outer = try JSONDecoder().decode(OfflineSyncOuterBundle.self, from: fileData)
         guard outer.format == "botark-sync-v1" else {
-            throw DesktopBridgeError.invalidResponse("不支持的同步包格式：\(outer.format)")
+            throw DesktopBridgeError.invalidResponse(String.localizedStringWithFormat(String(localized: "Unsupported sync bundle format: %@"), outer.format))
         }
         let plainData = try SyncCrypto.decryptAesGcmCombined(outer.payload, keyBase64Url: transferKey)
         let inner = try JSONDecoder().decode(OfflineSyncInnerPayload.self, from: plainData)
@@ -235,8 +235,8 @@ public final class BotArkStore {
         if let firstGroup = snapshot.groups.first {
             groupId = firstGroup.id
         } else {
-            groupId = "grp_standalone"
-            snapshot.groups.append(SyncedGroup(id: groupId, name: "个人智能体", collapsed: false))
+            groupId = SyncedGroup.standaloneDefault.id
+            snapshot.groups.append(.standaloneDefault)
         }
         snapshot.accounts[accountId] = SyncedAccount(
             id: accountId,
@@ -281,8 +281,8 @@ public final class BotArkStore {
         if let firstGroup = snapshot.groups.first {
             groupId = firstGroup.id
         } else {
-            groupId = "grp_standalone"
-            snapshot.groups.append(SyncedGroup(id: groupId, name: "个人智能体", collapsed: false))
+            groupId = SyncedGroup.standaloneDefault.id
+            snapshot.groups.append(.standaloneDefault)
         }
 
         snapshot.accounts[accountId] = SyncedAccount(
@@ -377,7 +377,7 @@ public final class BotArkStore {
         appendOrUpdateMessage(botId: bot.id, message: userMsg)
 
         if !attachments.isEmpty && trimmed.isEmpty {
-            markMessageDelivery(botId: bot.id, messageId: clientMsgId, delivery: "failed", error: "发送图片或视频需要连接电脑端")
+            markMessageDelivery(botId: bot.id, messageId: clientMsgId, delivery: "failed", error: String(localized: "A desktop connection is required to send photos or videos."))
             return
         }
 
@@ -417,7 +417,7 @@ public final class BotArkStore {
                             Task { @MainActor in
                                 self?.snapshot.approvals[bot.activeAccountId] = approvals
                                 if let first = approvals.first {
-                                    self?.postLocalNotification(title: "\(bot.name) 需要审批", body: first.title)
+                                    self?.postLocalNotification(title: String.localizedStringWithFormat(String(localized: "%@ Needs Approval"), bot.name), body: first.title)
                                 }
                             }
                         }
@@ -448,7 +448,7 @@ public final class BotArkStore {
             return
         }
 
-        markMessageDelivery(botId: bot.id, messageId: clientMsgId, delivery: "failed", error: "电脑端未连接，无法向该平台发送消息")
+        markMessageDelivery(botId: bot.id, messageId: clientMsgId, delivery: "failed", error: String(localized: "Connect to the desktop app to message this platform."))
     }
 
     public func stopGeneration(for bot: SyncedBot) {
@@ -575,7 +575,7 @@ public final class BotArkStore {
                 snapshot.approvals[accountId] = pending
                 if let first = pending.first {
                     let botName = snapshot.bots.first { $0.activeAccountId == accountId }?.name ?? "BotArk"
-                    postLocalNotification(title: "\(botName) 需要安全审批", body: first.title)
+                    postLocalNotification(title: String.localizedStringWithFormat(String(localized: "%@ Needs Security Approval"), botName), body: first.title)
                 }
             }
         default:
@@ -593,9 +593,9 @@ public final class BotArkStore {
         var merged = incoming
         merged.carryLocalRelayMessages(from: snapshot)
         if !localOnlyBots.isEmpty {
-            let fallbackGroupId = merged.groups.first?.id ?? "grp_standalone"
+            let fallbackGroupId = merged.groups.first?.id ?? SyncedGroup.standaloneDefault.id
             if merged.groups.isEmpty {
-                merged.groups.append(SyncedGroup(id: fallbackGroupId, name: "个人智能体", collapsed: false))
+                merged.groups.append(.standaloneDefault)
             }
             for var bot in localOnlyBots {
                 if !merged.groups.contains(where: { $0.id == bot.groupId }) {

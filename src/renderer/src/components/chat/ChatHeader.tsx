@@ -1,3 +1,4 @@
+import { desktopCopy, useDesktopLocale } from '@/lib/desktopCopy'
 import type { ReactNode } from 'react'
 import { HarkProjects } from '../hark/HarkProjects'
 import { ChevronRight, Globe, Pin, PinOff, RefreshCw } from 'lucide-react'
@@ -75,6 +76,7 @@ function useEnsureGrokAgentBound(bot: Bot): void {
 }
 
 export const ChatHeader = memo(function ChatHeader({ bot, showTranscriptSearch = false, compact = false, extra, merged = false, leading }: ChatHeaderProps) {
+  useDesktopLocale()
   const hasMessages = useBotStore((s) => (s.messages[bot.id]?.length ?? 0) > 0)
   const infoOpen = useBotStore((s) => s.infoPanelOpen)
   const toggleInfoPanel = useBotStore((s) => s.toggleInfoPanel)
@@ -218,7 +220,7 @@ export const ChatHeader = memo(function ChatHeader({ bot, showTranscriptSearch =
         {showTranscriptSearch && !compact && <TranscriptSearchButton />}
         {!compact && hasMessages && (
           <IconButton
-            label="共享对话页面"
+            label={desktopCopy("共享对话页面", "Share conversation")}
             onClick={() => triggerShareConversation({ botId: bot.id })}
           >
             <ArkExportDocSvg />

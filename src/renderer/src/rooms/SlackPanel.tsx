@@ -1,3 +1,4 @@
+import { desktopCopy, desktopNotice, useDesktopLocale } from '@/lib/desktopCopy'
 import { useCallback, useEffect, useState } from 'react'
 import { Loader2, Trash2, Unlink } from 'lucide-react'
 import type { SlackRequest, SlackState } from '@shared/slack'
@@ -14,6 +15,7 @@ export interface SlackPanelProps {
 }
 
 export function SlackPanel({ id, variant = 'inspector' }: SlackPanelProps) {
+  useDesktopLocale()
   const bridge = getBridge()?.slack
   const [open, setOpen] = useState(variant === 'inspector')
   const [state, setState] = useState<SlackState>()
@@ -79,10 +81,10 @@ export function SlackPanel({ id, variant = 'inspector' }: SlackPanelProps) {
           />
           <span className="truncate text-[12.5px] font-medium text-ink">
             {state?.connected
-              ? 'Socket Mode 已连接'
+              ? desktopCopy("Socket Mode 已连接", "Socket Mode Connected")
               : state?.saved
-                ? '已保存凭据'
-                : '未连接 Slack'}
+                ? desktopCopy("已保存凭据", "Saved credentials")
+                : desktopCopy("未连接 Slack", "Not connected to Slack")}
           </span>
         </div>
         {state?.connected && (
@@ -92,9 +94,7 @@ export function SlackPanel({ id, variant = 'inspector' }: SlackPanelProps) {
             disabled={busy}
             onClick={() => void run({ op: 'disconnect' })}
             className="h-6 px-2 text-[11px]"
-          >
-            断开
-          </Button>
+          >{desktopCopy("断开", "Disconnect")}</Button>
         )}
       </div>
 
@@ -139,14 +139,14 @@ export function SlackPanel({ id, variant = 'inspector' }: SlackPanelProps) {
               className="flex-1"
             >
               {busy ? <Loader2 className="animate-spin" /> : <ArkSlackWeaveSvg />}
-              {state?.saved ? '重连 Slack' : '连接 Slack'}
+              {state?.saved ? desktopCopy("重连 Slack", "Reconnect Slack") : desktopCopy("连接 Slack", "Connect Slack")}
             </Button>
             {state?.saved && (
               <button
                 type="button"
                 disabled={busy}
                 onClick={() => void run({ op: 'forget' })}
-                title="清除保存的 Slack 凭据"
+                title={desktopCopy("清除保存的 Slack 凭据", "Clear saved Slack credentials")}
                 className="press-icon grid size-7 place-items-center rounded-full text-ink-muted hover:bg-hover hover:text-status-error"
               >
                 <Trash2 className="size-3.5" />
@@ -176,7 +176,7 @@ export function SlackPanel({ id, variant = 'inspector' }: SlackPanelProps) {
             type="button"
             disabled={busy}
             onClick={() => void run({ op: 'unbind', roomId: id })}
-            title="解除频道绑定"
+            title={desktopCopy("解除频道绑定", "Unlink channel")}
             className="press-icon grid size-6 place-items-center rounded-full text-ink-muted hover:bg-hover hover:text-status-error"
           >
             <Unlink className="size-3.5" />
@@ -186,15 +186,15 @@ export function SlackPanel({ id, variant = 'inspector' }: SlackPanelProps) {
         state?.connected && (
           <div className="flex flex-col gap-1.5">
             <TextInput
-              aria-label="Slack 频道 ID"
-              placeholder="频道 ID（如 C07ABC123）"
+              aria-label={desktopCopy("Slack 频道 ID", "Slack Channel ID")}
+              placeholder={desktopCopy("频道 ID（如 C07ABC123）", "Channel ID (e.g. C07ABC123)")}
               value={channel}
               onChange={(e) => setChannel(e.target.value)}
               className="h-8 font-mono text-[12px]"
             />
             <TextInput
-              aria-label="Slack 线程时间戳"
-              placeholder="线程 ts（选填）"
+              aria-label={desktopCopy("Slack 线程时间戳", "Slack Thread Timestamp")}
+              placeholder={desktopCopy("线程 ts（选填）", "Thread timestamp (optional)")}
               value={thread}
               onChange={(e) => setThread(e.target.value)}
               className="h-8 font-mono text-[12px]"
@@ -212,16 +212,14 @@ export function SlackPanel({ id, variant = 'inspector' }: SlackPanelProps) {
                 })
               }
               className="w-full"
-            >
-              绑定频道
-            </Button>
+            >{desktopCopy("绑定频道", "Link channel")}</Button>
           </div>
         )
       )}
 
       {error && (
         <p role="alert" className="text-[11px] text-status-error">
-          {error}
+          {desktopNotice(error)}
         </p>
       )}
     </div>

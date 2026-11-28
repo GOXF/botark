@@ -266,7 +266,7 @@ export function GeneralSettingsSection({
     a.download = `botark-workspace-sanitized-${new Date().toISOString().slice(0, 10)}.json`
     a.click()
     URL.revokeObjectURL(url)
-    setHint('已导出不含任何 Token、Cookie 或密码的脱敏工作区结构文件')
+    setHint(tr('Exported a workspace file without tokens, cookies, or passwords'))
   }
 
   const handleWipeAllCredentials = async () => {
@@ -353,11 +353,7 @@ export function GeneralSettingsSection({
           <SegmentedControl<Locale>
             size="sm"
             value={locale}
-            onValueChange={(id) => {
-              if (id === locale) return
-              setLocale(id)
-              window.location.reload()
-            }}
+            onValueChange={setLocale}
             options={[
               { value: 'zh', label: '简体中文' },
               { value: 'en', label: 'English' }
@@ -420,7 +416,7 @@ export function GeneralSettingsSection({
       {/* Sidebar Section / Group Management */}
       <div className="overflow-hidden rounded-2xl border border-line bg-surface shadow-soft">
         <div className="flex items-center justify-between border-b border-line bg-sunken/40 px-4 py-2.5">
-          <span className="text-[13px] font-medium text-ink">侧边栏分组管理 ({groups.length})</span>
+          <span className="text-[13px] font-medium text-ink">{tr('Sidebar groups ({count})', { count: groups.length })}</span>
           <form
             className="flex items-center gap-1.5"
             onSubmit={(e) => {
@@ -433,11 +429,11 @@ export function GeneralSettingsSection({
             <input
               value={newGroupName}
               onChange={(e) => setNewGroupName(e.target.value)}
-              placeholder="新建分组名称…"
+              placeholder={tr('New group name…')}
               className="h-7 rounded-lg border border-line bg-canvas px-2.5 text-[12px] text-ink outline-none focus:border-accent-600"
             />
             <Button size="sm" variant="secondary" type="submit" disabled={!newGroupName.trim()}>
-              <FolderPlus className="size-3.5" /> 新建分组
+              <FolderPlus className="size-3.5" /> {tr('Create group')}
             </Button>
           </form>
         </div>
@@ -469,7 +465,7 @@ export function GeneralSettingsSection({
                     <span className="font-medium text-ink">{g.name}</span>
                   )}
                   <span className="rounded-full bg-sunken px-2 py-0.5 text-[11px] text-ink-muted">
-                    {count} 个 Bot
+                    {tr('{count} bots', { count })}
                   </span>
                 </div>
                 <div className="flex items-center gap-1.5">
@@ -481,14 +477,14 @@ export function GeneralSettingsSection({
                       setEditingGroupName(g.name)
                     }}
                   >
-                    重命名
+                    {tr('Rename')}
                   </Button>
                   {groups.length > 1 && (
                     <Button
                       size="sm"
                       variant="ghost"
                       onClick={() => removeGroup(g.id)}
-                      title="删除分组（组内 Bot 自动移至默认分组）"
+                      title={tr('Delete group and move its bots to the default group')}
                     >
                       <Trash2 className="size-3.5 text-status-error" />
                     </Button>

@@ -1,3 +1,4 @@
+import { desktopCopy, useDesktopLocale } from '@/lib/desktopCopy'
 import { useEffect, useRef } from 'react'
 import { getPlatform } from '@adapters/platforms'
 import { AlertCircle, ArrowLeft, ExternalLink, Globe, RotateCw } from 'lucide-react'
@@ -21,6 +22,7 @@ interface WebSessionPaneProps {
  * Cloud Computer / Secure Vault cards and return to native chat in one click.
  */
 export function WebSessionPane({ bot, account }: WebSessionPaneProps) {
+  useDesktopLocale()
   const containerRef = useRef<HTMLDivElement>(null)
   const platform = getPlatform(bot.platformId)
   const targetUrl = useBotStore((s) => s.webSessionTargetUrl)
@@ -75,21 +77,18 @@ export function WebSessionPane({ bot, account }: WebSessionPaneProps) {
       <div className="flex h-10 shrink-0 items-center justify-between gap-2 border-b border-line/60 bg-main px-3">
         <div className="flex min-w-0 items-center gap-2">
           <Button size="sm" variant="secondary" onClick={closeWebSession} className="h-7 px-2.5 text-[12px]">
-            <ArrowLeft className="size-3.5" />
-            返回原生对话
-          </Button>
+            <ArrowLeft className="size-3.5" />{desktopCopy("返回原生对话", "Back to conversation")}</Button>
           <span className="inline-flex min-w-0 items-center gap-1.5 rounded-full bg-surface px-2.5 py-0.5 text-[11.5px] text-ink-secondary ring-1 ring-line/60">
             <ArkShieldVaultSvg className="size-3 text-status-online" />
-            <span className="truncate">
-              独立隔离会话 · {platform.name}
+            <span className="truncate">{desktopCopy("独立隔离会话 · ", "Isolated session · ")}{platform.name}
             </span>
           </span>
         </div>
         <div className="flex shrink-0 items-center gap-1">
-          <IconButton size="sm" label="刷新原生页面" onClick={reloadView}>
+          <IconButton size="sm" label={desktopCopy("刷新原生页面", "Refresh native page")} onClick={reloadView}>
             <RotateCw className="size-3.5" />
           </IconButton>
-          <IconButton size="sm" label="在应用内独立安全窗口打开" onClick={openPopupWindow}>
+          <IconButton size="sm" label={desktopCopy("在应用内独立安全窗口打开", "Open in a separate secure window")} onClick={openPopupWindow}>
             <ExternalLink className="size-3.5" />
           </IconButton>
         </div>

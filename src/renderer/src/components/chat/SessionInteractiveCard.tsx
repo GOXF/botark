@@ -1,3 +1,4 @@
+import { desktopCopy, useDesktopLocale } from '@/lib/desktopCopy'
 import { memo, useEffect, useState } from 'react'
 import { ExternalLink, Globe, Monitor, RotateCw } from 'lucide-react'
 import {
@@ -28,6 +29,7 @@ export const SessionInteractiveCard = memo(function SessionInteractiveCard({
   botId: string
   messageId: string
 }) {
+  useDesktopLocale()
   const openWebSessionAt = useBotStore((s) => s.openWebSessionAt)
   const isVault = widget.cardType === 'vault'
   const sessionId = useBotStore((s) => s.bots.find((item) => item.id === botId)?.activeSessionId)
@@ -124,7 +126,7 @@ export const SessionInteractiveCard = memo(function SessionInteractiveCard({
           <div className="min-w-0">
             <p className="truncate text-[13.5px] font-semibold text-ink">{title}</p>
             {(widget.subtitle || url || isVault) && <p className="truncate text-[11.5px] text-ink-muted" title={url}>
-              {widget.subtitle || url || status || '安全存储'}
+              {widget.subtitle || url || status || desktopCopy("安全存储", "Secure Storage")}
             </p>}
           </div>
         </div>
@@ -145,13 +147,13 @@ export const SessionInteractiveCard = memo(function SessionInteractiveCard({
       {!isVault && (
         image ? <MusePreviewImage key={`${previewScope}:${revision}`} src={image} alt={title} className="mt-2.5" /> : (
           <p role="status" className="mt-2 text-[12px] text-ink-muted">
-            {loading ? '正在加载截图…' : '实时画面在 Muse 网页里'}
+            {loading ? desktopCopy("正在加载截图…", "Loading screenshots…") : '实时画面在 Muse 网页里'}
           </p>
         )
       )}
       <div className="mt-3 flex items-center gap-2">
         {!isVault && (
-          <button type="button" aria-label="刷新截图" title="刷新截图" disabled={loading}
+          <button type="button" aria-label={desktopCopy("刷新截图", "Refresh Screenshot")} title={desktopCopy("刷新截图", "Refresh Screenshot")} disabled={loading}
             onClick={() => setRefresh({ scope, revision: revision + 1 })}
             className="press-icon grid size-8 shrink-0 place-items-center rounded-full border border-line text-ink-secondary">
             <RotateCw className={loading ? 'size-3.5 animate-spin' : 'size-3.5'} />
@@ -162,12 +164,12 @@ export const SessionInteractiveCard = memo(function SessionInteractiveCard({
           onClick={openInApp}
           className="press flex h-8 flex-1 items-center justify-center gap-1.5 rounded-full bg-main px-3 text-[12.5px] font-medium text-ink ring-1 ring-line-strong hover:bg-hover"
         >
-          {webView ? '在 Muse 网页查看画面' : widget.actionLabel || (isVault ? '在应用内填写安全卡片' : '在隔离视图中操作')}
+          {webView ? '在 Muse 网页查看画面' : widget.actionLabel || (isVault ? desktopCopy("在应用内填写安全卡片", "Complete the secure form in BotArk") : desktopCopy("在隔离视图中操作", "Open in an isolated view"))}
         </button>
         <button
           type="button"
           onClick={openPopup}
-          title="在独立安全分区窗口打开"
+          title={desktopCopy("在独立安全分区窗口打开", "Open in a separate secure window")}
           className="press-icon grid size-8 shrink-0 place-items-center rounded-full border border-line text-ink-secondary hover:bg-hover hover:text-ink"
         >
           <ExternalLink className="size-3.5" />

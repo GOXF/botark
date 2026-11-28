@@ -9,10 +9,10 @@ public enum SyncCryptoError: LocalizedError {
 
     public var errorDescription: String? {
         switch self {
-        case .invalidBase64Key: return "加密密钥格式无效"
-        case .invalidKeyLength(let n): return "AES-256 密钥长度应为 32 字节（当前 \(n) 字节）"
-        case .invalidCiphertextEncoding: return "密文数据格式损坏"
-        case .decryptionFailed: return "AES-256-GCM 解密失败，请确认解密密钥是否正确"
+        case .invalidBase64Key: return String(localized: "Invalid Encryption Key Format")
+        case .invalidKeyLength(let n): return String.localizedStringWithFormat(String(localized: "The AES-256 key must be 32 bytes (received %lld)."), n)
+        case .invalidCiphertextEncoding: return String(localized: "Invalid Encrypted Data Format")
+        case .decryptionFailed: return String(localized: "AES-256-GCM decryption failed. Check the decryption key.")
         }
     }
 }

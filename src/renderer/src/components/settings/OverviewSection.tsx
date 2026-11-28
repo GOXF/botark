@@ -28,12 +28,12 @@ const PLATFORMS = [
   { id: 'meta-muse', tab: 'muse-accounts', desc: 'Noise WSS' },
   { id: 'dot', tab: 'dot-accounts', desc: 'Calpico Room' },
   { id: 'grok', tab: 'grok-accounts', desc: 'Sand PKCE' },
-  { id: 'hark', tab: 'hark-accounts', desc: '项目空间' },
+  { id: 'hark', tab: 'hark-accounts', desc: 'Project workspace' },
   { id: 'gemini', tab: 'gemini-accounts', desc: 'Gemini API' },
-  { id: 'hermes', tab: 'hermes-accounts', desc: '本地网关' },
+  { id: 'hermes', tab: 'hermes-accounts', desc: 'Local gateway' },
   { id: 'antigravity', tab: 'antigravity-accounts', desc: 'Google Cloud' },
-  { id: 'cue', tab: 'cue-accounts', desc: 'Cue 原生 / API' },
-  { id: 'ds-bot', tab: 'ds-bot-accounts', desc: 'DSH 开源团队' }
+  { id: 'cue', tab: 'cue-accounts', desc: 'Cue native / API' },
+  { id: 'ds-bot', tab: 'ds-bot-accounts', desc: 'DSH open-source team' }
 ] as const
 
 export function OverviewSection({
@@ -95,7 +95,7 @@ export function OverviewSection({
             disabled={busy || allAccounts.length === 0}
             onClick={onReconnectOffline}
           >
-            <RefreshCw className="size-3.5" /> 重连离线
+            <RefreshCw className="size-3.5" /> {tr('Reconnect offline accounts')}
           </Button>
         </div>
       </div>
@@ -103,11 +103,11 @@ export function OverviewSection({
       {/* Clean Minimalist KPI Strip */}
       <div className="grid grid-cols-4 gap-3">
         <div className="rounded-2xl border border-line bg-surface px-4 py-3 shadow-hairline">
-          <p className="text-[11.5px] text-ink-muted">Bot 总数</p>
+          <p className="text-[11.5px] text-ink-muted">{tr('Total bots')}</p>
           <p className="mt-1 text-[22px] font-semibold tabular-nums text-ink">{bots.length}</p>
         </div>
         <div className="rounded-2xl border border-line bg-surface px-4 py-3 shadow-hairline">
-          <p className="text-[11.5px] text-ink-muted">在线账号</p>
+          <p className="text-[11.5px] text-ink-muted">{tr('Online accounts')}</p>
           <p className="mt-1 text-[22px] font-semibold tabular-nums text-status-online-ink">
             {onlineAccountsCount} <span className="text-[13px] font-normal text-ink-muted">/ {allAccounts.length}</span>
           </p>
@@ -117,7 +117,7 @@ export function OverviewSection({
           <p className="mt-1 text-[22px] font-semibold tabular-nums text-ink">{roomCount}</p>
         </div>
         <div className="rounded-2xl border border-line bg-surface px-4 py-3 shadow-hairline">
-          <p className="text-[11.5px] text-ink-muted">加密代理池</p>
+          <p className="text-[11.5px] text-ink-muted">{tr('Encrypted proxy pool')}</p>
           <p className="mt-1 text-[22px] font-semibold tabular-nums text-ink">{poolCount}</p>
         </div>
       </div>
@@ -148,7 +148,7 @@ export function OverviewSection({
                   <span className="block truncate text-[13.5px] font-semibold tracking-tight text-ink">
                     {PLATFORM_LABELS[platform.id]}
                   </span>
-                  <span className="block truncate text-[11px] text-ink-muted">{platform.desc}</span>
+                  <span className="block truncate text-[11px] text-ink-muted">{tr(platform.desc)}</span>
                 </div>
               </div>
               <span className="shrink-0 rounded-full bg-sunken px-2 py-0.5 font-mono text-[11px] font-medium text-ink-secondary tabular-nums">
@@ -190,7 +190,7 @@ export function OverviewSection({
             <input
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="搜索 Bot 名称、邮箱 Handle 或账号 ID…"
+              placeholder={tr('Search bots, emails, handles, or account IDs…')}
               className="h-8 w-full rounded-xl border border-line bg-canvas pr-3 pl-8 text-[12px] text-ink outline-none placeholder:text-ink-muted focus:border-accent-600"
             />
           </div>
@@ -202,7 +202,7 @@ export function OverviewSection({
               onValueChange={(next) => setPlatformFilter(next)}
               className="min-w-36"
               options={[
-                { value: 'all', label: `全部平台 (${bots.length})` },
+                { value: 'all', label: tr('All platforms ({count})', { count: bots.length }) },
                 { value: 'meta-muse', label: `Meta Muse (${botCounts.get('meta-muse') ?? 0})` },
                 { value: 'dot', label: `ChatGPT Dot (${botCounts.get('dot') ?? 0})` },
                 { value: 'grok', label: `Grok Bot (${botCounts.get('grok') ?? 0})` },
@@ -221,9 +221,9 @@ export function OverviewSection({
               onValueChange={(next) => setStatusFilter(next)}
               className="min-w-28"
               options={[
-                { value: 'all', label: '全部状态' },
-                { value: 'online', label: '仅在线' },
-                { value: 'offline', label: '仅离线 / 异常' }
+                { value: 'all', label: tr('All statuses') },
+                { value: 'online', label: tr('Online only') },
+                { value: 'offline', label: tr('Offline or unavailable') }
               ]}
             />
           </div>
@@ -232,12 +232,12 @@ export function OverviewSection({
         {filteredBots.length === 0 ? (
           <div className="py-12 text-center">
             <p className="text-[13.5px] font-medium text-ink">
-              {bots.length === 0 ? '当前工作区暂无任何 Bot 账号' : '没有符合筛选条件的 Bot'}
+              {bots.length === 0 ? tr('No bots in this workspace yet') : tr('No bots match your filters')}
             </p>
             <p className="mt-1 text-[12px] text-ink-muted">
               {bots.length === 0
-                ? '可从左侧平台标签页添加或批量导入账号，所有凭据均使用系统安全存储加密。'
-                : '请尝试清空搜索词或切换平台筛选器。'}
+                ? tr('Add or import accounts from a platform tab. Credentials are encrypted using system storage.')
+                : tr('Clear the search or change the platform filter.')}
             </p>
           </div>
         ) : (
@@ -318,7 +318,7 @@ export function OverviewSection({
                         {acc && <StatusBadge status={acc.status} />}
                         {dotMeta?.hasRefreshToken && (
                           <span className="rounded-md bg-status-online/10 px-1.5 py-0.5 text-[10.5px] font-medium text-status-online-ink">
-                            RT 自动续期
+                            {tr('Automatic token renewal')}
                           </span>
                         )}
                       </div>
@@ -342,7 +342,7 @@ export function OverviewSection({
                       variant="pill"
                       value={bot.groupId}
                       onValueChange={(next) => moveBotToGroup(bot.id, next)}
-                      title="调整所属分组"
+                      title={tr('Change group')}
                       className="max-w-32"
                       options={groups.map((g) => ({ value: g.id, label: g.name }))}
                     />
@@ -354,11 +354,11 @@ export function OverviewSection({
                         selectBot(bot.id)
                       }}
                     >
-                      对话
+                      {tr('Chat')}
                     </Button>
                     <Menu>
                       <MenuTrigger
-                        aria-label={`${bot.name} 更多操作`}
+                        aria-label={tr('More actions for {name}', { name: bot.name })}
                         className="press-icon grid size-7 place-items-center rounded-full text-ink-muted hover:bg-hover hover:text-ink"
                       >
                         <MoreHorizontal className="size-4" />
@@ -366,14 +366,14 @@ export function OverviewSection({
                       <MenuContent align="end" side="bottom" className="min-w-40">
                         <MenuItem onSelect={() => togglePinBot(bot.id)}>
                           {bot.pinned ? <PinOff aria-hidden /> : <Pin aria-hidden />}
-                          {bot.pinned ? '取消置顶' : '置顶侧边栏'}
+                          {bot.pinned ? tr('Unpin') : tr('Pin to sidebar')}
                         </MenuItem>
                         {acc && (
                           <MenuItem
                             disabled={acc.pending}
                             onSelect={() => void connectAccount(acc.id)}
                           >
-                            <RefreshCw aria-hidden /> 重新连接
+                            <RefreshCw aria-hidden /> {tr('Reconnect')}
                           </MenuItem>
                         )}
                         {acc && (
@@ -381,12 +381,12 @@ export function OverviewSection({
                             disabled={acc.pending}
                             onSelect={() => void signOutAccount(acc.id)}
                           >
-                            <LogOut aria-hidden /> 退出登录
+                            <LogOut aria-hidden /> {tr('Sign out')}
                           </MenuItem>
                         )}
                         <MenuSeparator />
                         <MenuItem danger onSelect={() => void removeBot(bot.id)}>
-                          <Trash2 aria-hidden /> 删除 Bot
+                          <Trash2 aria-hidden /> {tr('Delete bot')}
                         </MenuItem>
                       </MenuContent>
                     </Menu>

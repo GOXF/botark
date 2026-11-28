@@ -1,3 +1,4 @@
+import { desktopCopy, desktopNotice, useDesktopLocale } from '@/lib/desktopCopy'
 import { useCallback, useEffect, useState } from 'react'
 import { CheckCircle2, LogOut, Pencil, RefreshCw, Trash2 } from 'lucide-react'
 import { createId } from '@shared/id'
@@ -16,6 +17,7 @@ const MODE_BADGE: Record<DsBotTransportMode, string> = {
 }
 
 export function DsBotAccountsSettingsPanel() {
+  useDesktopLocale()
   const bots = useBotStore((s) => s.bots)
   const accounts = useBotStore((s) => s.accounts)
   const selectBot = useBotStore((s) => s.selectBot)
@@ -61,8 +63,8 @@ export function DsBotAccountsSettingsPanel() {
       })
       setHint(
         isEdit
-          ? `已更新 DS Bot 连接并同步 ${count} 个 Bot / 群聊`
-          : `已接入 DS Bot「${status.displayName || status.hostName || 'DS Bot'}」，自动同步 ${count} 个 Bot / 群聊到侧栏`
+          ? desktopCopy("已更新 DS Bot 连接并同步 {0} 个 Bot / 群聊", "Updated the DS Bot connection and synced {0} bots or chats.", [(count)])
+          : desktopCopy("已接入 DS Bot「{0}」，自动同步 {1} 个 Bot / 群聊到侧栏", "Connected to DS Bot “{0}” and synced {1} bots or chats to the sidebar.", [(status.displayName || status.hostName || 'DS Bot'), (count)])
       )
       setEditingAccountId(null)
       setNewAccountId(createId('acc'))
@@ -79,7 +81,7 @@ export function DsBotAccountsSettingsPanel() {
     try {
       await connectAccount(accountId)
       const count = await syncDsBotAccountBots(accountId, { includeDismissed: true })
-      setHint(`已重新同步该 DS Bot 团队下的 ${count} 个 Bot / 群聊`)
+      setHint(desktopCopy("已重新同步该 DS Bot 团队下的 {0} 个 Bot / 群聊", "Resynced {0} bots or chats from this DS Bot team.", [(count)]))
       await refreshMeta()
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
@@ -95,7 +97,7 @@ export function DsBotAccountsSettingsPanel() {
       await removeBot(bot.id)
     }
     await refreshMeta()
-    setHint('已断开并移除该 DS Bot 实例')
+    setHint(desktopCopy("已断开并移除该 DS Bot 实例", "Disconnected and removed the DS Bot instance"))
   }
 
   const editingMeta = editingAccountId ? metaMap[editingAccountId] : undefined
@@ -104,22 +106,20 @@ export function DsBotAccountsSettingsPanel() {
     <div className="flex flex-col gap-5 animate-veil-in">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h2 className="text-[18px] font-semibold tracking-tight text-ink">DS Bot 团队接入管理</h2>
-          <p className="mt-0.5 text-[13px] text-ink-secondary">
-            原生接入开源 Fei-Craft/DS-Bot，支持自动展开团队全部 Bot 与群聊、实时流式、审批与长期记忆
-          </p>
+          <h2 className="text-[18px] font-semibold tracking-tight text-ink">{desktopCopy("DS Bot 团队接入管理", "DS Bot team management")}</h2>
+          <p className="mt-0.5 text-[13px] text-ink-secondary">{desktopCopy("原生接入开源 Fei-Craft/DS-Bot，支持自动展开团队全部 Bot 与群聊、实时流式、审批与长期记忆", "Connect an open-source DS Bot instance to sync team bots, chats, approvals, and memory.")}</p>
         </div>
       </div>
 
       {hint && (
         <div className="flex items-center gap-2 rounded-xl border border-status-online/30 bg-status-online/8 px-3.5 py-2.5 text-[12.5px] text-status-online-ink">
           <CheckCircle2 className="size-4 shrink-0" />
-          <span>{hint}</span>
+          <span>{desktopNotice(hint)}</span>
         </div>
       )}
       {error && (
         <div className="rounded-xl border border-status-error/30 bg-status-error/8 px-3.5 py-2.5 text-[12.5px] text-status-error">
-          {error}
+          {desktopNotice(error)}
         </div>
       )}
 
@@ -139,8 +139,7 @@ export function DsBotAccountsSettingsPanel() {
 
       {dsAccounts.length > 0 && (
         <div className="flex flex-col gap-2.5">
-          <h3 className="text-[13px] font-semibold text-ink-secondary">
-            已连接的 DS Bot 团队（{dsAccounts.length}）
+          <h3 className="text-[13px] font-semibold text-ink-secondary">{desktopCopy("已连接的 DS Bot 团队（{0}）", "Connected DS Bot teams ({0})", [dsAccounts.length])}
           </h3>
           {dsAccounts.map((acc) => {
             const meta = metaMap[acc.id]
@@ -161,7 +160,7 @@ export function DsBotAccountsSettingsPanel() {
                         </span>
                         {meta?.mode && (
                           <span className="rounded-full bg-accent-50 px-2 py-0.5 text-[10.5px] font-medium text-accent-600">
-                            {MODE_BADGE[meta.mode]}
+                            {desktopNotice(MODE_BADGE[meta.mode])}
                           </span>
                         )}
                         {meta?.version && (
@@ -171,8 +170,7 @@ export function DsBotAccountsSettingsPanel() {
                         )}
                       </div>
                       <p className="truncate font-mono text-[11.5px] text-ink-muted">
-                        {acc.handle || meta?.baseUrl || meta?.relayServer || acc.id} · {ownedBots.length} 个已同步对话
-                      </p>
+                        {acc.handle || meta?.baseUrl || meta?.relayServer || acc.id} · {ownedBots.length}{desktopCopy(" 个已同步对话", " synced conversations")}</p>
                     </div>
                   </div>
 
@@ -183,25 +181,19 @@ export function DsBotAccountsSettingsPanel() {
                       disabled={isSyncing}
                       onClick={() => void handleResync(acc.id)}
                     >
-                      <RefreshCw className={cn('size-3.5', isSyncing && 'animate-spin')} />
-                      同步团队
-                    </Button>
+                      <RefreshCw className={cn('size-3.5', isSyncing && 'animate-spin')} />{desktopCopy("同步团队", "Sync team")}</Button>
                     <Button
                       size="sm"
                       variant="ghost"
                       onClick={() => setEditingAccountId(acc.id)}
                     >
-                      <Pencil className="size-3.5" />
-                      编辑
-                    </Button>
+                      <Pencil className="size-3.5" />{desktopCopy("编辑", "Edit")}</Button>
                     <Button
                       size="sm"
                       variant="ghost"
                       onClick={() => void signOutAccount(acc.id)}
                     >
-                      <LogOut className="size-3.5" />
-                      断开
-                    </Button>
+                      <LogOut className="size-3.5" />{desktopCopy("断开", "Disconnect")}</Button>
                     <Button
                       size="sm"
                       variant="ghost"

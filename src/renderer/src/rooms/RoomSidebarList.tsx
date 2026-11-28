@@ -1,3 +1,4 @@
+import { desktopCopy, useDesktopLocale } from '@/lib/desktopCopy'
 import { memo, useRef, useState } from 'react'
 import { ChevronRight, MoreHorizontal, Pencil, Pin, PinOff, Plus, Trash2 } from 'lucide-react'
 import { useShallow } from 'zustand/react/shallow'
@@ -116,6 +117,7 @@ const RoomSidebarItem = memo(function RoomSidebarItem({
   room: CollabRoom
   compact?: boolean
 }) {
+  useDesktopLocale()
   const t = useT()
   const selected = useBotStore((s) => s.selectedBotId === room.id && !s.settingsOpen)
   const speaker = useRooms((s) => s.speakers[room.id])
@@ -130,10 +132,10 @@ const RoomSidebarItem = memo(function RoomSidebarItem({
   const subtitle = speaker
     ? `@${speaker}…`
     : room.finalId
-      ? '已定稿'
+      ? desktopCopy("已定稿", "Finalized")
       : lastMsg
         ? stripFinalPrefix(lastMsg.text).replace(/\s+/g, ' ').trim()
-        : `${room.members.length} 位成员`
+        : desktopCopy("{0} 位成员", "{0} Members", [(room.members.length)])
 
   return (
     <div
@@ -150,15 +152,13 @@ const RoomSidebarItem = memo(function RoomSidebarItem({
       }}
     >
       {drop.over && !compact && (
-        <span className="pointer-events-none absolute top-1/2 right-9 z-10 -translate-y-1/2 rounded-md bg-accent-600 px-1.5 py-0.5 text-[10.5px] font-medium text-white">
-          松开加入
-        </span>
+        <span className="pointer-events-none absolute top-1/2 right-9 z-10 -translate-y-1/2 rounded-md bg-accent-600 px-1.5 py-0.5 text-[10.5px] font-medium text-white">{desktopCopy("松开加入", "Drop to add")}</span>
       )}
       {renaming && !compact ? (
         <div className="flex h-11 items-center px-2">
           <InlineEdit
             value={room.title}
-            label="群聊名称"
+            label={desktopCopy("群聊名称", "Group chat name")}
             maxLength={50}
             className="h-8 w-full text-[13px] font-medium"
             onCommit={(name) => renameRoom(room.id, name)}
@@ -185,7 +185,7 @@ const RoomSidebarItem = memo(function RoomSidebarItem({
           aria-current={selected}
           aria-label={compact ? room.title : undefined}
           onClick={() => openSidebarRoom(room.id)}
-          title={compact ? `${room.title}（可拖入 Bot）` : room.title}
+          title={compact ? desktopCopy("{0}（可拖入 Bot）", "{0} (drop a bot here)", [(room.title)]) : room.title}
           className={cn(
             'no-drag text-ink transition-colors focus-visible:outline-offset-[-2px]',
             compact
@@ -260,7 +260,7 @@ const RoomSidebarItem = memo(function RoomSidebarItem({
                 disabled={room.messages.length === 0}
                 onSelect={() => exportRoomMarkdownFile(room)}
               >
-                <ArkExportDocSvg /> 导出 Markdown
+                <ArkExportDocSvg /> {desktopCopy("导出 Markdown", "Export Markdown")}
               </MenuItem>
               <MenuSeparator />
               <MenuItem danger onSelect={() => deleteRoom(room.id)}>
@@ -309,7 +309,7 @@ const RoomSidebarItem = memo(function RoomSidebarItem({
             <TextInput
               ref={renameInputRef}
               name="title"
-              aria-label="群聊名称"
+              aria-label={desktopCopy("群聊名称", "Group chat name")}
               defaultValue={room.title}
               maxLength={50}
               required
@@ -349,6 +349,7 @@ export function PinnedRoomsList({ compact = false }: { compact?: boolean }) {
 }
 
 export function RoomList({ compact = false, fill = false }: { compact?: boolean; fill?: boolean }) {
+  const tr = useT()
   const rooms = useRooms(useShallow((s) => s.rooms.filter((room) => room.pinned !== true)))
   const creating = useBotStore((s) => s.selectedBotId === NEW_ROOM_ID && !s.settingsOpen)
   const [collapsed, setCollapsed] = useState(false)
@@ -357,7 +358,7 @@ export function RoomList({ compact = false, fill = false }: { compact?: boolean;
   if (compact) {
     return (
       <section
-        aria-label="群聊"
+        aria-label={tr("Group chats")}
         className={cn(
           'no-drag mt-1 flex w-full flex-col items-center gap-1.5 border-t border-ink/[0.06] pt-2',
           fill ? 'min-h-0 flex-1' : 'max-h-[45%] shrink-0'
@@ -365,8 +366,8 @@ export function RoomList({ compact = false, fill = false }: { compact?: boolean;
       >
         <button
           type="button"
-          title="新建群聊"
-          aria-label="新建群聊"
+          title={tr("New group chat")}
+          aria-label={tr("New group chat")}
           aria-current={creating}
           onClick={() => openSidebarRoom(NEW_ROOM_ID)}
           className={cn(
@@ -390,7 +391,7 @@ export function RoomList({ compact = false, fill = false }: { compact?: boolean;
 
   return (
     <section
-      aria-label="群聊"
+      aria-label={tr("Group chats")}
       className={cn(
         'no-drag mt-1 border-t border-ink/[0.06] pt-1.5',
         fill ? 'flex min-h-0 flex-1 flex-col' : 'shrink-0'
@@ -404,7 +405,7 @@ export function RoomList({ compact = false, fill = false }: { compact?: boolean;
           className="flex h-7 min-w-0 flex-1 items-center gap-1.5 rounded-md px-1.5 text-left text-ink-muted transition-colors hover:bg-hover hover:text-ink-secondary"
         >
           <ArkRelayOrbSvg className="size-3.5 text-ink-secondary" />
-          <span className="truncate text-[12px] font-medium tracking-tight">群聊</span>
+          <span className="truncate text-[12px] font-medium tracking-tight">{tr("Group chats")}</span>
           {collapsed && rooms.length > 0 && (
             <span className="ml-auto text-[11px] tabular-nums opacity-70">{rooms.length}</span>
           )}
@@ -418,8 +419,8 @@ export function RoomList({ compact = false, fill = false }: { compact?: boolean;
         </button>
         <button
           type="button"
-          title="新建群聊"
-          aria-label="新建群聊"
+          title={tr("New group chat")}
+          aria-label={tr("New group chat")}
           onClick={() => openSidebarRoom(NEW_ROOM_ID)}
           className={cn(
             'press-icon grid size-6 shrink-0 place-items-center rounded-full transition-colors',

@@ -1,3 +1,4 @@
+import { desktopCopy, desktopNotice, useDesktopLocale } from '@/lib/desktopCopy'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { MuseSchedule, MuseTaskRun } from '@shared/ipc'
 import { EmptyLine, Section } from '@/components/info/Section'
@@ -72,6 +73,7 @@ function ScheduleRow({
 }
 
 export function SchedulesSection({ accountId }: { accountId: string }) {
+  useDesktopLocale()
   const [items, setItems] = useState<MuseSchedule[]>([])
   const [runs, setRuns] = useState<MuseTaskRun[]>([])
   const [runsFor, setRunsFor] = useState<string>()
@@ -187,13 +189,13 @@ export function SchedulesSection({ accountId }: { accountId: string }) {
 
   return (
     <Section
-      title="定时任务"
+      title={desktopCopy("定时任务", "Scheduled tasks")}
       count={active.length + paused.length || undefined}
       action={<RefreshButton loading={loading} onClick={() => void refresh()} />}
     >
-      {error && <p className="pb-1 text-[12px] text-status-error">{error}</p>}
+      {error && <p className="pb-1 text-[12px] text-status-error">{desktopNotice(error)}</p>}
       {active.length === 0 && paused.length === 0 ? (
-        <EmptyLine>暂无定时任务</EmptyLine>
+        <EmptyLine>{desktopCopy("暂无定时任务", "No scheduled tasks")}</EmptyLine>
       ) : (
         <>
           {active.length > 0 && renderGroup(t('Active'), active)}

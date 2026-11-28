@@ -1,0 +1,3 @@
+/* BotArk Simplified Chinese localization. English defaults are in the Swift source. */
+"NSCameraUsageDescription" = "扫描 BotArk 电脑端二维码以配对设备。";
+"NSLocalNetworkUsageDescription" = "BotArk 使用本地网络连接已配对的电脑端。";

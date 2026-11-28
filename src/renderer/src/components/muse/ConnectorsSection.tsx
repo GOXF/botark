@@ -1,3 +1,4 @@
+import { desktopCopy, desktopNotice, useDesktopLocale } from '@/lib/desktopCopy'
 import { useCallback, useEffect, useMemo, useState } from "react"
 import type { MuseConnectorView } from "@shared/ipc"
 import { EmptyLine, Section } from "@/components/info/Section"
@@ -10,6 +11,7 @@ import { cleanSidebarError, isOnlineAccountStatus } from "@/lib/sidebarCompat"
 import { useBotStore } from "@/store/botStore"
 
 export function ConnectorsSection({ accountId }: { accountId: string }) {
+  useDesktopLocale()
   const [items, setItems] = useState<MuseConnectorView[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string>()
@@ -56,11 +58,11 @@ export function ConnectorsSection({ accountId }: { accountId: string }) {
       const result = await muse.connectConnector(accountId, id)
       if (result.oauthUrl) {
         await muse.openHttps?.(result.oauthUrl)
-        setHint(result.message || "请在浏览器完成授权，然后点刷新")
+        setHint(result.message || desktopCopy("请在浏览器完成授权，然后点刷新", "Finish authorizing in your browser, then refresh."))
       } else if (!result.ok) {
-        setError(result.message || "连接失败")
+        setError(result.message || desktopCopy("连接失败", "Connection failed"))
       } else {
-        setHint(result.message || "已连接")
+        setHint(result.message || desktopCopy("已连接", "Connected"))
         await refresh()
       }
     } catch (err) {
@@ -82,7 +84,7 @@ export function ConnectorsSection({ accountId }: { accountId: string }) {
     try {
       const result = await muse.disconnectConnector(accountId, id)
       setConfirmId(undefined)
-      if (!result.ok) setError(result.message || "断开失败")
+      if (!result.ok) setError(result.message || desktopCopy("断开失败", "Disconnect failed"))
       await refresh()
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
@@ -103,15 +105,15 @@ export function ConnectorsSection({ accountId }: { accountId: string }) {
 
   return (
     <Section
-      title="连接器"
+      title={desktopCopy("连接器", "Connectors")}
       count={connectedCount || items.length || undefined}
       flush={items.length > 0}
       action={<RefreshButton loading={loading} onClick={() => void refresh()} />}
     >
-      {error && <p className="px-3 pt-2 text-[12px] text-status-error">{error}</p>}
-      {hint && <p className="px-3 pt-2 text-[12px] text-ink-secondary">{hint}</p>}
+      {error && <p className="px-3 pt-2 text-[12px] text-status-error">{desktopNotice(error)}</p>}
+      {hint && <p className="px-3 pt-2 text-[12px] text-ink-secondary">{desktopNotice(hint)}</p>}
       {items.length === 0 ? (
-        <EmptyLine>暂无连接器</EmptyLine>
+        <EmptyLine>{desktopCopy("暂无连接器", "No connectors yet")}</EmptyLine>
       ) : (
         <>
           {items.length > 6 && (
@@ -119,8 +121,8 @@ export function ConnectorsSection({ accountId }: { accountId: string }) {
               <TextInput
                 value={filter}
                 onChange={(e) => setFilter(e.target.value)}
-                placeholder="筛选连接器…"
-                aria-label="筛选连接器"
+                placeholder={desktopCopy("筛选连接器…", "Filter connectors…")}
+                aria-label={desktopCopy("筛选连接器", "Filter connectors")}
                 className="h-7 text-[12px]"
               />
             </div>
@@ -133,9 +135,7 @@ export function ConnectorsSection({ accountId }: { accountId: string }) {
                   <div className="flex min-w-0 items-center gap-1.5">
                     <p className="min-w-0 truncate text-[12.5px] font-medium text-ink">{c.name}</p>
                     {c.connected && (
-                      <span className="shrink-0 rounded-full bg-status-online/10 px-1.5 text-[10px] leading-4 font-medium text-status-online-ink">
-                        已连接
-                      </span>
+                      <span className="shrink-0 rounded-full bg-status-online/10 px-1.5 text-[10px] leading-4 font-medium text-status-online-ink">{desktopCopy("已连接", "Connected")}</span>
                     )}
                   </div>
                 </div>
@@ -146,12 +146,10 @@ export function ConnectorsSection({ accountId }: { accountId: string }) {
                     disabled={busyId === c.id}
                     onClick={() => void disconnect(c.id)}
                   >
-                    {confirmId === c.id ? "确认" : "断开"}
+                    {confirmId === c.id ? desktopCopy("确认", "Confirm") : desktopCopy("断开", "Disconnect")}
                   </Button>
                 ) : (
-                  <Button size="sm" variant="secondary" disabled={busyId === c.id} onClick={() => void connect(c.id)}>
-                    连接
-                  </Button>
+                  <Button size="sm" variant="secondary" disabled={busyId === c.id} onClick={() => void connect(c.id)}>{desktopCopy("连接", "Connect")}</Button>
                 )}
               </li>
             ))}
@@ -161,8 +159,7 @@ export function ConnectorsSection({ accountId }: { accountId: string }) {
               type="button"
               onClick={() => setExpanded(true)}
               className="w-full border-t border-line py-2 text-center text-[11.5px] font-medium text-ink-secondary hover:bg-hover hover:text-ink"
-            >
-              展开全部 ({sorted.length})
+            >{desktopCopy("展开全部 (", "Expand all (")}{sorted.length})
             </button>
           )}
           {expanded && !filter.trim() && sorted.length > 6 && (
@@ -170,9 +167,7 @@ export function ConnectorsSection({ accountId }: { accountId: string }) {
               type="button"
               onClick={() => setExpanded(false)}
               className="w-full border-t border-line py-2 text-center text-[11.5px] font-medium text-ink-secondary hover:bg-hover hover:text-ink"
-            >
-              收起列表
-            </button>
+            >{desktopCopy("收起列表", "Collapse list")}</button>
           )}
         </>
       )}

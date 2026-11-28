@@ -1,3 +1,4 @@
+import { desktopCopy } from '@/lib/desktopCopy'
 import { lazy, Suspense, useEffect, useState, type ReactNode } from 'react'
 import { adapterRegistry } from '@adapters/registry'
 import { BoardView, ProjectDetail } from '@/components/workspace/BoardView'
@@ -13,7 +14,7 @@ import { hasSeenOnboarding } from '@/components/onboarding/onboardingState'
 import { Sidebar } from '@/components/sidebar/Sidebar'
 import { GoxfUpdateBanner } from '@/components/update/GoxfUpdateBanner'
 import { ErrorBoundary } from '@/components/ui/ErrorBoundary'
-import { useGlobalShortcuts } from '@/lib/shortcuts'
+import { openSettingsFromMenu, useGlobalShortcuts } from '@/lib/shortcuts'
 import { useRooms } from '@/rooms/roomStore'
 import { applySlackConnection } from '@/rooms/slackRooms'
 import { startAdapterBridge } from '@/services/adapterBridge'
@@ -48,6 +49,7 @@ function OnDemandDialog({ open, children }: { open: boolean; children: ReactNode
 }
 
 export default function App() {
+  usePrefsStore((s) => s.locale)
   const settingsOpen = useBotStore((s) => s.settingsOpen)
   const addBotOpen = useBotStore((s) => s.addBotOpen)
   const onboardingOpen = useBotStore((s) => s.onboardingOpen)
@@ -223,6 +225,7 @@ export default function App() {
   useEffect(() => startPrefsSync(), [])
   useEffect(() => startWorkspaceSync(), [])
   useEffect(() => startPopoutHost(), [])
+  useEffect(() => window.electron?.onOpenSettings?.(openSettingsFromMenu), [])
   useEffect(() => {
     // Only resume an explicitly connected bridge after a renderer reload.
     if (sessionStorage.getItem('botark.slack.connected') !== '1') return
@@ -264,7 +267,7 @@ export default function App() {
           main={
             <div className="flex min-h-0 min-w-0 flex-1 flex-col">
               {!settingsOpen && <WorkspaceTopBar />}
-              <ErrorBoundary surface={settingsOpen ? '管理控制台' : '对话区'} resetKey={settingsOpen ? 'settings' : `${view}:${view === 'sessions' ? '' : selectedBotId}`}>
+              <ErrorBoundary surface={settingsOpen ? desktopCopy("管理控制台", "Management Console") : desktopCopy("对话区", "Conversation")} resetKey={settingsOpen ? 'settings' : `${view}:${view === 'sessions' ? '' : selectedBotId}`}>
                 <Suspense fallback={null}>
                   {settingsOpen ? (
                     <SettingsView />
@@ -282,7 +285,7 @@ export default function App() {
             </div>
           }
           aside={
-            <ErrorBoundary surface="右侧面板" resetKey={selectedBotId}>
+            <ErrorBoundary surface={desktopCopy("右侧面板", "Right-side panel")} resetKey={selectedBotId}>
               <Suspense fallback={null}>
                 {view === 'board' ? (
                   boardPicked && <ProjectDetail key={boardPicked.conversationId} project={boardPicked} highlight={boardPicked.taskId} onClose={() => setBoardPicked(undefined)} />

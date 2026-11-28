@@ -68,3 +68,16 @@ xcodebuild test \
 - **Single-Use QR Pairing**: Each QR code contains a 256-bit single-use `pairToken` (10-minute TTL) and an ephemeral 256-bit AES-256-GCM transfer key (`CryptoKit.AES.GCM.SealedBox(combined:)` binary-compatible with Node.js `crypto`).
 - **Per-Device Revocable Tokens**: Desktop stores only SHA-256 hashes of issued iPhone tokens (`0600` local file) and lets you revoke any paired device in one click.
 - **iOS Hardware Keychain**: Paired desktop tokens and direct Hermes API keys are stored in iOS Keychain (`kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`).
+
+
+### Localization
+
+BotArk's iOS interface follows the app language selected by iOS. English is the
+development language and fallback; Simplified Chinese is bundled alongside it.
+Third-party web pages, agent output and server-provided messages retain their
+original language.
+
+For app-owned copy, use `String(localized:)` and update the corresponding
+`Resources/en.lproj` and `Resources/zh-Hans.lproj` entries. Keep format
+placeholders consistent across languages. Camera and local-network prompts use
+the `InfoPlist.strings` tables.

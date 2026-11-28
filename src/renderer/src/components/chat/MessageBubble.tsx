@@ -1,3 +1,4 @@
+import { desktopCopy, desktopNotice, useDesktopLocale } from '@/lib/desktopCopy'
 import { memo, useCallback, useMemo, useState } from 'react'
 import { copyImageSrc } from '@/lib/goxfCopyImage'
 import { AlertCircle, Check, Clock3, Copy, CornerDownRight, Download, ExternalLink, FileText, Globe, KeyRound, Loader2, Maximize2, RotateCw, Undo2, Wrench } from 'lucide-react'
@@ -180,6 +181,7 @@ function RichWidgets({
   messageId: string
   onOpenDoc: (target: NativeDocumentTarget) => void
 }) {
+  useDesktopLocale()
   const sendMessage = useBotStore((s) => s.sendMessage)
   if (!widgets.length) return null
   return (
@@ -375,8 +377,7 @@ function RichWidgets({
                   }
                   className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium text-accent-600 hover:bg-hover"
                 >
-                  <Maximize2 className="size-3" /> 原生打开
-                </button>
+                  <Maximize2 className="size-3" />{desktopCopy(" 原生打开", " Open in native viewer")}</button>
               </div>
               <iframe
                 title={t('HTML widget')}
@@ -409,8 +410,7 @@ function RichWidgets({
                   }
                   className="inline-flex shrink-0 items-center gap-1 rounded-full bg-hover px-2.5 py-1 text-[11px] font-medium text-accent-600 hover:bg-active"
                 >
-                  <Maximize2 className="size-3" /> 原生打开
-                </button>
+                  <Maximize2 className="size-3" />{desktopCopy(" 原生打开", " Open in native viewer")}</button>
               )}
             </li>
           )
@@ -574,7 +574,7 @@ function RichWidgets({
           )
         }
         if (w.kind === 'markdown') {
-          const docTitle = w.title || w.path?.split('/').pop() || 'Markdown 文档'
+          const docTitle = w.title || w.path?.split('/').pop() || desktopCopy("Markdown 文档", "Markdown Document")
           const wordCount = (w.markdown || '').trim().length
           return (
             <li
@@ -600,8 +600,7 @@ function RichWidgets({
                   </span>
                   <span className="min-w-0 flex-1">
                     <span className="block truncate text-[13.5px] font-semibold text-ink">{docTitle}</span>
-                    <span className="block truncate text-[11px] text-ink-muted">
-                      文章 / 文档卡片{wordCount > 0 ? ` · ${wordCount} 字` : ''}
+                    <span className="block truncate text-[11px] text-ink-muted">{desktopCopy("文章 / 文档卡片", "Articles / Document Cards")}{wordCount > 0 ? desktopCopy(" · {0} 字", " · {0} words", [(wordCount)]) : ''}
                       {w.path ? ` · ${w.path}` : ''}
                     </span>
                   </span>
@@ -619,7 +618,7 @@ function RichWidgets({
                     })
                   }
                 >
-                  <Maximize2 /> 右侧画布阅读
+                  <Maximize2 /> {desktopCopy("右侧画布阅读", "Read in side panel")}
                 </Button>
               </div>
               {w.markdown && (
@@ -637,7 +636,7 @@ function RichWidgets({
         if (w.kind === 'hotel_results') {
           return (
             <li key={w.widgetId} className="rounded-xl border border-line bg-surface p-2.5 shadow-soft">
-              <p className="mb-1.5 text-[12px] font-medium text-ink-secondary">酒店推荐</p>
+              <p className="mb-1.5 text-[12px] font-medium text-ink-secondary">{desktopCopy("酒店推荐", "Hotel recommendation.")}</p>
               <ul className="flex flex-col gap-1.5 text-[12px]">
                 {w.hotels.map((h, i) => (
                   <li key={`${h.name}-${i}`} className="flex items-center justify-between gap-2 rounded-lg bg-hover/40 px-2.5 py-1.5">
@@ -653,8 +652,7 @@ function RichWidgets({
                         target="_blank"
                         rel="noreferrer"
                         className="inline-flex shrink-0 items-center gap-0.5 text-[11px] font-medium text-accent-600 hover:underline"
-                      >
-                        查看 <ExternalLink className="size-3" />
+                      >{desktopCopy("查看 ", "View ")}<ExternalLink className="size-3" />
                       </a>
                     )}
                   </li>
@@ -666,7 +664,7 @@ function RichWidgets({
         if (w.kind === 'idea_cards') {
           return (
             <li key={w.widgetId} className="rounded-xl border border-line bg-surface p-2.5 shadow-soft">
-              <p className="mb-1.5 text-[12px] font-medium text-ink-secondary">灵感卡片</p>
+              <p className="mb-1.5 text-[12px] font-medium text-ink-secondary">{desktopCopy("灵感卡片", "An inspiration card.")}</p>
               <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-2">
                 {w.cards.map((c) => (
                   <button
@@ -720,6 +718,7 @@ function GrokFormCard({
   botId: string
   accountId: string
 }) {
+  useDesktopLocale()
   const botMeta = useBotStore((s) => s.bots.find((b) => b.id === botId))
   const [values, setValues] = useState<Record<string, string>>(() => {
     const init: Record<string, string> = {}
@@ -738,7 +737,7 @@ function GrokFormCard({
     if (submitting || submitted) return
     const grok = getBridge()?.grok
     if (!grok?.rpc) {
-      setErrMsg('Grok IPC 不可用')
+      setErrMsg(desktopCopy("Grok IPC 不可用", "Grok connection is unavailable"))
       return
     }
     const agentId = botMeta?.selectedAgentId ?? ''
@@ -746,7 +745,7 @@ function GrokFormCard({
 
     for (const f of widget.fields) {
       if (f.required && !values[f.id]?.trim()) {
-        setErrMsg(`请填写必填项：${f.label}`)
+        setErrMsg(desktopCopy("请填写必填项：{0}", "Complete the required field: {0}", [(f.label)]))
         return
       }
     }
@@ -787,12 +786,12 @@ function GrokFormCard({
         })
       }
       if (!res.ok) {
-        setErrMsg(res.message || '提交失败')
+        setErrMsg(res.message || desktopCopy("提交失败", "Failed to submit"))
         return
       }
       setSubmitted(true)
     } catch (err) {
-      setErrMsg(err instanceof Error ? err.message : '提交出错')
+      setErrMsg(err instanceof Error ? err.message : desktopCopy("提交出错", "Couldn’t submit the form"))
     } finally {
       setSubmitting(false)
     }
@@ -808,7 +807,7 @@ function GrokFormCard({
         </span>
         <div className="min-w-0 flex-1">
           <p className="text-[13px] font-semibold text-ink">
-            {widget.title || (widget.formKind === 'secret-request' ? '提供密钥凭据' : '填写表单信息')}
+            {widget.title || (widget.formKind === 'secret-request' ? desktopCopy("提供密钥凭据", "Provide credentials") : desktopCopy("填写表单信息", "Complete the form"))}
           </p>
           {widget.subtitle && (
             <p className="mt-0.5 text-[11.5px] text-ink-muted">{widget.subtitle}</p>
@@ -816,8 +815,7 @@ function GrokFormCard({
         </div>
         {submitted && (
           <span className="inline-flex items-center gap-1 rounded-full bg-status-online/10 px-2 py-0.5 text-[11px] font-medium text-status-online">
-            <Check className="size-3" /> 已提交
-          </span>
+            <Check className="size-3" />{desktopCopy(" 已提交", " Submitted")}</span>
         )}
       </div>
 
@@ -861,18 +859,18 @@ function GrokFormCard({
 
         {hasSecretField && widget.formKind === 'user-form' && !submitted && (
           <div className="flex items-center justify-between gap-2 rounded-xl bg-sunken/45 px-2.5 py-1.5 text-[11.5px] text-ink-secondary">
-            <span>存入安全凭据库（Secret Vault）</span>
+            <span>{desktopCopy("存入安全凭据库（Secret Vault）", "Save to the secure vault")}</span>
             <SwitchPill checked={saveToVault} onCheckedChange={setSaveToVault} />
           </div>
         )}
 
-        {errMsg && <p className="text-[11.5px] text-status-error">{errMsg}</p>}
+        {errMsg && <p className="text-[11.5px] text-status-error">{desktopNotice(errMsg)}</p>}
 
         {!submitted && (
           <div className="mt-0.5 flex justify-end">
             <Button type="submit" size="sm" variant="primary" disabled={submitting}>
               {submitting && <Loader2 className="animate-spin" />}
-              {submitting ? '提交中…' : '提交'}
+              {submitting ? desktopCopy("提交中…", "Submitting…") : desktopCopy("提交", "Submit")}
             </Button>
           </div>
         )}
@@ -882,6 +880,7 @@ function GrokFormCard({
 }
 
 function OptionChips({ message, widget }: { message: ChatMessage; widget: ChatOptionWidget }) {
+  useDesktopLocale()
   const selectChatOption = useBotStore((s) => s.selectChatOption)
   const [customOpen, setCustomOpen] = useState(false)
   const [customText, setCustomText] = useState('')
@@ -923,9 +922,7 @@ function OptionChips({ message, widget }: { message: ChatMessage; widget: ChatOp
             type="button"
             onClick={() => setCustomOpen((v) => !v)}
             className="rounded-full border border-dashed border-line-strong bg-surface px-3 py-1.5 text-[13px] text-ink-secondary hover:bg-hover"
-          >
-            自定义…
-          </button>
+          >{desktopCopy("自定义…", "Custom…")}</button>
         )}
       </div>
       {customOpen && !selected && (
@@ -941,12 +938,12 @@ function OptionChips({ message, widget }: { message: ChatMessage; widget: ChatOp
           <input
             value={customText}
             onChange={(e) => setCustomText(e.target.value)}
-            placeholder={widget.customInputPlaceholder || '输入名字'}
+            placeholder={widget.customInputPlaceholder || desktopCopy("输入名字", "Enter Name")}
             className="min-w-0 flex-1 rounded-full border border-line bg-surface px-3 py-1.5 text-[13px] outline-none focus:border-accent"
             autoFocus
           />
           <Button type="submit" size="sm" variant="primary">
-            发送
+            {desktopCopy("发送", "Send")}
           </Button>
         </form>
       )}
@@ -995,6 +992,7 @@ const MessageBubbleBody = memo(function MessageBubbleBody({
   accountLabel,
   onRetry
 }: MessageBubbleProps) {
+  useDesktopLocale()
   const mine = message.role === 'user'
   const optionWidgets = (!mine && message.widgets?.filter((w) => w.kind === 'option')) || []
   const tools = (!mine && message.tools) || []
@@ -1083,7 +1081,7 @@ const MessageBubbleBody = memo(function MessageBubbleBody({
     message.text.length > 360 &&
     (/(^|\n)#{1,4}\s+|\n\|.+\|\n|```/.test(message.text) || message.text.length > 800)
   const reportTitleMatch = !mine ? /^(?:---[\s\S]*?---\s*)?#+\s+(.+)$/m.exec(message.text) : null
-  const reportTitle = reportTitleMatch?.[1]?.replace(/[*`]/g, '').trim() || '文章 / 报告文档'
+  const reportTitle = reportTitleMatch?.[1]?.replace(/[*`]/g, '').trim() || desktopCopy("文章 / 报告文档", "Articles / Report Documents")
 
   const copyMessageText = () => {
     if (!message.text) return
@@ -1099,7 +1097,7 @@ const MessageBubbleBody = memo(function MessageBubbleBody({
   const quoteReplyMessage = () => {
     const entryId = message.id.replace(/^grok_(u_)?/, '')
     const rawSnippet = (message.text || '').replace(/\s+/g, ' ').trim()
-    const quote = rawSnippet || '引用消息'
+    const quote = rawSnippet || desktopCopy("引用消息", "Quote Message")
     setReplyTarget(message.botId, {
       messageId: message.id,
       entryId,
@@ -1294,9 +1292,7 @@ const MessageBubbleBody = memo(function MessageBubbleBody({
                 </span>
                 <span className="min-w-0 flex-1">
                   <span className="block truncate text-[13.5px] font-semibold text-ink">{reportTitle}</span>
-                  <span className="block truncate text-[11px] text-ink-muted">
-                    Markdown 文章卡片 · {message.text.length} 字 · 支持右侧画布沉浸阅读
-                  </span>
+                  <span className="block truncate text-[11px] text-ink-muted">{desktopCopy("Markdown 文章卡片 · ", "Markdown article · ")}{message.text.length}{desktopCopy(" 字 · 支持右侧画布沉浸阅读", " characters · Read in the side panel")}</span>
                 </span>
               </button>
               <div className="flex shrink-0 items-center gap-1.5">
@@ -1306,7 +1302,7 @@ const MessageBubbleBody = memo(function MessageBubbleBody({
                     onClick={() => setArticleExpanded((v) => !v)}
                     className="inline-flex items-center gap-1 rounded-full border border-line bg-surface px-2.5 py-1 text-[11.5px] font-medium text-ink-secondary hover:bg-hover hover:text-ink"
                   >
-                    {articleExpanded ? '收起预览' : '展开全文'}
+                    {articleExpanded ? desktopCopy("收起预览", "Collapse Preview") : desktopCopy("展开全文", "Expand full text")}
                   </button>
                 )}
                 <Button
@@ -1321,7 +1317,7 @@ const MessageBubbleBody = memo(function MessageBubbleBody({
                     })
                   }
                 >
-                  <Maximize2 /> 右侧画布阅读
+                  <Maximize2 /> {desktopCopy("右侧画布阅读", "Read in side panel")}
                 </Button>
               </div>
             </div>
@@ -1356,9 +1352,7 @@ const MessageBubbleBody = memo(function MessageBubbleBody({
                   type="button"
                   onClick={() => setArticleExpanded(true)}
                   className="font-medium text-ink-secondary hover:text-ink"
-                >
-                  点击展开完整长文（共 {message.text.length} 字）
-                </button>
+                >{desktopCopy("点击展开完整长文（共 ", "Expand full text (")}{message.text.length}{desktopCopy(" 字）", " characters)")}</button>
                 <button
                   type="button"
                   onClick={() =>
@@ -1370,9 +1364,7 @@ const MessageBubbleBody = memo(function MessageBubbleBody({
                     })
                   }
                   className="font-medium text-accent-600 hover:underline"
-                >
-                  在右侧分栏打开 →
-                </button>
+                >{desktopCopy("在右侧分栏打开 →", "Open in side panel →")}</button>
               </div>
             )}
           </div>
@@ -1414,12 +1406,12 @@ const MessageBubbleBody = memo(function MessageBubbleBody({
           {/安全卡片|安全存储|密码/.test(message.text || '') ? (
             <>
               <ArkShieldVaultSvg className="size-3.5 text-accent-600" />
-              <span>在应用内打开安全卡片 / 原生页</span>
+              <span>{desktopCopy("在应用内打开安全卡片 / 原生页", "Open the secure form or native page in BotArk")}</span>
             </>
           ) : (
             <>
               <Globe className="size-3.5 text-accent-600" />
-              <span>在应用内查看实时云浏览器</span>
+              <span>{desktopCopy("在应用内查看实时云浏览器", "View the cloud browser in BotArk")}</span>
             </>
           )}
         </button>
@@ -1470,11 +1462,11 @@ const MessageBubbleBody = memo(function MessageBubbleBody({
                 <button
                   type="button"
                   onClick={quoteReplyMessage}
-                  title="引用回复"
+                  title={desktopCopy("引用回复", "Reply with quote")}
                   className="inline-flex shrink-0 items-center gap-0.5 rounded-full px-1.5 py-0.5 text-[11px] text-ink-secondary hover:bg-hover hover:text-ink"
                 >
                   <ArkHandoffCurveSvg className="size-3" />
-                  <span className={NARROW_LABEL}>引用</span>
+                  <span className={NARROW_LABEL}>{desktopCopy("引用", "Quote")}</span>
                 </button>
               )}
               <DeliveryState message={message} onRetry={onRetry} />
@@ -1485,11 +1477,11 @@ const MessageBubbleBody = memo(function MessageBubbleBody({
                 <button
                   type="button"
                   onClick={quoteReplyMessage}
-                  title="引用此消息回复"
+                  title={desktopCopy("引用此消息回复", "Quote this message in a reply")}
                   className="inline-flex shrink-0 items-center gap-1 rounded-full px-1.5 py-0.5 text-[11px] text-ink-secondary hover:bg-hover hover:text-ink"
                 >
                   <ArkHandoffCurveSvg className="size-3" />
-                  <span className={NARROW_LABEL}>引用</span>
+                  <span className={NARROW_LABEL}>{desktopCopy("引用", "Quote")}</span>
                 </button>
                 <button
                   type="button"
@@ -1498,16 +1490,16 @@ const MessageBubbleBody = memo(function MessageBubbleBody({
                   className="inline-flex shrink-0 items-center gap-1 rounded-full px-1.5 py-0.5 text-[11px] text-ink-secondary hover:bg-hover hover:text-ink"
                 >
                   {copiedMsg ? <Check className="size-3 text-status-online" /> : <Copy className="size-3" />}
-                  <span className={NARROW_LABEL}>{copiedMsg ? '已复制' : t('Copy')}</span>
+                  <span className={NARROW_LABEL}>{copiedMsg ? desktopCopy("已复制", "Copied") : t('Copy')}</span>
                 </button>
                 <button
                   type="button"
                   onClick={() => triggerShareConversation({ botId: message.botId, messageId: message.id })}
-                  title="生成共享页面"
+                  title={desktopCopy("生成共享页面", "Create a shareable page")}
                   className="inline-flex shrink-0 items-center gap-1 rounded-full px-1.5 py-0.5 text-[11px] text-ink-secondary hover:bg-hover hover:text-ink"
                 >
                   <ArkExportDocSvg className="size-3" />
-                  <span className={NARROW_LABEL}>分享</span>
+                  <span className={NARROW_LABEL}>{desktopCopy("分享", "Share")}</span>
                 </button>
                 <button
                   type="button"
@@ -1519,11 +1511,11 @@ const MessageBubbleBody = memo(function MessageBubbleBody({
                       mimeType: 'text/markdown'
                     })
                   }
-                  title="在右侧画布展开阅读"
+                  title={desktopCopy("在右侧画布展开阅读", "Read in the side panel")}
                   className="inline-flex shrink-0 items-center gap-1 rounded-full px-2 py-0.5 text-[11px] text-ink-secondary hover:bg-hover hover:text-ink"
                 >
                   <Maximize2 className="size-3" />
-                  <span className={NARROW_LABEL}>右侧阅读</span>
+                  <span className={NARROW_LABEL}>{desktopCopy("右侧阅读", "Read in side panel")}</span>
                 </button>
                 {botMeta?.platformId === 'grok' && botMeta.selectedAgentId && (
                   <div className="ml-0.5 inline-flex items-center gap-0.5">
@@ -1532,7 +1524,7 @@ const MessageBubbleBody = memo(function MessageBubbleBody({
                         key={emo}
                         type="button"
                         onClick={() => reactGrokMessage(emo)}
-                        title={`回应 ${emo}`}
+                        title={desktopCopy("回应 {0}", "Respond to {0}", [(emo)])}
                         className={cn(
                           'rounded-full px-1 py-0.5 text-[11px] hover:bg-hover',
                           reactedEmoji === emo && 'bg-accent-50 ring-1 ring-accent-500/40'

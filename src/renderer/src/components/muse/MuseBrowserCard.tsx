@@ -1,3 +1,4 @@
+import { desktopCopy, useDesktopLocale } from '@/lib/desktopCopy'
 import { useEffect, useState } from 'react'
 import { ChevronDown, ExternalLink, Monitor, RotateCw } from 'lucide-react'
 import { Button } from '@/components/ui/Button'
@@ -23,6 +24,7 @@ export function MuseBrowserCard(props: MuseBrowserCardProps) {
 }
 
 function ConversationBrowserCard({ accountId, sessionId, activeHint, replyId, typing }: MuseBrowserCardProps) {
+  useDesktopLocale()
   const muse = getBridge()?.muse
   const openWebSessionAt = useBotStore((state) => state.openWebSessionAt)
   const [open, setOpen] = useState(true)
@@ -84,27 +86,26 @@ function ConversationBrowserCard({ accountId, sessionId, activeHint, replyId, ty
   const awaitingFrame = Boolean(inlineSrc || (taskId && sha256)) && !inlineImage && !currentFrame
   const loading = checking || (open && (awaitingFrame || Boolean(currentFrame?.loading)))
   return (
-    <section className="mx-5 mb-1 shrink-0 rounded-xl border border-line bg-surface px-3 text-[12px]" aria-label="远程浏览器">
+    <section className="mx-5 mb-1 shrink-0 rounded-xl border border-line bg-surface px-3 text-[12px]" aria-label={desktopCopy("远程浏览器", "Remote Browser")}>
       <div className="flex min-w-0 items-center gap-2">
         <button type="button" aria-expanded={open} onClick={() => setOpen((value) => !value)}
           className="flex min-w-0 flex-1 items-center gap-2 py-2 text-left text-ink-secondary">
           <Monitor className="size-4 shrink-0" aria-hidden />
-          <span className="shrink-0 font-medium text-ink">远程浏览器</span>
+          <span className="shrink-0 font-medium text-ink">{desktopCopy("远程浏览器", "Remote Browser")}</span>
           <span className="min-w-0 truncate" title={snapshot.url || snapshot.title}>{snapshot.url || snapshot.title}</span>
           {snapshot.status && <span className="shrink-0 rounded-full bg-hover px-2 py-0.5 text-[11px]">{snapshot.status}</span>}
           <ChevronDown className={cn('ml-auto size-4 shrink-0', open && 'rotate-180')} aria-hidden />
         </button>
-        <IconButton size="sm" label="刷新截图" disabled={loading} onClick={() => setRevision((value) => value + 1)}>
+        <IconButton size="sm" label={desktopCopy("刷新截图", "Refresh Screenshot")} disabled={loading} onClick={() => setRevision((value) => value + 1)}>
           <RotateCw className={loading ? 'animate-spin' : undefined} aria-hidden />
         </IconButton>
         <Button size="sm" variant="secondary" className="h-7 shrink-0" onClick={() => openWebSessionAt(snapshot.interactionUrl ?? snapshot.url ?? null)}>
-          <ExternalLink className="size-3.5" aria-hidden /> 打开交互视图
-        </Button>
+          <ExternalLink className="size-3.5" aria-hidden />{desktopCopy(" 打开交互视图", " Open Interactive View")}</Button>
       </div>
       {open && <div className="pb-2">
-        {image && !currentFrame?.failed ? <MusePreviewImage key={revision} src={image} alt={snapshot.title || 'Muse 远程浏览器截图'} /> : (
+        {image && !currentFrame?.failed ? <MusePreviewImage key={revision} src={image} alt={snapshot.title || desktopCopy("Muse 远程浏览器截图", "Muse remote browser screenshot")} /> : (
           <p role="status" className="py-1 text-ink-muted">
-            {loading ? '正在加载截图…' : contextFailed || currentFrame?.failed ? '截图暂不可用' : '暂无截图'}
+            {loading ? desktopCopy("正在加载截图…", "Loading screenshots…") : contextFailed || currentFrame?.failed ? desktopCopy("截图暂不可用", "Screenshot unavailable") : desktopCopy("暂无截图", "No screenshot available")}
           </p>
         )}
       </div>}
@@ -113,11 +114,12 @@ function ConversationBrowserCard({ accountId, sessionId, activeHint, replyId, ty
 }
 
 export function MusePreviewImage({ src, alt, className }: { src: string; alt: string; className?: string }) {
+  useDesktopLocale()
   const [zoomed, setZoomed] = useState(false)
   const [failedSrc, setFailedSrc] = useState<string>()
-  if (failedSrc === src) return <p role="status" className="py-1 text-[12px] text-ink-muted">截图暂不可用</p>
+  if (failedSrc === src) return <p role="status" className="py-1 text-[12px] text-ink-muted">{desktopCopy("截图暂不可用", "Screenshot unavailable")}</p>
   return (
-    <button type="button" aria-expanded={zoomed} aria-label={zoomed ? '缩小截图' : '放大截图'}
+    <button type="button" aria-expanded={zoomed} aria-label={zoomed ? desktopCopy("缩小截图", "Zoom out") : desktopCopy("放大截图", "Zoom in.")}
       onClick={() => setZoomed((value) => !value)}
       className={cn('block w-full overflow-hidden rounded-lg border border-line bg-sunken',
         zoomed ? 'cursor-zoom-out' : 'cursor-zoom-in', className)}>

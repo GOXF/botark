@@ -1,3 +1,4 @@
+import { desktopCopy, desktopNotice, useDesktopLocale } from '@/lib/desktopCopy'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Check, Copy, Download, FileCode, FileText, Maximize2, Minimize2, RefreshCw, X, ZoomIn, ZoomOut } from 'lucide-react'
 import { Dialog } from '@/components/ui/Dialog'
@@ -334,6 +335,7 @@ function useCopyDocument(content: string, requestId: number | undefined) {
 }
 
 function ZoomableImagePreview({ src, alt, maxHeightClass }: { src: string; alt: string; maxHeightClass: string }) {
+  useDesktopLocale()
   const [zoom, setZoom] = useState<number>(1)
   return (
     <div className="flex flex-col gap-2 rounded-2xl border border-line bg-surface p-4 shadow-soft">
@@ -342,7 +344,7 @@ function ZoomableImagePreview({ src, alt, maxHeightClass }: { src: string; alt: 
           type="button"
           onClick={() => setZoom((z) => Math.max(0.5, Number((z - 0.25).toFixed(2))))}
           className="inline-flex items-center gap-0.5 rounded-full bg-hover px-2 py-1 hover:bg-active hover:text-ink"
-          title="缩小"
+          title={desktopCopy("缩小", "Zoom Out")}
         >
           <ZoomOut className="size-3.5" />
         </button>
@@ -350,7 +352,7 @@ function ZoomableImagePreview({ src, alt, maxHeightClass }: { src: string; alt: 
           type="button"
           onClick={() => setZoom(1)}
           className="rounded-full bg-hover px-2 py-1 tabular-nums hover:bg-active hover:text-ink"
-          title="重置缩放"
+          title={desktopCopy("重置缩放", "Reset zoom")}
         >
           {Math.round(zoom * 100)}%
         </button>
@@ -358,7 +360,7 @@ function ZoomableImagePreview({ src, alt, maxHeightClass }: { src: string; alt: 
           type="button"
           onClick={() => setZoom((z) => Math.min(3, Number((z + 0.25).toFixed(2))))}
           className="inline-flex items-center gap-0.5 rounded-full bg-hover px-2 py-1 hover:bg-active hover:text-ink"
-          title="放大"
+          title={desktopCopy("放大", "Zoom In")}
         >
           <ZoomIn className="size-3.5" />
         </button>
@@ -387,6 +389,7 @@ export function DocumentCanvasPane({
   onClose: () => void
   onOpenNestedDoc?: (next: NativeDocumentTarget) => void
 }) {
+  useDesktopLocale()
   const { targetKey, requestId, loading, ready, error, content, rawBase64, mime, reload } = useDocumentContent(target)
   const [mode, setMode] = useState<'rendered' | 'source'>('rendered')
   const { copied, copyContent } = useCopyDocument(content, requestId)
@@ -449,8 +452,7 @@ export function DocumentCanvasPane({
                   mode === 'rendered' ? 'bg-surface text-ink shadow-soft' : 'text-ink-secondary hover:text-ink'
                 )}
               >
-                <FileText className="size-3" /> 排版
-              </button>
+                <FileText className="size-3" />{desktopCopy(" 排版", " Layout")}</button>
               <button
                 type="button"
                 onClick={() => setMode('source')}
@@ -459,8 +461,7 @@ export function DocumentCanvasPane({
                   mode === 'source' ? 'bg-surface text-ink shadow-soft' : 'text-ink-secondary hover:text-ink'
                 )}
               >
-                <FileCode className="size-3" /> 源码
-              </button>
+                <FileCode className="size-3" />{desktopCopy(" 源码", " Source")}</button>
             </div>
           )}
           {target.path && (
@@ -468,7 +469,7 @@ export function DocumentCanvasPane({
               <RefreshCw className={cn('size-3.5', loading && 'animate-spin')} />
             </Button>
           )}
-          <Button size="sm" variant="ghost" disabled={!ready || !content} onClick={copyContent} title={copied ? '已复制' : t('Copy')}>
+          <Button size="sm" variant="ghost" disabled={!ready || !content} onClick={copyContent} title={copied ? desktopCopy("已复制", "Copied") : t('Copy')}>
             {copied ? <Check className="size-3.5 text-status-online" /> : <Copy className="size-3.5" />}
           </Button>
           <Button
@@ -484,11 +485,11 @@ export function DocumentCanvasPane({
             size="sm"
             variant="ghost"
             onClick={() => setExpandedModal(true)}
-            title="弹窗大屏阅读"
+            title={desktopCopy("弹窗大屏阅读", "Open in a larger window")}
           >
             <Maximize2 className="size-3.5" />
           </Button>
-          <Button size="sm" variant="ghost" onClick={onClose} title="关闭文档侧栏">
+          <Button size="sm" variant="ghost" onClick={onClose} title={desktopCopy("关闭文档侧栏", "Close Document Sidebar")}>
             <X className="size-4" />
           </Button>
         </div>
@@ -500,7 +501,7 @@ export function DocumentCanvasPane({
           <div className="py-16 text-center text-[13px] text-ink-muted">{t('Loading preview…')}</div>
         ) : error ? (
           <div className="rounded-xl border border-status-error/20 bg-status-error/5 p-4 text-[13px] text-status-error">
-            {error}
+            {desktopNotice(error)}
           </div>
         ) : isImage && rawBase64 ? (
           <ZoomableImagePreview
@@ -546,7 +547,7 @@ export function DocumentCanvasPane({
           />
         ) : (
           <pre className="overflow-auto rounded-2xl border border-line bg-sunken p-4 font-mono text-[12.5px] leading-relaxed whitespace-pre-wrap text-ink">
-            {content || '（空文件）'}
+            {content || desktopCopy("（空文件）", "(empty file)")}
           </pre>
         )}
       </div>
@@ -569,6 +570,7 @@ export function NativeDocumentDialog({
 }
 
 function OpenNativeDocumentDialog({ target, onClose }: { target: NativeDocumentTarget; onClose: () => void }) {
+  useDesktopLocale()
   const { targetKey, requestId, loading, ready, error, content, rawBase64, mime, reload } = useDocumentContent(target)
   const [mode, setMode] = useState<'rendered' | 'source'>('rendered')
   const { copied, copyContent } = useCopyDocument(content, requestId)
@@ -616,8 +618,7 @@ function OpenNativeDocumentDialog({ target, onClose }: { target: NativeDocumentT
                   mode === 'rendered' ? 'bg-surface text-ink shadow-soft' : 'text-ink-secondary hover:text-ink'
                 )}
               >
-                <FileText className="size-3.5" /> 排版视图
-              </button>
+                <FileText className="size-3.5" />{desktopCopy(" 排版视图", " Layout View")}</button>
               <button
                 type="button"
                 onClick={() => setMode('source')}
@@ -626,8 +627,7 @@ function OpenNativeDocumentDialog({ target, onClose }: { target: NativeDocumentT
                   mode === 'source' ? 'bg-surface text-ink shadow-soft' : 'text-ink-secondary hover:text-ink'
                 )}
               >
-                <FileCode className="size-3.5" /> 源码
-              </button>
+                <FileCode className="size-3.5" />{desktopCopy(" 源码", " Source")}</button>
             </div>
           )}
           {target.path && (
@@ -645,7 +645,7 @@ function OpenNativeDocumentDialog({ target, onClose }: { target: NativeDocumentT
           )}
           <Button size="sm" variant="secondary" disabled={!ready || !content} onClick={copyContent}>
             {copied ? <Check className="size-3.5 text-status-online" /> : <Copy className="size-3.5" />}
-            {copied ? '已复制' : t('Copy')}
+            {copied ? desktopCopy("已复制", "Copied") : t('Copy')}
           </Button>
           <Button
             size="sm"
@@ -655,7 +655,7 @@ function OpenNativeDocumentDialog({ target, onClose }: { target: NativeDocumentT
           >
             <Download className="size-3.5" /> {t('Download')}
           </Button>
-          <Button size="sm" variant="ghost" onClick={onClose} title="收起至侧栏">
+          <Button size="sm" variant="ghost" onClick={onClose} title={desktopCopy("收起至侧栏", "Collapse to Sidebar")}>
             <Minimize2 className="size-3.5" />
           </Button>
         </div>
@@ -666,7 +666,7 @@ function OpenNativeDocumentDialog({ target, onClose }: { target: NativeDocumentT
         <div className="py-12 text-center text-[13px] text-ink-muted">{t('Loading preview…')}</div>
       ) : error ? (
         <div className="rounded-xl border border-status-error/20 bg-status-error/5 p-4 text-[13px] text-status-error">
-          {error}
+          {desktopNotice(error)}
         </div>
       ) : isImage && rawBase64 ? (
         <ZoomableImagePreview
@@ -702,7 +702,7 @@ function OpenNativeDocumentDialog({ target, onClose }: { target: NativeDocumentT
         />
       ) : (
         <pre className="max-h-[66vh] overflow-auto rounded-xl border border-line bg-sunken p-4 font-mono text-[12.5px] leading-relaxed whitespace-pre-wrap text-ink">
-          {content || '（空文件）'}
+          {content || desktopCopy("（空文件）", "(empty file)")}
         </pre>
       )}
     </Dialog>

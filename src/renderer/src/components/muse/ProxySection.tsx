@@ -1,3 +1,4 @@
+import { useDesktopLocale } from '@/lib/desktopCopy'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { MuseProxyConfigInput, MuseProxyPoolItemView, MuseProxyScheme, MuseProxyView, ProxyTestResult } from '@shared/ipc'
 import { EmptyLine, Section } from '@/components/info/Section'
@@ -148,6 +149,7 @@ export function parseInlineProxyInput(
  * Applies to the account's session partition and its Node-side transport; passwords stay in the keychain.
  */
 export function ProxySection({ accountId }: { accountId: string }) {
+  useDesktopLocale()
   const platformId = useBotStore((s) => s.accounts[accountId]?.platformId)
   const [view, setView] = useState<MuseProxyView | null>(null)
   const [pool, setPool] = useState<MuseProxyPoolItemView[]>([])

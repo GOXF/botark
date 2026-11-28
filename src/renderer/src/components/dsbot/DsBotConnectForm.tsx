@@ -1,3 +1,4 @@
+import { desktopCopy, desktopNotice, useDesktopLocale } from '@/lib/desktopCopy'
 import { useCallback, useEffect, useState } from 'react'
 import { CheckCircle2, Globe, KeyRound, Link2, RefreshCw, ShieldCheck } from 'lucide-react'
 import { getPlatform } from '@adapters/platforms'
@@ -60,6 +61,7 @@ export function DsBotConnectForm({
   onConnected,
   onCancel
 }: DsBotConnectFormProps) {
+  useDesktopLocale()
   const [mode, setMode] = useState<DsBotTransportMode>(initialMode)
   const [displayName, setDisplayName] = useState(initialDisplayName)
   const [mcpUrl, setMcpUrl] = useState(
@@ -103,7 +105,7 @@ export function DsBotConnectForm({
     event.preventDefault()
     const dsBot = getBridge()?.dsBot
     if (!dsBot?.configure) {
-      setError('需要在 Electron 桌面端中连接 DS Bot')
+      setError(desktopCopy("需要在 Electron 桌面端中连接 DS Bot", "Connect DS Bot in the desktop app."))
       return
     }
     setBusy(true)
@@ -119,7 +121,7 @@ export function DsBotConnectForm({
         keepExistingSecret: isEdit && hasExistingSecret && !secret.trim()
       })
       if (!status.signedIn) {
-        setError(status.error || '无法连接到 DS Bot，请检查地址和凭据')
+        setError(status.error || desktopCopy("无法连接到 DS Bot，请检查地址和凭据", "Couldn’t connect to DS Bot. Check the address and credentials."))
         return
       }
       onConnected(status)
@@ -136,7 +138,7 @@ export function DsBotConnectForm({
         <div className="flex items-center gap-2">
           <PlatformGlyph platform={getPlatform('ds-bot')} size="sm" className="size-4" />
           <span className="text-[13.5px] font-semibold text-ink">
-            {isEdit ? '编辑 DS Bot 连接' : '连接 DS Bot 团队'}
+            {isEdit ? desktopCopy("编辑 DS Bot 连接", "Edit DS Bot Connection") : desktopCopy("连接 DS Bot 团队", "Connect to a DS Bot team")}
           </span>
         </div>
         <button
@@ -145,9 +147,7 @@ export function DsBotConnectForm({
           onClick={() => void detectLocal(true)}
           className="inline-flex items-center gap-1 rounded-full border border-line bg-main px-2.5 py-0.5 text-[11px] font-medium text-ink-secondary hover:bg-hover hover:text-ink"
         >
-          <RefreshCw className={cn('size-3', detecting && 'animate-spin')} />
-          检测本机
-        </button>
+          <RefreshCw className={cn('size-3', detecting && 'animate-spin')} />{desktopCopy("检测本机", "Detect local service")}</button>
       </div>
 
       {localInfo && (localInfo.mcpReachable || localInfo.channelReachable) && (
@@ -155,8 +155,8 @@ export function DsBotConnectForm({
           <CheckCircle2 className="size-3.5 shrink-0" />
           <span>
             {localInfo.mcpReachable
-              ? `已检测到本机 DS Bot MCP（端口 ${localInfo.mcpPort}）`
-              : `已检测到本机 DS Bot 服务（端口 ${localInfo.channelPort}）`}
+              ? desktopCopy("已检测到本机 DS Bot MCP（端口 {0}）", "Local DS Bot MCP (port {0}) detected", [(localInfo.mcpPort)])
+              : desktopCopy("已检测到本机 DS Bot 服务（端口 {0}）", "Local DS Bot service detected (port {0})", [(localInfo.channelPort)])}
           </span>
         </div>
       )}
@@ -182,7 +182,7 @@ export function DsBotConnectForm({
               )}
             >
               <Icon className="size-3.5" aria-hidden />
-              <span className="text-[12px] font-medium leading-tight">{opt.label}</span>
+              <span className="text-[12px] font-medium leading-tight">{desktopNotice(opt.label)}</span>
             </button>
           )
         })}
@@ -190,17 +190,17 @@ export function DsBotConnectForm({
 
       <p className="rounded-lg bg-sunken/60 px-3 py-2 text-[11.5px] leading-4 text-ink-secondary">
         <span className="mr-1.5 inline-block rounded bg-accent-50 px-1.5 py-0.5 text-[10.5px] font-medium text-accent-600">
-          {activeSpec.badge}
+          {desktopNotice(activeSpec.badge)}
         </span>
-        {activeSpec.summary}
+        {desktopNotice(activeSpec.summary)}
       </p>
 
       <label className="flex flex-col gap-1">
-        <span className="text-[12px] font-medium text-ink-secondary">团队 / 实例名称（可选）</span>
+        <span className="text-[12px] font-medium text-ink-secondary">{desktopCopy("团队 / 实例名称（可选）", "Team or instance name (optional)")}</span>
         <input
           value={displayName}
           onChange={(e) => setDisplayName(e.target.value)}
-          placeholder="例如：My DS Bot / Home NAS"
+          placeholder={desktopCopy("例如：My DS Bot / Home NAS", "For example: My DS Bot / Home NAS")}
           className="h-9 rounded-lg border border-line bg-main px-3 text-[13px] text-ink outline-none focus:border-accent-600"
         />
       </label>
@@ -208,11 +208,11 @@ export function DsBotConnectForm({
       {mode === 'mcp' && (
         <>
           <label className="flex flex-col gap-1">
-            <span className="text-[12px] font-medium text-ink-secondary">MCP 地址（本机端口或远程 URL）</span>
+            <span className="text-[12px] font-medium text-ink-secondary">{desktopCopy("MCP 地址（本机端口或远程 URL）", "MCP address (local or remote URL)")}</span>
             <input
               value={mcpUrl}
               onChange={(e) => setMcpUrl(e.target.value)}
-              placeholder="http://127.0.0.1:8797/mcp 或 https://dsbot.example.com/mcp"
+              placeholder={desktopCopy("http://127.0.0.1:8797/mcp 或 https://dsbot.example.com/mcp", "http://127.0.0.1:8797/mcp or https://dsbot.example.com/mcp")}
               spellCheck={false}
               required
               className="h-9 rounded-lg border border-line bg-main px-3 font-mono text-[12.5px] text-ink outline-none focus:border-accent-600"
@@ -220,7 +220,7 @@ export function DsBotConnectForm({
           </label>
           <label className="flex flex-col gap-1">
             <span className="text-[12px] font-medium text-ink-secondary">
-              MCP Bearer Token {isEdit && hasExistingSecret ? '（留空沿用已加密保存的 Token）' : ''}
+              MCP Bearer Token {isEdit && hasExistingSecret ? desktopCopy("（留空沿用已加密保存的 Token）", "(leave blank to keep the saved encrypted token)") : ''}
             </span>
             <input
               type="password"
@@ -238,8 +238,7 @@ export function DsBotConnectForm({
       {mode === 'relay' && (
         <label className="flex flex-col gap-1">
           <span className="flex items-center gap-1.5 text-[12px] font-medium text-ink-secondary">
-            <Link2 className="size-3.5" aria-hidden />
-            DS Bot 配对链接 {isEdit && hasExistingSecret ? '（留空沿用当前已配对设备）' : ''}
+            <Link2 className="size-3.5" aria-hidden />{desktopCopy("DS Bot 配对链接 ", "DS Bot pairing link ")}{isEdit && hasExistingSecret ? desktopCopy("（留空沿用当前已配对设备）", "(leave blank to keep the paired device)") : ''}
           </span>
           <textarea
             value={pairingUri}
@@ -256,9 +255,7 @@ export function DsBotConnectForm({
       {mode === 'channel' && (
         <>
           <label className="flex flex-col gap-1">
-            <span className="text-[12px] font-medium text-ink-secondary">
-              DSH Web / Docker 地址（可直接粘贴含 ?token=... 的首次登录 URL）
-            </span>
+            <span className="text-[12px] font-medium text-ink-secondary">{desktopCopy("DSH Web / Docker 地址（可直接粘贴含 ?token=... 的首次登录 URL）", "DSH Web / Docker URL")}</span>
             <input
               value={channelUrl}
               onChange={(e) => setChannelUrl(e.target.value)}
@@ -269,14 +266,12 @@ export function DsBotConnectForm({
             />
           </label>
           <label className="flex flex-col gap-1">
-            <span className="text-[12px] font-medium text-ink-secondary">
-              Cookie（可选：若 URL 不含 ?token=... 时填写）
-            </span>
+            <span className="text-[12px] font-medium text-ink-secondary">{desktopCopy("Cookie（可选：若 URL 不含 ?token=... 时填写）", "Cookie (optional if your URL contains a token)")}</span>
             <input
               type="password"
               value={secret}
               onChange={(e) => setSecret(e.target.value)}
-              placeholder={isEdit && hasExistingSecret ? '留空沿用已保存的签名 Cookie' : '留空自动通过 ?token= 换取'}
+              placeholder={isEdit && hasExistingSecret ? desktopCopy("留空沿用已保存的签名 Cookie", "Leave blank to keep the saved cookie") : desktopCopy("留空自动通过 ?token= 换取", "Leave blank to use the token in the URL")}
               spellCheck={false}
               className="h-9 rounded-lg border border-line bg-main px-3 font-mono text-[12.5px] text-ink outline-none focus:border-accent-600"
             />
@@ -286,18 +281,16 @@ export function DsBotConnectForm({
 
       {error && (
         <div role="alert" className="rounded-xl border border-status-error/30 bg-status-error/8 px-3 py-2 text-[12px] text-status-error">
-          {error}
+          {desktopNotice(error)}
         </div>
       )}
 
       <div className="flex items-center justify-end gap-2 pt-1">
         {onCancel && (
-          <Button type="button" size="sm" variant="ghost" disabled={busy} onClick={onCancel}>
-            取消
-          </Button>
+          <Button type="button" size="sm" variant="ghost" disabled={busy} onClick={onCancel}>{desktopCopy("取消", "Cancel")}</Button>
         )}
         <Button type="submit" size="sm" variant="primary" disabled={busy}>
-          {busy ? '正在验证并同步团队…' : submitLabel || (isEdit ? '保存并重新连接' : '连接并同步全部 Bot')}
+          {busy ? desktopCopy("正在验证并同步团队…", "Verifying and syncing the team…") : submitLabel || (isEdit ? desktopCopy("保存并重新连接", "Save and reconnect") : desktopCopy("连接并同步全部 Bot", "Connect and sync all bots"))}
         </Button>
       </div>
     </form>

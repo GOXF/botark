@@ -1,3 +1,4 @@
+import { desktopCopy, useDesktopLocale } from '@/lib/desktopCopy'
 import { useEffect, useState } from 'react'
 import { getPlatform } from '@adapters/platforms'
 import { adapterRegistry } from '@adapters/registry'
@@ -44,6 +45,7 @@ import { WorkspaceTools } from './WorkspaceTools'
 type RoomTab = 'overview' | 'workspace' | 'slack' | 'handoff'
 
 export function RoomInspectorPanel({ room }: { room: CollabRoom }) {
+  useDesktopLocale()
   const toggleInfoPanel = useBotStore((s) => s.toggleInfoPanel)
   const bots = useBotStore((s) => s.bots)
   const accounts = useBotStore((s) => s.accounts)
@@ -78,7 +80,7 @@ export function RoomInspectorPanel({ room }: { room: CollabRoom }) {
     <>
       <PaneHeader className="pr-3">
         <IconButton
-          label="关闭"
+          label={desktopCopy("关闭", "Close")}
           shortcut={shortcutLabel('I')}
           className="no-drag ml-auto"
           onClick={toggleInfoPanel}
@@ -100,7 +102,7 @@ export function RoomInspectorPanel({ room }: { room: CollabRoom }) {
             {editing ? (
               <InlineEdit
                 value={room.title}
-                label="群聊名称"
+                label={desktopCopy("群聊名称", "Group chat name")}
                 className="h-7 text-[15px] font-semibold"
                 onCommit={(next) => renameRoom(room.id, next)}
                 onDone={() => setEditing(false)}
@@ -110,9 +112,9 @@ export function RoomInspectorPanel({ room }: { room: CollabRoom }) {
                 {room.title}
               </p>
             )}
-            <p className="mt-0.5 text-[12px] text-ink-muted">{room.members.length} 位成员</p>
+            <p className="mt-0.5 text-[12px] text-ink-muted">{room.members.length}{desktopCopy(" 位成员", " Members")}</p>
           </div>
-          <IconButton label="重命名" className="shrink-0" onClick={() => setEditing(true)}>
+          <IconButton label={desktopCopy("重命名", "Rename")} className="shrink-0" onClick={() => setEditing(true)}>
             <Pencil />
           </IconButton>
         </div>
@@ -124,11 +126,11 @@ export function RoomInspectorPanel({ room }: { room: CollabRoom }) {
             onValueChange={setTab}
             fullWidth
             size="xs"
-            aria-label="协作设置"
+            aria-label={desktopCopy("协作设置", "Collaboration Settings")}
             options={((opts) => (opts.length > 3 ? opts.map(({ icon: _icon, ...o }) => o) : opts))([
               // Four tabs don't fit the narrow panel with icons ("工…" / "Sla…"), so drop the icons then.
-              { value: 'overview' as const, label: '编排', icon: <ArkRelayOrbSvg /> },
-              { value: 'workspace' as const, label: '工作区', icon: <ArkWorkspaceVaultSvg /> },
+              { value: 'overview' as const, label: desktopCopy("编排", "Coordination"), icon: <ArkRelayOrbSvg /> },
+              { value: 'workspace' as const, label: desktopCopy("工作区", "Workspace"), icon: <ArkWorkspaceVaultSvg /> },
               ...(isGlobalAdmin(room) ? [] : [{ value: 'slack' as const, label: 'Slack', icon: <ArkSlackWeaveSvg /> }]),
               { value: 'handoff' as const, label: '交接', icon: undefined }
             ])}
@@ -138,9 +140,9 @@ export function RoomInspectorPanel({ room }: { room: CollabRoom }) {
         <div key={`${room.id}:${tab}`} className="animate-veil-in">
           {tab === 'overview' && (
             <>
-              <Section title="调度">
+              <Section title={desktopCopy("调度", "Coordination")}>
                 <div className="flex flex-col gap-2.5 text-[12px]">
-                  {isGlobalAdmin(room) ? <p>管理员可向已添加的 Bot 分派任务，回复在此汇总。</p> : <>
+                  {isGlobalAdmin(room) ? <p>{desktopCopy("管理员可向已添加的 Bot 分派任务，回复在此汇总。", "The coordinator can delegate to added bots. Their replies appear here.")}</p> : <>
                     <SegmentedControl<CollabRoom['mode'] | 'admin'>
                       value={room.coordinatorId ? 'admin' : room.mode}
                       onValueChange={(mode) => mode === 'admin'
@@ -150,8 +152,8 @@ export function RoomInspectorPanel({ room }: { room: CollabRoom }) {
                       size="xs"
                       // Three options don't fit the narrow panel with an icon ("自主…"), so none carries one.
                       options={[
-                        { value: 'auto', label: '自主接力' },
-                        { value: 'manual', label: '手动 @' },
+                        { value: 'auto', label: desktopCopy("自主接力", "Automatic handoff") },
+                        { value: 'manual', label: desktopCopy("手动 @", "Manual @mentions") },
                         { value: 'admin', label: '群管理员' }
                       ]}
                     />
@@ -169,20 +171,20 @@ export function RoomInspectorPanel({ room }: { room: CollabRoom }) {
                   </>}
 
                   <div className="flex items-center justify-between">
-                    <span className="text-[12px] text-ink-secondary">单轮上限</span>
+                    <span className="text-[12px] text-ink-secondary">{desktopCopy("单轮上限", "Per-turn limit")}</span>
                     <NumberStepper
                       value={room.limit}
                       onChange={(limit) => updateRoomConfig(room.id, { limit })}
                       min={1}
                       max={24}
-                      suffix="轮"
-                      aria-label="单轮上限"
+                      suffix={desktopCopy("轮", " rounds")}
+                      aria-label={desktopCopy("单轮上限", "Per-turn limit")}
                     />
                   </div>
                 </div>
               </Section>
 
-              <Section title="成员" count={room.members.length} flush
+              <Section title={desktopCopy("成员", "Members")} count={room.members.length} flush
                 action={<IconButton size="sm" label={isGlobalAdmin(room) ? '管理员调度自动同步 Bot 列表' : '添加成员'}
                   disabled={isGlobalAdmin(room)} onClick={() => setAdding(true)}><Plus aria-hidden /></IconButton>}>
                 <AddRoomMembersDialog roomId={room.id} open={adding} onOpenChange={setAdding} />
@@ -227,7 +229,7 @@ export function RoomInspectorPanel({ room }: { room: CollabRoom }) {
                       <li
                         key={m.botId}
                         draggable={!cannotRemove && !isMoving}
-                        title={cannotRemove ? undefined : `拖到 Bot 列表可移出，拖到其他群聊可转移`}
+                        title={cannotRemove ? undefined : desktopCopy("拖到 Bot 列表可移出，拖到其他群聊可转移", "Drag to the bot list to remove this member, or to another group chat to move them.")}
                         onDragStart={(e) => {
                           e.dataTransfer.effectAllowed = 'move'
                           e.dataTransfer.setData(ROOM_MEMBER_DRAG_MIME, encodeRoomMemberDrag(room.id, m.botId))
@@ -262,8 +264,8 @@ export function RoomInspectorPanel({ room }: { room: CollabRoom }) {
                             {bot && (
                               <button
                                 type="button"
-                                title={`打开 ${m.name}`}
-                                aria-label={`打开 ${m.name}`}
+                                title={desktopCopy("打开 {0}", "Open {0}", [(m.name)])}
+                                aria-label={desktopCopy("打开 {0}", "Open {0}", [(m.name)])}
                                 onClick={() => selectBot(bot.id)}
                                 className="press-icon grid size-6 place-items-center rounded-full text-ink-muted hover:bg-active hover:text-ink"
                               >
@@ -274,10 +276,10 @@ export function RoomInspectorPanel({ room }: { room: CollabRoom }) {
                               type="button"
                               title={
                                 cannotRemove
-                                  ? '群聊至少保留一位成员'
-                                  : `将 ${m.name} 移动到其他群组`
+                                  ? desktopCopy("群聊至少保留一位成员", "A group chat must keep at least one member.")
+                                  : desktopCopy("将 {0} 移动到其他群组", "Move {0} to another group", [(m.name)])
                               }
-                              aria-label={`移动 ${m.name}`}
+                              aria-label={desktopCopy("移动 {0}", "Move {0}", [(m.name)])}
                               disabled={cannotRemove}
                               onClick={() => {
                                 setMemberFeedback(null)
@@ -299,7 +301,7 @@ export function RoomInspectorPanel({ room }: { room: CollabRoom }) {
                             </button>
                             <button
                               type="button"
-                              title={isGlobalAdmin(room) ? '管理员调度自动同步 Bot 列表' : cannotRemove ? '群聊至少保留一位成员' : `移出 ${m.name}`}
+                              title={isGlobalAdmin(room) ? desktopCopy("管理员调度自动同步 Bot 列表", "Bots are synced automatically in coordinator-managed chats.") : cannotRemove ? desktopCopy("群聊至少保留一位成员", "A group chat must keep at least one member.") : `移出 ${m.name}`}
                               aria-label={`移出 ${m.name}`}
                               disabled={cannotRemove}
                               onClick={() => {
@@ -307,7 +309,7 @@ export function RoomInspectorPanel({ room }: { room: CollabRoom }) {
                                 if (!res.ok) {
                                   setMemberFeedback({
                                     kind: 'error',
-                                    text: res.error ?? '无法移出成员'
+                                    text: res.error ?? desktopCopy("无法移出成员", "Couldn’t remove the member.")
                                   })
                                 } else {
                                   if (isMoving) {
@@ -316,7 +318,7 @@ export function RoomInspectorPanel({ room }: { room: CollabRoom }) {
                                   }
                                   setMemberFeedback({
                                     kind: 'success',
-                                    text: `已将 ${m.name} 移出当前群聊`
+                                    text: desktopCopy("已将 {0} 移出当前群聊", "Removed {0} from the current group chat.", [(m.name)])
                                   })
                                 }
                               }}
@@ -333,7 +335,7 @@ export function RoomInspectorPanel({ room }: { room: CollabRoom }) {
                         {isMoving && (
                           <div className="flex flex-col gap-1.5 rounded-lg border border-line bg-surface p-2 text-[11.5px]">
                             {otherRooms.length === 0 ? (
-                              <span className="text-ink-muted">暂无其他群聊可转移</span>
+                              <span className="text-ink-muted">{desktopCopy("暂无其他群聊可转移", "No other group chats are available.")}</span>
                             ) : (
                               <>
                                 <Select
@@ -347,7 +349,7 @@ export function RoomInspectorPanel({ room }: { room: CollabRoom }) {
                                         tm.botId === m.botId ||
                                         tm.name.toLowerCase() === m.name.toLowerCase()
                                     )
-                                    const reason = dup ? '已存在' : ''
+                                    const reason = dup ? desktopCopy("已存在", "Exists") : ''
                                     return { value: r.id, label: r.title, description: reason || undefined, disabled: Boolean(reason) }
                                   })}
                                 />
@@ -360,9 +362,7 @@ export function RoomInspectorPanel({ room }: { room: CollabRoom }) {
                                       setTargetRoomId('')
                                     }}
                                     className="h-6 px-2 text-[11px]"
-                                  >
-                                    取消
-                                  </Button>
+                                  >{desktopCopy("取消", "Cancel")}</Button>
                                   <Button
                                     size="sm"
                                     variant="primary"
@@ -373,21 +373,19 @@ export function RoomInspectorPanel({ room }: { room: CollabRoom }) {
                                       if (!res.ok) {
                                         setMemberFeedback({
                                           kind: 'error',
-                                          text: res.error ?? '转移成员失败'
+                                          text: res.error ?? desktopCopy("转移成员失败", "Couldn’t move the member.")
                                         })
                                       } else {
                                         setMovingBotId(null)
                                         setTargetRoomId('')
                                         setMemberFeedback({
                                           kind: 'success',
-                                          text: `已将 ${m.name} 转移到「${target?.title ?? '目标群聊'}」`
+                                          text: `已将 ${m.name} 转移到「${target?.title ?? desktopCopy("目标群聊", "Destination group chat")}」`
                                         })
                                       }
                                     }}
                                     className="h-6 px-2.5 text-[11px]"
-                                  >
-                                    确认转移
-                                  </Button>
+                                  >{desktopCopy("确认转移", "Confirm move")}</Button>
                                 </div>
                               </>
                             )}
@@ -399,7 +397,7 @@ export function RoomInspectorPanel({ room }: { room: CollabRoom }) {
                 </ul>
               </Section>
 
-              <Section title="操作">
+              <Section title={desktopCopy("操作", "Actions")}>
                 <div className="flex items-center gap-1.5">
                   <Button
                     size="sm"
@@ -408,19 +406,15 @@ export function RoomInspectorPanel({ room }: { room: CollabRoom }) {
                     onClick={() => exportRoomMarkdownFile(room)}
                     className="flex-1"
                   >
-                    <ArkExportDocSvg className="size-3.5" />
-                    导出
-                  </Button>
+                    <ArkExportDocSvg className="size-3.5" />{desktopCopy("导出", "Export")}</Button>
                   <Button
                     size="sm"
                     variant="ghost"
                     disabled={room.messages.length === 0}
                     onClick={() => clearRoomTranscript(room.id)}
-                    title="清空对话"
+                    title={desktopCopy("清空对话", "Clear conversation")}
                   >
-                    <RotateCcw className="size-3.5" />
-                    清空
-                  </Button>
+                    <RotateCcw className="size-3.5" />{desktopCopy("清空", "Clear")}</Button>
                   <Button
                     size="sm"
                     variant={confirmDelete ? 'danger-confirm' : 'danger'}
@@ -434,7 +428,7 @@ export function RoomInspectorPanel({ room }: { room: CollabRoom }) {
                     onBlur={() => setConfirmDelete(false)}
                   >
                     <Trash2 className="size-3.5" />
-                    {confirmDelete ? '确认' : '删除'}
+                    {confirmDelete ? desktopCopy("确认", "Confirm") : desktopCopy("删除", "Delete")}
                   </Button>
                 </div>
               </Section>
@@ -461,7 +455,7 @@ export function RoomInspectorPanel({ room }: { room: CollabRoom }) {
 
           {tab === 'slack' && !room.coordinatorId &&
             (room.slackParent ? (
-              <Section title="Slack 线程">
+              <Section title={desktopCopy("Slack 线程", "Slack Thread")}>
                 <p className="font-mono text-[11.5px] text-ink-secondary">
                   {room.slackChannel} · {room.slackThread}
                 </p>

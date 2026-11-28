@@ -1,3 +1,4 @@
+import { nativeDisplayCopy } from '../nativeDisplayCopy'
 import { BrowserWindow, session as electronSession, shell, type WebContents } from 'electron'
 import { getAppWindowIcon } from '../appIcon'
 import {
@@ -250,7 +251,7 @@ export async function openGrokLoginWindow(
     height: 720,
     minWidth: 680,
     minHeight: 540,
-    title: '登录 Grok Bot',
+    title: nativeDisplayCopy("登录 Grok Bot", "Sign in to Grok Bot"),
     backgroundColor: '#f7f7f8',
     autoHideMenuBar: true,
     ...(windowIcon ? { icon: windowIcon } : {}),
@@ -294,7 +295,7 @@ export async function openGrokLoginWindow(
         overrideBrowserWindowOptions: {
           width: 520,
           height: 680,
-          title: '安全授权',
+          title: nativeDisplayCopy("安全授权", "Secure sign-in"),
           ...(windowIcon ? { icon: windowIcon } : {}),
           parent: win && !win.isDestroyed() ? win : undefined,
           autoHideMenuBar: true,
@@ -339,8 +340,8 @@ export async function openGrokLoginWindow(
           void win.webContents
             .executeJavaScript(
               buildGoogleFallbackBannerScript({
-                title: '已自动切换至系统默认浏览器完成 Google 授权',
-                detail: '请在系统浏览器中完成登录并确认授权，完成后 BotArk 将自动同步账号与 Bot。'
+                title: nativeDisplayCopy("已自动切换至系统默认浏览器完成 Google 授权", "Google sign-in opened in your default browser."),
+                detail: nativeDisplayCopy("请在系统浏览器中完成登录并确认授权，完成后 BotArk 将自动同步账号与 Bot。", "Finish signing in and confirm access in your browser. BotArk will then sync your account and bots.")
               }),
               true
             )

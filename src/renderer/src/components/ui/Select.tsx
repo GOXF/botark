@@ -1,3 +1,4 @@
+import { desktopCopy, useDesktopLocale } from '@/lib/desktopCopy'
 import { useState, type ReactNode } from 'react'
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu'
 import { Check, ChevronDown } from 'lucide-react'
@@ -54,7 +55,7 @@ export function Select<T extends string = string>({
   value,
   onValueChange,
   options,
-  placeholder = '请选择…',
+  placeholder = desktopCopy("请选择…", "Please choose…"),
   variant = 'field',
   size = 'md',
   leadingIcon,
@@ -68,6 +69,7 @@ export function Select<T extends string = string>({
   menuClassName,
   footer
 }: SelectProps<T>) {
+  useDesktopLocale()
   const [open, setOpen] = useState(false)
   useOverlayLock(open)
 

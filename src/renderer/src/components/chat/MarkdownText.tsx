@@ -1,3 +1,4 @@
+import { desktopCopy, useDesktopLocale } from '@/lib/desktopCopy'
 import { type ReactNode, memo, useState } from 'react'
 import { Check, Copy, Download, Image as ImageIcon, ZoomIn } from 'lucide-react'
 import { cn } from '@/lib/cn'
@@ -16,6 +17,7 @@ import { t } from '@/lib/i18n'
  */
 
 function InlineMarkdownImage({ src, alt }: { src: string; alt: string }) {
+  useDesktopLocale()
   const [zoomed, setZoomed] = useState(false)
   const [failed, setFailed] = useState(false)
 
@@ -52,7 +54,7 @@ function InlineMarkdownImage({ src, alt }: { src: string; alt: string }) {
           type="button"
           onClick={() => setZoomed(true)}
           className="block cursor-zoom-in"
-          title="点击放大查看"
+          title={desktopCopy("点击放大查看", "Click to zoom in")}
         >
           <img
             src={src}
@@ -63,10 +65,10 @@ function InlineMarkdownImage({ src, alt }: { src: string; alt: string }) {
           />
         </button>
         <span className="pointer-events-none absolute top-2 right-2 flex items-center gap-1 opacity-0 transition-opacity group-hover/mdimg:opacity-100">
-          <ImageOverlayButton label="放大查看" onClick={() => setZoomed(true)}>
+          <ImageOverlayButton label={desktopCopy("放大查看", "Zoom In")} onClick={() => setZoomed(true)}>
             <ZoomIn />
           </ImageOverlayButton>
-          <ImageOverlayButton label="保存图片" onClick={saveImage}>
+          <ImageOverlayButton label={desktopCopy("保存图片", "Save Picture")} onClick={saveImage}>
             <Download />
           </ImageOverlayButton>
         </span>
@@ -77,6 +79,7 @@ function InlineMarkdownImage({ src, alt }: { src: string; alt: string }) {
 }
 
 function CodeBlock({ lang, code }: { lang: string; code: string }) {
+  useDesktopLocale()
   const [copied, setCopied] = useState(false)
 
   const onCopy = () => {
@@ -99,7 +102,7 @@ function CodeBlock({ lang, code }: { lang: string; code: string }) {
           className="inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[11px] text-ink-secondary hover:bg-hover hover:text-ink"
         >
           {copied ? <Check className="size-3 text-status-online" /> : <Copy className="size-3" />}
-          {copied ? '已复制' : t('Copy')}
+          {copied ? desktopCopy("已复制", "Copied") : t('Copy')}
         </button>
       </div>
       <pre className="overflow-x-auto px-3 py-2.5 font-mono text-[12.5px] leading-[1.55] text-ink">
@@ -348,7 +351,7 @@ function renderInline(
             key={`${keyPrefix}-fc-${i}`}
             type="button"
             onClick={() => onFileLinkClick(inner.replace(/^\/+/, ''), inner)}
-            title="点击原生打开预览"
+            title={desktopCopy("点击原生打开预览", "Click to open a raw preview")}
             className="rounded-full bg-sunken px-1.5 py-0.5 font-mono text-[0.9em] text-accent-600 underline decoration-dotted underline-offset-2 hover:bg-hover"
           >
             {inner}

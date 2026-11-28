@@ -1,3 +1,4 @@
+import { desktopCopy, useDesktopLocale } from '@/lib/desktopCopy'
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { HarkLiveView } from './HarkLiveView'
 import { createPortal } from 'react-dom'
@@ -32,6 +33,7 @@ function clock(at: number): string {
  * screenshot history, save and "open in web".
  */
 export function HarkBrowserCard({ accountId, sessionId, attention = false }: { accountId: string; sessionId?: string; attention?: boolean }) {
+  useDesktopLocale()
   const [preview, setPanel] = useState<HarkBrowserPreview | null>(null)
   // GOXF: Hark can run several browsers at once; pick which one the card, side column and full view show.
   const [pick, setPick] = useState(-1)
@@ -276,7 +278,7 @@ export function HarkBrowserCard({ accountId, sessionId, attention = false }: { a
           <div className="relative mx-3 grid min-h-0 flex-1 place-items-center overflow-hidden rounded-xl bg-white/[0.06]">
             {live && <HarkLiveView src={live} accountId={accountId} onState={setLivePainted} className="h-full w-full border-0" />}
             {live && livePainted ? null
-              : image ? <img src={image} alt="Hark 远程浏览器截图" className="max-h-full max-w-full object-contain" />
+              : image ? <img src={image} alt={desktopCopy("Hark 远程浏览器截图", "Hark remote browser screenshot")} className="max-h-full max-w-full object-contain" />
               : <span className="text-white/55">{error || '暂无画面'}</span>}
           </div>
           <footer className="flex shrink-0 items-center gap-2 p-3"><div className="min-w-0 flex-1"><StepPill dark /></div></footer>
@@ -302,7 +304,7 @@ export function HarkBrowserCard({ accountId, sessionId, attention = false }: { a
               {live && !viewing && <HarkLiveView src={live} accountId={accountId} onState={setLivePainted}
                 className="aspect-video max-h-full w-full border-0" />}
               {live && !viewing && livePainted ? null
-                : shown ? <img src={shown.src} alt="Hark 远程浏览器截图" className="max-h-full max-w-full object-contain" />
+                : shown ? <img src={shown.src} alt={desktopCopy("Hark 远程浏览器截图", "Hark remote browser screenshot")} className="max-h-full max-w-full object-contain" />
                 : <span className="text-white/55">{error || '暂无截图'}</span>}
             </div>
             <aside className="flex w-80 shrink-0 flex-col gap-4 overflow-y-auto rounded-xl bg-white/[0.08] p-4">

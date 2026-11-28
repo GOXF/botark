@@ -1,3 +1,4 @@
+import { nativeDisplayCopy } from '../nativeDisplayCopy'
 /**
  * Isolated per-account BrowserWindow login for Cue by Manus (`cue.im` / `app.cue.im`).
  *
@@ -213,7 +214,7 @@ export async function openCueLoginWindow(
     height: 780,
     minWidth: 720,
     minHeight: 560,
-    title: '使用 Cue 登录',
+    title: nativeDisplayCopy("使用 Cue 登录", "Sign in to Cue"),
     backgroundColor: '#18181b',
     autoHideMenuBar: true,
     ...(windowIcon ? { icon: windowIcon } : {}),
@@ -249,7 +250,7 @@ export async function openCueLoginWindow(
     void startCueBrowserLogin(accountId).catch((err) => {
       if (!win.isDestroyed()) {
         void dialog.showMessageBox(win, {
-          type: 'error', message: '无法打开 Cue 浏览器登录', detail: err instanceof Error ? err.message : String(err)
+          type: 'error', message: nativeDisplayCopy("无法打开 Cue 浏览器登录", "Couldn’t open Cue sign-in in your browser."), detail: err instanceof Error ? err.message : String(err)
         })
       }
     })
@@ -296,14 +297,14 @@ export async function openCueLoginWindow(
       // works here), and stealing focus while its dialog is up makes the ceremony fail.
       await wc.executeJavaScript(
         buildGoogleFallbackBannerScript({
-          title: '通行密钥无法完成时，可改用系统浏览器或密码登录',
+          title: nativeDisplayCopy("通行密钥无法完成时，可改用系统浏览器或密码登录", "If passkey sign-in doesn’t work, use your browser or sign in with a password."),
           detail:
-            '若 Windows 安全中心提示「使用通行密钥登录时出现问题」(密钥状态无效 0x8009000B)，可点「取消」在 Google 页面改用密码登录，或点击右侧「在系统浏览器登录」（Chrome / Edge 登录后会自动回到 BotArk）。',
-          buttonLabel: '在系统浏览器登录',
+            nativeDisplayCopy("若 Windows 安全中心提示「使用通行密钥登录时出现问题」(密钥状态无效 0x8009000B)，可点「取消」在 Google 页面改用密码登录，或点击右侧「在系统浏览器登录」（Chrome / Edge 登录后会自动回到 BotArk）。", "If Windows Security shows a passkey error (0x8009000B), cancel and choose another sign-in option in Google or open sign-in in your browser."),
+          buttonLabel: nativeDisplayCopy("在系统浏览器登录", "Sign in with your browser"),
           actionUrl: 'botark-external://open',
           secondaryActions: [
-            { label: '尝试兼容模式重试', actionUrl: 'botark-action://retry-firefox-ua' },
-            { label: '改用邮箱验证码登录', actionUrl: 'botark-action://back-to-login' }
+            { label: nativeDisplayCopy("尝试兼容模式重试", "Retry in compatibility mode"), actionUrl: 'botark-action://retry-firefox-ua' },
+            { label: nativeDisplayCopy("改用邮箱验证码登录", "Sign in with an email code"), actionUrl: 'botark-action://back-to-login' }
           ]
         }),
         true
@@ -355,7 +356,7 @@ export async function openCueLoginWindow(
           overrideBrowserWindowOptions: {
             width: 540,
             height: 700,
-            title: 'Cue 安全登录',
+            title: nativeDisplayCopy("Cue 安全登录", "Cue secure sign-in"),
             backgroundColor: '#18181b',
             autoHideMenuBar: true,
             ...(windowIcon ? { icon: windowIcon } : {}),
@@ -452,7 +453,7 @@ export async function openCueLoginWindow(
   // never hangs waiting for cue.im chunks + Turnstile.
   void (async () => {
     try {
-      await win.loadURL(CUE_LOADING_PAGE_URL)
+      await win.loadURL(cueLoadingPageUrl())
     } catch {
       /* ignore: the real page load below is what matters */
     }
@@ -463,14 +464,16 @@ export async function openCueLoginWindow(
   })()
 }
 
-const CUE_LOADING_PAGE_HTML = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>使用 Cue 登录</title>
+function cueLoadingPageUrl(): string {
+  const html = `<!doctype html><html lang="${nativeDisplayCopy("zh-CN", "en")}"><head><meta charset="utf-8"><title>${nativeDisplayCopy("使用 Cue 登录", "Sign in to Cue")}</title>
 <style>html,body{margin:0;height:100%;background:#18181b;color:#e4e4e7;font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif}
 body{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px}
 .s{width:28px;height:28px;border-radius:50%;border:3px solid #3f3f46;border-top-color:#e4e4e7;animation:r .8s linear infinite}
 @keyframes r{to{transform:rotate(360deg)}}p{margin:0;color:#a1a1aa;font-size:13px}</style></head>
-<body><div class="s"></div><div>正在打开 Cue 登录页…</div><p>首次连接 cue.im 可能需要几秒钟</p></body></html>`
+<body><div class="s"></div><div>${nativeDisplayCopy("正在打开 Cue 登录页…", "Opening Cue sign-in…")}</div><p>${nativeDisplayCopy("首次连接 cue.im 可能需要几秒钟", "The first connection to Cue may take a few seconds.")}</p></body></html>`
 
-export const CUE_LOADING_PAGE_URL = `data:text/html;charset=utf-8,${encodeURIComponent(CUE_LOADING_PAGE_HTML)}`
+  return `data:text/html;charset=utf-8,${encodeURIComponent(html)}`
+}
 
 export async function cancelCueLogin(accountId: string): Promise<void> {
   revokeCueLoginNonce(accountId)

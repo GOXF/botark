@@ -1,3 +1,4 @@
+import { desktopCopy, useDesktopLocale } from '@/lib/desktopCopy'
 import { useCallback, useEffect, useState } from 'react'
 import { ExternalLink } from 'lucide-react'
 import type { MuseQuotaSnapshot } from '@shared/ipc'
@@ -24,6 +25,7 @@ function ProgressBar({ value }: { value: number }) {
 }
 
 export function QuotaSection({ accountId }: { accountId: string }) {
+  useDesktopLocale()
   const [snap, setSnap] = useState<MuseQuotaSnapshot | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string>()
@@ -67,18 +69,18 @@ export function QuotaSection({ accountId }: { accountId: string }) {
   }
 
   return (
-    <Section title="额度管理" action={<RefreshButton loading={loading} onClick={() => void refresh()} />}>
+    <Section title={desktopCopy("额度管理", "Manage quotas")} action={<RefreshButton loading={loading} onClick={() => void refresh()} />}>
       {error && snap?.errorCode !== 'action_not_found' && <p className="pb-1 text-[12px] text-status-error">{error}</p>}
       {!sub ? (
         <div className="flex items-center justify-between gap-2">
-          <EmptyLine>{loading ? t('Loading usage…') : online ? (snap?.errorCode === 'action_not_found' ? 'Muse 改版了，暂时读不到额度' : t('Usage unavailable')) : '请先登录 Muse 账号'}</EmptyLine>
+          <EmptyLine>{loading ? t('Loading usage…') : online ? (snap?.errorCode === 'action_not_found' ? 'Muse 改版了，暂时读不到额度' : t('Usage unavailable')) : desktopCopy("请先登录 Muse 账号", "Sign in to Muse first.")}</EmptyLine>
           {!loading && online && (
             <button
               type="button"
               onClick={openMuseWeb}
               className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-md px-1.5 py-0.5 text-[11px] text-ink-secondary hover:bg-hover hover:text-ink"
             >
-              <span>前往 Muse 查看</span>
+              <span>{desktopCopy("前往 Muse 查看", "Go to Muse")}</span>
               <ExternalLink className="size-3 shrink-0" aria-hidden />
             </button>
           )}

@@ -1,3 +1,4 @@
+import { nativeDisplayCopy } from '../nativeDisplayCopy'
 import { createServer, type Server as HttpServer } from 'node:http'
 import { randomBytes, randomUUID } from 'node:crypto'
 import { constants, closeSync, existsSync, fstatSync, openSync, readSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
@@ -304,7 +305,7 @@ async function approve(win: BrowserWindow, message: string, detail: string) {
     type: 'question',
     message,
     detail,
-    buttons: ['取消', '允许一次'],
+    buttons: [nativeDisplayCopy("取消", "Cancel"), nativeDisplayCopy("允许一次", "Allow once")],
     defaultId: 0,
     cancelId: 0,
     noLink: true
@@ -371,8 +372,8 @@ async function invoke(
     const boundRoot = binding.root
     await approve(
       win,
-      `${recipient} 请求使用 ${tool}`,
-      `目录：${boundRoot}\n参数：${JSON.stringify(args, null, 2)}`
+      nativeDisplayCopy('{0} 请求使用 {1}', '{0} is requesting permission to use {1}', [recipient, tool]),
+      nativeDisplayCopy('目录：{0}\n参数：{1}', 'Directory: {0}\nArguments: {1}', [boundRoot, JSON.stringify(args, null, 2)])
     )
     assertScope()
     return workspaceFile(boundRoot, tool, args, assertScope)
@@ -386,8 +387,12 @@ async function invoke(
 
   await approve(
     win,
-    `${recipient} 请求使用 ${tool}`,
-    `服务：${entry.name}\n${entry.ext.launchDirectory ? `目录：${entry.ext.launchDirectory}\n` : ''}参数：${JSON.stringify(args, null, 2)}`
+    nativeDisplayCopy('{0} 请求使用 {1}', '{0} is requesting permission to use {1}', [recipient, tool]),
+    [
+      nativeDisplayCopy('服务：{0}', 'Server: {0}', [entry.name]),
+      ...(entry.ext.launchDirectory ? [nativeDisplayCopy('目录：{0}', 'Directory: {0}', [entry.ext.launchDirectory])] : []),
+      nativeDisplayCopy('参数：{0}', 'Arguments: {0}', [JSON.stringify(args, null, 2)])
+    ].join('\n')
   )
   assertScope()
   const latest = advertisedTools(effectiveEntries(scopeId, binding)).get(tool)
@@ -489,9 +494,13 @@ function launchDirectory(ownerScope: McpConfigScope, ext: External, binding?: Bi
 
 function describeServerTarget(config: ParsedMcpServer, cwd?: string): string {
   if (config.command) {
-    return `以当前用户身份运行本地程序：${config.command} ${JSON.stringify(config.args ?? [])}\n目录：${cwd}\n该程序可以访问当前用户可访问的文件。`
+    return nativeDisplayCopy(
+      '以当前用户身份运行本地程序：{0} {1}\n目录：{2}\n该程序可以访问当前用户可访问的文件。',
+      'Run a local program as the current user: {0} {1}\nDirectory: {2}\nThis program can access any file the current user can access.',
+      [config.command, JSON.stringify(config.args ?? []), cwd]
+    )
   }
-  return `连接 ${new URL(config.url!).origin}`
+  return nativeDisplayCopy('连接 {0}', 'Connect to {0}', [new URL(config.url!).origin])
 }
 
 async function connectWithTimeout(
@@ -561,7 +570,7 @@ async function startExternal(
     if (ext.replacement) await ext.replacement
     if (ext.closing) await ext.closing
     assertStarting()
-    await (approval ? approval() : approve(win, `启动 MCP 服务 ${name}`, describeServerTarget(ext.config, cwd)))
+    await (approval ? approval() : approve(win, nativeDisplayCopy('启动 MCP 服务 {0}', 'Start MCP server {0}', [name]), describeServerTarget(ext.config, cwd)))
     assertStarting()
 
     const timeoutTimer = setTimeout(() => {
@@ -848,7 +857,7 @@ async function connectHermes(
   if (!targetPath) {
     const defaultYaml = join(getHermesHome(), 'config.yaml')
     const pick = await dialog.showOpenDialog(win, {
-      title: '选择此 Hermes 实例的 config.yaml',
+      title: nativeDisplayCopy("选择此 Hermes 实例的 config.yaml", "Choose the config.yaml for this Hermes instance"),
       defaultPath: existsSync(defaultYaml) ? defaultYaml : undefined,
       properties: ['openFile'],
       filters: [{ name: 'Hermes YAML', extensions: ['yaml', 'yml'] }]
@@ -862,8 +871,9 @@ async function connectHermes(
   if (config.errors.length) throw new Error('配置文件不是有效 YAML')
   await approve(
     win,
-    '将本地工作区接入 Hermes',
-    `${path}\nmcp_servers.botark_workspace 将指向 ${root}。重新加载 Hermes 配置后生效。`
+    nativeDisplayCopy('将本地工作区接入 Hermes', 'Connect the local workspace to Hermes'),
+    nativeDisplayCopy('{0}\nmcp_servers.botark_workspace 将指向 {1}。重新加载 Hermes 配置后生效。',
+      '{0}\nmcp_servers.botark_workspace will point to {1}. Reload the Hermes configuration to apply this change.', [path, root])
   )
   await withStateLock(async () => {
     assertBinding()
@@ -1178,7 +1188,7 @@ async function bindDirectory(
   let rawDir = requestedDir?.trim()
   if (!rawDir) {
     const pick = await dialog.showOpenDialog(win, {
-      title: '授权工作区目录',
+      title: nativeDisplayCopy("授权工作区目录", "Grant access to a workspace folder"),
       properties: ['openDirectory']
     })
     if (pick.canceled || !pick.filePaths[0]) {
@@ -1244,12 +1254,12 @@ async function batchStartServers(
   if (!candidates.length) return { startedServers, failedServers }
 
   const detail = candidates
-    .map((c) => `• ${c.name}：${describeServerTarget(c.ext.config, launchDirectory(c.ownerScope, c.ext, binding))}`)
+    .map((c) => nativeDisplayCopy('• {0}：{1}', '• {0}: {1}', [c.name, describeServerTarget(c.ext.config, launchDirectory(c.ownerScope, c.ext, binding))]))
     .join('\n')
   let approval: Promise<void> | undefined
   // Queue the shared dialog after every startup has registered its own controller.
   const confirm = () => approval ??= Promise.resolve().then(() =>
-    approve(win, `启动 ${candidates.length} 个 MCP 服务`, detail))
+    approve(win, nativeDisplayCopy('启动 {0} 个 MCP 服务', 'Start MCP servers ({0})', [candidates.length]), detail))
 
   const results = await Promise.allSettled(
     candidates.map(async (c) => {
@@ -1420,7 +1430,7 @@ export function registerWorkspaceIpc(owner: () => BrowserWindow | null) {
 
       case 'import': {
         const pick = await dialog.showOpenDialog(win, {
-          title: '导入 mcpServers JSON',
+          title: nativeDisplayCopy("导入 mcpServers JSON", "Import mcpServers JSON"),
           properties: ['openFile'],
           filters: [{ name: 'JSON', extensions: ['json', 'jsonc'] }]
         })
