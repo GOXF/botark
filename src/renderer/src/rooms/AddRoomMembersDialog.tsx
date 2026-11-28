@@ -8,7 +8,6 @@ import { cn } from '@/lib/cn'
 import { useBotStore } from '@/store/botStore'
 import { addMemberToRoom, useRooms } from './roomStore'
 
-const MAX = 6
 const ready = (status?: string) => status === 'online' || status === 'attention' || status === 'busy'
 
 /** GOXF: add bots to a group that already exists (until now only drag-and-drop did). */
@@ -22,7 +21,6 @@ export function AddRoomMembersDialog({ roomId, open, onOpenChange }: { roomId: s
   if (!room) return null
   const inRoom = new Set(room.members.map((m) => m.botId))
   const candidates = bots.filter((b) => !inRoom.has(b.id))
-  const left = MAX - room.members.length
 
   const close = (v: boolean) => {
     if (!v) { setIds([]); setError(undefined) }
@@ -45,7 +43,7 @@ export function AddRoomMembersDialog({ roomId, open, onOpenChange }: { roomId: s
       <div className="flex flex-col gap-2">
         <div className="flex items-center justify-between px-0.5 text-[12px] text-ink-muted">
           <span>选择要加入的 Bot</span>
-          <span className="tabular-nums">{room.members.length + ids.length} / {MAX}</span>
+          <span className="tabular-nums">已选 {ids.length}</span>
         </div>
         {error && <p role="alert" className="text-[12px] text-status-error">{error}</p>}
         {candidates.length === 0 ? <p className="py-6 text-center text-[13px] text-ink-muted">没有可加入的 Bot 了</p> : (
@@ -54,22 +52,19 @@ export function AddRoomMembersDialog({ roomId, open, onOpenChange }: { roomId: s
               const acc = accounts[b.activeAccountId]
               const online = ready(acc?.status)
               const checked = ids.includes(b.id)
-              const full = !checked && ids.length >= left
               const platform = getPlatform(b.platformId)
               const toggle = async () => {
-                if (full) return
                 if (!online) {
                   if (!b.activeAccountId || acc?.pending) return
                   await connectAccount(b.activeAccountId)
                   if (!ready(useBotStore.getState().accounts[b.activeAccountId]?.status)) return
                 }
-                setIds((p) => (p.includes(b.id) ? p.filter((x) => x !== b.id) : p.length >= left ? p : [...p, b.id]))
+                setIds((p) => (p.includes(b.id) ? p.filter((x) => x !== b.id) : [...p, b.id]))
               }
               return (
-                <button key={b.id} type="button" role="checkbox" aria-checked={checked} disabled={full} onClick={() => void toggle()}
+                <button key={b.id} type="button" role="checkbox" aria-checked={checked} onClick={() => void toggle()}
                   className={cn('press flex items-center gap-2.5 rounded-xl border px-3 py-2.5 text-left',
-                    checked ? 'border-ink/25 bg-active/70' : online ? 'border-line bg-surface hover:bg-hover/45' : 'border-line/60 bg-sunken/35 opacity-75',
-                    full && 'opacity-55')}>
+                    checked ? 'border-ink/25 bg-active/70' : online ? 'border-line bg-surface hover:bg-hover/45' : 'border-line/60 bg-sunken/35 opacity-75')}>
                   <BotAvatar emoji={b.emoji} seed={b.id} avatar={b.avatar} avatarShape={b.avatarShape} avatarColor={b.avatarColor}
                     platformId={b.platformId} status={acc?.status ?? 'offline'} size="sm" />
                   <span className="min-w-0 flex-1">
