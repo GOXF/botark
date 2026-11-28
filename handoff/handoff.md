@@ -410,3 +410,10 @@ git clone <GOXF/botark> && cd botark && git checkout fix/hark-login-sync && npm 
 - 管理分组弹窗：只有左侧抓手可拖（输入框照常选字），描述改为「按住左侧抓手拖动调整顺序。」。
 - playwright 在 web 构建上实测：拖动排序、拖到末尾、菜单上移/下移、bot 行跨分组拖 + 拖到标题、刷新后顺序保留、弹窗拖动。截图 work/mock/v22-real-light/dark.png。
 - 未验证：Electron/Windows 真实拖影样子（headless 不画拖影）；折叠的图标侧栏没改；弹窗拖动时其余行不让位（只有插入线），与效果图有差。
+
+## 2026-11-28 17:55 北京 群聊去掉 6 人上限（260c26d）
+- 用户 17:51 同意（改行为，不出效果图）。测试包 v0.17.0-goxf.dev.260c26d（https://github.com/GOXF/botark/releases/tag/v0.17.0-goxf.dev.260c26d），待用户试。
+- roomStore：新建只保留至少 2 人（「请至少选择 2 位成员」）；addMemberToRoom / 转移成员不再判 6 人。RoomView 选人去掉 6 人封顶（标题「至少选择 2 位成员 · 已选 N」）；Inspector「添加成员」按钮、侧栏菜单、转移目标「已满 6 人」都去掉。管理员调度不变。不加设置项。
+- 测试：groupAdmin.test.ts 加「6 人群加第 7 人」；renderer 全过，两份 tsc、design:check OK。
+- mock `v23-room-cap`（可调上限方案）已否决，按原样留在 mock 注册表。
+- 未验证：真界面选 7 人建群/加第 8 人（web 构建里需 7 个在线 Bot，没跑 playwright）；成员多时群聊头像堆、成员列表、调度提示词长度的观感。
