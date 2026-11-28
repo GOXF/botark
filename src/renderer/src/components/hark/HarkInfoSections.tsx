@@ -13,6 +13,7 @@ import { TextInput } from '@/components/ui/Field'
 import { RefreshButton } from '@/components/muse/RefreshButton'
 import { getBridge } from '@/lib/bridge'
 import { harkQuotaExhausted, useHarkQuota } from '@/lib/harkQuota'
+import { pickTime } from '@/lib/harkTime'
 import { harkRpc } from '@adapters/hark/harkRequests'
 import { createId } from '@shared/id'
 import { currentHarkBrowser, harkScreenshotReference } from '@shared/harkBrowserPreview'
@@ -94,19 +95,6 @@ const QUOTA_MODE_KEY = 'botark.hark.quotaMode'
 const QUOTA_REFRESH_MS = 5 * 60_000
 
 /** First parseable time among `keys` on any of `objs` (ISO string, seconds or ms). Field names are guessed: none → no line. */
-function pickTime(objs: Array<Record<string, unknown> | null>, keys: string[]): Date | null {
-  for (const o of objs) {
-    if (!o) continue
-    for (const k of keys) {
-      const v = o[k]
-      if (v == null || v === '') continue
-      const d = typeof v === 'number' ? new Date(v < 1e12 ? v * 1000 : v) : new Date(String(v))
-      if (!Number.isNaN(d.getTime())) return d
-    }
-  }
-  return null
-}
-
 const pad2 = (n: number): string => String(n).padStart(2, '0')
 
 /** 「明天 14:06 重置」 / 「12月23日 14:02 重置」 */
