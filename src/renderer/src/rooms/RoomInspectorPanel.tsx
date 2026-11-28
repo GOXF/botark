@@ -183,8 +183,8 @@ export function RoomInspectorPanel({ room }: { room: CollabRoom }) {
               </Section>
 
               <Section title="成员" count={room.members.length} flush
-                action={<IconButton size="sm" label={isGlobalAdmin(room) ? '管理员调度自动同步 Bot 列表' : room.members.length >= 6 ? '群聊成员已达上限（6 位）' : '添加成员'}
-                  disabled={isGlobalAdmin(room) || room.members.length >= 6} onClick={() => setAdding(true)}><Plus aria-hidden /></IconButton>}>
+                action={<IconButton size="sm" label={isGlobalAdmin(room) ? '管理员调度自动同步 Bot 列表' : '添加成员'}
+                  disabled={isGlobalAdmin(room)} onClick={() => setAdding(true)}><Plus aria-hidden /></IconButton>}>
                 <AddRoomMembersDialog roomId={room.id} open={adding} onOpenChange={setAdding} />
                 {memberFeedback && (
                   <p
@@ -342,13 +342,12 @@ export function RoomInspectorPanel({ room }: { room: CollabRoom }) {
                                   value={targetRoomId}
                                   onValueChange={setTargetRoomId}
                                   options={otherRooms.map((r) => {
-                                    const full = r.members.length >= 6
                                     const dup = r.members.some(
                                       (tm) =>
                                         tm.botId === m.botId ||
                                         tm.name.toLowerCase() === m.name.toLowerCase()
                                     )
-                                    const reason = full ? '已满 6 人' : dup ? '已存在' : ''
+                                    const reason = dup ? '已存在' : ''
                                     return { value: r.id, label: r.title, description: reason || undefined, disabled: Boolean(reason) }
                                   })}
                                 />

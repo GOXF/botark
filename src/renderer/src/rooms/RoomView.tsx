@@ -154,7 +154,6 @@ function CreateRoom() {
     setPokeMap((prev) => ({ ...prev, [botId]: (prev[botId] ?? 0) + 1 }))
     setIds((prev) => {
       if (prev.includes(botId)) return prev.filter((id) => id !== botId)
-      if (prev.length >= 6) return prev
       return [...prev, botId]
     })
   }
@@ -224,8 +223,8 @@ function CreateRoom() {
           {/* Sculpted 2-Column Bot Cards */}
           <div className="flex flex-col gap-2">
             <div className="flex items-center justify-between px-0.5 text-[12px] text-ink-muted">
-              <span>选择 2–6 位成员</span>
-              <span className="tabular-nums">{ids.length} / 6</span>
+              <span>至少选择 2 位成员</span>
+              <span className="tabular-nums">已选 {ids.length}</span>
             </div>
 
             {bots.length === 0 ? (
@@ -241,7 +240,6 @@ function CreateRoom() {
                   const isOnline = isReadyStatus(acc?.status)
                   const orderIndex = ids.indexOf(b.id)
                   const checked = orderIndex >= 0
-                  const maxReached = !checked && ids.length >= 6
                   const platform = getPlatform(b.platformId)
                   const connectAndSelect = async () => {
                     if (!b.activeAccountId || acc?.pending) return
@@ -249,7 +247,7 @@ function CreateRoom() {
                     const nextStatus = useBotStore.getState().accounts[b.activeAccountId]?.status
                     if (isReadyStatus(nextStatus)) {
                       setIds((prev) =>
-                        prev.includes(b.id) || prev.length >= 6 ? prev : [...prev, b.id]
+                        prev.includes(b.id) ? prev : [...prev, b.id]
                       )
                     }
                   }
@@ -259,16 +257,16 @@ function CreateRoom() {
                       key={b.id}
                       role={isOnline ? 'checkbox' : undefined}
                       aria-checked={isOnline ? checked : undefined}
-                      tabIndex={isOnline && !maxReached ? 0 : -1}
+                      tabIndex={isOnline ? 0 : -1}
                       onClick={() => {
-                        if (isOnline && !maxReached) {
+                        if (isOnline) {
                           toggleBot(b.id)
-                        } else if (!isOnline && !maxReached) {
+                        } else {
                           void connectAndSelect()
                         }
                       }}
                       onKeyDown={(e) => {
-                        if ((e.key === ' ' || e.key === 'Enter') && isOnline && !maxReached) {
+                        if ((e.key === ' ' || e.key === 'Enter') && isOnline) {
                           e.preventDefault()
                           toggleBot(b.id)
                         }
@@ -277,11 +275,9 @@ function CreateRoom() {
                         'press flex items-center gap-2.5 rounded-2xl border px-3 py-2.5 text-left transition-all outline-none select-none',
                         checked
                           ? 'border-ink/25 bg-active/70 shadow-hairline'
-                          : isOnline && !maxReached
+                          : isOnline
                             ? 'cursor-pointer border-line bg-surface hover:border-line-strong hover:bg-hover/45'
-                            : !maxReached
-                              ? 'cursor-pointer border-line/60 bg-sunken/35 opacity-75 hover:opacity-95'
-                              : 'border-line/60 bg-sunken/35 opacity-55'
+                            : 'cursor-pointer border-line/60 bg-sunken/35 opacity-75 hover:opacity-95'
                       )}
                     >
                       <BotAvatar

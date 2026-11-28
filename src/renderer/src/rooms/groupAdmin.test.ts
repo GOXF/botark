@@ -45,3 +45,13 @@ it('the global 管理员调度 room is untouched by a group administrator', () =
   expect(global.members.map((m) => m.botId)).toEqual(['A', 'B', 'C'])
   expect(addMemberToRoom(globalId, 'C').ok).toBe(false)
 })
+
+it('no member cap: a 7th member can join a room of 6', () => {
+  const ids = ['A', 'B', 'C', 'D', 'E', 'F', 'G']
+  useRooms.setState({ rooms: [{ id: 'g', title: '大群', brief: '', members: ids.slice(0, 6).map(member), mode: 'auto', limit: 8, messages: [] }],
+    speakers: {}, errors: {}, slackDestinations: {} })
+  useBotStore.setState({ bots: ids.map((id) => ({ id, name: id, platformId: 'dot', accountIds: [id], activeAccountId: id } as Bot)),
+    accounts: Object.fromEntries(ids.map((id) => [id, { id, status: 'online' }])) as never })
+  expect(addMemberToRoom('g', 'G')).toEqual({ ok: true })
+  expect(room().members).toHaveLength(7)
+})

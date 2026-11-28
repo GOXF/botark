@@ -246,7 +246,7 @@ const RoomSidebarItem = memo(function RoomSidebarItem({
               <MoreHorizontal className="size-3.5" />
             </MenuTrigger>
             <MenuContent align="start" side="bottom" className="min-w-40">
-              <MenuItem disabled={isGlobalAdmin(room) || room.members.length >= 6} onSelect={() => setAdding(true)}>
+              <MenuItem disabled={isGlobalAdmin(room)} onSelect={() => setAdding(true)}>
                 <Plus aria-hidden /> {isGlobalAdmin(room) ? '添加成员（管理员自动同步）' : '添加成员…'}
               </MenuItem>
               <MenuItem onSelect={() => togglePinRoom(room.id)}>

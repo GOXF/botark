@@ -498,7 +498,7 @@ export function addRoom(title: string, ids: string[], mode: CollabRoom['mode'], 
       ...freshRoomSession(bot.platformId)
     }
   })
-  if (members.length < 2 || members.length > 6) throw new Error('请选择 2–6 位成员')
+  if (members.length < 2) throw new Error('请至少选择 2 位成员')
   if (!Number.isInteger(limit) || limit < 1 || limit > 24) throw new Error('轮数应为 1–24')
   const room: CollabRoom = {
     id: createId('room'),
@@ -547,9 +547,6 @@ export function addMemberToRoom(roomId: string, botId: string): { ok: boolean; e
   if (isGlobalAdmin(room)) return { ok: false, error: '管理员调度自动同步 Bot 列表' }
   if (room.members.some((m) => m.botId === botId)) {
     return { ok: false, error: '该 Bot 已在群聊中' }
-  }
-  if (room.members.length >= 6) {
-    return { ok: false, error: '群聊成员已达上限（6 位）' }
   }
   const { bots, accounts } = useBotStore.getState()
   const bot = bots.find((b) => b.id === botId)
@@ -609,9 +606,6 @@ export function moveMemberToRoom(
   if (!member) return { ok: false, error: '该成员不在当前群聊中' }
   if (source.members.length <= 1) {
     return { ok: false, error: '当前群聊至少需要保留一位成员' }
-  }
-  if (target.members.length >= 6) {
-    return { ok: false, error: '目标群聊成员已达上限（6 位）' }
   }
   if (target.members.some((m) => m.botId === botId)) {
     return { ok: false, error: '目标群聊中已包含该 Bot' }
