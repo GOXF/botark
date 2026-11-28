@@ -417,3 +417,9 @@ git clone <GOXF/botark> && cd botark && git checkout fix/hark-login-sync && npm 
 - 测试：groupAdmin.test.ts 加「6 人群加第 7 人」；renderer 全过，两份 tsc、design:check OK。
 - mock `v23-room-cap`（可调上限方案）已否决，按原样留在 mock 注册表。
 - 未验证：真界面选 7 人建群/加第 8 人（web 构建里需 7 个在线 Bot，没跑 playwright）；成员多时群聊头像堆、成员列表、调度提示词长度的观感。
+
+## 2026-11-29 01:00 北京
+- 已合并 #13（6a38d4b）：Bot 概览勾选框改为「设为全局管理员（管全部 Bot）」，下方一行指向群里的「群管理员」。
+- 已合并 #14（76769bb，merge 提交，保留上游历史）：同步上游 v0.17.1（多语言）。版本 0.17.1 / goxfBuild 15。冲突 90 处：功能以我们为准，上游给了英文的文字换成 desktopCopy(中, 英)，我们独有的文字仍是中文；默认语言保持中文。
+- main 镜像已更新到上游 ecbe7c5。
+- 遗留：英文界面下我们独有文字未翻译；Muse 额度真机验证方式待用户选。
