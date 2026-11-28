@@ -6,8 +6,12 @@ import type { FetchFn } from './controlPlane'
 
 const ORIGIN = 'https://muse.ai'
 
-/** Known id from docs/museai/QUOTA.md — may change on deploy; we rediscover. */
-const FALLBACK_ACTION_ID = '409b972cbb33d3e372f4ca9d3c8332677217064f62'
+/** Known ids from docs/museai/QUOTA.md, newest first — they change on deploy; we rediscover. */
+const KNOWN_ACTION_IDS = [
+  '406cd44441421b58cea8309747129141947de9f499', // 2026-11-28
+  '409b972cbb33d3e372f4ca9d3c8332677217064f62'
+]
+const FALLBACK_ACTION_ID = KNOWN_ACTION_IDS[0]!
 
 export interface MuseQuotaTier {
   tierId: string
@@ -236,9 +240,15 @@ function collectChunkUrlsFromHtml(html: string, seen: Set<string>, queue: string
   }
 }
 
+/** Where Turbopack chunks live when a loader names them by file only ("3c93p469092sl.js"). */
+const BARE_CHUNK_DIR = '/_next/static/immutable/chunks/'
+
 function collectNestedChunkUrls(js: string, seen: Set<string>, queue: string[]): void {
-  for (const m of js.matchAll(/["']((?:\/_next\/)?static\/(?:immutable\/)?chunks\/[A-Za-z0-9._/-]+\.js)["']/g)) {
-    const raw = m[1]!
+  const paths = [
+    ...[...js.matchAll(/["']((?:\/_next\/)?static\/(?:immutable\/)?chunks\/[A-Za-z0-9._/-]+\.js)["']/g)].map((m) => m[1]!),
+    ...[...js.matchAll(/["']([a-z0-9]{8,24}\.js)["']/g)].map((m) => BARE_CHUNK_DIR + m[1]!)
+  ]
+  for (const raw of paths) {
     const normalized = raw.startsWith('/') ? raw : `/_next/${raw}`
     const url = `${ORIGIN}${normalized}`
     if (!seen.has(url) && seen.size < DISCOVERY_CHUNK_LIMIT * 2) {
@@ -382,7 +392,7 @@ export async function fetchSubscription(
   const fetchedAt = Date.now()
   const cache = actionCache(opts.accountId === undefined ? fetchFn : JSON.stringify([opts.accountId, opts.deployment ?? ORIGIN]))
   const cached = cache.read()
-  const tryIds = new Set([cached ?? FALLBACK_ACTION_ID, FALLBACK_ACTION_ID])
+  const tryIds = new Set([cached ?? FALLBACK_ACTION_ID, ...KNOWN_ACTION_IDS])
   let lastStatus = 0
   let lastText = ''
   let lastAllAuthRejected = false
