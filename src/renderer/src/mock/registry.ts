@@ -6,6 +6,7 @@ import { V21BoardDragMock } from './mocks/v21-board-drag'
 import { V20ProxySubRealMock } from './mocks/v20-proxy-sub-real'
 import { V21BoardDragRealMock } from './mocks/v21-board-drag-real'
 import { V22RoomAdminMock } from './mocks/v22-room-admin'
+import { V22GroupDragMock } from './mocks/v22-group-drag'
 
 /** Mock name (the ?mock= value and PNG file name) → component. */
 export const MOCKS: Record<string, ComponentType> = {
@@ -15,5 +16,6 @@ export const MOCKS: Record<string, ComponentType> = {
   'v21-board-drag': V21BoardDragMock,
   'v20-proxy-sub-real': V20ProxySubRealMock,
   'v21-board-drag-real': V21BoardDragRealMock,
-  'v22-room-admin': V22RoomAdminMock
+  'v22-room-admin': V22RoomAdminMock,
+  'v22-group-drag': V22GroupDragMock
 }
