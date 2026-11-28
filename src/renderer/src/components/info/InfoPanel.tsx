@@ -340,8 +340,9 @@ function OpenInfoPanel({
                 <label className="flex items-center gap-2 text-[13px]">
                   <input type="checkbox" checked={Boolean(coordinationRoomId)}
                     onChange={(e) => setRoomAdministrator(bot.id, e.target.checked)} />
-                  设为管理员
+                  设为全局管理员（管全部 Bot）
                 </label>
+                <p className="mt-1 text-[11px] text-ink-muted">只管某个群：在那个群的「调度」里选「群管理员」。</p>
                 {coordinationRoomId && (
                   <button type="button" className="mt-2 text-[12px] text-accent-600"
                     onClick={() => useBotStore.getState().selectBot(coordinationRoomId)}>
