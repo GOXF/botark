@@ -392,3 +392,8 @@ git clone <GOXF/botark> && cd botark && git checkout fix/hark-login-sync && npm 
 - store/boardOverrideStore.ts：zustand persist，localStorage `botark-board-overrides-v1`，key = Hark `${projectKey}:${taskId}`（projectKey = botId|accountId|conversationId）、普通卡 `b:<botId>` / `r:<roomId>`。无过期、无自动规则、不写 Hark。lib/boardStatus.ts 加 effectiveColumn / sanitizeOverrides。列计数、来源 chip 计数、刚完成一天折叠都按生效列。手动设到某列的空闲普通卡也会显示。
 - 测试：store/boardOverrideStore.test.ts；renderer 全过，design:check OK。真界面 mock `v21-board-drag-real`（假 Hark bridge），playwright 实测拖放、右键菜单、恢复自动都改对了 localStorage。
 - 未验证：Windows/Electron 里真实拖影样子（headless 不画拖影）、触控板拖动、键盘 ContextMenu 键打开菜单位置；任务消失后 override 不清理（按要求不过期）。
+
+## 2026-11-28 16:30 北京 合并 #10、#9（goxf/portable 4cc0510，测试版 v0.17.0-goxf.dev.4cc0510）
+- #10：概览「协作调度」固定第一栏（Section `pinned`）；Muse 额度 `action_not_found` 时提示「Muse 改版了，暂时读不到额度」。
+- #9：普通群「调度」新增「群管理员」（`CollabRoom.adminScope='room'`，`isGlobalAdmin()` 区分全局管理员调度）；管理员每轮提示词附成员状态（`rooms/adminContext.ts`）。
+- 遗留：Muse 额度根因（muse.ai 改版，`fetchSubscriptionAction` 409）待用户给新 Next-Action id 后改 `src/main/muse-native/quota.ts`；群管理员在成员列表暂无标记；`roomStore.ts` 待拆。
