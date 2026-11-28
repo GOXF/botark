@@ -92,7 +92,7 @@ struct BotListView: View {
                     .shadow(color: ArkTheme.cardShadow, radius: 6, y: 2)
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("添加独立智能体")
+            .accessibilityLabel(String(localized: "Add Standalone Agent"))
 
             Button {
                 showQRScanner = true
@@ -105,7 +105,7 @@ struct BotListView: View {
                     .shadow(color: .black.opacity(0.14), radius: 8, y: 3)
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("扫码配对")
+            .accessibilityLabel(String(localized: "Scan to Pair"))
         }
         .padding(.horizontal, 18)
         .padding(.top, 8)
@@ -124,9 +124,9 @@ struct BotListView: View {
         let label: String = {
             switch store.connectionState {
             case .connected(let host, _): return host
-            case .connecting: return "连接中"
-            case .offline(let host): return store.hasStandaloneBots ? "独立运行" : "\(host) 离线"
-            case .unpaired: return store.hasStandaloneBots ? "独立运行" : "未配对"
+            case .connecting: return String(localized: "Connecting")
+            case .offline(let host): return store.hasStandaloneBots ? String(localized: "Standalone") : String.localizedStringWithFormat(String(localized: "%@ · Offline"), host)
+            case .unpaired: return store.hasStandaloneBots ? String(localized: "Standalone") : String(localized: "Not Paired")
             }
         }()
 
@@ -208,11 +208,11 @@ struct BotListView: View {
                 .onAppear { glowBreath = true }
 
                 VStack(spacing: 5) {
-                    Text("你的随身 AI 方舟")
+                    Text(String(localized: "Your AI Workspace on iPhone"))
                         .font(ArkFont.bold(21))
                         .tracking(-0.5)
 
-                    Text("选一个平台直接开用 · 无需电脑")
+                    Text(String(localized: "Choose a platform to start. No desktop required."))
                         .font(ArkFont.regular(12.5))
                         .foregroundStyle(.secondary)
                 }
@@ -236,7 +236,7 @@ struct BotListView: View {
                     HStack(spacing: 8) {
                         Image(systemName: "qrcode.viewfinder")
                             .font(.system(size: 14.5, weight: .semibold))
-                        Text("扫码同步电脑端（零服务器）")
+                        Text(String(localized: "Scan to Sync with Desktop"))
                             .font(ArkFont.semibold(13.5))
                     }
                     .foregroundStyle(ArkTheme.onInk)
@@ -249,7 +249,7 @@ struct BotListView: View {
                 .padding(.horizontal, 18)
                 .padding(.top, 16)
 
-                Text("独立直连 · 隔离分区 · 零服务器")
+                Text(String(localized: "Direct access · Separate sessions · No relay servers"))
                     .font(ArkFont.mono(10))
                     .foregroundStyle(.tertiary)
                     .padding(.top, 14)
@@ -269,7 +269,7 @@ struct BotListView: View {
                 // Pinned bots -> Tactile Horizontal Bento Deck!
                 if !pinnedBots.isEmpty {
                     VStack(alignment: .leading, spacing: 8) {
-                        sectionHeader("置顶", trailing: "\(pinnedBots.count)")
+                        sectionHeader(String(localized: "Pinned"), trailing: "\(pinnedBots.count)")
 
                         ScrollView(.horizontal, showsIndicators: false) {
                             HStack(spacing: 10) {
@@ -292,7 +292,7 @@ struct BotListView: View {
                 // Remaining groups -> Crisp editorial conversation cards
                 if store.snapshot.groups.isEmpty {
                     if !unpinnedBots.isEmpty {
-                        botGroupCard(title: "全部", bots: unpinnedBots)
+                        botGroupCard(title: String(localized: "All"), bots: unpinnedBots)
                     }
                 } else {
                     ForEach(store.snapshot.groups) { group in
@@ -304,7 +304,7 @@ struct BotListView: View {
                     let knownIds = Set(store.snapshot.groups.map(\.id))
                     let ungrouped = unpinnedBots.filter { !knownIds.contains($0.groupId) }
                     if !ungrouped.isEmpty {
-                        botGroupCard(title: "其他", bots: ungrouped)
+                        botGroupCard(title: String(localized: "Other"), bots: ungrouped)
                     }
                 }
             }
@@ -334,7 +334,7 @@ struct BotListView: View {
     private var platformFilterStrip: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 7) {
-                filterPill(title: "全部", platform: nil, count: store.snapshot.bots.count)
+                filterPill(title: String(localized: "All"), platform: nil, count: store.snapshot.bots.count)
                 ForEach(PlatformId.allCases) { platform in
                     let count = store.snapshot.bots.filter { $0.platformId == platform }.count
                     if count > 0 {
@@ -392,7 +392,7 @@ struct BotListView: View {
                     BotAvatarView(bot: bot, status: status, size: 36)
                     Spacer()
                     if pendingCount > 0 {
-                        Text("\(pendingCount) 审批")
+                        Text(String.localizedStringWithFormat(String(localized: "%lld Approvals"), pendingCount))
                             .font(ArkFont.semibold(10))
                             .foregroundStyle(.white)
                             .padding(.horizontal, 7)
@@ -489,13 +489,13 @@ struct BotListView: View {
 
                 HStack(spacing: 6) {
                     if isTyping {
-                        Text("正在生成...")
+                        Text(String(localized: "Generating…"))
                             .font(ArkFont.medium(12.5))
                             .foregroundStyle(ArkTheme.accent)
                     } else {
                         Text(
                             bot.isStandaloneWeb
-                                ? "手机独立直连 · \(URL(string: bot.standaloneUrl ?? "")?.host ?? bot.platformId.displayName)"
+                                ? String.localizedStringWithFormat(String(localized: "Direct Connection · %@"), URL(string: bot.standaloneUrl ?? "")?.host ?? bot.platformId.displayName)
                                 : (cleanPreview(lastMsg?.text) ?? bot.platformId.displayName)
                         )
                             .font(ArkFont.regular(12.5))
@@ -506,7 +506,7 @@ struct BotListView: View {
                     Spacer(minLength: 4)
 
                     if pendingCount > 0 {
-                        Text("\(pendingCount) 审批")
+                        Text(String.localizedStringWithFormat(String(localized: "%lld Approvals"), pendingCount))
                             .font(ArkFont.semibold(10))
                             .foregroundStyle(.white)
                             .padding(.horizontal, 6.5)

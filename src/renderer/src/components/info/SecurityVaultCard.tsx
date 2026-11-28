@@ -1,3 +1,4 @@
+import { desktopNotice, useDesktopLocale } from '@/lib/desktopCopy'
 import { useCallback, useEffect, useState } from 'react'
 import {
   CheckCircle2,
@@ -13,7 +14,7 @@ import { ArkShieldVaultSvg } from '@/components/ui/ArkGlyphs'
 import { Button } from '@/components/ui/Button'
 import { getBridge } from '@/lib/bridge'
 import { cn } from '@/lib/cn'
-import { t } from '@/lib/i18n'
+import { t, useT } from '@/lib/i18n'
 import { fetchSecurityVaultStatus, hardenSecurityVaultPermissions } from '@/lib/vaultClient'
 import { useBotStore } from '@/store/botStore'
 import type { Bot } from '@/types'
@@ -28,6 +29,7 @@ export function InspectorProtocolCard({
   activeTab: InspectorTabId
   onSelectTab: (tab: InspectorTabId) => void
 }) {
+  const tr = useT()
   const webSessionOpen = useBotStore((s) => s.webSessionOpen)
   const toggleWebSession = useBotStore((s) => s.toggleWebSession)
   const startNewMuseSession = useBotStore((s) => s.startNewMuseSession)
@@ -107,7 +109,7 @@ export function InspectorProtocolCard({
             )}
           >
             <Users className="size-3.5 text-ink-secondary" aria-hidden />
-            管理全部 Bot
+            {tr("Manage all bots")}
           </button>
         </>
       )}
@@ -232,7 +234,22 @@ export function InspectorProtocolCard({
 /**
  * Full Security & Vault audit card rendered in `SettingsView` (`general` tab).
  */
+const vaultLabels: Record<string, string> = {
+  "proxy": "Per-account proxy vault",
+  "proxy-pool": "Global proxy pool vault",
+  "grok-tokens": "Grok Sand token vault",
+  "dot-tokens": "Dot OAuth credential vault",
+  "cue-tokens": "Cue session credential vault",
+  "hermes-accounts": "Hermes gateway key vault",
+  "dsbot-accounts": "DS Bot credential and key vault",
+  "mcp-registry": "MCP service key vault",
+  "mobile-sync": "iOS paired-device token hash store",
+  "secrets-vault": "Memory snapshot and private data vault",
+}
+
 export function SecurityVaultCenter() {
+  useDesktopLocale()
+  const tr = useT()
   const [status, setStatus] = useState<SecurityVaultStatus | null>(null)
   const [loading, setLoading] = useState(false)
   const [hint, setHint] = useState<string>()
@@ -260,8 +277,8 @@ export function SecurityVaultCenter() {
         setStatus(res.status)
         setHint(
           res.repaired > 0
-            ? `已自动修复并锁定 ${res.repaired} 个保险箱文件为 0600 仅本人可读写权限`
-            : '全部密文保险箱文件均已验证为 0600 严格权限'
+            ? tr("Set {n} vault files to owner-only read and write (0600).", { n: res.repaired })
+            : tr("All encrypted vault files already have owner-only permissions (0600).")
         )
       }
     } finally {
@@ -277,15 +294,15 @@ export function SecurityVaultCenter() {
             <ArkShieldVaultSvg className="size-4" />
           </span>
           <div>
-            <h3 className="text-[14px] font-semibold text-ink">系统钥匙串与加密保险箱</h3>
+            <h3 className="text-[14px] font-semibold text-ink">{tr("System Keychain and encrypted vault")}</h3>
             <p className="text-[12px] text-ink-secondary">
-              全平台凭据由系统钥匙串 AES-256-GCM 硬件加密隔离存储
+              {tr("Platform credentials are encrypted and stored using system secure storage.")}
             </p>
           </div>
         </div>
         <div className="flex items-center gap-1.5">
           <Button size="sm" variant="secondary" disabled={loading} onClick={() => void handleHarden()}>
-            <KeyRound className="size-3.5" /> 加固 0600
+            <KeyRound className="size-3.5" /> {tr("Set owner-only permissions")}
           </Button>
           <Button size="sm" variant="ghost" disabled={loading} onClick={() => void refresh()}>
             <RefreshCw className={cn('size-3.5', loading && 'animate-spin')} />
@@ -295,13 +312,13 @@ export function SecurityVaultCenter() {
 
       {hint && (
         <div className="border-b border-line bg-status-online/8 px-4 py-2 text-[12px] text-status-online-ink">
-          {hint}
+          {desktopNotice(hint)}
         </div>
       )}
 
       <div className="grid grid-cols-1 gap-2.5 p-4 sm:grid-cols-3">
         <div className="rounded-xl border border-line bg-canvas p-3">
-          <p className="text-[11.5px] text-ink-muted">钥匙串加密引擎</p>
+          <p className="text-[11.5px] text-ink-muted">{tr("Keychain encryption")}</p>
           <p className="mt-1 flex items-center gap-1.5 text-[13px] font-semibold text-ink">
             <span
               className={cn(
@@ -309,7 +326,7 @@ export function SecurityVaultCenter() {
                 status?.keychainAvailable ? 'bg-status-online' : 'bg-status-attention'
               )}
             />
-            {status?.keychainAvailable ? 'AES-256-GCM 已激活' : '浏览器预览模式'}
+            {status?.keychainAvailable ? tr("AES-256-GCM active") : tr("Browser preview mode")}
           </p>
           <p className="mt-0.5 truncate text-[11px] text-ink-muted">
             {status?.cipherSuite ?? 'macOS Keychain · Electron safeStorage'}
@@ -317,18 +334,18 @@ export function SecurityVaultCenter() {
         </div>
 
         <div className="rounded-xl border border-line bg-canvas p-3">
-          <p className="text-[11.5px] text-ink-muted">进程隔离与网络防泄漏</p>
+          <p className="text-[11.5px] text-ink-muted">{tr("Process and network isolation")}</p>
           <p className="mt-1 flex items-center gap-1.5 text-[13px] font-semibold text-ink">
             <CheckCircle2 className="size-3.5 text-status-online-ink" />
             Sandbox + Fail-Closed
           </p>
           <p className="mt-0.5 text-[11px] text-ink-muted">
-            1 Bot = 1 独立分区 · 代理异常自动黑洞断流
+            {tr("Each bot has a separate partition. Traffic stops if its proxy fails.")}
           </p>
         </div>
 
         <div className="rounded-xl border border-line bg-canvas p-3">
-          <p className="text-[11.5px] text-ink-muted">应用签名与完整性</p>
+          <p className="text-[11.5px] text-ink-muted">{tr("App signing and integrity")}</p>
           <p className="mt-1 flex items-center gap-1.5 text-[13px] font-semibold text-ink">
             <span
               className={cn(
@@ -336,10 +353,10 @@ export function SecurityVaultCenter() {
                 status?.codeSigned ? 'bg-status-online' : 'bg-ink-muted'
               )}
             />
-            {status?.codeSigned ? 'Apple Developer ID 已签名' : '本地开发模式'}
+            {status?.codeSigned ? tr("Signed with Apple Developer ID") : tr("Local development build")}
           </p>
           <p className="mt-0.5 truncate text-[11px] text-ink-muted">
-            {status?.signingAuthority ?? '正式构建启用 Hardened Runtime + 公证'}
+            {status?.signingAuthority ?? tr("Release builds use Hardened Runtime and notarization")}
           </p>
         </div>
       </div>
@@ -350,14 +367,14 @@ export function SecurityVaultCenter() {
             {status.stores.map((store) => (
               <li key={store.id} className="flex items-center justify-between gap-3 px-4 py-2.5">
                 <div className="min-w-0">
-                  <span className="font-medium text-ink">{store.label}</span>
+                  <span className="font-medium text-ink">{vaultLabels[store.id] ? tr(vaultLabels[store.id]) : store.label}</span>
                   <span className="ml-2 font-mono text-[11px] text-ink-muted">{store.fileName}</span>
                 </div>
                 <div className="flex shrink-0 items-center gap-2">
                   {store.exists ? (
                     <>
                       <span className="rounded-full bg-sunken px-2 py-0.5 text-[11px] tabular-nums text-ink-secondary">
-                        {store.entryCount} 项密文
+                        {tr("Encrypted entries: {n}", { n: store.entryCount })}
                       </span>
                       <span
                         className={cn(
@@ -367,11 +384,11 @@ export function SecurityVaultCenter() {
                             : 'bg-status-attention/15 text-status-attention'
                         )}
                       >
-                        {store.modeOctal ?? '0600'} {store.ownerOnly ? '仅本人' : '待加固'}
+                        {store.modeOctal ?? '0600'} {store.ownerOnly ? tr("Owner only") : tr("Needs attention")}
                       </span>
                     </>
                   ) : (
-                    <span className="text-[11.5px] text-ink-muted">尚未创建（按需加密落盘）</span>
+                    <span className="text-[11.5px] text-ink-muted">{tr("Not created yet")}</span>
                   )}
                 </div>
               </li>

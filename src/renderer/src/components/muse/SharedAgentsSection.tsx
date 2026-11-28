@@ -1,3 +1,4 @@
+import { desktopNotice, useDesktopLocale } from '@/lib/desktopCopy'
 import { useCallback, useEffect, useState } from 'react'
 import { asObj, str } from '@shared/parse'
 import { EmptyLine, Section } from '@/components/info/Section'
@@ -79,6 +80,7 @@ function parseList(raw: unknown): SharedAgentRow[] {
  * bootstrap not captured; UI stays honest and never fakes a remote connect.
  */
 export function SharedAgentsSection({ accountId }: { accountId: string }) {
+  useDesktopLocale()
   const status = useBotStore((s) => s.accounts[accountId]?.status)
   const [loading, setLoading] = useState(false)
   const [unavailable, setUnavailable] = useState(false)
@@ -136,7 +138,7 @@ export function SharedAgentsSection({ accountId }: { accountId: string }) {
       count={agents.length || undefined}
       action={<RefreshButton onClick={() => void refresh()} loading={loading} />}
     >
-      {error ? <p className="mb-1 text-[12px] text-status-error-ink">{error}</p> : null}
+      {error ? <p className="mb-1 text-[12px] text-status-error-ink">{desktopNotice(error)}</p> : null}
       {unavailable || agents.length === 0 ? (
         <EmptyLine>{unavailable ? t('Shared Agents unavailable') : t('No shared agent definitions')}</EmptyLine>
       ) : (

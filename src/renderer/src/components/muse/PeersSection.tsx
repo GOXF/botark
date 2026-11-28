@@ -1,3 +1,4 @@
+import { desktopCopy, desktopNotice, useDesktopLocale } from '@/lib/desktopCopy'
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { asObj, str } from '@shared/parse'
 import { EmptyLine, Section } from '@/components/info/Section'
@@ -302,6 +303,7 @@ export function PeersSection({ accountId }: { accountId: string }) {
 }
 
 function AccountPeersSection({ accountId }: { accountId: string }) {
+  useDesktopLocale()
   const connected = useBotStore((s) => isOnlineAccountStatus(s.accounts[accountId]?.status))
   const allAccounts = useBotStore((s) => s.accounts)
   const [loading, setLoading] = useState(false)
@@ -419,7 +421,7 @@ function AccountPeersSection({ accountId }: { accountId: string }) {
           expires_at: inv.expiresAtMs ?? Date.now() + 86_400_000
         }
       })
-      setHint('已投递到目标账号收件箱 — 请切换到该账号点击接受')
+      setHint(desktopCopy("已投递到目标账号收件箱 — 请切换到该账号点击接受", "Sent to the target inbox. Switch accounts to accept it."))
     })
 
   const revokeInvite = (inviteId: string) =>
@@ -599,8 +601,8 @@ function AccountPeersSection({ accountId }: { accountId: string }) {
       count={contacts.length || undefined}
       action={<RefreshButton loading={loading} onClick={() => void refresh()} />}
     >
-      {error && <p className="pb-1 text-[12px] text-status-error">{error}</p>}
-      {hint && <p className="pb-1 text-[12px] text-ink-secondary">{hint}</p>}
+      {error && <p className="pb-1 text-[12px] text-status-error">{desktopNotice(error)}</p>}
+      {hint && <p className="pb-1 text-[12px] text-ink-secondary">{desktopNotice(hint)}</p>}
       {sasCode && (
         <p className="mb-2 rounded-lg bg-sunken px-2.5 py-2 font-mono text-[13px] text-ink">{sasCode}</p>
       )}
@@ -641,16 +643,14 @@ function AccountPeersSection({ accountId }: { accountId: string }) {
                     </div>
                     <div className="mt-1.5 flex flex-wrap gap-1">
                       <Button size="sm" variant="ghost" onClick={() => void loadPeerRules(p.museId)}>
-                        {selectedPeerForRules === p.museId ? '收起规则' : '规则'}
+                        {selectedPeerForRules === p.museId ? desktopCopy("收起规则", "Hide rules") : desktopCopy("规则", "Rule")}
                       </Button>
                       <Button
                         size="sm"
                         variant="ghost"
                         disabled={Boolean(busy)}
                         onClick={() => resetPeerConversation(p)}
-                      >
-                        重置对话
-                      </Button>
+                      >{desktopCopy("重置对话", "Reset conversation")}</Button>
                       <Button
                         size="sm"
                         variant="ghost"
@@ -666,16 +666,14 @@ function AccountPeersSection({ accountId }: { accountId: string }) {
                           <TextInput
                             value={newRuleText}
                             onChange={(e) => setNewRuleText(e.target.value)}
-                            placeholder="添加针对该联系人的指令规则…"
+                            placeholder={desktopCopy("添加针对该联系人的指令规则…", "Add instructions for this contact…")}
                             aria-label="Peer rule"
                             className="h-6 flex-1 text-[11px]"
                           />
-                          <Button size="sm" onClick={() => addPeerRule(p.museId)}>
-                            添加
-                          </Button>
+                          <Button size="sm" onClick={() => addPeerRule(p.museId)}>{desktopCopy("添加", "Add")}</Button>
                         </div>
                         {peerRules.length === 0 ? (
-                          <p className="text-ink-muted">暂无特定规则</p>
+                          <p className="text-ink-muted">{desktopCopy("暂无特定规则", "No rules for this contact")}</p>
                         ) : (
                           <ul className="flex flex-col gap-1">
                             {peerRules.map((r) => (
@@ -685,9 +683,7 @@ function AccountPeersSection({ accountId }: { accountId: string }) {
                                   type="button"
                                   onClick={() => deletePeerRule(p.museId, r.id)}
                                   className="text-status-error hover:underline"
-                                >
-                                  删除
-                                </button>
+                                >{desktopCopy("删除", "Delete")}</button>
                               </li>
                             ))}
                           </ul>
@@ -736,7 +732,7 @@ function AccountPeersSection({ accountId }: { accountId: string }) {
                         <Select
                           size="xs"
                           value={targetAccountId}
-                          placeholder="选择本机其它 Muse 账号投递…"
+                          placeholder={desktopCopy("选择本机其它 Muse 账号投递…", "Send to another local Muse account…")}
                           onValueChange={(next) => setTargetAccountId(next)}
                           className="flex-1"
                           options={otherMuseAccounts.map((acc) => ({
@@ -748,9 +744,7 @@ function AccountPeersSection({ accountId }: { accountId: string }) {
                           size="sm"
                           disabled={!targetAccountId || Boolean(busy)}
                           onClick={() => deliverInviteToOtherAccount(inv, targetAccountId)}
-                        >
-                          投递收件箱
-                        </Button>
+                        >{desktopCopy("投递收件箱", "Send to inbox")}</Button>
                       </div>
                     )}
                   </li>

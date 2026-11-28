@@ -1,3 +1,4 @@
+import { desktopCopy, useDesktopLocale } from '@/lib/desktopCopy'
 import { type ReactNode, memo, useEffect, useState } from 'react'
 import { Check, Copy, Download, Image as ImageIcon, X, ZoomIn } from 'lucide-react'
 import { cn } from '@/lib/cn'
@@ -15,6 +16,7 @@ import { t } from '@/lib/i18n'
  */
 
 function InlineMarkdownImage({ src, alt }: { src: string; alt: string }) {
+  useDesktopLocale()
   const [zoomed, setZoomed] = useState(false)
   const [failed, setFailed] = useState(false)
 
@@ -60,7 +62,7 @@ function InlineMarkdownImage({ src, alt }: { src: string; alt: string }) {
           type="button"
           onClick={() => setZoomed(true)}
           className="block cursor-zoom-in"
-          title="点击放大查看"
+          title={desktopCopy("点击放大查看", "Click to zoom in")}
         >
           <img
             src={src}
@@ -73,7 +75,7 @@ function InlineMarkdownImage({ src, alt }: { src: string; alt: string }) {
           <button
             type="button"
             onClick={() => setZoomed(true)}
-            title="放大查看"
+            title={desktopCopy("放大查看", "Zoom In")}
             className="pointer-events-auto grid size-7 place-items-center rounded-full bg-black/55 text-white backdrop-blur-sm hover:bg-black/75"
           >
             <ZoomIn className="size-3.5" />
@@ -81,7 +83,7 @@ function InlineMarkdownImage({ src, alt }: { src: string; alt: string }) {
           <button
             type="button"
             onClick={saveImage}
-            title="保存图片"
+            title={desktopCopy("保存图片", "Save Picture")}
             className="pointer-events-auto grid size-7 place-items-center rounded-full bg-black/55 text-white backdrop-blur-sm hover:bg-black/75"
           >
             <Download className="size-3.5" />
@@ -106,11 +108,10 @@ function InlineMarkdownImage({ src, alt }: { src: string; alt: string }) {
                 onClick={saveImage}
                 className="inline-flex items-center gap-1.5 rounded-full bg-white/15 px-3 py-1.5 text-[12px] font-medium text-white hover:bg-white/25"
               >
-                <Download className="size-3.5" /> 保存图片
-              </button>
+                <Download className="size-3.5" />{desktopCopy(" 保存图片", " Save Picture")}</button>
               <button
                 type="button"
-                aria-label="关闭预览"
+                aria-label={desktopCopy("关闭预览", "Close Preview")}
                 onClick={() => setZoomed(false)}
                 className="grid size-8 place-items-center rounded-full bg-white/15 text-white hover:bg-white/25"
               >
@@ -131,6 +132,7 @@ function InlineMarkdownImage({ src, alt }: { src: string; alt: string }) {
 }
 
 function CodeBlock({ lang, code }: { lang: string; code: string }) {
+  useDesktopLocale()
   const [copied, setCopied] = useState(false)
 
   const onCopy = () => {
@@ -153,7 +155,7 @@ function CodeBlock({ lang, code }: { lang: string; code: string }) {
           className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] text-ink-secondary hover:bg-hover hover:text-ink"
         >
           {copied ? <Check className="size-3 text-status-online" /> : <Copy className="size-3" />}
-          {copied ? '已复制' : t('Copy')}
+          {copied ? desktopCopy("已复制", "Copied") : t('Copy')}
         </button>
       </div>
       <pre className="overflow-x-auto px-3 py-2.5 font-mono text-[12.5px] leading-[1.55] text-ink">
@@ -402,7 +404,7 @@ function renderInline(
             key={`${keyPrefix}-fc-${i}`}
             type="button"
             onClick={() => onFileLinkClick(inner.replace(/^\/+/, ''), inner)}
-            title="点击原生打开预览"
+            title={desktopCopy("点击原生打开预览", "Click to open a raw preview")}
             className="rounded bg-sunken px-1.5 py-0.5 font-mono text-[0.9em] text-accent-600 underline decoration-dotted underline-offset-2 hover:bg-hover"
           >
             {inner}

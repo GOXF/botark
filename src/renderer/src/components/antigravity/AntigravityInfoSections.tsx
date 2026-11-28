@@ -1,3 +1,4 @@
+import { desktopCopy, desktopNotice, useDesktopLocale } from '@/lib/desktopCopy'
 import { useCallback, useEffect, useState } from 'react'
 import {
   Check,
@@ -35,13 +36,14 @@ function agyBridge() {
 function relativeTime(ms?: number): string {
   if (!ms) return ''
   const diff = Math.max(0, Date.now() - ms)
-  if (diff < 60_000) return '刚刚'
-  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)} 分钟前`
-  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)} 小时前`
-  return `${Math.floor(diff / 86_400_000)} 天前`
+  if (diff < 60_000) return desktopCopy("刚刚", "Just now")
+  if (diff < 3_600_000) return desktopCopy("{0} 分钟前", "{0} min ago", [(Math.floor(diff / 60_000))])
+  if (diff < 86_400_000) return desktopCopy("{0} 小时前", "{0} hr ago", [(Math.floor(diff / 3_600_000))])
+  return desktopCopy("{0} 天前", "{0} days ago", [(Math.floor(diff / 86_400_000))])
 }
 
 export function AntigravityAccountAndModelSection({ accountId }: { accountId: string }) {
+  useDesktopLocale()
   const [profile, setProfile] = useState<AntigravityUserProfile | null>(null)
   const [models, setModels] = useState<AntigravityModelInfo[]>([])
   const [selectedModelEnum, setSelectedModelEnum] = useState<number | undefined>()
@@ -93,7 +95,7 @@ export function AntigravityAccountAndModelSection({ accountId }: { accountId: st
 
   return (
     <Section
-      title="Antigravity 模型与配额"
+      title={desktopCopy("Antigravity 模型与配额", "Antigravity Model & Quota")}
       action={
         <button
           type="button"
@@ -120,10 +122,10 @@ export function AntigravityAccountAndModelSection({ accountId }: { accountId: st
         </div>
       )}
 
-      {error && <p className="mb-2 text-[11.5px] text-status-error">{error}</p>}
+      {error && <p className="mb-2 text-[11.5px] text-status-error">{desktopNotice(error)}</p>}
 
       {models.length === 0 ? (
-        <EmptyLine>{loading ? '加载可用模型…' : '登录后自动同步模型'}</EmptyLine>
+        <EmptyLine>{loading ? desktopCopy("加载可用模型…", "Loading available models…") : desktopCopy("登录后自动同步模型", "Models sync after sign-in")}</EmptyLine>
       ) : (
         <div className="space-y-0.5">
           {models.map((m) => {
@@ -150,9 +152,7 @@ export function AntigravityAccountAndModelSection({ accountId }: { accountId: st
                   <div className="flex items-center gap-1.5">
                     <span className="truncate text-[12px] font-medium">{m.displayName}</span>
                     {m.isDefault && (
-                      <span className="rounded bg-surface-muted px-1 py-0.5 text-[9.5px] text-ink-muted">
-                        默认
-                      </span>
+                      <span className="rounded bg-surface-muted px-1 py-0.5 text-[9.5px] text-ink-muted">{desktopCopy("默认", "Default")}</span>
                     )}
                   </div>
                   {pct !== undefined && (
@@ -186,6 +186,7 @@ export function AntigravityConversationsSection({
   accountId: string
   activeSessionId?: string
 }) {
+  useDesktopLocale()
   const switchAntigravitySession = useBotStore((s) => s.switchAntigravitySession)
   const startNewAntigravitySession = useBotStore((s) => s.startNewAntigravitySession)
   const [items, setItems] = useState<AntigravityConversationSummary[]>([])
@@ -229,7 +230,7 @@ export function AntigravityConversationsSection({
 
   return (
     <Section
-      title="云端会话"
+      title={desktopCopy("云端会话", "Cloud sessions")}
       count={items.length}
       action={
         <div className="flex items-center gap-1">
@@ -238,9 +239,7 @@ export function AntigravityConversationsSection({
             onClick={() => startNewAntigravitySession(botId)}
             className="press-icon inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] text-ink-secondary hover:bg-hover hover:text-ink"
           >
-            <ArkComposeNewSvg className="size-3" />
-            新建
-          </button>
+            <ArkComposeNewSvg className="size-3" />{desktopCopy("新建", "New")}</button>
           <button
             type="button"
             onClick={() => void refresh()}
@@ -254,7 +253,7 @@ export function AntigravityConversationsSection({
       }
     >
       {items.length === 0 ? (
-        <EmptyLine>{loading ? '正在拉取云端会话…' : '暂无云端会话'}</EmptyLine>
+        <EmptyLine>{loading ? desktopCopy("正在拉取云端会话…", "Loading cloud sessions…") : desktopCopy("暂无云端会话", "No cloud sessions yet")}</EmptyLine>
       ) : (
         <div className="max-h-64 space-y-0.5 overflow-y-auto pr-0.5">
           {items.map((conv) => {
@@ -280,9 +279,9 @@ export function AntigravityConversationsSection({
                   <div className="min-w-0 flex-1">
                     <div className="truncate text-[12px] font-medium">{conv.title}</div>
                     <div className="flex items-center gap-1.5 text-[10.5px] text-ink-muted">
-                      <span>{conv.stepCount} 步</span>
+                      <span>{conv.stepCount}{desktopCopy(" 步", " Step")}</span>
                       {conv.statusLabel === 'running' && (
-                        <span className="text-accent-600">· 运行中</span>
+                        <span className="text-accent-600">{desktopCopy("· 运行中", "· Running")}</span>
                       )}
                       {conv.updatedAtMs > 0 && <span>· {relativeTime(conv.updatedAtMs)}</span>}
                     </div>
@@ -292,7 +291,7 @@ export function AntigravityConversationsSection({
                   type="button"
                   onClick={() => void remove(conv.conversationId)}
                   disabled={deletingId === conv.conversationId}
-                  aria-label="删除会话"
+                  aria-label={desktopCopy("删除会话", "Delete session")}
                   className="press-icon rounded p-1 text-ink-muted opacity-0 transition-opacity hover:bg-status-error/10 hover:text-status-error group-hover:opacity-100"
                 >
                   {deletingId === conv.conversationId ? (
@@ -311,6 +310,7 @@ export function AntigravityConversationsSection({
 }
 
 export function AntigravityEnvironmentsSection({ accountId }: { accountId: string }) {
+  useDesktopLocale()
   const [envs, setEnvs] = useState<AntigravityEnvironmentInfo[]>([])
   const [workspaces, setWorkspaces] = useState<AntigravityWorkspaceInfo[]>([])
   const [selectedCapsuleId, setSelectedCapsuleId] = useState<string | undefined>()
@@ -355,7 +355,7 @@ export function AntigravityEnvironmentsSection({ accountId }: { accountId: strin
   return (
     <>
       <Section
-        title="云端沙盒环境 (Capsules)"
+        title={desktopCopy("云端沙盒环境 (Capsules)", "Cloud Sandbox Environment (Capsules)")}
         count={envs.length}
         action={
           <button
@@ -369,7 +369,7 @@ export function AntigravityEnvironmentsSection({ accountId }: { accountId: strin
         }
       >
         {envs.length === 0 ? (
-          <EmptyLine>{loading ? '正在加载云端沙盒…' : '使用默认 Google 托管云端环境'}</EmptyLine>
+          <EmptyLine>{loading ? desktopCopy("正在加载云端沙盒…", "Loading cloud sandboxes…") : desktopCopy("使用默认 Google 托管云端环境", "Use the default Google-hosted environment")}</EmptyLine>
         ) : (
           <div className="space-y-1">
             {envs.map((env, idx) => {
@@ -404,9 +404,9 @@ export function AntigravityEnvironmentsSection({ accountId }: { accountId: strin
         )}
       </Section>
 
-      <Section title="工作区" count={workspaces.length}>
+      <Section title={desktopCopy("工作区", "Workspace")} count={workspaces.length}>
         {workspaces.length === 0 ? (
-          <EmptyLine>暂无已同步工作区</EmptyLine>
+          <EmptyLine>{desktopCopy("暂无已同步工作区", "No synced workspaces yet")}</EmptyLine>
         ) : (
           <div className="space-y-0.5">
             {workspaces.slice(0, 12).map((ws) => (
@@ -429,6 +429,7 @@ export function AntigravityEnvironmentsSection({ accountId }: { accountId: strin
 }
 
 export function AntigravityAgentsSection({ accountId }: { accountId: string }) {
+  useDesktopLocale()
   const [agents, setAgents] = useState<AntigravityAgentInfo[]>([])
   const [selectedAgentPath, setSelectedAgentPath] = useState<string | undefined>()
   const [loading, setLoading] = useState(false)
@@ -463,7 +464,7 @@ export function AntigravityAgentsSection({ accountId }: { accountId: string }) {
 
   return (
     <Section
-      title="云端 Agents"
+      title={desktopCopy("云端 Agents", "Cloud agents")}
       count={agents.length}
       action={
         <button
@@ -477,7 +478,7 @@ export function AntigravityAgentsSection({ accountId }: { accountId: string }) {
       }
     >
       {agents.length === 0 ? (
-        <EmptyLine>{loading ? '加载云端 Agents…' : '默认通用 Antigravity Agent'}</EmptyLine>
+        <EmptyLine>{loading ? desktopCopy("加载云端 Agents…", "Loading cloud agents…") : desktopCopy("默认通用 Antigravity Agent", "Default Antigravity agent")}</EmptyLine>
       ) : (
         <div className="space-y-0.5">
           {agents.map((ag) => {

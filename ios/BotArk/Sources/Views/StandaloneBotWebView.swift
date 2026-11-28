@@ -52,7 +52,7 @@ struct StandaloneBotWebView: View {
                         Image(systemName: "wifi.exclamationmark")
                             .font(.system(size: 26, weight: .semibold))
                             .foregroundStyle(.secondary)
-                        Text("页面暂时无法加载")
+                        Text(String(localized: "Page Could Not Load"))
                             .font(ArkFont.semibold(15))
                         Text(errText)
                             .font(ArkFont.regular(12))
@@ -64,7 +64,7 @@ struct StandaloneBotWebView: View {
                             loadError = nil
                             reloadToken = UUID()
                         } label: {
-                            Text("重新加载")
+                            Text(String(localized: "Reload"))
                                 .font(ArkFont.semibold(13.5))
                                 .foregroundStyle(ArkTheme.onInk)
                                 .padding(.horizontal, 20)
@@ -89,8 +89,8 @@ struct StandaloneBotWebView: View {
             }
         }
         .background(ArkTheme.canvas.ignoresSafeArea())
-        .confirmationDialog("移除独立 Bot？", isPresented: $confirmDelete, titleVisibility: .visible) {
-            Button("移除并清除本地登录态", role: .destructive) {
+        .confirmationDialog(String(localized: "Remove Standalone Bot?"), isPresented: $confirmDelete, titleVisibility: .visible) {
+            Button(String(localized: "Remove and Clear Local Sign-In"), role: .destructive) {
                 let idToDelete = botId
                 onBack()
                 Task {
@@ -101,9 +101,9 @@ struct StandaloneBotWebView: View {
                     store.removeStandaloneBot(botId: idToDelete)
                 }
             }
-            Button("取消", role: .cancel) {}
+            Button(String(localized: "Cancel"), role: .cancel) {}
         } message: {
-            Text("仅移除手机端此独立 Bot 及其隔离 Cookie，不会影响电脑端。")
+            Text(String(localized: "Removes this standalone bot and its cookies from this device only. The desktop app is unaffected."))
         }
     }
 
@@ -134,7 +134,7 @@ struct StandaloneBotWebView: View {
                             .font(ArkFont.semibold(14.5))
                             .tracking(-0.2)
                             .lineLimit(1)
-                        Text("独立")
+                        Text(String(localized: "Standalone Bot"))
                             .font(ArkFont.medium(9.5))
                             .foregroundStyle(bot.platformId.brandColor)
                             .padding(.horizontal, 5)
@@ -167,7 +167,7 @@ struct StandaloneBotWebView: View {
                     Button {
                         onBack()
                     } label: {
-                        Label("返回 Bot 列表", systemImage: "square.grid.2x2")
+                        Label(String(localized: "Back to Bot List"), systemImage: "square.grid.2x2")
                     }
                 }
                 Button {
@@ -175,13 +175,13 @@ struct StandaloneBotWebView: View {
                         openURL(url)
                     }
                 } label: {
-                    Label("在 Safari 中打开", systemImage: "safari")
+                    Label(String(localized: "Open in Safari"), systemImage: "safari")
                 }
                 Divider()
                 Button(role: .destructive) {
                     confirmDelete = true
                 } label: {
-                    Label("移除此独立 Bot", systemImage: "trash")
+                    Label(String(localized: "Remove Standalone Bot"), systemImage: "trash")
                 }
             } label: {
                 Image(systemName: "ellipsis")

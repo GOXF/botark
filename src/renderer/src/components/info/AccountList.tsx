@@ -1,3 +1,4 @@
+import { desktopNotice, useDesktopLocale } from '@/lib/desktopCopy'
 import { useState } from 'react'
 import {
   Check,
@@ -43,6 +44,7 @@ const LOGIN_CTA_LABEL: Record<PlatformId, string> = {
  * sending account; signed-out accounts on all 4 platforms offer 1-click login.
  */
 export function AccountList({ bot, accounts }: AccountListProps) {
+  useDesktopLocale()
   const t = useT()
   const setActiveAccount = useBotStore((s) => s.setActiveAccount)
   const connectAccount = useBotStore((s) => s.connectAccount)
@@ -138,7 +140,7 @@ export function AccountList({ bot, accounts }: AccountListProps) {
                   <span className="block truncate text-[13px] leading-[18px] text-ink">{name}</span>
                   {showError && (
                     <span className="block truncate text-[12px] leading-4 text-status-error">
-                      {account.statusDetail}
+                      {desktopNotice(account.statusDetail)}
                     </span>
                   )}
                 </span>

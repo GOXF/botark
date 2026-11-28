@@ -1,3 +1,4 @@
+import { desktopCopy, desktopNotice, useDesktopLocale } from '@/lib/desktopCopy'
 import { useCallback, useEffect, useMemo, useState } from "react"
 import type { MuseChatSessionView } from "@shared/ipc"
 import { EmptyLine, Section } from "@/components/info/Section"
@@ -21,6 +22,7 @@ function formatTime(ms: number | null): string {
 }
 
 export function SessionsSection({ accountId }: { accountId: string }) {
+  useDesktopLocale()
   const [items, setItems] = useState<MuseChatSessionView[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string>()
@@ -139,11 +141,11 @@ export function SessionsSection({ accountId }: { accountId: string }) {
 
   return (
     <Section
-      title="会话"
+      title={desktopCopy("会话", "Session")}
       count={visible.length || undefined}
       action={<RefreshButton loading={loading} onClick={() => void refresh()} />}
     >
-      {error && <p className="pb-1 text-[12px] text-status-error">{error}</p>}
+      {error && <p className="pb-1 text-[12px] text-status-error">{desktopNotice(error)}</p>}
       <div className="mb-2 flex gap-1.5">
         <TextInput
           value={searchQuery}
@@ -154,13 +156,11 @@ export function SessionsSection({ accountId }: { accountId: string }) {
           onKeyDown={(e) => {
             if (e.key === "Enter") void runChatSearch()
           }}
-          placeholder="搜索聊天内容…"
-          aria-label="搜索聊天内容"
+          placeholder={desktopCopy("搜索聊天内容…", "Search for chat content…")}
+          aria-label={desktopCopy("搜索聊天内容", "Search for chat content")}
           className="h-7 flex-1 text-[12px]"
         />
-        <Button size="sm" variant="secondary" disabled={searching} onClick={() => void runChatSearch()}>
-          搜索
-        </Button>
+        <Button size="sm" variant="secondary" disabled={searching} onClick={() => void runChatSearch()}>{desktopCopy("搜索", "Search")}</Button>
         {bot && (
           <Button
             size="sm"
@@ -173,30 +173,26 @@ export function SessionsSection({ accountId }: { accountId: string }) {
                 void refresh()
               })
             }}
-          >
-            + 新建
-          </Button>
+          >{desktopCopy("+ 新建", "+ New")}</Button>
         )}
         {items.some((s) => s.archived) && (
           <Button size="sm" variant="ghost" onClick={() => setShowArchived((v) => !v)}>
-            {showArchived ? "隐藏归档" : "已归档"}
+            {showArchived ? desktopCopy("隐藏归档", "Hide archived") : desktopCopy("已归档", "Archived")}
           </Button>
         )}
       </div>
       {searchHits && (
         <div className="mb-2 rounded-lg border border-line bg-surface p-2 text-[12px]">
           <div className="mb-1 flex items-center justify-between">
-            <span className="font-medium text-ink-secondary">搜索结果 ({searchHits.length})</span>
+            <span className="font-medium text-ink-secondary">{desktopCopy("搜索结果 (", "Search results (")}{searchHits.length})</span>
             <button
               type="button"
               onClick={() => setSearchHits(null)}
               className="text-[11px] text-ink-muted hover:text-ink"
-            >
-              关闭
-            </button>
+            >{desktopCopy("关闭", "Close")}</button>
           </div>
           {searchHits.length === 0 ? (
-            <p className="text-ink-muted">无匹配聊天记录</p>
+            <p className="text-ink-muted">{desktopCopy("无匹配聊天记录", "No matching chat messages")}</p>
           ) : (
             <ul className="flex flex-col gap-1">
               {searchHits.map((h) => (
@@ -209,9 +205,7 @@ export function SessionsSection({ accountId }: { accountId: string }) {
                         setBusyId(h.sessionId!)
                         void switchMuseSession(bot.id, h.sessionId!).finally(() => setBusyId(undefined))
                       }}
-                    >
-                      打开
-                    </Button>
+                    >{desktopCopy("打开", "Open")}</Button>
                   )}
                 </li>
               ))}
@@ -220,7 +214,7 @@ export function SessionsSection({ accountId }: { accountId: string }) {
         </div>
       )}
       {visible.length === 0 ? (
-        <EmptyLine>{loading ? "加载会话…" : "暂无会话"}</EmptyLine>
+        <EmptyLine>{loading ? desktopCopy("加载会话…", "Loading sessions…") : desktopCopy("暂无会话", "No sessions yet")}</EmptyLine>
       ) : (
         <ul className="flex flex-col gap-2">
           {visible.map((item) => {
@@ -245,7 +239,7 @@ export function SessionsSection({ accountId }: { accountId: string }) {
                         <TextInput
                           value={renameTitle}
                           onChange={(e) => setRenameTitle(e.target.value)}
-                          aria-label="会话标题"
+                          aria-label={desktopCopy("会话标题", "Session Title")}
                           className="h-7 text-[13px]"
                         />
                         <Button
@@ -259,12 +253,8 @@ export function SessionsSection({ accountId }: { accountId: string }) {
                               title: renameTitle.trim()
                             })
                           }
-                        >
-                          保存
-                        </Button>
-                        <Button size="sm" onClick={() => setRenameId(undefined)}>
-                          取消
-                        </Button>
+                        >{desktopCopy("保存", "Save")}</Button>
+                        <Button size="sm" onClick={() => setRenameId(undefined)}>{desktopCopy("取消", "Cancel")}</Button>
                       </div>
                     ) : (
                       <p className="truncate text-[13px] font-medium text-ink">{item.title}</p>
@@ -274,9 +264,9 @@ export function SessionsSection({ accountId }: { accountId: string }) {
                     )}
                     <p className="mt-0.5 text-[11px] text-ink-muted">
                       {formatTime(item.updatedAtMs)}
-                      {isActive ? " · 当前会话" : ""}
-                      {item.pinned ? " · 置顶" : ""}
-                      {item.archived ? " · 已归档" : ""}
+                      {isActive ? desktopCopy(" · 当前会话", "• Current session") : ""}
+                      {item.pinned ? desktopCopy(" · 置顶", " · Pinned") : ""}
+                      {item.archived ? desktopCopy(" · 已归档", "• Archived") : ""}
                     </p>
                   </div>
                 </div>
@@ -291,7 +281,7 @@ export function SessionsSection({ accountId }: { accountId: string }) {
                         void switchMuseSession(bot.id, item.id).finally(() => setBusyId(undefined))
                       }}
                     >
-                      {isActive ? "刷新历史" : "打开对话"}
+                      {isActive ? desktopCopy("刷新历史", "Refresh History") : desktopCopy("打开对话", "Open conversation")}
                     </Button>
                   )}
                   <Button
@@ -304,7 +294,7 @@ export function SessionsSection({ accountId }: { accountId: string }) {
                       })
                     }
                   >
-                    {item.pinned ? "取消置顶" : "置顶"}
+                    {item.pinned ? desktopCopy("取消置顶", "Unpin") : desktopCopy("置顶", "Pin")}
                   </Button>
                   <Button
                     size="sm"
@@ -313,9 +303,7 @@ export function SessionsSection({ accountId }: { accountId: string }) {
                       setRenameId(item.id)
                       setRenameTitle(item.title)
                     }}
-                  >
-                    重命名
-                  </Button>
+                  >{desktopCopy("重命名", "Rename")}</Button>
                   <Button
                     size="sm"
                     variant={confirmingArchive ? "primary" : undefined}
@@ -327,10 +315,10 @@ export function SessionsSection({ accountId }: { accountId: string }) {
                     }
                   >
                     {item.archived
-                      ? "取消归档"
+                      ? desktopCopy("取消归档", "Unarchive")
                       : confirmingArchive
-                        ? "再点一次确认归档"
-                        : "归档"}
+                        ? desktopCopy("再点一次确认归档", "Click again to archive")
+                        : desktopCopy("归档", "Archive")}
                   </Button>
                   <Button
                     size="sm"
@@ -338,7 +326,7 @@ export function SessionsSection({ accountId }: { accountId: string }) {
                     disabled={busyId === item.id}
                     onClick={() => ask(item.id, "delete")}
                   >
-                    {confirmingDelete ? "再点一次确认删除" : "删除"}
+                    {confirmingDelete ? desktopCopy("再点一次确认删除", "Click again to confirm deletion") : desktopCopy("删除", "Delete")}
                   </Button>
                 </div>
               </li>

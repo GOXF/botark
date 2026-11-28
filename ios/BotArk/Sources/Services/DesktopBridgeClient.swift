@@ -10,11 +10,11 @@ public enum DesktopBridgeError: LocalizedError {
     public var errorDescription: String? {
         switch self {
         case .noReachableHost(let hosts):
-            return "无法连接到电脑端（已探测：\(hosts.joined(separator: ", "))）。请确认手机与电脑在同一 Wi-Fi / 热点或 Tailscale 网络下，且电脑端已开启同步桥。"
+            return String.localizedStringWithFormat(String(localized: "Could not reach the desktop (tried %@). Check that both devices share a network or Tailscale and that Mobile Sync is on."), hosts.joined(separator: ", "))
         case .invalidResponse(let msg):
-            return "电脑端返回了无效数据：\(msg)"
+            return String.localizedStringWithFormat(String(localized: "The desktop returned invalid data: %@"), msg)
         case .unauthorized:
-            return "设备授权已失效或已被电脑端移除，请重新扫码配对。"
+            return String(localized: "This device is no longer authorized. Scan a new pairing code to reconnect.")
         case .serverError(let msg):
             return msg
         }
@@ -98,7 +98,7 @@ public actor DesktopBridgeClient {
         guard http.statusCode == 200, decoded.ok,
               let deviceId = decoded.deviceId,
               let deviceToken = decoded.deviceToken else {
-            throw DesktopBridgeError.serverError(decoded.message ?? "配对失败（HTTP \(http.statusCode)）")
+            throw DesktopBridgeError.serverError(decoded.message ?? String.localizedStringWithFormat(String(localized: "Pairing failed (HTTP %lld)"), http.statusCode))
         }
 
         var directCreds: [DirectHermesCredential] = []
@@ -134,7 +134,7 @@ public actor DesktopBridgeClient {
         }
         if http.statusCode == 401 { throw DesktopBridgeError.unauthorized }
         guard http.statusCode == 200 else {
-            throw DesktopBridgeError.serverError("同步快照失败（HTTP \(http.statusCode)）")
+            throw DesktopBridgeError.serverError(String.localizedStringWithFormat(String(localized: "Snapshot sync failed (HTTP %lld)"), http.statusCode))
         }
         struct Wrapper: Decodable { let ok: Bool; let snapshot: WorkspaceSnapshot }
         return try JSONDecoder().decode(Wrapper.self, from: data).snapshot
@@ -174,7 +174,7 @@ public actor DesktopBridgeClient {
         struct SendResponse: Decodable { let messageId: String?; let message: String? }
         let payload = try? JSONDecoder().decode(SendResponse.self, from: data)
         guard http.statusCode == 200 else {
-            throw DesktopBridgeError.serverError(payload?.message ?? "发送失败（HTTP \(http.statusCode)）")
+            throw DesktopBridgeError.serverError(payload?.message ?? String.localizedStringWithFormat(String(localized: "Sending failed (HTTP %lld)"), http.statusCode))
         }
         return payload?.messageId
     }

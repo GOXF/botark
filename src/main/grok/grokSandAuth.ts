@@ -1,3 +1,4 @@
+import { nativeDisplayCopy } from '../nativeDisplayCopy'
 /**
  * Sand client accessToken via official PKCE + poll login (Grok Bot.app 0.79.3 flow).
  * Supports both Cursor WorkOS Sand tokens and xAI Identity OAuth2 tokens, plus
@@ -885,7 +886,7 @@ export async function runSandLogin(
     width: 980,
     height: 760,
     show: opts.show ?? true,
-    title: '使用 Grok Bot 登录（sand）',
+    title: nativeDisplayCopy("使用 Grok Bot 登录（sand）", "Sign in to Grok Bot (Sand)"),
     backgroundColor: '#f7f7f8',
     autoHideMenuBar: true,
     ...(windowIcon ? { icon: windowIcon } : {}),
@@ -941,7 +942,7 @@ export async function runSandLogin(
         if (typeof openExternal === 'function') {
           void openExternal(url)
         }
-        opts.onNeedsInput?.('已自动在系统浏览器打开授权页，请完成登录后返回…')
+        opts.onNeedsInput?.(nativeDisplayCopy("已自动在系统浏览器打开授权页，请完成登录后返回…", "Sign-in opened in your browser. Finish signing in there, then return to BotArk…"))
         if (childWin && !childWin.isDestroyed()) {
           try {
             childWin.close()
@@ -953,8 +954,8 @@ export async function runSandLogin(
           void win.webContents
             .executeJavaScript(
               buildGoogleFallbackBannerScript({
-                title: '已自动切换至系统默认浏览器完成 Google 授权',
-                detail: '请在系统浏览器中完成登录并确认授权，完成后 BotArk 将自动完成同步。'
+                title: nativeDisplayCopy("已自动切换至系统默认浏览器完成 Google 授权", "Google sign-in opened in your default browser."),
+                detail: nativeDisplayCopy("请在系统浏览器中完成登录并确认授权，完成后 BotArk 将自动完成同步。", "Finish signing in and confirm access in your browser. BotArk will sync automatically.")
               }),
               true
             )
@@ -979,7 +980,7 @@ export async function runSandLogin(
         overrideBrowserWindowOptions: {
           width: 520,
           height: 680,
-          title: '安全授权',
+          title: nativeDisplayCopy("安全授权", "Secure sign-in"),
           ...(windowIcon ? { icon: windowIcon } : {}),
           parent: win.isDestroyed() ? undefined : win,
           autoHideMenuBar: true,

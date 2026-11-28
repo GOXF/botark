@@ -1,3 +1,4 @@
+import { desktopCopy, useDesktopLocale } from '@/lib/desktopCopy'
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { createId } from '@shared/id'
 import {
@@ -92,6 +93,7 @@ function waitForRetry(ms: number, signal: AbortSignal): Promise<void> {
 
 /** Paste or load `email | inbox_url` lines to sign in separate Muse bots with email codes. */
 export function MuseBatchImport({ onDone, onBusyChange }: { onDone: () => void; onBusyChange?: (busy: boolean) => void }) {
+  useDesktopLocale()
   const t = useT()
   const addBot = useBotStore((s) => s.addBot)
   const [text, setText] = useState('')
@@ -322,7 +324,7 @@ export function MuseBatchImport({ onDone, onBusyChange }: { onDone: () => void; 
         <textarea
           value={text}
           onChange={(event) => setText(event.target.value)}
-          placeholder={PLACEHOLDER}
+          placeholder={desktopCopy(PLACEHOLDER, PLACEHOLDER.replace('# 每行一个：邮箱 | 收件箱链接', '# One per line: email | inbox URL'))}
           aria-label={t('Accounts to import')}
           spellCheck={false}
           rows={8}

@@ -1,3 +1,4 @@
+import { desktopCopy, useDesktopLocale } from '@/lib/desktopCopy'
 import { GeminiInfoSections } from '@/components/gemini/GeminiInfoSections'
 import { setRoomAdministrator, useRooms } from '@/rooms/roomStore'
 import { useState } from 'react'
@@ -300,6 +301,7 @@ function OpenInfoPanel({
   requestedTab: InspectorTabId
   setTab: (tab: InspectorTabId) => void
 }) {
+  useDesktopLocale()
   const [activeAccount, ...accounts] = useBotStore(
     useShallow((s) => [s.accounts[bot.activeAccountId], ...getBotAccounts(bot, s.accounts)] as const)
   )
@@ -335,17 +337,13 @@ function OpenInfoPanel({
         <div key={`${bot.id}:${activeTab}`} className="animate-veil-in">
           {activeTab === 'overview' ? (
             <>
-              <Section title="协作调度">
+              <Section title={desktopCopy("协作调度", "Collaboration")}>
                 <label className="flex items-center gap-2 text-[13px]">
                   <input type="checkbox" checked={Boolean(coordinationRoomId)}
-                    onChange={(e) => setRoomAdministrator(bot.id, e.target.checked)} />
-                  设为管理员
-                </label>
+                    onChange={(e) => setRoomAdministrator(bot.id, e.target.checked)} />{desktopCopy("设为管理员", "Set as Administrator")}</label>
                 {coordinationRoomId && (
                   <button type="button" className="mt-2 text-[12px] text-accent-600"
-                    onClick={() => useBotStore.getState().selectBot(coordinationRoomId)}>
-                    打开调度对话
-                  </button>
+                    onClick={() => useBotStore.getState().selectBot(coordinationRoomId)}>{desktopCopy("打开调度对话", "Open coordination chat")}</button>
                 )}
               </Section>
               {bot.platformId === 'meta-muse' && bot.activeAccountId && (

@@ -326,7 +326,7 @@ describe('Antigravity credential import IPC', () => {
       await wc.loadURL('https://accounts.google.com/v3/signin/rejected')
       wc.emit('did-finish-load')
       await vi.waitFor(() => expect(wc.executeJavaScript).toHaveBeenCalledWith(
-        expect.stringContaining('Copy as cURL'),
+        expect.stringContaining('botark-external://open'),
         true
       ))
       expect(openExternal).toHaveBeenCalledExactlyOnceWith('https://antigravity.google.com/')

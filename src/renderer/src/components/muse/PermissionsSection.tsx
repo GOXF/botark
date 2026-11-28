@@ -1,3 +1,4 @@
+import { desktopCopy, desktopNotice, useDesktopLocale } from '@/lib/desktopCopy'
 import { useCallback, useEffect, useState } from 'react'
 import { asObj } from '@shared/parse'
 import { EmptyLine, Section } from '@/components/info/Section'
@@ -129,6 +130,7 @@ const MODES: Array<{ value: 'auto_allow' | 'always_ask'; label: () => string }> 
 ]
 
 export function PermissionsSection({ accountId }: { accountId: string }) {
+  useDesktopLocale()
   const [state, setState] = useState<PermState>({ activeGrants: [], raw: {}, rows: [] })
   const [network, setNetwork] = useState<'auto_allow' | 'always_ask' | ''>('')
   const [connector, setConnector] = useState<'auto_allow' | 'always_ask' | ''>('')
@@ -261,8 +263,8 @@ export function PermissionsSection({ accountId }: { accountId: string }) {
       count={state.activeGrants.length || state.rows.length || undefined}
       action={<RefreshButton loading={loading} onClick={() => void refresh()} />}
     >
-      {error && <p className="pb-1 text-[12px] text-status-error">{error}</p>}
-      {hint && <p className="pb-1 text-[12px] text-ink-secondary">{hint}</p>}
+      {error && <p className="pb-1 text-[12px] text-status-error">{desktopNotice(error)}</p>}
+      {hint && <p className="pb-1 text-[12px] text-ink-secondary">{desktopNotice(hint)}</p>}
       {unavailable && !canWrite ? (
         <EmptyLine>{t('Permissions unavailable')}</EmptyLine>
       ) : (
@@ -360,7 +362,7 @@ export function PermissionsSection({ accountId }: { accountId: string }) {
             <TextInput
               value={ruleHost}
               onChange={(e) => setRuleHost(e.target.value)}
-              placeholder="添加域名规则 (example.com)"
+              placeholder={desktopCopy("添加域名规则 (example.com)", "Add Domain Name Rule (example.com)")}
               aria-label="Host"
               className="h-7 flex-1 text-[12px]"
             />

@@ -1,3 +1,4 @@
+import { desktopCopy, desktopNotice, useDesktopLocale } from '@/lib/desktopCopy'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu'
 import {
@@ -37,6 +38,7 @@ async function rpc(request: HarkRpcRequest) {
 const PROJECTS_CHANGED = 'bothub:hark-projects'
 
 export function HarkProjects({ botId, compact }: { botId: string; compact?: boolean }) {
+  useDesktopLocale()
   const bot = useBotStore((s) => s.bots.find((b) => b.id === botId))!
   const accountId = bot.activeAccountId
   const connected = useBotStore((s) =>
@@ -186,7 +188,7 @@ export function HarkProjects({ botId, compact }: { botId: string; compact?: bool
         path: `/project/${encodeURIComponent(projectId)}/preview-url`
       })
       const url = (data as { url?: string })?.url
-      if (!url || new URL(url).protocol !== 'https:') throw new Error('该项目暂无可用在线预览')
+      if (!url || new URL(url).protocol !== 'https:') throw new Error(desktopCopy("该项目暂无可用在线预览", "This project has no online preview."))
       await getBridge()?.muse.openHttps(url)
     })
 
@@ -224,7 +226,7 @@ export function HarkProjects({ botId, compact }: { botId: string; compact?: bool
           <DropdownMenu.Trigger
             type="button"
             disabled={busy}
-            aria-label="切换 Hark 项目"
+            aria-label={desktopCopy("切换 Hark 项目", "Switch Hark project")}
             className={cn(
               'group press inline-flex h-8 max-w-52 min-w-0 items-center gap-1.5 rounded-full px-3 text-[12.5px] font-medium text-ink outline-none select-none',
               'border-[0.5px] border-line-strong bg-main shadow-soft hover:bg-surface data-[state=open]:bg-surface',
@@ -236,7 +238,7 @@ export function HarkProjects({ botId, compact }: { botId: string; compact?: bool
             ) : (
               <ArkProjectStackSvg className="size-3.5 shrink-0 text-accent-600" />
             )}
-            <span className="truncate">{activeProject?.title ?? '当前项目'}</span>
+            <span className="truncate">{activeProject?.title ?? desktopCopy("当前项目", "Current project")}</span>
             <ChevronDown
               aria-hidden
               className="size-3.5 shrink-0 text-ink-muted transition-transform duration-200 ease-spring-tap group-data-[state=open]:rotate-180"
@@ -255,17 +257,14 @@ export function HarkProjects({ botId, compact }: { botId: string; compact?: bool
               )}
             >
               <div className="flex items-center justify-between px-2.5 pt-1 pb-1.5">
-                <span className="text-[11px] font-semibold tracking-tight text-ink-muted">
-                  Hark 项目工作空间 ({visibleProjects.length})
+                <span className="text-[11px] font-semibold tracking-tight text-ink-muted">{desktopCopy("Hark 项目工作空间 (", "Hark project workspace (")}{visibleProjects.length})
                 </span>
                 <button
                   type="button"
                   onClick={() => setAdding((v) => !v)}
                   className="press inline-flex items-center gap-1 rounded-full bg-accent-50 px-2 py-0.5 text-[11px] font-semibold text-accent-600 hover:bg-accent-100"
                 >
-                  <Plus className="size-3" />
-                  新建项目
-                </button>
+                  <Plus className="size-3" />{desktopCopy("新建项目", "New project")}</button>
               </div>
 
               {adding && (
@@ -279,8 +278,8 @@ export function HarkProjects({ botId, compact }: { botId: string; compact?: bool
                 >
                   <TextInput
                     autoFocus
-                    aria-label="项目名称"
-                    placeholder="输入新项目名称…"
+                    aria-label={desktopCopy("项目名称", "Name of project")}
+                    placeholder={desktopCopy("输入新项目名称…", "Enter a name for the new project…")}
                     value={title}
                     onChange={(e) => setTitle(e.target.value)}
                     className="h-7 flex-1 text-[12px]"
@@ -291,9 +290,7 @@ export function HarkProjects({ botId, compact }: { botId: string; compact?: bool
                     variant="primary"
                     disabled={busy || !title.trim()}
                     className="h-7 px-2.5 text-[11.5px]"
-                  >
-                    创建
-                  </Button>
+                  >{desktopCopy("创建", "Create")}</Button>
                 </form>
               )}
 
@@ -318,9 +315,7 @@ export function HarkProjects({ botId, compact }: { botId: string; compact?: bool
                       />
                       <span className="min-w-0 flex-1 truncate">{p.title}</span>
                       {p.main && (
-                        <span className="rounded-full bg-hover px-1.5 py-0.2 text-[10px] text-ink-muted">
-                          默认
-                        </span>
+                        <span className="rounded-full bg-hover px-1.5 py-0.2 text-[10px] text-ink-muted">{desktopCopy("默认", "Default")}</span>
                       )}
                       <Check
                         aria-hidden
@@ -339,7 +334,7 @@ export function HarkProjects({ botId, compact }: { botId: string; compact?: bool
 
         {error && (
           <span role="alert" className="max-w-44 truncate text-[11.5px] text-status-error">
-            {error}
+            {desktopNotice(error)}
           </span>
         )}
       </div>
@@ -350,8 +345,7 @@ export function HarkProjects({ botId, compact }: { botId: string; compact?: bool
     <div className="flex flex-col gap-2 text-[12px]">
       {/* Quick Add Project Bar */}
       <div className="flex items-center justify-between">
-        <span className="text-[11px] font-medium text-ink-muted">
-          项目 ({visibleProjects.length})
+        <span className="text-[11px] font-medium text-ink-muted">{desktopCopy("项目 (", "Projects (")}{visibleProjects.length})
         </span>
         <button
           type="button"
@@ -359,7 +353,7 @@ export function HarkProjects({ botId, compact }: { botId: string; compact?: bool
           className="press inline-flex items-center gap-1 rounded-full bg-hover px-2 py-0.5 text-[11px] font-medium text-ink hover:bg-active"
         >
           <Plus className="size-3 text-accent-600" />
-          {adding ? '取消' : '新建'}
+          {adding ? desktopCopy("取消", "Cancel") : desktopCopy("新建", "New")}
         </button>
       </div>
 
@@ -373,15 +367,13 @@ export function HarkProjects({ botId, compact }: { botId: string; compact?: bool
         >
           <TextInput
             autoFocus
-            aria-label="项目名称"
-            placeholder="输入项目名称…"
+            aria-label={desktopCopy("项目名称", "Name of project")}
+            placeholder={desktopCopy("输入项目名称…", "Enter project name…")}
             value={title}
             onChange={(e) => setTitle(e.target.value)}
             className="h-8 flex-1 text-[12px]"
           />
-          <Button type="submit" size="sm" variant="primary" disabled={busy || !title.trim()}>
-            创建
-          </Button>
+          <Button type="submit" size="sm" variant="primary" disabled={busy || !title.trim()}>{desktopCopy("创建", "Create")}</Button>
         </form>
       )}
 
@@ -419,7 +411,7 @@ export function HarkProjects({ botId, compact }: { botId: string; compact?: bool
                   {p.title}
                 </span>
                 {p.main && (
-                  <span className="shrink-0 text-[10.5px] text-ink-muted">默认</span>
+                  <span className="shrink-0 text-[10.5px] text-ink-muted">{desktopCopy("默认", "Default")}</span>
                 )}
               </button>
 
@@ -428,8 +420,8 @@ export function HarkProjects({ botId, compact }: { botId: string; compact?: bool
                   <button
                     type="button"
                     disabled={busy}
-                    title="在线预览"
-                    aria-label={`预览 ${p.title}`}
+                    title={desktopCopy("在线预览", "Online Preview")}
+                    aria-label={desktopCopy("预览 {0}", "Preview {0}", [(p.title)])}
                     onClick={() => void openPreview(p.id)}
                     className="press-icon grid size-6 place-items-center rounded-full text-ink-secondary hover:bg-active hover:text-accent-600 disabled:opacity-35"
                   >
@@ -438,8 +430,8 @@ export function HarkProjects({ botId, compact }: { botId: string; compact?: bool
                   <button
                     type="button"
                     disabled={busy}
-                    title="归档"
-                    aria-label={`归档 ${p.title}`}
+                    title={desktopCopy("归档", "Archive")}
+                    aria-label={desktopCopy("归档 {0}", "Archive {0}", [(p.title)])}
                     onClick={() => void toggleArchive(p)}
                     className="press-icon grid size-6 place-items-center rounded-full text-ink-secondary hover:bg-active hover:text-ink disabled:opacity-35"
                   >
@@ -460,7 +452,7 @@ export function HarkProjects({ botId, compact }: { botId: string; compact?: bool
             onClick={() => setShowArchived((v) => !v)}
             className="text-[11px] font-medium text-ink-muted hover:text-ink-secondary"
           >
-            {showArchived ? '收起已归档项目' : `已归档项目 (${archivedProjects.length})`}
+            {showArchived ? desktopCopy("收起已归档项目", "Hide archived projects") : desktopCopy("已归档项目 ({0})", "Archived projects ({0})", [(archivedProjects.length)])}
           </button>
           {showArchived && (
             <ul className="mt-1.5 flex flex-col gap-1 animate-veil-in">
@@ -476,9 +468,7 @@ export function HarkProjects({ botId, compact }: { botId: string; compact?: bool
                     onClick={() => void toggleArchive(p)}
                     className="press inline-flex items-center gap-1 rounded-full bg-surface px-2 py-0.5 text-[11px] font-medium text-ink-secondary shadow-hairline hover:text-ink"
                   >
-                    <ArchiveRestore className="size-3" />
-                    恢复
-                  </button>
+                    <ArchiveRestore className="size-3" />{desktopCopy("恢复", "Restore")}</button>
                 </li>
               ))}
             </ul>
@@ -488,7 +478,7 @@ export function HarkProjects({ botId, compact }: { botId: string; compact?: bool
 
       {error && (
         <p role="alert" className="text-[11.5px] text-status-error">
-          {error}
+          {desktopNotice(error)}
         </p>
       )}
     </div>

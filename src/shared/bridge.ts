@@ -300,6 +300,8 @@ export interface BotHubBridge {
   readonly gemini?: import('./gemini').GeminiBridge
   /** Node-style platform string, e.g. "darwin", "win32", "linux". */
   readonly platform: string
+  readonly setDisplayLocale?: (locale: import('./displayLocale').DisplayLocale) => void
+  readonly onOpenSettings?: (listener: () => void) => () => void
   readonly versions: {
     readonly electron: string
     readonly chrome: string

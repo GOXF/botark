@@ -1,3 +1,4 @@
+import { nativeDisplayCopy } from '../nativeDisplayCopy'
 import { createServer, type Server as HttpServer } from 'node:http'
 import { randomBytes, randomUUID } from 'node:crypto'
 import { constants, closeSync, existsSync, fstatSync, openSync, readSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
@@ -304,7 +305,7 @@ async function approve(win: BrowserWindow, message: string, detail: string) {
     type: 'question',
     message,
     detail,
-    buttons: ['取消', '允许一次'],
+    buttons: [nativeDisplayCopy("取消", "Cancel"), nativeDisplayCopy("允许一次", "Allow once")],
     defaultId: 0,
     cancelId: 0,
     noLink: true
@@ -848,7 +849,7 @@ async function connectHermes(
   if (!targetPath) {
     const defaultYaml = join(getHermesHome(), 'config.yaml')
     const pick = await dialog.showOpenDialog(win, {
-      title: '选择此 Hermes 实例的 config.yaml',
+      title: nativeDisplayCopy("选择此 Hermes 实例的 config.yaml", "Choose the config.yaml for this Hermes instance"),
       defaultPath: existsSync(defaultYaml) ? defaultYaml : undefined,
       properties: ['openFile'],
       filters: [{ name: 'Hermes YAML', extensions: ['yaml', 'yml'] }]
@@ -1178,7 +1179,7 @@ async function bindDirectory(
   let rawDir = requestedDir?.trim()
   if (!rawDir) {
     const pick = await dialog.showOpenDialog(win, {
-      title: '授权工作区目录',
+      title: nativeDisplayCopy("授权工作区目录", "Grant access to a workspace folder"),
       properties: ['openDirectory']
     })
     if (pick.canceled || !pick.filePaths[0]) {
@@ -1420,7 +1421,7 @@ export function registerWorkspaceIpc(owner: () => BrowserWindow | null) {
 
       case 'import': {
         const pick = await dialog.showOpenDialog(win, {
-          title: '导入 mcpServers JSON',
+          title: nativeDisplayCopy("导入 mcpServers JSON", "Import mcpServers JSON"),
           properties: ['openFile'],
           filters: [{ name: 'JSON', extensions: ['json', 'jsonc'] }]
         })

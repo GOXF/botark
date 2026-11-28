@@ -1,3 +1,4 @@
+import { desktopCopy, useDesktopLocale } from '@/lib/desktopCopy'
 import { useEffect, useRef, useState } from 'react'
 import { ChevronDown, Monitor } from 'lucide-react'
 import { harkRpc } from '@adapters/hark/harkRequests'
@@ -12,6 +13,7 @@ export function HarkBrowserCard({ accountId, sessionId }: { accountId: string; s
 }
 
 function HarkBrowserPreviewCard({ accountId, sessionId }: { accountId: string; sessionId?: string }) {
+  useDesktopLocale()
   const [open, setOpen] = useState(false)
   const [panel, setPanel] = useState<HarkBrowserPreview | null>(null)
   const [error, setError] = useState('')
@@ -63,17 +65,17 @@ function HarkBrowserPreviewCard({ accountId, sessionId }: { accountId: string; s
       <div className="flex items-center gap-2">
         <button type="button" aria-expanded={open} onClick={() => setOpen(!open)}
           className="flex min-w-0 flex-1 items-center gap-2 py-2 text-ink-secondary">
-          <Monitor className="size-4 shrink-0" /><span className="shrink-0">远程浏览器</span>
+          <Monitor className="size-4 shrink-0" /><span className="shrink-0">{desktopCopy("远程浏览器", "Remote Browser")}</span>
           <span className="truncate">{panel?.label}</span>
           <ChevronDown className={open ? 'ml-auto size-4 rotate-180' : 'ml-auto size-4'} />
         </button>
         {open && <RefreshButton loading={loading} onClick={() => setRevision((r) => r + 1)} />}
       </div>
       {open && <div className="pb-2">
-        {image && <img src={image} alt="Hark 远程浏览器截图" className="max-h-[24vh] w-full rounded-lg bg-sunken object-contain" />}
-        <p className="truncate text-ink-muted" role="status">{error || screenshot?.error || (loading ? '正在刷新…' : panel
-          ? panel.status + (image ? '' : key || url ? ' · 正在加载截图…' : ' · 暂无截图')
-          : '当前对话暂无浏览器任务')}</p>
+        {image && <img src={image} alt={desktopCopy("Hark 远程浏览器截图", "Hark remote browser screenshot")} className="max-h-[24vh] w-full rounded-lg bg-sunken object-contain" />}
+        <p className="truncate text-ink-muted" role="status">{error || screenshot?.error || (loading ? desktopCopy("正在刷新…", "Refreshing…") : panel
+          ? panel.status + (image ? '' : key || url ? desktopCopy(" · 正在加载截图…", "• Loading a screenshot…") : desktopCopy(" · 暂无截图", " · No screenshot available"))
+          : desktopCopy("当前对话暂无浏览器任务", "No browser task in this conversation yet."))}</p>
       </div>}
     </section>
   )

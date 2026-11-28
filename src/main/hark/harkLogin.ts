@@ -1,3 +1,4 @@
+import { nativeDisplayCopy } from '../nativeDisplayCopy'
 /**
  * Interactive Hark login via BrowserWindow + account persist partition.
  *
@@ -151,7 +152,7 @@ export async function openHarkLoginWindow(accountId: string, parent?: BrowserWin
     height: 780,
     minWidth: 720,
     minHeight: 560,
-    title: '使用 Hark 登录',
+    title: nativeDisplayCopy("使用 Hark 登录", "Sign in to Hark"),
     backgroundColor: '#f7f7f8',
     autoHideMenuBar: true,
     ...(windowIcon ? { icon: windowIcon } : {}),
@@ -198,13 +199,13 @@ export async function openHarkLoginWindow(accountId: string, parent?: BrowserWin
       }
       await wc.executeJavaScript(
         buildGoogleFallbackBannerScript({
-          title: 'Google 登录受限或需要通行密钥',
-          detail: '可尝试兼容模式重试，或在系统浏览器打开 Hark 登录后使用「粘贴凭据导入」。',
-          buttonLabel: '在系统浏览器打开',
+          title: nativeDisplayCopy("Google 登录受限或需要通行密钥", "Google sign-in is restricted or requires a passkey."),
+          detail: nativeDisplayCopy("可尝试兼容模式重试，或在系统浏览器打开 Hark 登录后使用「粘贴凭据导入」。", "Retry sign-in or finish signing in to Hark in your browser."),
+          buttonLabel: nativeDisplayCopy("在系统浏览器打开", "Open in browser"),
           actionUrl: 'botark-external://open',
           secondaryActions: [
-            { label: '尝试兼容模式重试', actionUrl: 'botark-action://retry-firefox-ua' },
-            { label: '返回 Hark 登录页', actionUrl: 'botark-action://back-to-login' }
+            { label: nativeDisplayCopy("尝试兼容模式重试", "Retry in compatibility mode"), actionUrl: 'botark-action://retry-firefox-ua' },
+            { label: nativeDisplayCopy("返回 Hark 登录页", "Back to Hark sign-in"), actionUrl: 'botark-action://back-to-login' }
           ]
         }),
         true
@@ -256,7 +257,7 @@ export async function openHarkLoginWindow(accountId: string, parent?: BrowserWin
           overrideBrowserWindowOptions: {
             width: 540,
             height: 700,
-            title: 'Hark 安全登录',
+            title: nativeDisplayCopy("Hark 安全登录", "Hark secure sign-in"),
             autoHideMenuBar: true,
             ...(windowIcon ? { icon: windowIcon } : {}),
             parent: parentForChild.isDestroyed() ? undefined : parentForChild,

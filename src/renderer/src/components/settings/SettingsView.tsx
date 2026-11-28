@@ -1,3 +1,4 @@
+import { desktopNotice, useDesktopLocale } from '@/lib/desktopCopy'
 import { GeminiAccountsSettingsPanel } from '@/components/gemini/GeminiAccountsSettingsPanel'
 import { useMemo, useRef, useState } from 'react'
 import { Activity, ArrowLeft, LayoutDashboard, Server, Settings, Smartphone, Sparkles, Users, type LucideIcon } from 'lucide-react'
@@ -37,6 +38,7 @@ interface SettingsNavItem {
 }
 
 export function SettingsView() {
+  useDesktopLocale()
   const tr = useT()
   const settingsTab = useBotStore((s) => s.settingsTab)
   const setSettingsOpen = useBotStore((s) => s.setSettingsOpen)
@@ -83,7 +85,7 @@ export function SettingsView() {
       const targets = allAccounts.filter((a) => (onlyOffline ? a.status === 'offline' || a.status === 'error' : true))
       await Promise.all(targets.map((a) => connectAccount(a.id).catch(() => undefined)))
       await dot.refresh()
-      setHint(`已完成 ${targets.length} 个账号的连接巡检与会话同步`)
+      setHint(tr('Checked connections and synced sessions for {count} accounts', { count: targets.length }))
     } finally {
       setBusy(false)
     }
@@ -196,12 +198,12 @@ export function SettingsView() {
           <div className="mx-auto max-w-[820px]">
             {error && (
               <div role="alert" className="mb-4 whitespace-pre-line rounded-xl border border-status-error/25 bg-status-error/8 px-3.5 py-2.5 text-[13px] text-status-error">
-                {error}
+                {desktopNotice(error)}
               </div>
             )}
             {hint && (
               <div className="mb-4 rounded-xl border border-accent-600/20 bg-accent-50 px-3.5 py-2.5 text-[13px] text-ink">
-                {hint}
+                {desktopNotice(hint)}
               </div>
             )}
 

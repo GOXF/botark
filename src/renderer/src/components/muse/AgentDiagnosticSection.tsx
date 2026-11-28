@@ -1,3 +1,4 @@
+import { desktopCopy, desktopNotice, useDesktopLocale } from '@/lib/desktopCopy'
 import { useCallback, useEffect, useState } from 'react'
 import { asObj } from '@shared/parse'
 import { Section } from '@/components/info/Section'
@@ -46,6 +47,7 @@ function parseActivityList(raw: unknown): ActivityLogItem[] {
  * Muse Agent Config, Model, Identity, VM Health, Subagents & Activity Log.
  */
 export function AgentDiagnosticSection({ accountId }: { accountId: string }) {
+  useDesktopLocale()
   const status = useBotStore((s) => s.accounts[accountId]?.status)
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -118,7 +120,7 @@ export function AgentDiagnosticSection({ accountId }: { accountId: string }) {
     setHint(undefined)
     try {
       await muse.rpc({ accountId, method: 'model.set', params: { model: m, id: m } })
-      setHint('模型已更新')
+      setHint(desktopCopy("模型已更新", "Model updated"))
       await refresh()
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
@@ -131,13 +133,13 @@ export function AgentDiagnosticSection({ accountId }: { accountId: string }) {
 
   return (
     <Section
-      title="模型与运行状态"
+      title={desktopCopy("模型与运行状态", "Model and status")}
       count={activities.length || undefined}
       action={<RefreshButton loading={loading} onClick={() => void refresh()} />}
     >
       <div className="flex flex-col gap-2.5 text-[12px]">
-        {error && <p className="text-status-error">{error}</p>}
-        {hint && <p className="text-ink-secondary">{hint}</p>}
+        {error && <p className="text-status-error">{desktopNotice(error)}</p>}
+        {hint && <p className="text-ink-secondary">{desktopNotice(hint)}</p>}
 
         <div className="flex flex-wrap items-center gap-x-4 gap-y-1 rounded-lg bg-hover/60 px-2.5 py-1.5 text-[11px]">
           <span>
@@ -146,12 +148,12 @@ export function AgentDiagnosticSection({ accountId }: { accountId: string }) {
           </span>
           {agentName && (
             <span>
-              <span className="text-ink-muted">身份 </span>
+              <span className="text-ink-muted">{desktopCopy("身份 ", "Identity ")}</span>
               <span className="text-ink">{agentName}</span>
             </span>
           )}
           <span>
-            <span className="text-ink-muted">子代理 </span>
+            <span className="text-ink-muted">{desktopCopy("子代理 ", "Subagent ")}</span>
             <span className="text-ink">{subagentsCount}</span>
           </span>
         </div>
@@ -169,7 +171,7 @@ export function AgentDiagnosticSection({ accountId }: { accountId: string }) {
             <TextInput
               value={modelName}
               onChange={(e) => setModelName(e.target.value)}
-              placeholder="默认模型"
+              placeholder={desktopCopy("默认模型", "Default Model")}
               aria-label="Model"
               className="h-7 flex-1 text-[12px]"
             />
@@ -181,9 +183,7 @@ export function AgentDiagnosticSection({ accountId }: { accountId: string }) {
 
         {activities.length > 0 && (
           <div>
-            <p className="mb-1 text-[11px] font-semibold tracking-wide text-ink-muted uppercase">
-              最近活动
-            </p>
+            <p className="mb-1 text-[11px] font-semibold tracking-wide text-ink-muted uppercase">{desktopCopy("最近活动", "Recent activity")}</p>
             <ul className="divide-y divide-line max-h-48 overflow-y-auto">
               {activities.map((a) => (
                 <li key={a.id} className="py-1.5 text-[11.5px]">

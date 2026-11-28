@@ -1,3 +1,4 @@
+import { desktopNotice, useDesktopLocale } from '@/lib/desktopCopy'
 import { useEffect, useState } from 'react'
 import type { GeminiConfig, GeminiDraft, GeminiSession } from '@shared/gemini'
 import { Section } from '@/components/info/Section'
@@ -10,6 +11,7 @@ import type { Bot } from '@/types'
 import { geminiField } from './GeminiConnectForm'
 
 export function GeminiInfoSections({ bot }: { bot: Bot }) {
+  useDesktopLocale()
   const t = useT()
   const api = getBridge()?.gemini
   const accountId = bot.activeAccountId
@@ -63,7 +65,7 @@ export function GeminiInfoSections({ bot }: { bot: Bot }) {
         {t('Latest turn tokens')} · {t('Input')} {usage.promptTokenCount ?? '—'} · {t('Output')} {usage.candidatesTokenCount ?? '—'}
         {' · '}{t('Thinking')} {usage.thoughtsTokenCount ?? '—'} · {t('Total')} {usage.totalTokenCount ?? '—'}
       </p>}
-      {error && <p role="alert" className="text-xs text-status-error">{error}</p>}
+      {error && <p role="alert" className="text-xs text-status-error">{desktopNotice(error)}</p>}
     </Section>
     <Section title={t('Conversations')} count={sessions.length}>
       <ul className="space-y-1 text-xs">

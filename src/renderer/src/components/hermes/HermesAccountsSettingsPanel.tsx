@@ -1,3 +1,4 @@
+import { desktopCopy, desktopNotice, useDesktopLocale } from '@/lib/desktopCopy'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { createId } from '@shared/id'
 import type { HermesAuthStatus } from '@shared/ipc'
@@ -22,6 +23,7 @@ function originFor(value: string | undefined): string | undefined {
 }
 
 export function HermesAccountsSettingsPanel() {
+  useDesktopLocale()
   const bots = useBotStore((s) => s.bots)
   const accounts = useBotStore((s) => s.accounts)
   const addBot = useBotStore((s) => s.addBot)
@@ -96,7 +98,7 @@ export function HermesAccountsSettingsPanel() {
     event.preventDefault()
     const hermes = getBridge()?.hermes
     if (!hermes?.configure) {
-      setError('需要在 Electron 桌面端中配置 Hermes')
+      setError(desktopCopy("需要在 Electron 桌面端中配置 Hermes", "Configure Hermes in the desktop app."))
       return
     }
     setBusy(true)
@@ -116,7 +118,7 @@ export function HermesAccountsSettingsPanel() {
         displayName
       })
       if (!st.signedIn) {
-        setError(st.error || '无法连接 Hermes API Server，请检查服务地址和 API_SERVER_KEY')
+        setError(st.error || desktopCopy("无法连接 Hermes API Server，请检查服务地址和 API_SERVER_KEY", "Couldn’t connect to Hermes. Check the server address and API key."))
         return
       }
       if (!isEdit) {
@@ -133,10 +135,10 @@ export function HermesAccountsSettingsPanel() {
             }
           ]
         })
-        setHint(`已接入 Hermes 实例「${displayName}」（${st.baseUrl}）`)
+        setHint(desktopCopy("已接入 Hermes 实例「{0}」（{1}）", "Connected to Hermes “{0}” ({1}).", [(displayName), (st.baseUrl)]))
       } else {
         await connectAccount(accountId)
-        setHint(`已更新 Hermes 实例配置（${st.baseUrl}）`)
+        setHint(desktopCopy("已更新 Hermes 实例配置（{0}）", "Updated Hermes instance configuration ({0})", [(st.baseUrl)]))
       }
       setEditingAccountId(null)
       setNameInput('')
@@ -169,26 +171,22 @@ export function HermesAccountsSettingsPanel() {
     <div className="flex flex-col gap-5 animate-veil-in">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h2 className="text-[18px] font-semibold tracking-tight text-ink">Hermes 实例管理</h2>
-          <p className="mt-0.5 text-[13px] text-ink-secondary">
-            接入本机或远程 Hermes Gateway，支持多实例、流式工具与审批
-          </p>
+          <h2 className="text-[18px] font-semibold tracking-tight text-ink">{desktopCopy("Hermes 实例管理", "Hermes instances")}</h2>
+          <p className="mt-0.5 text-[13px] text-ink-secondary">{desktopCopy("接入本机或远程 Hermes Gateway，支持多实例、流式工具与审批", "Connect local or remote Hermes gateways with streaming tool activity and approvals.")}</p>
         </div>
         <Button size="sm" variant="secondary" disabled={detecting} onClick={() => void detectLocal(!editingAccountId)}>
-          <RefreshCw className={cn('size-3.5', detecting && 'animate-spin')} />
-          检测本机服务
-        </Button>
+          <RefreshCw className={cn('size-3.5', detecting && 'animate-spin')} />{desktopCopy("检测本机服务", "Detect local service")}</Button>
       </div>
 
       {hint && (
         <div className="flex items-center gap-2 rounded-xl border border-status-online/30 bg-status-online/8 px-3.5 py-2.5 text-[12.5px] text-status-online-ink">
           <CheckCircle2 className="size-4 shrink-0" />
-          <span>{hint}</span>
+          <span>{desktopNotice(hint)}</span>
         </div>
       )}
       {error && (
         <div className="rounded-xl border border-status-error/30 bg-status-error/8 px-3.5 py-2.5 text-[12.5px] text-status-error">
-          {error}
+          {desktopNotice(error)}
         </div>
       )}
 
@@ -201,28 +199,27 @@ export function HermesAccountsSettingsPanel() {
           <div className="flex items-center gap-2">
             <PlatformGlyph platform={getPlatform('hermes')} size="sm" className="size-4" />
             <h3 className="text-[14px] font-semibold text-ink">
-              {editingAccountId ? '编辑 Hermes 连接' : '添加 Hermes 实例'}
+              {editingAccountId ? desktopCopy("编辑 Hermes 连接", "Edit Hermes Connection") : desktopCopy("添加 Hermes 实例", "Add Hermes instance")}
             </h3>
           </div>
           {localReachable && (
-            <span className="rounded-full bg-status-online/12 px-2.5 py-0.5 text-[11px] font-medium text-status-online-ink">
-              本机服务在线{localVersion ? ` · v${localVersion}` : ''}
+            <span className="rounded-full bg-status-online/12 px-2.5 py-0.5 text-[11px] font-medium text-status-online-ink">{desktopCopy("本机服务在线", "Local service is online")}{localVersion ? ` · v${localVersion}` : ''}
             </span>
           )}
         </div>
 
         <div className="grid grid-cols-2 gap-3">
           <label className="flex flex-col gap-1">
-            <span className="text-[12px] font-medium text-ink-secondary">实例名称</span>
+            <span className="text-[12px] font-medium text-ink-secondary">{desktopCopy("实例名称", "Instance name")}</span>
             <input
               value={nameInput}
               onChange={(e) => setNameInput(e.target.value)}
-              placeholder="例如：Hermes Local / VPS Agent"
+              placeholder={desktopCopy("例如：Hermes Local / VPS Agent", "For example: Hermes Local / VPS Agent")}
               className="h-9 rounded-lg border border-line bg-main px-3 text-[13px] text-ink outline-none focus:border-accent-600"
             />
           </label>
           <label className="flex flex-col gap-1">
-            <span className="text-[12px] font-medium text-ink-secondary">模型别名（可选）</span>
+            <span className="text-[12px] font-medium text-ink-secondary">{desktopCopy("模型别名（可选）", "Model alias (optional)")}</span>
             <input
               value={modelInput}
               onChange={(e) => setModelInput(e.target.value)}
@@ -235,7 +232,7 @@ export function HermesAccountsSettingsPanel() {
 
         <div className="grid grid-cols-2 gap-3">
           <label className="flex flex-col gap-1">
-            <span className="text-[12px] font-medium text-ink-secondary">API Server 地址</span>
+            <span className="text-[12px] font-medium text-ink-secondary">{desktopCopy("API Server 地址", "API Server Address")}</span>
             <input
               value={baseUrlInput}
               onChange={(e) => {
@@ -260,10 +257,10 @@ export function HermesAccountsSettingsPanel() {
               }}
               placeholder={
                 useLocalKey && canUseLocalKey
-                  ? '自动读取 ~/.hermes/.env'
+                  ? desktopCopy("自动读取 ~/.hermes/.env", "Automatically read ~/.hermes/.env")
                   : canReuseSavedKey
-                  ? '留空保留当前已加密密钥'
-                  : '无鉴权服务可留空'
+                  ? desktopCopy("留空保留当前已加密密钥", "Leave blank to keep the saved key")
+                  : desktopCopy("无鉴权服务可留空", "Leave blank if authentication isn’t required.")
               }
               spellCheck={false}
               className="h-9 rounded-lg border border-line bg-main px-3 font-mono text-[12.5px] text-ink outline-none focus:border-accent-600"
@@ -273,9 +270,7 @@ export function HermesAccountsSettingsPanel() {
 
         {canUseLocalKey && !apiKeyInput.trim() && (
           <div className="flex items-center justify-between gap-3 rounded-xl bg-main px-3 py-2 ring-1 ring-line/50">
-            <span className="text-[12px] text-ink-secondary">
-              自动读取本机 <code className="font-mono text-[11px] text-ink">~/.hermes/.env</code> 密钥
-            </span>
+            <span className="text-[12px] text-ink-secondary">{desktopCopy("自动读取本机 ", " Read locally from ")}<code className="font-mono text-[11px] text-ink">~/.hermes/.env</code>{desktopCopy(" 密钥", " Key")}</span>
             <SwitchPill checked={useLocalKey} onCheckedChange={setUseLocalKey} />
           </div>
         )}
@@ -297,13 +292,11 @@ export function HermesAccountsSettingsPanel() {
                   setModelInput('')
                   setUseLocalKey(false)
                 }}
-              >
-                取消编辑
-              </Button>
+              >{desktopCopy("取消编辑", "Cancel editing")}</Button>
             )}
             <Button type="submit" size="sm" variant="primary" disabled={busy || !baseUrlInput.trim()}>
               <Plus className="size-3.5" />
-              {busy ? '验证连接中…' : editingAccountId ? '保存并重连' : '验证并接入'}
+              {busy ? desktopCopy("验证连接中…", "Checking connection…") : editingAccountId ? desktopCopy("保存并重连", "Save & Reconnect") : desktopCopy("验证并接入", "Verify and connect")}
             </Button>
           </div>
         </div>
@@ -311,9 +304,7 @@ export function HermesAccountsSettingsPanel() {
 
       {/* Connected Hermes Accounts List */}
       {hermesAccounts.length === 0 ? (
-        <div className="rounded-2xl border border-dashed border-line bg-surface/50 px-6 py-10 text-center text-[13px] text-ink-muted">
-          尚未接入任何 Hermes 实例。上方填入本机或远程 Hermes API Server 地址即可一键接入。
-        </div>
+        <div className="rounded-2xl border border-dashed border-line bg-surface/50 px-6 py-10 text-center text-[13px] text-ink-muted">{desktopCopy("尚未接入任何 Hermes 实例。上方填入本机或远程 Hermes API Server 地址即可一键接入。", "No Hermes instances connected. Enter a local or remote Hermes API server address above.")}</div>
       ) : (
         <div className="overflow-hidden rounded-2xl border border-line bg-surface shadow-soft">
           <ul className="divide-y divide-line">
@@ -337,26 +328,22 @@ export function HermesAccountsSettingsPanel() {
                           </span>
                         )}
                         {meta?.hasApiKey && (
-                          <span className="rounded bg-status-online/10 px-1.5 py-0.5 text-[10.5px] text-status-online-ink">
-                            Keychain 已加密
-                          </span>
+                          <span className="rounded bg-status-online/10 px-1.5 py-0.5 text-[10.5px] text-status-online-ink">{desktopCopy("Keychain 已加密", "Encrypted in Keychain")}</span>
                         )}
                       </div>
                       <p className="mt-0.5 truncate font-mono text-[11px] text-ink-muted">
                         {meta?.baseUrl || acc.handle || acc.id}
                       </p>
                       {acc.status === 'error' && acc.statusDetail && (
-                        <p className="mt-0.5 truncate text-[11.5px] text-status-error">{acc.statusDetail}</p>
+                        <p className="mt-0.5 truncate text-[11.5px] text-status-error">{desktopNotice(acc.statusDetail)}</p>
                       )}
                     </div>
                   </div>
                   <div className="flex shrink-0 items-center gap-1.5">
                     {ownerBot && (
-                      <Button size="sm" variant="secondary" onClick={() => selectBot(ownerBot.id)}>
-                        进入对话
-                      </Button>
+                      <Button size="sm" variant="secondary" onClick={() => selectBot(ownerBot.id)}>{desktopCopy("进入对话", "Open conversation")}</Button>
                     )}
-                    <Button size="sm" variant="ghost" onClick={() => startEdit(acc.id)} title="编辑配置">
+                    <Button size="sm" variant="ghost" onClick={() => startEdit(acc.id)} title={desktopCopy("编辑配置", "Edit Configuration")}>
                       <Pencil className="size-3.5" />
                     </Button>
                     <Button
@@ -364,15 +351,13 @@ export function HermesAccountsSettingsPanel() {
                       variant="ghost"
                       disabled={acc.pending}
                       onClick={() => void connectAccount(acc.id)}
-                    >
-                      重连
-                    </Button>
+                    >{desktopCopy("重连", "Reconnect")}</Button>
                     <Button
                       size="sm"
                       variant="ghost"
                       disabled={acc.pending}
                       onClick={() => void signOutAccount(acc.id).then(() => refreshMeta())}
-                      title="断开并清除密钥"
+                      title={desktopCopy("断开并清除密钥", "Disconnect and clear keys")}
                     >
                       <LogOut className="size-3.5" />
                     </Button>
@@ -381,7 +366,7 @@ export function HermesAccountsSettingsPanel() {
                         size="sm"
                         variant="ghost"
                         onClick={() => void removeBot(ownerBot.id).then(() => refreshMeta())}
-                        title="删除"
+                        title={desktopCopy("删除", "Delete")}
                       >
                         <Trash2 className="size-3.5 text-status-error" />
                       </Button>
