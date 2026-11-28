@@ -1,6 +1,6 @@
 import type { SlackBridge, SlackInbound, SlackState } from '@shared/slack'
 import { roomRunFinished, roomSlackDestination, submitBrief, useRooms } from './roomStore'
-import { freshRoomSession, isHumanRoomMessage, type CollabRoom } from './model'
+import { freshRoomSession, isGlobalAdmin, isHumanRoomMessage, type CollabRoom } from './model'
 import { isToolRequest } from './toolRequests'
 
 interface QueuedSlackMessage {
@@ -19,7 +19,7 @@ async function drainInbox(roomId: string, inbox: QueuedSlackMessage[]) {
         continue
       }
       const room = useRooms.getState().rooms.find((r) => r.id === roomId)
-      if (!room || room.coordinatorId) break
+      if (!room || isGlobalAdmin(room)) break
       const { event, onRecorded } = inbox.shift()!
       const run = submitBrief(roomId, event.text, {
         author: 'Slack ' + event.user,
@@ -39,7 +39,7 @@ async function drainInbox(roomId: string, inbox: QueuedSlackMessage[]) {
 export function receiveSlackMessage(event: QueuedSlackMessage['event'], onRecorded?: () => void): boolean {
   const rooms = useRooms.getState().rooms
   const parent = rooms.find((r) => r.id === event.roomId)
-  if (!parent || parent.coordinatorId) return false
+  if (!parent || isGlobalAdmin(parent)) return false
   const id = event.fork ? event.roomId + '/slack/' + event.channel + '/' + event.thread : parent.id
   let room = rooms.find((r) => r.id === id)
   if (!room) {
@@ -109,7 +109,7 @@ export function applySlackConnection(bridge: SlackBridge, connection: Omit<Slack
     if (state.rooms === before.rooms) return
     for (const [index, room] of state.rooms.entries()) {
       if (room === before.rooms[index]) continue
-      if (room.coordinatorId || !destinations[room.slackParent ?? room.id]) continue
+      if (isGlobalAdmin(room) || !destinations[room.slackParent ?? room.id]) continue
       const previous = before.rooms[index]
       const old = previous?.id === room.id ? previous : before.rooms.find((r) => r.id === room.id)
       if (old && room.messages.length > old.messages.length) publishNew(bridge, room, old.messages.length)

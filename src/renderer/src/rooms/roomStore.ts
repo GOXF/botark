@@ -10,6 +10,7 @@ import type { Bot } from '@/types'
 import {
   classifyRoomReply,
   freshRoomSession,
+  isGlobalAdmin,
   isHumanRoomMessage,
   mentions,
   normalizeMentionName,
@@ -126,6 +127,7 @@ export const useRooms = create<RoomState>()(
                 limit: typeof r.limit === 'number' && r.limit > 0 ? r.limit : 6,
                 brief: typeof r.brief === 'string' ? r.brief : '',
                 coordinatorId: typeof r.coordinatorId === 'string' ? r.coordinatorId : undefined,
+                adminScope: r.adminScope === 'room' && typeof r.coordinatorId === 'string' ? ('room' as const) : undefined,
                 slackParent: typeof r.slackParent === 'string' ? r.slackParent : undefined,
                 slackChannel: typeof r.slackChannel === 'string' ? r.slackChannel : undefined,
                 slackThread: typeof r.slackThread === 'string' ? r.slackThread : undefined,
@@ -272,7 +274,7 @@ function revokeCoordination(room: CollabRoom): CollabRoom {
 }
 
 export function setRoomAdministrator(botId: string, enabled: boolean) {
-  const existing = useRooms.getState().rooms.find((r) => r.coordinatorId === botId)
+  const existing = useRooms.getState().rooms.find((r) => isGlobalAdmin(r) && r.coordinatorId === botId)
   if (existing) {
     if (!enabled) update(existing.id, revokeCoordination)
     return existing.id
@@ -297,7 +299,13 @@ function reconcileRooms(targetRoomId?: string) {
   const nextRooms = rooms.map((room) => {
     if (targetRoomId && room.id !== targetRoomId) return room
     let members = room.members
-    if (room.coordinatorId) {
+    if (room.coordinatorId && !isGlobalAdmin(room) && !members.some((m) => m.botId === room.coordinatorId)) {
+      // A group chat's administrator left the room: back to plain relay.
+      anyChanged = true
+      stopRoom(room.id)
+      room = { ...room, coordinatorId: undefined, adminScope: undefined }
+    }
+    if (isGlobalAdmin(room)) {
       const owner = bots.find((b) => b.id === room.coordinatorId)
       const original = members.find((m) => m.botId === room.coordinatorId)
       if (!owner || owner.activeAccountId !== original?.accountId || owner.selectedAgentId !== original?.agentId) {
@@ -348,7 +356,7 @@ const roomById = (id: string) => useRooms.getState().rooms.find((r) => r.id === 
 export const roomRunFinished = (id: string) => runs.get(id)?.finished
 
 export function roomSlackDestination(room: CollabRoom): SlackDestination | undefined {
-  if (room.coordinatorId) return
+  if (isGlobalAdmin(room)) return
   const binding = useRooms.getState().slackDestinations[room.slackParent ?? room.id]
   const active = runs.get(room.id)
   if (active) return active.slackDestination
@@ -400,11 +408,20 @@ export function updateRoomConfig(
 ) {
   update(id, (r) => ({
     ...r,
-    ...(patch.mode && !r.coordinatorId ? { mode: patch.mode } : {}),
+    ...(patch.mode && !isGlobalAdmin(r) ? { mode: patch.mode, coordinatorId: undefined, adminScope: undefined } : {}),
     ...(patch.limit !== undefined
       ? { limit: Math.max(1, Math.min(24, Math.round(patch.limit))) }
       : {})
   }))
+}
+
+/** GOXF: make one member this group chat's own administrator (only this room). */
+export function setGroupAdministrator(id: string, botId: string) {
+  const room = roomById(id)
+  if (!room || isGlobalAdmin(room) || !room.members.some((m) => m.botId === botId)) return
+  if (room.coordinatorId === botId) return
+  stopRoom(id)
+  update(id, (r) => ({ ...r, coordinatorId: botId, adminScope: 'room' }))
 }
 
 export function clearRoomTranscript(id: string) {
@@ -497,10 +514,14 @@ export function addRoom(title: string, ids: string[], mode: CollabRoom['mode'], 
   return room
 }
 
+/** A group chat's administrator leaving the room turns the room back to plain relay. */
+const dropAdmin = (r: CollabRoom, botId: string) =>
+  r.coordinatorId === botId && !isGlobalAdmin(r) ? { coordinatorId: undefined, adminScope: undefined } : {}
+
 export function removeMember(roomId: string, botId: string): { ok: boolean; error?: string } {
   const room = roomById(roomId)
   if (!room) return { ok: false, error: '未找到该群聊' }
-  if (room.coordinatorId) return { ok: false, error: '管理员调度自动同步 Bot 列表' }
+  if (isGlobalAdmin(room)) return { ok: false, error: '管理员调度自动同步 Bot 列表' }
   if (!room.members.some((m) => m.botId === botId)) {
     return { ok: false, error: '该成员不在当前群聊中' }
   }
@@ -512,7 +533,7 @@ export function removeMember(roomId: string, botId: string): { ok: boolean; erro
   }
   useRooms.setState((s) => ({
     rooms: s.rooms.map((r) =>
-      r.id === roomId ? { ...r, members: r.members.filter((m) => m.botId !== botId) } : r
+      r.id === roomId ? { ...r, members: r.members.filter((m) => m.botId !== botId), ...dropAdmin(r, botId) } : r
     ),
     errors: { ...s.errors, [roomId]: undefined }
   }))
@@ -523,7 +544,7 @@ export function removeMember(roomId: string, botId: string): { ok: boolean; erro
 export function addMemberToRoom(roomId: string, botId: string): { ok: boolean; error?: string } {
   const room = roomById(roomId)
   if (!room) return { ok: false, error: '未找到该群聊' }
-  if (room.coordinatorId) return { ok: false, error: '管理员调度自动同步 Bot 列表' }
+  if (isGlobalAdmin(room)) return { ok: false, error: '管理员调度自动同步 Bot 列表' }
   if (room.members.some((m) => m.botId === botId)) {
     return { ok: false, error: '该 Bot 已在群聊中' }
   }
@@ -583,7 +604,7 @@ export function moveMemberToRoom(
   if (!source) return { ok: false, error: '未找到源群聊' }
   const target = roomById(targetRoomId)
   if (!target) return { ok: false, error: '未找到目标群聊' }
-  if (source.coordinatorId || target.coordinatorId) return { ok: false, error: '管理员调度自动同步 Bot 列表' }
+  if (isGlobalAdmin(source) || isGlobalAdmin(target)) return { ok: false, error: '管理员调度自动同步 Bot 列表' }
   const member = source.members.find((m) => m.botId === botId)
   if (!member) return { ok: false, error: '该成员不在当前群聊中' }
   if (source.members.length <= 1) {
@@ -614,7 +635,7 @@ export function moveMemberToRoom(
   useRooms.setState((s) => ({
     rooms: s.rooms.map((r) => {
       if (r.id === sourceRoomId) {
-        return { ...r, members: r.members.filter((m) => m.botId !== botId) }
+        return { ...r, members: r.members.filter((m) => m.botId !== botId), ...dropAdmin(r, botId) }
       }
       if (r.id === targetRoomId) {
         return { ...r, members: [...r.members, movedMember] }

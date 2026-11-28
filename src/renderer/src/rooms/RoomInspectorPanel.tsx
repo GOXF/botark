@@ -7,7 +7,6 @@ import { AddRoomMembersDialog } from './AddRoomMembersDialog'
 import { PaneHeader } from '@/components/layout/PaneHeader'
 import {
   ArkExportDocSvg,
-  ArkPromptSparkSvg,
   ArkRelayOrbSvg,
   ArkSlackWeaveSvg,
   ArkWorkspaceVaultSvg
@@ -22,7 +21,7 @@ import { Select } from '@/components/ui/Select'
 import { cn } from '@/lib/cn'
 import { shortcutLabel } from '@/lib/shortcuts'
 import { useBotStore } from '@/store/botStore'
-import { roomRecipient, type CollabRoom } from './model'
+import { isGlobalAdmin, roomRecipient, type CollabRoom } from './model'
 import { RoomAvatarCluster } from './RoomAvatarCluster'
 import { exportRoomMarkdownFile } from './roomExport'
 export { exportRoomMarkdownFile }
@@ -33,6 +32,7 @@ import {
   removeMember,
   renameRoom,
   roomSlackDestination,
+  setGroupAdministrator,
   updateRoomConfig,
   useRooms
 } from './roomStore'
@@ -129,7 +129,7 @@ export function RoomInspectorPanel({ room }: { room: CollabRoom }) {
               // Four tabs don't fit the narrow panel with icons ("工…" / "Sla…"), so drop the icons then.
               { value: 'overview' as const, label: '编排', icon: <ArkRelayOrbSvg /> },
               { value: 'workspace' as const, label: '工作区', icon: <ArkWorkspaceVaultSvg /> },
-              ...(room.coordinatorId ? [] : [{ value: 'slack' as const, label: 'Slack', icon: <ArkSlackWeaveSvg /> }]),
+              ...(isGlobalAdmin(room) ? [] : [{ value: 'slack' as const, label: 'Slack', icon: <ArkSlackWeaveSvg /> }]),
               { value: 'handoff' as const, label: '交接', icon: undefined }
             ])}
           />
@@ -140,16 +140,33 @@ export function RoomInspectorPanel({ room }: { room: CollabRoom }) {
             <>
               <Section title="调度">
                 <div className="flex flex-col gap-2.5 text-[12px]">
-                  {room.coordinatorId ? <p>管理员可向已添加的 Bot 分派任务，回复在此汇总。</p> : <SegmentedControl<CollabRoom['mode']>
-                    value={room.mode}
-                    onValueChange={(mode) => updateRoomConfig(room.id, { mode })}
-                    fullWidth
-                    size="xs"
-                    options={[
-                      { value: 'auto', label: '自主接力', icon: <ArkPromptSparkSvg /> },
-                      { value: 'manual', label: '手动 @' }
-                    ]}
-                  />}
+                  {isGlobalAdmin(room) ? <p>管理员可向已添加的 Bot 分派任务，回复在此汇总。</p> : <>
+                    <SegmentedControl<CollabRoom['mode'] | 'admin'>
+                      value={room.coordinatorId ? 'admin' : room.mode}
+                      onValueChange={(mode) => mode === 'admin'
+                        ? setGroupAdministrator(room.id, room.members[0]!.botId)
+                        : updateRoomConfig(room.id, { mode })}
+                      fullWidth
+                      size="xs"
+                      // Three options don't fit the narrow panel with an icon ("自主…"), so none carries one.
+                      options={[
+                        { value: 'auto', label: '自主接力' },
+                        { value: 'manual', label: '手动 @' },
+                        { value: 'admin', label: '群管理员' }
+                      ]}
+                    />
+                    {room.coordinatorId && (
+                      <>
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="shrink-0 whitespace-nowrap text-[12px] text-ink-secondary">管理员</span>
+                          <Select value={room.coordinatorId} onValueChange={(id) => setGroupAdministrator(room.id, id)}
+                            size="xs" variant="field" aria-label="群管理员"
+                            options={room.members.map((m) => ({ value: m.botId, label: m.name }))} />
+                        </div>
+                        <p className="text-[11px] text-ink-muted">发到本群的消息先交给管理员，由它分派给本群成员并汇总。只管本群。</p>
+                      </>
+                    )}
+                  </>}
 
                   <div className="flex items-center justify-between">
                     <span className="text-[12px] text-ink-secondary">单轮上限</span>
@@ -166,8 +183,8 @@ export function RoomInspectorPanel({ room }: { room: CollabRoom }) {
               </Section>
 
               <Section title="成员" count={room.members.length} flush
-                action={<IconButton size="sm" label={room.coordinatorId ? '管理员调度自动同步 Bot 列表' : room.members.length >= 6 ? '群聊成员已达上限（6 位）' : '添加成员'}
-                  disabled={Boolean(room.coordinatorId) || room.members.length >= 6} onClick={() => setAdding(true)}><Plus aria-hidden /></IconButton>}>
+                action={<IconButton size="sm" label={isGlobalAdmin(room) ? '管理员调度自动同步 Bot 列表' : room.members.length >= 6 ? '群聊成员已达上限（6 位）' : '添加成员'}
+                  disabled={isGlobalAdmin(room) || room.members.length >= 6} onClick={() => setAdding(true)}><Plus aria-hidden /></IconButton>}>
                 <AddRoomMembersDialog roomId={room.id} open={adding} onOpenChange={setAdding} />
                 {memberFeedback && (
                   <p
@@ -196,7 +213,7 @@ export function RoomInspectorPanel({ room }: { room: CollabRoom }) {
                     const isSpeaking = speaker === m.name
                     const platform = getPlatform(m.platform)
                     const isMoving = movingBotId === m.botId
-                    const cannotRemove = Boolean(room.coordinatorId) || room.members.length <= 1
+                    const cannotRemove = isGlobalAdmin(room) || room.members.length <= 1
                     const eligibleTargets = otherRooms.filter(
                       (r) =>
                         r.members.length < 6 &&
@@ -282,7 +299,7 @@ export function RoomInspectorPanel({ room }: { room: CollabRoom }) {
                             </button>
                             <button
                               type="button"
-                              title={room.coordinatorId ? '管理员调度自动同步 Bot 列表' : cannotRemove ? '群聊至少保留一位成员' : `移出 ${m.name}`}
+                              title={isGlobalAdmin(room) ? '管理员调度自动同步 Bot 列表' : cannotRemove ? '群聊至少保留一位成员' : `移出 ${m.name}`}
                               aria-label={`移出 ${m.name}`}
                               disabled={cannotRemove}
                               onClick={() => {

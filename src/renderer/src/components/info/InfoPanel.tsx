@@ -1,4 +1,5 @@
 import { GeminiInfoSections } from '@/components/gemini/GeminiInfoSections'
+import { isGlobalAdmin } from '@/rooms/model'
 import { setRoomAdministrator, useRooms } from '@/rooms/roomStore'
 import { useState } from 'react'
 import { Pencil, X } from 'lucide-react'
@@ -305,7 +306,7 @@ function OpenInfoPanel({
   )
   const toggleInfoPanel = useBotStore((s) => s.toggleInfoPanel)
   const updateNotes = useBotStore((s) => s.updateNotes)
-  const coordinationRoomId = useRooms((s) => s.rooms.find((r) => r.coordinatorId === bot.id)?.id)
+  const coordinationRoomId = useRooms((s) => s.rooms.find((r) => isGlobalAdmin(r) && r.coordinatorId === bot.id)?.id)
   const inspector = getPlatformInspector(bot.platformId)
   const activeTab = resolveInspectorTab(bot.platformId, requestedTab)
   const activeTabLabel = inspector.tabs.find((item) => item.id === activeTab)?.label ?? 'Overview'
