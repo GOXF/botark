@@ -1,3 +1,4 @@
+import { desktopNotice, useDesktopLocale } from '@/lib/desktopCopy'
 import { HarkBrowserCard } from '../hark/HarkBrowserCard'
 import { HarkAskCards, useHarkAsks } from '../hark/HarkAskCard'
 import { MuseBrowserCard } from '../muse/MuseBrowserCard'
@@ -63,6 +64,7 @@ function ConversationIntro({
   onPlatformLogin?: () => void
   onOpenInspector?: () => void
 }) {
+  useDesktopLocale()
   return (
     <div className="flex min-h-0 flex-1 animate-veil-in flex-col items-center justify-center gap-5 px-8 pb-6 text-center">
       <div className="flex flex-col items-center gap-3">
@@ -81,7 +83,7 @@ function ConversationIntro({
       {needsPlatformLogin && onPlatformLogin ? (
         <div className="flex flex-wrap items-center justify-center gap-2">
           <Button variant="primary" size="lg" onClick={onPlatformLogin}>
-            {t(PLATFORM_LOGIN_LABELS[bot.platformId])}
+            {desktopNotice(t(PLATFORM_LOGIN_LABELS[bot.platformId]))}
           </Button>
           {bot.platformId !== 'meta-muse' && onOpenInspector && (
             <Button variant="secondary" size="lg" onClick={onOpenInspector}>

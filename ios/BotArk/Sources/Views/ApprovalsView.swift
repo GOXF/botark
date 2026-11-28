@@ -7,7 +7,7 @@ struct ApprovalsView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
-                Text("审批")
+                Text(String(localized: "Approvals"))
                     .font(ArkFont.bold(19))
                     .tracking(-0.4)
                 if !store.pendingApprovals.isEmpty {
@@ -29,7 +29,7 @@ struct ApprovalsView: View {
                     Image(systemName: "checkmark.shield")
                         .font(.system(size: 34, weight: .light))
                         .foregroundStyle(.tertiary)
-                    Text("暂无待审批")
+                    Text(String(localized: "No Pending Approvals"))
                         .font(ArkFont.medium(14))
                         .foregroundStyle(.secondary)
                 }
@@ -78,11 +78,11 @@ struct ApprovalsView: View {
             }
 
             HStack(spacing: 7) {
-                pillButton("允许", fill: ArkTheme.ink, fg: ArkTheme.onInk) { decide(item, decision: "allow_once") }
-                pillButton("本次会话", fill: ArkTheme.subtleFill, fg: .primary) { decide(item, decision: "allow_session") }
-                pillButton("始终", fill: ArkTheme.subtleFill, fg: .primary) { decide(item, decision: "allow_always") }
+                pillButton(String(localized: "Allow"), fill: ArkTheme.ink, fg: ArkTheme.onInk) { decide(item, decision: "allow_once") }
+                pillButton(String(localized: "This Session"), fill: ArkTheme.subtleFill, fg: .primary) { decide(item, decision: "allow_session") }
+                pillButton(String(localized: "Always"), fill: ArkTheme.subtleFill, fg: .primary) { decide(item, decision: "allow_always") }
                 Spacer()
-                pillButton("拒绝", fill: ArkTheme.rose.opacity(0.10), fg: ArkTheme.rose) { decide(item, decision: "deny") }
+                pillButton(String(localized: "Deny"), fill: ArkTheme.rose.opacity(0.10), fg: ArkTheme.rose) { decide(item, decision: "deny") }
             }
         }
         .padding(14)

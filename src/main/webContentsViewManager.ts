@@ -1,3 +1,4 @@
+import { nativeDisplayCopy } from './nativeDisplayCopy'
 import { createHash } from 'node:crypto'
 import {
   BrowserWindow,
@@ -415,7 +416,7 @@ export class WebContentsViewManager {
             ...size,
             minHeight: 480,
             parent,
-            title: 'BotArk 安全会话窗口',
+            title: nativeDisplayCopy("BotArk 安全会话窗口", "BotArk secure session"),
             autoHideMenuBar: true,
             ...(windowIcon ? { icon: windowIcon } : {}),
             backgroundColor: '#ffffff',

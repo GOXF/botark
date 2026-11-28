@@ -1,3 +1,4 @@
+import { desktopCopy, desktopNotice, useDesktopLocale } from '@/lib/desktopCopy'
 import { dsBotServer } from '@shared/dsBotMcp'
 import { createMutex } from '@shared/proxyPool'
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
@@ -103,7 +104,7 @@ function parseKeyValueLines(raw: string, mode: 'env' | 'headers'): Record<string
   if (trimmed.startsWith('{')) {
     const parsed = JSON.parse(trimmed) as unknown
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-      throw new Error(mode === 'env' ? '环境变量 JSON 必须是对象' : '请求头 JSON 必须是对象')
+      throw new Error(mode === 'env' ? desktopCopy("环境变量 JSON 必须是对象", "Environment variable JSON must be an object") : desktopCopy("请求头 JSON 必须是对象", "Request header JSON must be an object"))
     }
     const out: Record<string, string> = {}
     for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
@@ -119,7 +120,7 @@ function parseKeyValueLines(raw: string, mode: 'env' | 'headers'): Record<string
     const idx = line.indexOf(sep)
     if (idx <= 0) {
       throw new Error(
-        mode === 'env' ? `环境变量行格式应为 KEY=VALUE：${line}` : `请求头行格式应为 Key: Value：${line}`
+        mode === 'env' ? desktopCopy("环境变量行格式应为 KEY=VALUE：{0}", "Use KEY=VALUE for environment variables: {0}", [(line)]) : desktopCopy("请求头行格式应为 Key: Value：{0}", "Use Key: Value for request headers: {0}", [(line)])
       )
     }
     const key = line.slice(0, idx).trim()
@@ -184,6 +185,7 @@ function McpScopeSettings({
   mutationLock: ReturnType<typeof createMutex>
   onUpdated?: (view: WorkspaceView) => void
 }) {
+  useDesktopLocale()
   const locale = usePrefsStore((s) => s.locale)
   const L = (zh: string, en: string) => (locale === 'en' ? en : zh)
   const requestId = useRef(0)
@@ -497,7 +499,7 @@ function McpScopeSettings({
       {hint && (
         <div className="flex items-center gap-2 rounded-xl border border-status-online/30 bg-status-online/8 px-3.5 py-2.5 text-[12.5px] text-status-online-ink">
           <CheckCircle2 className="size-4 shrink-0" />
-          <span>{hint}</span>
+          <span>{desktopNotice(hint)}</span>
         </div>
       )}
       {error && (
@@ -505,7 +507,7 @@ function McpScopeSettings({
           role="alert"
           className="rounded-xl border border-status-error/30 bg-status-error/8 px-3.5 py-2.5 text-[12.5px] text-status-error"
         >
-          {error}
+          {desktopNotice(error)}
         </div>
       )}
 
@@ -848,7 +850,7 @@ function McpScopeSettings({
           <Field htmlFor="ds-bot-token" label={L('客户端令牌', 'Client token')}>
             <TextInput id="ds-bot-token" type="password" autoComplete="off" value={dsBotToken} onChange={(e) => setDsBotToken(e.target.value)} />
           </Field>
-          {(formError || error) && <p role="alert" className="text-[12px] text-status-error">{formError || error}</p>}
+          {(formError || error) && <p role="alert" className="text-[12px] text-status-error">{desktopNotice(formError || error)}</p>}
         </div>
       </Dialog>
       {/* Add / Edit Server Dialog */}
@@ -986,7 +988,7 @@ function McpScopeSettings({
 
           {formError && (
             <p role="alert" className="rounded-lg bg-status-error/10 px-2.5 py-1.5 text-[12px] text-status-error-ink">
-              {formError}
+              {desktopNotice(formError)}
             </p>
           )}
         </div>
@@ -1023,7 +1025,7 @@ function McpScopeSettings({
           </label>
           {pasteError && (
             <p role="alert" className="rounded-lg bg-status-error/10 px-2.5 py-1.5 text-[12px] text-status-error-ink">
-              {pasteError}
+              {desktopNotice(pasteError)}
             </p>
           )}
         </div>

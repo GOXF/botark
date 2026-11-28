@@ -1,3 +1,4 @@
+import { desktopCopy, desktopNotice, useDesktopLocale } from '@/lib/desktopCopy'
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { Download, Eye, FileText, KeyRound, Lock, LogIn, Pause, Play, Plus, Sparkles, Target, Trash2 } from 'lucide-react'
 import { asObj, str } from '@shared/parse'
@@ -32,6 +33,7 @@ export function DotCredentialsAndQuotaSection({
   accountId: string
   botId: string
 }) {
+  useDesktopLocale()
   const connected = useDotConnected(accountId)
   const connectAccount = useBotStore((s) => s.connectAccount)
   const renameAccount = useBotStore((s) => s.renameAccount)
@@ -145,7 +147,7 @@ export function DotCredentialsAndQuotaSection({
       setShowTokenBox(false)
       await connectAccount(accountId)
       if (priorSnapshot && dot.rpc) {
-        setHint(`已导入凭据 ${st.handle ?? ''}，正在自动迁移原 Dot 记忆…`)
+        setHint(desktopCopy("已导入凭据 {0}，正在自动迁移原 Dot 记忆…", "Imported credentials for {0}. Migrating memories…", [(st.handle ?? '')]))
         await dot
           .rpc({
             accountId,
@@ -155,9 +157,9 @@ export function DotCredentialsAndQuotaSection({
             botId
           })
           .catch(() => null)
-        setHint(`已导入 Dot 凭据 ${st.handle ?? ''} 并完成记忆迁移`)
+        setHint(desktopCopy("已导入 Dot 凭据 {0} 并完成记忆迁移", "Imported Dot Credentials {0} and completed memory migration", [(st.handle ?? '')]))
       } else {
-        setHint(`已导入 Dot 凭据：${st.handle ?? accountId}`)
+        setHint(desktopCopy("已导入 Dot 凭据：{0}", "Imported Dot credentials: {0}", [(st.handle ?? accountId)]))
       }
       await refresh()
     } catch (err) {
@@ -169,18 +171,18 @@ export function DotCredentialsAndQuotaSection({
 
   return (
     <Section
-      title="账号与配额"
+      title={desktopCopy("账号与配额", "Accounts and quotas")}
       action={<RefreshButton loading={loading} onClick={() => void refresh()} />}
     >
       <div className="flex flex-col gap-2.5 text-[12px]">
-        {error && <p className="text-status-error">{error}</p>}
-        {hint && <p className="text-status-online-ink">{hint}</p>}
+        {error && <p className="text-status-error">{desktopNotice(error)}</p>}
+        {hint && <p className="text-status-online-ink">{desktopNotice(hint)}</p>}
 
         <div className="flex items-center justify-between gap-2">
           <span className="truncate text-[13px] font-medium text-ink">
             {authInfo?.signedIn
               ? `${authInfo.handle || authInfo.displayName || 'Dot'}`
-              : '未登录'}
+              : desktopCopy("未登录", "Not signed in")}
           </span>
           {authInfo?.planType && (
             <span className="rounded-full bg-accent-600/12 px-2 py-0.5 text-[10.5px] font-medium uppercase text-accent-600">
@@ -194,7 +196,7 @@ export function DotCredentialsAndQuotaSection({
             {typeof rateLimits.primaryUsedPct === 'number' && (
               <div>
                 <div className="flex justify-between text-[11.5px]">
-                  <span className="text-ink-secondary">5 小时额度</span>
+                  <span className="text-ink-secondary">{desktopCopy("5 小时额度", "Five-hour quota")}</span>
                   <span className="tabular-nums text-ink">{rateLimits.primaryUsedPct}%</span>
                 </div>
                 <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-hover">
@@ -208,7 +210,7 @@ export function DotCredentialsAndQuotaSection({
             {typeof rateLimits.secondaryUsedPct === 'number' && (
               <div>
                 <div className="flex justify-between text-[11.5px]">
-                  <span className="text-ink-secondary">周度额度</span>
+                  <span className="text-ink-secondary">{desktopCopy("周度额度", "Weekly quota")}</span>
                   <span className="tabular-nums text-ink">{rateLimits.secondaryUsedPct}%</span>
                 </div>
                 <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-hover">
@@ -229,16 +231,14 @@ export function DotCredentialsAndQuotaSection({
             disabled={busy}
             onClick={() => void openDotLogin(accountId)}
           >
-            <LogIn className="size-3.5" /> 网页登录
-          </Button>
+            <LogIn className="size-3.5" />{desktopCopy(" 网页登录", " Sign in on the web")}</Button>
           <Button
             size="sm"
             variant="secondary"
             disabled={busy}
             onClick={() => setShowTokenBox((v) => !v)}
           >
-            <KeyRound className="size-3.5" /> 导入凭据
-          </Button>
+            <KeyRound className="size-3.5" />{desktopCopy(" 导入凭据", " Import credentials")}</Button>
         </div>
 
         {showTokenBox && (
@@ -246,20 +246,20 @@ export function DotCredentialsAndQuotaSection({
             <textarea
               value={rawTokenInput}
               onChange={(e) => setRawTokenInput(e.target.value)}
-              placeholder="粘贴 access_token、refresh_token 或 auth.json…"
+              placeholder={desktopCopy("粘贴 access_token、refresh_token 或 auth.json…", "Paste access_token, refresh_token or auth.json…")}
               rows={3}
               className="w-full rounded-lg border border-line bg-transparent p-2 font-mono text-[11px] text-ink outline-none"
             />
             <TextInput
               value={refreshTokenInput}
               onChange={(e) => setRefreshTokenInput(e.target.value)}
-              placeholder="可选：refresh_token (rt_...)"
+              placeholder={desktopCopy("可选：refresh_token (rt_...)", "Optional: refresh_token (rt_...)")}
               aria-label="Refresh Token"
               className="h-7 font-mono text-[11px]"
             />
             {authInfo?.signedIn && (
               <div className="flex items-center justify-between gap-2 py-0.5 text-[11.5px] text-ink-secondary">
-                <span>自动迁移当前记忆</span>
+                <span>{desktopCopy("自动迁移当前记忆", "Automatically transfer current memory")}</span>
                 <SwitchPill checked={autoMigrateMemory} onCheckedChange={setAutoMigrateMemory} />
               </div>
             )}
@@ -269,7 +269,7 @@ export function DotCredentialsAndQuotaSection({
               disabled={busy || (!rawTokenInput.trim() && !refreshTokenInput.trim())}
               onClick={() => void handleImportRaw()}
             >
-              {busy ? '连接中…' : '保存并连接'}
+              {busy ? desktopCopy("连接中…", "Connecting…") : desktopCopy("保存并连接", "Save & Connect")}
             </Button>
           </div>
         )}
@@ -288,6 +288,7 @@ export function DotOrbitProfilesSection({
   accountId: string
   botId: string
 }) {
+  useDesktopLocale()
   const connected = useDotConnected(accountId)
   const [dots, setDots] = useState<
     Array<{
@@ -408,7 +409,7 @@ export function DotOrbitProfilesSection({
             }
           })
         }
-        setHint(`已切换到 ${d.dot?.displayName || dotId}`)
+        setHint(desktopCopy("已切换到 {0}", "Switched to {0}", [(d.dot?.displayName || dotId)]))
       }
     } catch (err) {
       if (generation === requestGeneration.current) setError(cleanSidebarError(err))
@@ -490,16 +491,16 @@ export function DotOrbitProfilesSection({
 
   return (
     <Section
-      title="Dot 实例"
+      title={desktopCopy("Dot 实例", "Dot instance")}
       count={dots.length > 1 ? dots.length : undefined}
       action={<RefreshButton loading={loading} onClick={() => void refresh()} />}
     >
       <div className="flex flex-col gap-2 text-[12px]">
-        {error && <p className="text-status-error">{error}</p>}
-        {hint && <p className="text-ink-secondary">{hint}</p>}
+        {error && <p className="text-status-error">{desktopNotice(error)}</p>}
+        {hint && <p className="text-ink-secondary">{desktopNotice(hint)}</p>}
 
         {dots.length === 0 ? (
-          <EmptyLine>暂无实例，发送消息自动初始化</EmptyLine>
+          <EmptyLine>{desktopCopy("暂无实例，发送消息自动初始化", "No instances yet. Send a message to create one.")}</EmptyLine>
         ) : (
           <ul className="flex flex-col gap-1">
             {dots.map((d) => {
@@ -527,9 +528,7 @@ export function DotOrbitProfilesSection({
                     />
                     <span className="truncate font-medium text-ink">{d.displayName}</span>
                     {d.isPaused && (
-                      <span className="rounded bg-hover px-1.5 py-0.5 text-[10px] text-ink-muted">
-                        已暂停
-                      </span>
+                      <span className="rounded bg-hover px-1.5 py-0.5 text-[10px] text-ink-muted">{desktopCopy("已暂停", "Paused")}</span>
                     )}
                   </button>
                   <div className="flex items-center gap-0.5">
@@ -538,7 +537,7 @@ export function DotOrbitProfilesSection({
                       variant="ghost"
                       disabled={busy}
                       onClick={() => void handlePauseResume(d.id, d.isPaused)}
-                      title={d.isPaused ? '恢复运行' : '暂停'}
+                      title={d.isPaused ? desktopCopy("恢复运行", "Resume") : desktopCopy("暂停", "Pause")}
                     >
                       {d.isPaused ? <Play className="size-3.5" /> : <Pause className="size-3.5" />}
                     </Button>
@@ -564,13 +563,12 @@ export function DotOrbitProfilesSection({
           <TextInput
             value={newDotName}
             onChange={(e) => setNewDotName(e.target.value)}
-            placeholder="新实例名称…"
+            placeholder={desktopCopy("新实例名称…", "New instance name…")}
             aria-label="New Dot name"
             className="h-7 flex-1 text-[12px]"
           />
           <Button size="sm" variant="secondary" disabled={busy} onClick={() => void handleCreateDot()}>
-            <Plus className="size-3.5" /> 新建
-          </Button>
+            <Plus className="size-3.5" />{desktopCopy(" 新建", " New")}</Button>
         </div>
       </div>
     </Section>
@@ -582,6 +580,7 @@ export function DotOrbitProfilesSection({
  *    Cross-Account Memory Snapshot & Migration (`exportMemory` / `importMemory`), & Threads (`/backend-api/tbo/{id}/threads`)
  */
 export function DotGoalAndThreadsSection({ accountId }: { accountId: string }) {
+  useDesktopLocale()
   const connected = useDotConnected(accountId)
   const roomId = useBotStore((s) => s.bots.find((b) => b.activeAccountId === accountId)?.activeSessionId)
   const bots = useBotStore((s) => s.bots)
@@ -691,7 +690,7 @@ export function DotGoalAndThreadsSection({ accountId }: { accountId: string }) {
       setLoading(false)
       setSavedGoal(value)
       setGoalDraft((draft) => draft === goalDraft ? undefined : draft)
-      setHint(value ? '已保存长期目标' : '已清除目标')
+      setHint(value ? desktopCopy("已保存长期目标", "Saved long-term goals") : desktopCopy("已清除目标", "Cleared goals"))
     } catch (err) {
       if (target === goalTarget.current) setError(cleanSidebarError(err))
     } finally {
@@ -704,7 +703,7 @@ export function DotGoalAndThreadsSection({ accountId }: { accountId: string }) {
     if (!dotBridge?.rpc) return
     setBusy(true)
     setError(undefined)
-    setHint(mode === 'deep' ? '正在深度整理记忆快照…' : '正在提取记忆快照…')
+    setHint(mode === 'deep' ? desktopCopy("正在深度整理记忆快照…", "Organizing the memory snapshot…") : desktopCopy("正在提取记忆快照…", "Extracting a memory snapshot…"))
     try {
       const res = await dotBridge.rpc({ accountId, op: 'exportMemory', mode })
       if (res.ok && res.data && typeof res.data === 'object') {
@@ -716,7 +715,7 @@ export function DotGoalAndThreadsSection({ accountId }: { accountId: string }) {
         }
         if (d.markdown) {
           updateSnapshotText(d.markdown)
-          setHint(`已提取记忆快照（${d.globalMemoriesCount ?? 0} 条记忆）`)
+          setHint(desktopCopy("已提取记忆快照（{0} 条记忆）", "Extracted a snapshot with {0} memories.", [(d.globalMemoriesCount ?? 0)]))
         }
       } else if (!res.ok) {
         setError(res.message)
@@ -733,7 +732,7 @@ export function DotGoalAndThreadsSection({ accountId }: { accountId: string }) {
     if (!dotBridge?.rpc || !memorySnapshot.trim()) return
     setBusy(true)
     setError(undefined)
-    setHint('正在注入记忆快照…')
+    setHint(desktopCopy("正在注入记忆快照…", "Applying the memory snapshot…"))
     try {
       const res = await dotBridge.rpc({
         accountId: destAccountId,
@@ -743,7 +742,7 @@ export function DotGoalAndThreadsSection({ accountId }: { accountId: string }) {
         botId: destBotId
       })
       if (res.ok) {
-        setHint('记忆迁移完成')
+        setHint(desktopCopy("记忆迁移完成", "Memory migration complete."))
       } else {
         setError(res.message)
       }
@@ -758,24 +757,23 @@ export function DotGoalAndThreadsSection({ accountId }: { accountId: string }) {
 
   return (
     <Section
-      title="长期目标与记忆"
+      title={desktopCopy("长期目标与记忆", "Long-term goals and memory")}
       action={<RefreshButton loading={loading} onClick={() => void refresh()} />}
     >
       <div className="flex flex-col gap-2.5 text-[12px]">
-        {error && <p className="text-status-error">{error}</p>}
-        {hint && <p className="text-status-online-ink">{hint}</p>}
+        {error && <p className="text-status-error">{desktopNotice(error)}</p>}
+        {hint && <p className="text-status-online-ink">{desktopNotice(hint)}</p>}
 
         <div className="flex gap-1.5">
           <TextInput
             value={goal}
             onChange={(e) => setGoalDraft(e.target.value)}
-            placeholder="设置长期目标…"
+            placeholder={desktopCopy("设置长期目标…", "Set long-term goals…")}
             aria-label="Dot goal"
             className="h-7 flex-1 text-[12px]"
           />
           <Button size="sm" variant="secondary" disabled={busy} onClick={() => void saveGoal()}>
-            <Target className="size-3.5" /> 保存
-          </Button>
+            <Target className="size-3.5" />{desktopCopy(" 保存", " Save")}</Button>
         </div>
 
         <div className="flex flex-col gap-1.5 border-t border-line pt-2">
@@ -785,40 +783,35 @@ export function DotGoalAndThreadsSection({ accountId }: { accountId: string }) {
               variant="secondary"
               disabled={busy}
               onClick={() => void handleExportMemory('fast')}
-            >
-              提取记忆
-            </Button>
+            >{desktopCopy("提取记忆", "Extract memories")}</Button>
             <Button
               size="sm"
               variant="ghost"
               disabled={busy}
               onClick={() => void handleExportMemory('deep')}
             >
-              <Sparkles className="size-3.5" /> 深度整理
-            </Button>
+              <Sparkles className="size-3.5" />{desktopCopy(" 深度整理", " Organize memory")}</Button>
             {memorySnapshot.trim() && (
               <Button
                 size="sm"
                 variant="primary"
                 disabled={busy}
                 onClick={() => void handleImportMemoryTo(accountId, currentBot?.id)}
-              >
-                注入当前账号
-              </Button>
+              >{desktopCopy("注入当前账号", "Apply to this account")}</Button>
             )}
           </div>
 
           <textarea
             value={memorySnapshot}
             onChange={(e) => updateSnapshotText(e.target.value)}
-            placeholder="提取后可在此编辑记忆快照，或一键迁移至新账号…"
+            placeholder={desktopCopy("提取后可在此编辑记忆快照，或一键迁移至新账号…", "Edit the memory snapshot here or transfer it to a new account.")}
             rows={memorySnapshot.trim() ? 5 : 2}
             className="w-full rounded-lg border border-line bg-transparent p-2 font-mono text-[11px] leading-[15px] text-ink outline-none"
           />
           {vaultSealed && memorySnapshot.trim() && (
             <p className="flex items-center gap-1 text-[10.5px] text-status-online-ink">
               <Lock className="size-3 shrink-0" aria-hidden />
-              <span>记忆草稿已由系统钥匙串加密保存（0600 保险箱，无明文缓存）</span>
+              <span>{desktopCopy("记忆草稿已由系统钥匙串加密保存（0600 保险箱，无明文缓存）", "The memory draft is encrypted in the local vault with owner-only permissions.")}</span>
             </p>
           )}
 
@@ -831,7 +824,7 @@ export function DotGoalAndThreadsSection({ accountId }: { accountId: string }) {
                 className="flex-1"
                 options={otherDotBots.map((b) => ({
                   value: b.id,
-                  label: `迁移至：${b.name}`
+                  label: desktopCopy("迁移至：{0}", "Migrate to: {0}", [(b.name)])
                 }))}
               />
               <Button
@@ -845,9 +838,7 @@ export function DotGoalAndThreadsSection({ accountId }: { accountId: string }) {
                     void handleImportMemoryTo(dest.activeAccountId, dest.id)
                   }
                 }}
-              >
-                迁移
-              </Button>
+              >{desktopCopy("迁移", "Migrate")}</Button>
             </div>
           )}
         </div>
@@ -873,6 +864,7 @@ export function DotGoalAndThreadsSection({ accountId }: { accountId: string }) {
  * 4. Dot Library & Dynamic Pages (`/backend-api/files/library/nodes` & `/backend-api/pages`)
  */
 export function DotLibrarySection({ accountId }: { accountId: string }) {
+  useDesktopLocale()
   const connected = useDotConnected(accountId)
   const setActiveDocument = useBotStore((s) => s.setActiveDocument)
   const [nodes, setNodes] = useState<
@@ -903,7 +895,7 @@ export function DotLibrarySection({ accountId }: { accountId: string }) {
         name: n.title
       })
       if (!res.ok) {
-        setError(res.message || `下载失败 (${res.status})`)
+        setError(res.message || desktopCopy("下载失败 ({0})", "Download failed ({0})", [(res.status)]))
         return
       }
       const d = res.data as { dataBase64: string; mimeType: string; filename: string }
@@ -980,18 +972,18 @@ export function DotLibrarySection({ accountId }: { accountId: string }) {
 
   return (
     <Section
-      title="页面与文件"
+      title={desktopCopy("页面与文件", "Pages and Files")}
       count={nodes.length || undefined}
       action={<RefreshButton loading={loading} onClick={() => void refresh()} />}
     >
       <div className="flex flex-col gap-2 text-[12px]">
-        {error && <p className="text-status-error">{error}</p>}
+        {error && <p className="text-status-error">{desktopNotice(error)}</p>}
 
         <div className="flex gap-1.5">
           <TextInput
             value={newPageTitle}
             onChange={(e) => setNewPageTitle(e.target.value)}
-            placeholder="新建页面标题…"
+            placeholder={desktopCopy("新建页面标题…", "New Page Title…")}
             aria-label="New Dynamic Page title"
             className="h-7 flex-1 text-[12px]"
           />
@@ -1001,8 +993,7 @@ export function DotLibrarySection({ accountId }: { accountId: string }) {
             disabled={busy || !newPageTitle.trim()}
             onClick={() => void handleCreatePage()}
           >
-            <Plus className="size-3.5" /> 新建
-          </Button>
+            <Plus className="size-3.5" />{desktopCopy(" 新建", " New")}</Button>
         </div>
 
         {nodes.length === 0 ? (
@@ -1032,7 +1023,7 @@ export function DotLibrarySection({ accountId }: { accountId: string }) {
                           platformId: 'dot'
                         })
                       }
-                      title="预览文件"
+                      title={desktopCopy("预览文件", "Preview File")}
                     >
                       <Eye className="size-3.5" />
                     </Button>
@@ -1041,7 +1032,7 @@ export function DotLibrarySection({ accountId }: { accountId: string }) {
                       variant="secondary"
                       disabled={downloadingId === n.id}
                       onClick={() => void handleDownloadNode(n)}
-                      title="下载文件"
+                      title={desktopCopy("下载文件", "Download File")}
                     >
                       <Download className="size-3.5" />
                     </Button>

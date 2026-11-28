@@ -1,3 +1,4 @@
+import { desktopCopy, useDesktopLocale } from '@/lib/desktopCopy'
 import { memo, useEffect, useMemo, useState } from 'react'
 import { Download, FileText, Film, FolderOpen, Image as ImageIcon, Maximize2, Music, X, ZoomIn } from 'lucide-react'
 import { downloadPercent, formatDownloadSize, type GoxfDownloadEvent } from '@shared/goxfDownload'
@@ -318,6 +319,7 @@ export function WorkspaceImage({
   /** One of several pictures: an equal-height tile, clickable anywhere. */
   tile?: boolean
 }) {
+  useDesktopLocale()
   const initialDirectSrc =
     /^data:image\//i.test(part.path) || (isHttp(part.path) && !needsAuthProxyHttpUrl(part.path))
       ? part.path
@@ -383,7 +385,7 @@ export function WorkspaceImage({
             onClick={() => setLightboxOpen(true)}
             className={tile ? 'flex cursor-zoom-in items-center justify-center' : 'block w-full cursor-zoom-in text-left'}
             style={tile ? { width: tileWidth(aspect), height: TILE_H } : undefined}
-            title="点击放大查看"
+            title={desktopCopy("点击放大查看", "Click to zoom in")}
           >
             <img
               src={src}
@@ -410,10 +412,10 @@ export function WorkspaceImage({
             />
           </button>
           <div className="pointer-events-none absolute top-2 right-2 flex items-center gap-1 opacity-0 transition-opacity group-hover/img:opacity-100">
-            <ImageOverlayButton label="放大查看" onClick={() => setLightboxOpen(true)}>
+            <ImageOverlayButton label={desktopCopy("放大查看", "Zoom In")} onClick={() => setLightboxOpen(true)}>
               <ZoomIn />
             </ImageOverlayButton>
-            <ImageOverlayButton label="保存图片" onClick={() => saveDataOrUrlToDisk(src, filename, part.mimeType)}>
+            <ImageOverlayButton label={desktopCopy("保存图片", "Save Picture")} onClick={() => saveDataOrUrlToDisk(src, filename, part.mimeType)}>
               <Download />
             </ImageOverlayButton>
           </div>
@@ -450,9 +452,7 @@ export function WorkspaceImage({
             setRetryNonce((n) => n + 1)
           }}
           className="shrink-0 rounded-full bg-hover px-2 py-0.5 text-[11px] font-medium text-accent-600 hover:bg-active"
-        >
-          重试
-        </button>
+        >{desktopCopy("重试", "Try again")}</button>
       )}
     </div>
   )
@@ -467,6 +467,7 @@ function WorkspaceAV({
   accountId?: string
   kind: 'audio' | 'video'
 }) {
+  useDesktopLocale()
   const { path, name, mimeType, imageId, kind: mediaKind } = part
   const directSrc = /^data:(?:audio|video)\//i.test(path) || (isHttp(path) && !needsAuthProxyHttpUrl(path)) ? path : null
   const [retryNonce, setRetryNonce] = useState(0)
@@ -540,10 +541,9 @@ function WorkspaceAV({
             type="button"
             onClick={() => saveDataOrUrlToDisk(src, filename, part.mimeType)}
             className="inline-flex shrink-0 items-center gap-1 rounded-full bg-hover px-2 py-0.5 text-[11px] font-medium text-ink-secondary hover:bg-active hover:text-ink"
-            title="下载保存"
+            title={desktopCopy("下载保存", "Save download")}
           >
-            <Download className="size-3" /> 保存
-          </button>
+            <Download className="size-3" />{desktopCopy(" 保存", " Save")}</button>
         </div>
         {kind === 'audio' ? (
           <audio controls preload="metadata" src={src} onError={handleMediaError} className="w-full max-w-md" />
@@ -576,9 +576,7 @@ function WorkspaceAV({
           type="button"
           onClick={() => setRetryNonce((n) => n + 1)}
           className="shrink-0 rounded-full bg-hover px-2 py-0.5 text-[11px] font-medium text-accent-600 hover:bg-active"
-        >
-          重试
-        </button>
+        >{desktopCopy("重试", "Try again")}</button>
       )}
     </div>
   )
@@ -595,6 +593,7 @@ export const MediaPreview = memo(function MediaPreview({
   onOpenDoc?: (target: NativeDocumentTarget) => void
   mine?: boolean
 }) {
+  useDesktopLocale()
   const [downloadingKey, setDownloadingKey] = useState<string | null>(null)
   const [downloadError, setDownloadError] = useState<string | null>(null)
   // GOXF: http(s) files stream to Downloads in main with progress + size, instead of base64 over IPC.
@@ -663,7 +662,7 @@ export const MediaPreview = memo(function MediaPreview({
       {parts.map((part) => {
         const isHttpUrl = isHttp(part.path)
         const subtitle = isHttpUrl
-          ? part.mimeType || '可预览 / 下载文件'
+          ? part.mimeType || desktopCopy("可预览 / 下载文件", "Files you can preview or download")
           : part.path
         const key = part.path || part.name || 'part'
         return (
@@ -746,7 +745,7 @@ export const MediaPreview = memo(function MediaPreview({
                     }}
                     className="text-accent-600"
                   >
-                    <Maximize2 /> 预览
+                    <Maximize2 /> {desktopCopy("预览", "Preview")}
                   </Button>
                   {progress[key]?.state === 'progress' ? (
                     <Button size="sm" variant="secondary" onClick={() => void downloads?.cancel(key)}>
@@ -763,7 +762,7 @@ export const MediaPreview = memo(function MediaPreview({
                       disabled={downloadingKey === key}
                       onClick={() => void handleDirectDownload(part)}
                     >
-                      <Download /> {downloadingKey === key ? '下载中…' : '下载'}
+                      <Download /> {downloadingKey === key ? desktopCopy("下载中…", "Downloading…") : desktopCopy("下载", "Download")}
                     </Button>
                   )}
                 </div>

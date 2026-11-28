@@ -1,3 +1,4 @@
+import { desktopCopy, desktopNotice, useDesktopLocale } from '@/lib/desktopCopy'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   BarChart3,
@@ -53,6 +54,7 @@ export function DsBotServerSection({
   accountId: string
   agentId?: string
 }) {
+  useDesktopLocale()
   const [status, setStatus] = useState<DsBotAuthStatus | null>(null)
   const [models, setModels] = useState<DsBotModelInfo[]>([])
   const [currentModel, setCurrentModel] = useState<string>('')
@@ -112,7 +114,7 @@ export function DsBotServerSection({
 
   return (
     <Section
-      title="DS Bot 连接与模型"
+      title={desktopCopy("DS Bot 连接与模型", "DS Bot Connection and Model")}
       action={
         <div className="flex items-center gap-1">
           <RefreshButton loading={loading} onClick={() => void refresh()} />
@@ -120,7 +122,7 @@ export function DsBotServerSection({
             type="button"
             onClick={() => setSettingsOpen(true, 'ds-bot-accounts')}
             className="press rounded-md p-1 text-ink-muted hover:bg-hover hover:text-ink"
-            title="DS Bot 连接设置"
+            title={desktopCopy("DS Bot 连接设置", "DS Bot Connection Settings")}
           >
             <Settings className="size-3.5" />
           </button>
@@ -130,11 +132,9 @@ export function DsBotServerSection({
       <div className="flex flex-col gap-2 text-[12.5px]">
         <div className="flex items-center justify-between gap-2">
           <span className="flex items-center gap-1.5 text-ink-secondary">
-            <Server className="size-3.5" />
-            接入方式
-          </span>
+            <Server className="size-3.5" />{desktopCopy("接入方式", "Connection method")}</span>
           <span className="rounded-full bg-accent-50 px-2 py-0.5 text-[11px] font-medium text-accent-600">
-            {status?.mode ? MODE_LABELS[status.mode] ?? status.mode : '未连接'}
+            {status?.mode ? desktopNotice(MODE_LABELS[status.mode] ?? status.mode) : desktopCopy("未连接", "Not Connected")}
           </span>
         </div>
 
@@ -147,9 +147,7 @@ export function DsBotServerSection({
         {!isRoom && models.length > 0 && agentId && (
           <div className="mt-1 flex flex-col gap-1">
             <span className="flex items-center gap-1.5 text-[11.5px] text-ink-secondary">
-              <Cpu className="size-3.5" />
-              当前 Bot 模型
-            </span>
+              <Cpu className="size-3.5" />{desktopCopy("当前 Bot 模型", "Current Bot Model")}</span>
             <Select
               size="xs"
               value={currentModel || models[0]!.ref}
@@ -164,18 +162,17 @@ export function DsBotServerSection({
         )}
 
         {status?.mode === 'mcp' && (
-          <p className="rounded-lg bg-sunken/70 px-2.5 py-1.5 text-[11px] leading-4 text-ink-muted">
-            当前为 MCP 模式（支持收发消息、历史与待处理提示）。切换为「加密配对链接」或「DSH Web」可解锁流式、审批操作、记忆与定时任务管理。
-          </p>
+          <p className="rounded-lg bg-sunken/70 px-2.5 py-1.5 text-[11px] leading-4 text-ink-muted">{desktopCopy("当前为 MCP 模式（支持收发消息、历史与待处理提示）。切换为「加密配对链接」或「DSH Web」可解锁流式、审批操作、记忆与定时任务管理。", "MCP mode supports messages, history, and read-only prompts. Use an encrypted pairing link or DSH Web for streaming, approvals, memory, and scheduled tasks.")}</p>
         )}
 
-        {error && <p className="text-[11.5px] text-status-error">{error}</p>}
+        {error && <p className="text-[11.5px] text-status-error">{desktopNotice(error)}</p>}
       </div>
     </Section>
   )
 }
 
 export function DsBotQuestionsSection({ accountId }: { accountId: string }) {
+  useDesktopLocale()
   const [questions, setQuestions] = useState<DsBotQuestionView[]>([])
   const [answers, setAnswers] = useState<Record<string, string>>({})
   const [busyId, setBusyId] = useState<string>()
@@ -233,7 +230,7 @@ export function DsBotQuestionsSection({ accountId }: { accountId: string }) {
   }
 
   return (
-    <Section title="等待你回复的问题" count={questions.length}>
+    <Section title={desktopCopy("等待你回复的问题", "Waiting for your answer")} count={questions.length}>
       <div className="flex flex-col gap-2.5">
         {questions.map((q) => (
           <div key={q.id} className="rounded-xl border border-accent-600/25 bg-accent-50/40 p-2.5 text-[12px]">
@@ -263,7 +260,7 @@ export function DsBotQuestionsSection({ accountId }: { accountId: string }) {
                   <input
                     value={answers[q.id] ?? ''}
                     onChange={(e) => setAnswers((prev) => ({ ...prev, [q.id]: e.target.value }))}
-                    placeholder="输入自定义回复…"
+                    placeholder={desktopCopy("输入自定义回复…", "Enter Custom Reply…")}
                     className="h-7 min-w-0 flex-1 rounded-lg border border-line bg-surface px-2 text-[12px] text-ink outline-none focus:border-accent-600"
                   />
                   <Button
@@ -277,17 +274,18 @@ export function DsBotQuestionsSection({ accountId }: { accountId: string }) {
                 </div>
               </div>
             ) : (
-              <p className="mt-1 text-[11px] text-ink-muted">当前为 MCP 只读提示，请在 DS Bot 桌面端回复</p>
+              <p className="mt-1 text-[11px] text-ink-muted">{desktopCopy("当前为 MCP 只读提示，请在 DS Bot 桌面端回复", "This prompt is read-only in MCP mode. Reply in the DS Bot app.")}</p>
             )}
           </div>
         ))}
-        {error && <p className="text-[11.5px] text-status-error">{error}</p>}
+        {error && <p className="text-[11.5px] text-status-error">{desktopNotice(error)}</p>}
       </div>
     </Section>
   )
 }
 
 export function DsBotUsageSection({ accountId, agentId }: { accountId: string; agentId?: string }) {
+  useDesktopLocale()
   const [usage, setUsage] = useState<DsBotUsageSummary | null>(null)
   const [loading, setLoading] = useState(false)
 
@@ -317,12 +315,12 @@ export function DsBotUsageSection({ accountId, agentId }: { accountId: string; a
   if (!usage) return null
 
   return (
-    <Section title="Token 用量统计" action={<RefreshButton loading={loading} onClick={() => void refresh()} />}>
+    <Section title={desktopCopy("Token 用量统计", "Token Usage Statistics")} action={<RefreshButton loading={loading} onClick={() => void refresh()} />}>
       <div className="grid grid-cols-3 gap-1.5 text-center">
         {[
-          { label: '24 小时', bucket: usage.day },
-          { label: '7 天', bucket: usage.week },
-          { label: '30 天', bucket: usage.month }
+          { label: desktopCopy("24 小时", "24 hours"), bucket: usage.day },
+          { label: desktopCopy("7 天", "7 days"), bucket: usage.week },
+          { label: desktopCopy("30 天", "30 days"), bucket: usage.month }
         ].map(({ label, bucket }) => (
           <div key={label} className="rounded-xl border border-line bg-surface px-2 py-2">
             <div className="flex items-center justify-center gap-1 text-[10.5px] text-ink-muted">
@@ -332,7 +330,7 @@ export function DsBotUsageSection({ accountId, agentId }: { accountId: string; a
             <div className="mt-0.5 font-mono text-[12.5px] font-semibold text-ink">
               {formatTokens((bucket?.input ?? 0) + (bucket?.output ?? 0))}
             </div>
-            <div className="text-[10.5px] text-ink-muted">{bucket?.calls ?? 0} 次调用</div>
+            <div className="text-[10.5px] text-ink-muted">{bucket?.calls ?? 0}{desktopCopy(" 次调用", " calls")}</div>
           </div>
         ))}
       </div>
@@ -341,6 +339,7 @@ export function DsBotUsageSection({ accountId, agentId }: { accountId: string; a
 }
 
 export function DsBotSchedulesSection({ accountId }: { accountId: string }) {
+  useDesktopLocale()
   const [tasks, setTasks] = useState<DsBotScheduleItem[]>([])
   const [available, setAvailable] = useState(false)
   const [loading, setLoading] = useState(false)
@@ -416,12 +415,12 @@ export function DsBotSchedulesSection({ accountId }: { accountId: string }) {
 
   return (
     <Section
-      title="定时自动化任务"
+      title={desktopCopy("定时自动化任务", "Scheduled automations")}
       count={tasks.length || undefined}
       action={<RefreshButton loading={loading} onClick={() => void refresh()} />}
     >
       {tasks.length === 0 ? (
-        <EmptyLine>暂无定时任务</EmptyLine>
+        <EmptyLine>{desktopCopy("暂无定时任务", "No scheduled tasks")}</EmptyLine>
       ) : (
         <div className="flex flex-col gap-2">
           {tasks.map((task) => {
@@ -444,7 +443,7 @@ export function DsBotSchedulesSection({ accountId }: { accountId: string }) {
                         type="button"
                         disabled={busyId === task.id}
                         onClick={() => void toggle(task)}
-                        title={paused ? '恢复任务' : '暂停任务'}
+                        title={paused ? desktopCopy("恢复任务", "Resume Task") : desktopCopy("暂停任务", "Pause Tasks")}
                         className="rounded-md p-1 text-ink-secondary hover:bg-hover hover:text-ink"
                       >
                         {paused ? <Play className="size-3.5" /> : <Pause className="size-3.5" />}
@@ -454,7 +453,7 @@ export function DsBotSchedulesSection({ accountId }: { accountId: string }) {
                       type="button"
                       disabled={busyId === task.id}
                       onClick={() => void remove(task)}
-                      title="删除任务"
+                      title={desktopCopy("删除任务", "Delete Task")}
                       className="rounded-md p-1 text-ink-muted hover:bg-status-error/10 hover:text-status-error"
                     >
                       <Trash2 className="size-3.5" />
@@ -466,12 +465,13 @@ export function DsBotSchedulesSection({ accountId }: { accountId: string }) {
           })}
         </div>
       )}
-      {error && <p className="mt-1.5 text-[11.5px] text-status-error">{error}</p>}
+      {error && <p className="mt-1.5 text-[11.5px] text-status-error">{desktopNotice(error)}</p>}
     </Section>
   )
 }
 
 export function DsBotMemorySection({ accountId, agentId }: { accountId: string; agentId?: string }) {
+  useDesktopLocale()
   const [view, setView] = useState<DsBotMemoryView | null>(null)
   const [draft, setDraft] = useState('')
   const [loading, setLoading] = useState(false)
@@ -546,22 +546,20 @@ export function DsBotMemorySection({ accountId, agentId }: { accountId: string; 
 
   return (
     <Section
-      title="DS Bot 长期记忆"
+      title={desktopCopy("DS Bot 长期记忆", "DS Bot Long-Term Memory")}
       count={view?.entries.length || undefined}
       action={<RefreshButton loading={loading} onClick={() => void refresh()} />}
     >
       {!agentId ? (
-        <EmptyLine>请选择具体 DS Bot 成员或群聊</EmptyLine>
+        <EmptyLine>{desktopCopy("请选择具体 DS Bot 成员或群聊", "Please select a specific DS Bot member or group chat")}</EmptyLine>
       ) : view && !view.memoryEnabled ? (
-        <EmptyLine>MCP 模式暂不支持读写记忆；使用「加密配对链接」或「DSH Web」可完整管理 MEMORY.md</EmptyLine>
+        <EmptyLine>{desktopCopy("MCP 模式暂不支持读写记忆；使用「加密配对链接」或「DSH Web」可完整管理 MEMORY.md", "MCP mode can’t read or write memory. Use an encrypted pairing link or DSH Web to manage MEMORY.md.")}</EmptyLine>
       ) : (
         <div className="flex flex-col gap-2.5">
           {view?.summary && (
             <div className="rounded-xl border border-line bg-sunken/60 p-2.5 text-[12px] leading-5 text-ink-secondary">
               <div className="mb-1 flex items-center gap-1 text-[11px] font-medium text-ink">
-                <Brain className="size-3.5 text-accent-600" />
-                记忆摘要
-              </div>
+                <Brain className="size-3.5 text-accent-600" />{desktopCopy("记忆摘要", "Memory Summary")}</div>
               {view.summary}
             </div>
           )}
@@ -570,7 +568,7 @@ export function DsBotMemorySection({ accountId, agentId }: { accountId: string; 
             <input
               value={draft}
               onChange={(e) => setDraft(e.target.value)}
-              placeholder="新增一条长期记忆…"
+              placeholder={desktopCopy("新增一条长期记忆…", "Add a long-term memory…")}
               className="h-8 min-w-0 flex-1 rounded-lg border border-line bg-surface px-2.5 text-[12px] text-ink outline-none focus:border-accent-600"
             />
             <Button type="submit" size="sm" variant="secondary" disabled={saving || !draft.trim()}>
@@ -579,7 +577,7 @@ export function DsBotMemorySection({ accountId, agentId }: { accountId: string; 
           </form>
 
           {view && view.entries.length === 0 ? (
-            <EmptyLine>还没有保存任何长期记忆条目</EmptyLine>
+            <EmptyLine>{desktopCopy("还没有保存任何长期记忆条目", "No long-term memory entries have been saved")}</EmptyLine>
           ) : (
             <div className="flex flex-col gap-1.5">
               {(view?.entries ?? []).map((entry, idx) => (
@@ -590,7 +588,7 @@ export function DsBotMemorySection({ accountId, agentId }: { accountId: string; 
                   <div className="min-w-0 flex-1">
                     <p className="text-ink leading-5">{entry.text}</p>
                     <p className="mt-0.5 text-[10.5px] text-ink-muted">
-                      {entry.scope === 'team' ? '团队共享' : entry.scope === 'group' ? '群聊记忆' : '专属记忆'}
+                      {entry.scope === 'team' ? desktopCopy("团队共享", "Shared with the team") : entry.scope === 'group' ? desktopCopy("群聊记忆", "Group chat memory") : desktopCopy("专属记忆", "Private memory")}
                       {entry.topic ? ` · [[${entry.topic}]]` : ''}
                       {entry.added ? ` · ${entry.added}` : ''}
                     </p>
@@ -599,7 +597,7 @@ export function DsBotMemorySection({ accountId, agentId }: { accountId: string; 
                     type="button"
                     disabled={saving}
                     onClick={() => void handleForget(entry)}
-                    title="遗忘此记忆"
+                    title={desktopCopy("遗忘此记忆", "Forget this memory.")}
                     className="opacity-0 group-hover:opacity-100 rounded-md p-1 text-ink-muted hover:bg-status-error/10 hover:text-status-error"
                   >
                     <Trash2 className="size-3.5" />
@@ -608,7 +606,7 @@ export function DsBotMemorySection({ accountId, agentId }: { accountId: string; 
               ))}
             </div>
           )}
-          {error && <p className="text-[11.5px] text-status-error">{error}</p>}
+          {error && <p className="text-[11.5px] text-status-error">{desktopNotice(error)}</p>}
         </div>
       )}
     </Section>
@@ -616,6 +614,7 @@ export function DsBotMemorySection({ accountId, agentId }: { accountId: string; 
 }
 
 export function DsBotTeamRosterSection({ accountId }: { accountId: string }) {
+  useDesktopLocale()
   const [targets, setTargets] = useState<DsBotTargetInfo[]>([])
   const [canCreate, setCanCreate] = useState(false)
   const [newName, setNewName] = useState('')
@@ -703,20 +702,18 @@ export function DsBotTeamRosterSection({ accountId }: { accountId: string }) {
 
   return (
     <Section
-      title="DS Bot 团队成员与群聊"
+      title={desktopCopy("DS Bot 团队成员与群聊", "DS Bot team members and group chats")}
       count={targets.length || undefined}
       action={
         <div className="flex items-center gap-1">
           <Button size="sm" variant="ghost" disabled={loading} onClick={() => void handleSyncAll()}>
-            <RefreshCw className={cn('size-3', loading && 'animate-spin')} />
-            全部同步
-          </Button>
+            <RefreshCw className={cn('size-3', loading && 'animate-spin')} />{desktopCopy("全部同步", "Sync All")}</Button>
         </div>
       }
     >
       <div className="flex flex-col gap-2">
         {targets.length === 0 ? (
-          <EmptyLine>暂无可访问的 Bot 或群聊</EmptyLine>
+          <EmptyLine>{desktopCopy("暂无可访问的 Bot 或群聊", "No accessible bots or group chats")}</EmptyLine>
         ) : (
           targets.map((target) => {
             const matchedBot = bots.find(
@@ -744,15 +741,13 @@ export function DsBotTeamRosterSection({ accountId }: { accountId: string }) {
                   <p className="truncate text-[11px] text-ink-muted">
                     {target.kind === 'room'
                       ? target.members?.length
-                        ? `群聊 · ${target.members.join('、')}`
-                        : 'DS Bot 群聊'
-                      : target.role || target.model || 'DS Bot 成员'}
+                        ? desktopCopy("群聊 · {0}", "Group chat · {0}", [(target.members.join('、'))])
+                        : desktopCopy("DS Bot 群聊", "DS Bot group chat")
+                      : target.role || target.model || desktopCopy("DS Bot 成员", "DS Bot Member")}
                   </p>
                 </div>
                 {target.working && (
-                  <span className="shrink-0 rounded-full bg-status-online/15 px-2 py-0.5 text-[10.5px] font-medium text-status-online-ink">
-                    工作中
-                  </span>
+                  <span className="shrink-0 rounded-full bg-status-online/15 px-2 py-0.5 text-[10.5px] font-medium text-status-online-ink">{desktopCopy("工作中", "Working")}</span>
                 )}
               </button>
             )
@@ -764,29 +759,27 @@ export function DsBotTeamRosterSection({ accountId }: { accountId: string }) {
             onSubmit={(e) => void handleCreate(e)}
             className="mt-1 flex flex-col gap-1.5 rounded-xl border border-dashed border-line p-2.5"
           >
-            <span className="text-[11.5px] font-medium text-ink-secondary">新建 DS Bot 成员</span>
+            <span className="text-[11.5px] font-medium text-ink-secondary">{desktopCopy("新建 DS Bot 成员", "New DS Bot Member")}</span>
             <input
               value={newName}
               onChange={(e) => setNewName(e.target.value)}
-              placeholder="Bot 名称（例如 Coder / Researcher）"
+              placeholder={desktopCopy("Bot 名称（例如 Coder / Researcher）", "Bot name (e.g. Coder or Researcher)")}
               className="h-8 rounded-lg border border-line bg-main px-2.5 text-[12px] text-ink outline-none focus:border-accent-600"
             />
             <div className="flex gap-1.5">
               <input
                 value={newRole}
                 onChange={(e) => setNewRole(e.target.value)}
-                placeholder="角色定位（可选）"
+                placeholder={desktopCopy("角色定位（可选）", "Role positioning (optional)")}
                 className="h-8 min-w-0 flex-1 rounded-lg border border-line bg-main px-2.5 text-[12px] text-ink outline-none focus:border-accent-600"
               />
               <Button type="submit" size="sm" variant="primary" disabled={creating || !newName.trim()}>
-                <Plus className="size-3.5" />
-                创建
-              </Button>
+                <Plus className="size-3.5" />{desktopCopy("创建", "Create")}</Button>
             </div>
           </form>
         )}
 
-        {error && <p className="text-[11.5px] text-status-error">{error}</p>}
+        {error && <p className="text-[11.5px] text-status-error">{desktopNotice(error)}</p>}
       </div>
     </Section>
   )

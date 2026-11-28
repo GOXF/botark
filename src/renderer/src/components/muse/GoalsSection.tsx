@@ -1,3 +1,4 @@
+import { desktopCopy, desktopNotice, useDesktopLocale } from '@/lib/desktopCopy'
 import { useCallback, useEffect, useState } from 'react'
 import { asObj } from '@shared/parse'
 import { EmptyLine, Section } from '@/components/info/Section'
@@ -37,6 +38,7 @@ function parseGoals(raw: unknown): GoalItem[] {
 }
 
 export function GoalsSection({ accountId }: { accountId: string }) {
+  useDesktopLocale()
   const status = useBotStore((s) => s.accounts[accountId]?.status)
   const [items, setItems] = useState<GoalItem[]>([])
   const [prompt, setPrompt] = useState('')
@@ -121,7 +123,7 @@ export function GoalsSection({ accountId }: { accountId: string }) {
             onKeyDown={(e) => {
               if (e.key === 'Enter') void submitGoalPrompt()
             }}
-            placeholder="添加长期目标…"
+            placeholder={desktopCopy("添加长期目标…", "Add a long-term goal…")}
             aria-label="Goal prompt"
             className="h-7 flex-1 text-[12px]"
           />
@@ -129,11 +131,11 @@ export function GoalsSection({ accountId }: { accountId: string }) {
             {t('Add')}
           </Button>
         </div>
-        {error && <p className="text-[12px] text-status-error">{error}</p>}
+        {error && <p className="text-[12px] text-status-error">{desktopNotice(error)}</p>}
         {unavailable && items.length === 0 ? (
-          <EmptyLine>目标功能暂不可用</EmptyLine>
+          <EmptyLine>{desktopCopy("目标功能暂不可用", "Goals aren’t available here.")}</EmptyLine>
         ) : items.length === 0 ? (
-          <EmptyLine>暂无长期目标</EmptyLine>
+          <EmptyLine>{desktopCopy("暂无长期目标", "No long-term goals yet")}</EmptyLine>
         ) : (
           <ul className="divide-y divide-line">
             {items.map((g) => (

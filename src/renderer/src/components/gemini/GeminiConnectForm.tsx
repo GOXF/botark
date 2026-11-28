@@ -1,3 +1,4 @@
+import { desktopNotice, useDesktopLocale } from '@/lib/desktopCopy'
 import { useState } from 'react'
 import { GEMINI_BASE_URL, GEMINI_MODEL, type GeminiConfig, type GeminiModel } from '@shared/gemini'
 import { Button } from '@/components/ui/Button'
@@ -11,6 +12,7 @@ export function GeminiConnectForm({ accountId, initial, onSaved }: {
   initial?: GeminiConfig | null
   onSaved: () => void | Promise<void>
 }) {
+  useDesktopLocale()
   const t = useT()
   const [apiKey, setKey] = useState('')
   const [baseUrl, setUrl] = useState(initial?.baseUrl ?? '')
@@ -65,6 +67,6 @@ export function GeminiConnectForm({ accountId, initial, onSaved }: {
       </label>
       <Button variant="primary" disabled={busy} onClick={() => void run(true)}>{t('Save')}</Button>
     </>}
-    {error && <p role="alert" className="text-status-error">{error}</p>}
+    {error && <p role="alert" className="text-status-error">{desktopNotice(error)}</p>}
   </fieldset>
 }

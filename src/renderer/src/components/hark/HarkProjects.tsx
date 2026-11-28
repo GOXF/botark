@@ -1,3 +1,4 @@
+import { desktopCopy, desktopNotice, useDesktopLocale } from '@/lib/desktopCopy'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   Archive,
@@ -85,6 +86,7 @@ export function HarkProjects({
   /** Lets a parent refresh button spin while the list is being fetched. */
   onLoadingChange?: (loading: boolean) => void
 }) {
+  useDesktopLocale()
   const bot = useBotStore((s) => s.bots.find((b) => b.id === botId))!
   const accountId = bot.activeAccountId
   const connected = useBotStore((s) =>
@@ -282,7 +284,7 @@ export function HarkProjects({
         path: `/project/${encodeURIComponent(projectId)}/preview-url`
       })
       const url = (data as { url?: string })?.url
-      if (!url || new URL(url).protocol !== 'https:') throw new Error('该项目暂无可用在线预览')
+      if (!url || new URL(url).protocol !== 'https:') throw new Error(desktopCopy("该项目暂无可用在线预览", "This project has no online preview."))
       await getBridge()?.muse.openHttps(url)
     })
 
@@ -347,12 +349,11 @@ export function HarkProjects({
     <div className="flex flex-col gap-2 text-[12px]">
       {/* Quick Add Project Bar */}
       <div className="flex items-center justify-between">
-        <span className="text-[11px] font-medium text-ink-muted">
-          项目 ({visibleProjects.length})
+        <span className="text-[11px] font-medium text-ink-muted">{desktopCopy("项目 (", "Projects (")}{visibleProjects.length})
         </span>
         <Button size="sm" variant="secondary" disabled={busy} onClick={() => void createProject()}>
           <Plus />
-          新建项目
+          {desktopCopy("新建", "New")}项目
         </Button>
       </div>
 
@@ -404,10 +405,10 @@ export function HarkProjects({
                   <IconButton size="sm" label="重命名" disabled={busy} onClick={() => setRenaming(p.id)}>
                     <Pencil />
                   </IconButton>
-                  <IconButton size="sm" label="在线预览" disabled={busy} onClick={() => void openPreview(p.id)}>
+                  <IconButton size="sm" label={desktopCopy("在线预览", "Online Preview")} disabled={busy} onClick={() => void openPreview(p.id)}>
                     <ExternalLink />
                   </IconButton>
-                  <IconButton size="sm" label="归档" disabled={busy} onClick={() => void toggleArchive(p)}>
+                  <IconButton size="sm" label={desktopCopy("归档", "Archive")} disabled={busy} onClick={() => void toggleArchive(p)}>
                     <Archive />
                   </IconButton>
                   <DeleteProjectButton confirming={confirmDelete === p.id} disabled={busy} onClick={() => void deleteProject(p)} />
@@ -426,7 +427,7 @@ export function HarkProjects({
             onClick={() => setShowArchived((v) => !v)}
             className="text-[11px] font-medium text-ink-muted hover:text-ink-secondary"
           >
-            {showArchived ? '收起已归档项目' : `已归档项目 (${archivedProjects.length})`}
+            {showArchived ? desktopCopy("收起已归档项目", "Hide archived projects") : desktopCopy("已归档项目 ({0})", "Archived projects ({0})", [(archivedProjects.length)])}
           </button>
           {showArchived && (
             <ul className="mt-1.5 flex flex-col gap-1 animate-veil-in">
@@ -444,7 +445,7 @@ export function HarkProjects({
                     className="press inline-flex items-center gap-1 rounded-full bg-surface px-2 py-0.5 text-[11px] font-medium text-ink-secondary shadow-hairline hover:text-ink"
                   >
                     <ArchiveRestore className="size-3" />
-                    恢复
+                    {desktopCopy("恢复", "Restore")}
                   </button>
                   <DeleteProjectButton confirming={confirmDelete === p.id} disabled={busy} onClick={() => void deleteProject(p)} />
                   </span>
@@ -457,7 +458,7 @@ export function HarkProjects({
 
       {error && (
         <p role="alert" className="text-[11.5px] text-status-error">
-          {error}
+          {desktopNotice(error)}
         </p>
       )}
     </div>

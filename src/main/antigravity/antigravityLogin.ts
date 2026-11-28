@@ -1,3 +1,4 @@
+import { nativeDisplayCopy } from '../nativeDisplayCopy'
 /**
  * Interactive Google Antigravity login via BrowserWindow + isolated persist partition.
  *
@@ -141,7 +142,7 @@ export async function openAntigravityLoginWindow(accountId: string, parent?: Bro
     height: 780,
     minWidth: 720,
     minHeight: 560,
-    title: '使用 Google Antigravity 登录',
+    title: nativeDisplayCopy("使用 Google Antigravity 登录", "Sign in to Google Antigravity"),
     backgroundColor: '#1f1f1f',
     autoHideMenuBar: true,
     ...(windowIcon ? { icon: windowIcon } : {}),
@@ -210,7 +211,7 @@ export async function openAntigravityLoginWindow(accountId: string, parent?: Bro
           overrideBrowserWindowOptions: {
             width: 540,
             height: 700,
-            title: 'Google 登录',
+            title: nativeDisplayCopy("Google 登录", "Google sign-in"),
             autoHideMenuBar: true,
             ...(windowIcon ? { icon: windowIcon } : {}),
             parent: parentForChild.isDestroyed() ? undefined : parentForChild,
@@ -260,9 +261,9 @@ export async function openAntigravityLoginWindow(accountId: string, parent?: Bro
     const id = 'botark-antigravity-session-banner'
     const banner = buildGoogleFallbackBannerScript({
       id,
-      title: 'BotArk 尚未验证 Antigravity 会话',
-      detail: message + ' 也可在系统浏览器完成登录后，将 Cookie 或「Copy as cURL」粘贴到 BotArk 的「添加 Bot」窗口。',
-      buttonLabel: '在系统浏览器打开',
+      title: nativeDisplayCopy("BotArk 尚未验证 Antigravity 会话", "BotArk hasn’t verified the Antigravity session yet."),
+      detail: message + nativeDisplayCopy(" 也可在系统浏览器完成登录后，将 Cookie 或「Copy as cURL」粘贴到 BotArk 的「添加 Bot」窗口。", " You can also finish signing in in your browser and return to BotArk."),
+      buttonLabel: nativeDisplayCopy("在系统浏览器打开", "Open in browser"),
       actionUrl: 'botark-external://open'
     })
     try {
@@ -320,11 +321,11 @@ export async function openAntigravityLoginWindow(accountId: string, parent?: Bro
       }
       await wc.executeJavaScript(
         buildGoogleFallbackBannerScript({
-          title: 'Google 登录受限或需要通行密钥',
-          detail: '可点击「兼容模式重试」，也可在系统浏览器完成登录，再将 Antigravity 请求的 Cookie 或「Copy as cURL」粘贴到 BotArk 的「添加 Bot」窗口。',
-          buttonLabel: '在系统浏览器打开',
+          title: nativeDisplayCopy("Google 登录受限或需要通行密钥", "Google sign-in is restricted or requires a passkey."),
+          detail: nativeDisplayCopy("可点击「兼容模式重试」，也可在系统浏览器完成登录，再将 Antigravity 请求的 Cookie 或「Copy as cURL」粘贴到 BotArk 的「添加 Bot」窗口。", "Retry here, or sign in to Antigravity in your browser. Browser sign-in alone does not connect BotArk; return to Add Bot to complete the account import."),
+          buttonLabel: nativeDisplayCopy("在系统浏览器打开", "Open in browser"),
           actionUrl: 'botark-external://open',
-          secondaryActions: [{ label: '兼容模式重试', actionUrl: 'botark-action://retry-firefox-ua' }]
+          secondaryActions: [{ label: nativeDisplayCopy("兼容模式重试", "Retry in compatibility mode"), actionUrl: 'botark-action://retry-firefox-ua' }]
         }),
         true
       )

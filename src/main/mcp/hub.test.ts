@@ -461,7 +461,14 @@ describe('workspace MCP hub', () => {
     const script = stdioEchoScript('cwd', '', "{structuredContent:{cwd:process.cwd()},isError:true}")
     const nodeTool = { command: process.execPath, args: ['-e', script] }
     await request('room', { op: 'upsert', autoStart: true, server: { ...nodeTool, name: 'global_', targetScope: 'global' } })
-    expect(mocks.confirm.mock.lastCall?.[1].detail).toContain(homedir())
+    expect(mocks.confirm.mock.lastCall?.[1]).toMatchObject({
+      message: 'Start MCP server global_', buttons: ['Cancel', 'Allow once'], defaultId: 0, cancelId: 0
+    })
+    const warning = mocks.confirm.mock.lastCall?.[1].detail
+    expect(warning).toContain(process.execPath)
+    expect(warning).toContain(JSON.stringify(nodeTool.args))
+    expect(warning).toContain(`Directory: ${homedir()}`)
+    expect(warning).toContain('This program can access any file the current user can access.')
     await request('room', { op: 'upsert', autoStart: true, server: { ...nodeTool, name: 'scoped' } })
     expect(mocks.confirm.mock.lastCall?.[1].detail).toContain(root)
     expect(JSON.parse(await runTool('room', 'global___cwd', {}))).toMatchObject({

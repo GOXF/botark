@@ -1,3 +1,4 @@
+import { desktopCopy, desktopNotice, useDesktopLocale } from '@/lib/desktopCopy'
 import { useCallback, useEffect, useState } from "react"
 import type { MuseInviteSnapshot } from "@shared/ipc"
 import { EmptyLine, Section } from "@/components/info/Section"
@@ -9,6 +10,7 @@ import { cleanSidebarError, isOnlineAccountStatus } from "@/lib/sidebarCompat"
 import { useBotStore } from "@/store/botStore"
 
 export function InviteSection({ accountId }: { accountId: string }) {
+  useDesktopLocale()
   const [snap, setSnap] = useState<MuseInviteSnapshot | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string>()
@@ -91,10 +93,10 @@ export function InviteSection({ accountId }: { accountId: string }) {
         : null
 
   return (
-    <Section title="邀请码" action={<RefreshButton loading={loading} onClick={() => void refresh()} />}>
-      {error && <p className="pb-1 text-[12px] text-status-error">{error}</p>}
+    <Section title={desktopCopy("邀请码", "Invitation code")} action={<RefreshButton loading={loading} onClick={() => void refresh()} />}>
+      {error && <p className="pb-1 text-[12px] text-status-error">{desktopNotice(error)}</p>}
       {!snap || (snap.error && !snap.code) ? (
-        <EmptyLine>{loading ? "加载邀请信息…" : "暂无邀请信息"}</EmptyLine>
+        <EmptyLine>{loading ? desktopCopy("加载邀请信息…", "Loading invitation information…") : desktopCopy("暂无邀请信息", "No invitation information available")}</EmptyLine>
       ) : (
         <div className="flex flex-col gap-3 py-0.5">
           {snap.title && <p className="text-[13px] font-medium text-ink">{snap.title}</p>}
@@ -109,27 +111,25 @@ export function InviteSection({ accountId }: { accountId: string }) {
           )}
           <div className="flex items-center justify-between gap-2 rounded-lg border border-line/60 px-2.5 py-2">
             <div className="min-w-0">
-              <p className="text-[11px] text-ink-muted">你的邀请码</p>
+              <p className="text-[11px] text-ink-muted">{desktopCopy("你的邀请码", "Your invitation code")}</p>
               <p className="truncate font-mono text-[14px] tracking-wide text-ink">
                 {snap.code || "—"}
               </p>
               {remaining && (
-                <p className="mt-0.5 text-[11px] text-ink-secondary">剩余次数 {remaining}</p>
+                <p className="mt-0.5 text-[11px] text-ink-secondary">{desktopCopy("剩余次数 ", "Remaining ")}{remaining}</p>
               )}
             </div>
             <div className="flex shrink-0 flex-col gap-1.5">
               <Button size="sm" disabled={!snap.code} onClick={() => void copy("code")}>
-                {copied === "code" ? "已复制" : "复制码"}
+                {copied === "code" ? desktopCopy("已复制", "Copied") : desktopCopy("复制码", "Copy Code")}
               </Button>
               <Button size="sm" disabled={!snap.code && !snap.inviteLink} onClick={() => void copy("share")}>
-                {copied === "share" ? "已复制" : "复制分享"}
+                {copied === "share" ? desktopCopy("已复制", "Copied") : desktopCopy("复制分享", "Copy share link")}
               </Button>
             </div>
           </div>
           <div>
-            <p className="mb-1.5 text-[11px] font-semibold tracking-wide text-ink-muted uppercase">
-              兑换好友码
-            </p>
+            <p className="mb-1.5 text-[11px] font-semibold tracking-wide text-ink-muted uppercase">{desktopCopy("兑换好友码", "Redeem a friend’s code")}</p>
             {snap.inviteCodeEntryAvailable ? (
               <div className="flex flex-col gap-2">
                 {snap.redeemSubtitle && (
@@ -139,8 +139,8 @@ export function InviteSection({ accountId }: { accountId: string }) {
                   <TextInput
                     value={redeemCode}
                     onChange={(e) => setRedeemCode(e.target.value.toUpperCase())}
-                    placeholder="输入邀请码"
-                    aria-label="好友邀请码"
+                    placeholder={desktopCopy("输入邀请码", "Enter invitation code")}
+                    aria-label={desktopCopy("好友邀请码", "Friend’s invitation code")}
                     disabled={redeemBusy}
                     className="font-mono uppercase"
                   />
@@ -149,23 +149,21 @@ export function InviteSection({ accountId }: { accountId: string }) {
                     variant="primary"
                     disabled={redeemBusy || redeemCode.trim().length < 4}
                     onClick={() => void redeem()}
-                  >
-                    兑换
-                  </Button>
+                  >{desktopCopy("兑换", "Redeem")}</Button>
                 </div>
               </div>
             ) : (
               <div className="rounded-lg bg-sunken/50 px-2.5 py-2">
                 <TextInput
                   value=""
-                  placeholder="本账号已兑换过，入口已关闭"
+                  placeholder={desktopCopy("本账号已兑换过，入口已关闭", "This account has already redeemed a code.")}
                   disabled
-                  aria-label="兑换入口不可用"
+                  aria-label={desktopCopy("兑换入口不可用", "Invites can’t be redeemed here.")}
                 />
                 <p className="mt-1.5 text-[11px] text-ink-muted">
                   {snap.hasRedeemedInviteCode
-                    ? "每个账号只能兑换一次好友邀请码。"
-                    : "当前账号不可兑换邀请码。"}
+                    ? desktopCopy("每个账号只能兑换一次好友邀请码。", "Each account can redeem one friend’s invitation code.")
+                    : desktopCopy("当前账号不可兑换邀请码。", "This account can’t redeem an invitation code.")}
                 </p>
               </div>
             )}

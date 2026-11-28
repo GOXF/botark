@@ -1,3 +1,4 @@
+import { desktopNotice, useDesktopLocale } from '@/lib/desktopCopy'
 import { useRef, useState } from 'react'
 import { Copy, Pencil, Pin, PinOff, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/Button'
@@ -12,6 +13,7 @@ const field = 'w-full rounded-lg border border-line bg-surface px-3 py-2 text-[1
 const variables = ['date', 'bot', 'clipboard', 'cursor']
 
 function TemplateEditor({ initial, onDone }: { initial: Form; onDone: () => void }) {
+  useDesktopLocale()
   const t = useT()
   const [form, setForm] = useState(initial)
   const [error, setError] = useState('')
@@ -60,7 +62,7 @@ function TemplateEditor({ initial, onDone }: { initial: Form; onDone: () => void
           {preview.text.slice(preview.cursorOffset)}
         </p>
       </div>
-      {error && <p role="alert" className="text-xs text-status-error">{error}</p>}
+      {error && <p role="alert" className="text-xs text-status-error">{desktopNotice(error)}</p>}
       <div className="flex justify-end gap-2">
         <Button onClick={onDone}>{t('Cancel')}</Button>
         <Button type="submit" variant="primary">{t('Save template')}</Button>
@@ -70,6 +72,7 @@ function TemplateEditor({ initial, onDone }: { initial: Form; onDone: () => void
 }
 
 function LibraryBody() {
+  useDesktopLocale()
   const t = useT()
   const templates = usePromptStore((s) => s.templates)
   const [form, setForm] = useState<Form | null>(null)
@@ -150,7 +153,7 @@ function LibraryBody() {
           setFeedback(t('Starter templates restored.'))
         }}>{t(confirm?.action === 'restore' ? 'Confirm restore' : 'Restore default templates')}</Button>
       </div>
-      {feedback && <p role="status" className="text-xs text-ink-secondary">{feedback}</p>}
+      {feedback && <p role="status" className="text-xs text-ink-secondary">{desktopNotice(feedback)}</p>}
     </div>
   )
 }

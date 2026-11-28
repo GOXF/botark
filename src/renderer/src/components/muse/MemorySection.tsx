@@ -1,3 +1,4 @@
+import { desktopNotice, useDesktopLocale } from '@/lib/desktopCopy'
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { EmptyLine, Section } from '@/components/info/Section'
 import { Button } from '@/components/ui/Button'
@@ -137,6 +138,7 @@ export function MemorySection({ accountId }: { accountId: string }) {
 }
 
 function AccountMemorySection({ accountId }: { accountId: string }) {
+  useDesktopLocale()
   const [query, setQuery] = useState('')
   const [hits, setHits] = useState<MemoryHit[]>([])
   const [loading, setLoading] = useState(false)
@@ -220,7 +222,7 @@ function AccountMemorySection({ accountId }: { accountId: string }) {
             {t('Consolidate')}
           </Button>
         </div>
-        {error && <p className="text-[12px] text-status-error">{error}</p>}
+        {error && <p className="text-[12px] text-status-error">{desktopNotice(error)}</p>}
         {unavailable && hits.length === 0 ? (
           <EmptyLine>{t('Memory unavailable')}</EmptyLine>
         ) : hits.length === 0 ? (

@@ -41,9 +41,9 @@
 		<true/>
 	</dict>
 	<key>NSCameraUsageDescription</key>
-	<string>扫描 BotArk 电脑端配对二维码，在局域网或 Tailscale 下零服务器直接同步全部 AI 助手。</string>
+	<string>Scan a QR code from BotArk on your computer to pair this device.</string>
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>BotArk 需要访问本地网络以直连同一局域网或 Tailscale 中的电脑端 BotArk，无需任何云端服务器。</string>
+	<string>BotArk uses your local network to connect to your paired computer.</string>
 	<key>UIAppFonts</key>
 	<array>
 		<string>PlusJakartaSans-Regular.ttf</string>

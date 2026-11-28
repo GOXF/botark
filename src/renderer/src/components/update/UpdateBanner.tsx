@@ -1,3 +1,4 @@
+import { desktopCopy, useDesktopLocale } from '@/lib/desktopCopy'
 import { useEffect, useState } from 'react'
 import { Download, RefreshCw, X } from 'lucide-react'
 import type { UpdateStatusEvent } from '@shared/ipc'
@@ -14,6 +15,7 @@ type BannerState =
   | { kind: 'message'; text: string; error?: boolean }
 
 export function UpdateBanner() {
+  useDesktopLocale()
   const [state, setState] = useState<BannerState>({ kind: 'hidden' })
   const [, setChecking] = useState(false)
 
@@ -44,7 +46,7 @@ export function UpdateBanner() {
           break
         case 'not-available':
           setChecking(false)
-          setState({ kind: 'message', text: `当前已是最新版本 (v${event.version})` })
+          setState({ kind: 'message', text: desktopCopy("当前已是最新版本 (v{0})", "You’re up to date (v{0})", [(event.version)]) })
           break
         case 'error':
           setChecking(false)

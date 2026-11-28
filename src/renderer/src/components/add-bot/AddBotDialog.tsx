@@ -1,3 +1,4 @@
+import { desktopCopy, desktopNotice, useDesktopLocale } from '@/lib/desktopCopy'
 import { GeminiConnectForm } from '@/components/gemini/GeminiConnectForm'
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent, type RefObject } from 'react'
 import { getPlatform } from '@adapters/platforms'
@@ -50,6 +51,7 @@ export function AddBotDialog() {
 export default AddBotDialog
 
 function AddBotFlow({ open, wizardId }: { open: boolean; wizardId: number }) {
+  useDesktopLocale()
   const addBot = useBotStore((s) => s.addBot)
   const bots = useBotStore((s) => s.bots)
   const accounts = useBotStore((s) => s.accounts)
@@ -264,13 +266,13 @@ function AddBotFlow({ open, wizardId }: { open: boolean; wizardId: number }) {
         : dsBotConnectOpen && phase.kind === 'idle'
           ? t('Connect DS Bot')
           : grokAccountChoiceOpen && phase.kind === 'idle'
-          ? '添加 Grok Bot'
+          ? desktopCopy("添加 Grok Bot", "Add Grok Bot")
           : phase.kind === 'idle'
             ? t('New bot')
             : phase.kind === 'waiting'
               ? t('Sign in to {name}', { name: platform!.name })
               : phase.platformId === 'grok'
-                ? '正在同步 Grok Bot 名单…'
+                ? desktopCopy("正在同步 Grok Bot 名单…", "Syncing Grok bots…")
                 : t('Set up your bot')
 
   return (
@@ -463,9 +465,7 @@ function AddBotFlow({ open, wizardId }: { open: boolean; wizardId: number }) {
               ) : (
                 <>
                   <RefreshCw className="size-5 animate-spin text-ink-secondary" />
-                  <p className="text-[13.5px] text-ink-secondary">
-                    登录成功，正在将该账号下的全部 Grok Bot 同步到左侧列表…
-                  </p>
+                  <p className="text-[13.5px] text-ink-secondary">{desktopCopy("登录成功，正在将该账号下的全部 Grok Bot 同步到左侧列表…", "Signed in. Syncing this account’s Grok bots to the sidebar…")}</p>
                 </>
               )}
             </div>
@@ -534,6 +534,7 @@ function GrokExistingAccountStep({
   onCreated: (botId?: string) => void
   onLoginNewAccount: () => void
 }) {
+  useDesktopLocale()
   const syncGrokAccountBots = useBotStore((s) => s.syncGrokAccountBots)
   const bots = useBotStore((s) => s.bots)
   const [targetAccId, setTargetAccId] = useState(accounts[0]?.id ?? '')
@@ -573,7 +574,7 @@ function GrokExistingAccountStep({
           create_caller: 5
         }
       })
-      if (!res.ok) throw new Error(res.message || '创建失败')
+      if (!res.ok) throw new Error(res.message || desktopCopy("创建失败", "Couldn’t create the bot."))
       await syncGrokAccountBots(targetAccId, { includeDismissed: true })
       if (requestId.current !== request) return
       const createdBot = useBotStore
@@ -628,11 +629,9 @@ function GrokExistingAccountStep({
       <div className="rounded-xl border border-line bg-surface p-3.5">
         <div className="flex items-center justify-between gap-2">
           <div className="flex items-center gap-1.5">
-            <span className="text-[13px] font-medium text-ink">在已登录账号下新建 Bot</span>
+            <span className="text-[13px] font-medium text-ink">{desktopCopy("在已登录账号下新建 Bot", "Create a bot in a signed-in account")}</span>
             {hasDuplicateHandle && (
-              <span className="rounded bg-status-attention/15 px-1.5 py-0.5 text-[10.5px] font-medium text-status-attention-ink">
-                重名账号已区分
-              </span>
+              <span className="rounded bg-status-attention/15 px-1.5 py-0.5 text-[10.5px] font-medium text-status-attention-ink">{desktopCopy("重名账号已区分", "Duplicate account names were renamed.")}</span>
             )}
           </div>
           {accounts.length > 1 ? (
@@ -650,15 +649,14 @@ function GrokExistingAccountStep({
             />
           ) : (
             <span className="truncate font-mono text-[11.5px] text-ink-muted">
-              {accounts[0]?.handle || accounts[0]?.displayName}（已同步 {existingCount} 个 Bot）
-            </span>
+              {accounts[0]?.handle || accounts[0]?.displayName}{desktopCopy("（已同步", " (synced: ")}{existingCount}{desktopCopy("个 Bot）", " bots)")}</span>
           )}
         </div>
         <div className="mt-2.5 flex gap-2">
           <input
             value={newName}
             onChange={(e) => setNewName(e.target.value)}
-            placeholder="输入新 Bot 名称…"
+            placeholder={desktopCopy("输入新 Bot 名称…", "Enter a name for the new bot…")}
             className="h-9 min-w-0 flex-1 rounded-lg border border-line-strong bg-main px-3 text-[13px] text-ink outline-none focus:border-accent-600"
             onKeyDown={(e) => {
               if (e.key === 'Enter' && newName.trim()) {
@@ -673,8 +671,7 @@ function GrokExistingAccountStep({
             disabled={busy || !newName.trim()}
             onClick={() => void handleCreateOnAccount()}
           >
-            <Plus className="size-3.5" /> 新建
-          </Button>
+            <Plus className="size-3.5" />{desktopCopy(" 新建", " Create")}</Button>
         </div>
         <div className="mt-2 flex items-center justify-between pt-1">
           <button
@@ -683,9 +680,7 @@ function GrokExistingAccountStep({
             onClick={() => void handleSyncAll()}
             className="inline-flex items-center gap-1 text-[12px] text-ink-secondary hover:text-ink"
           >
-            <RefreshCw className={cn('size-3', busy && 'animate-spin')} />
-            重新同步该账号下的全部 Bot 到左侧列表
-          </button>
+            <RefreshCw className={cn('size-3', busy && 'animate-spin')} />{desktopCopy("重新同步该账号下的全部 Bot 到左侧列表", "Resync all bots from this account to the sidebar")}</button>
         </div>
       </div>
 
@@ -694,11 +689,11 @@ function GrokExistingAccountStep({
         onClick={onLoginNewAccount}
         className="flex h-10 w-full items-center justify-between rounded-xl border border-dashed border-line px-3.5 text-[13px] text-ink-secondary transition-colors hover:border-ink/25 hover:bg-hover hover:text-ink"
       >
-        <span>登录或导入另一个 Grok Bot 账号</span>
+        <span>{desktopCopy("登录或导入另一个 Grok Bot 账号", "Sign in to another Grok account or import credentials")}</span>
         <ChevronRight className="size-4" />
       </button>
 
-      {error && <p className="text-[12px] text-status-error">{error}</p>}
+      {error && <p className="text-[12px] text-status-error">{desktopNotice(error)}</p>}
     </div>
   )
 }
@@ -729,6 +724,7 @@ function PlatformStep({
   onBatch: () => void
   onCreateRoom: () => void
 }) {
+  useDesktopLocale()
   const platforms = adapterRegistry.listPlatforms().filter((p) => p.usable)
   const t = useT()
   return (
@@ -772,7 +768,7 @@ function PlatformStep({
           className="press flex h-10 items-center gap-2 rounded-xl border border-line/80 bg-sunken/40 px-3 text-left text-[12.5px] font-medium text-ink transition-colors outline-none hover:bg-hover focus-visible:ring-1 focus-visible:ring-line-strong"
         >
           <ArkRelayOrbSvg active className="size-4 shrink-0 text-ink" />
-          <span className="truncate">多 Agent 协作室</span>
+          <span className="truncate">{desktopCopy("多 Agent 协作室", "Multi-agent collaboration room")}</span>
         </button>
         <button
           type="button"
@@ -785,7 +781,7 @@ function PlatformStep({
       </div>
       {error && (
         <p className="mt-3 px-2 text-[12px] text-status-error" role="alert">
-          {error}
+          {desktopNotice(error)}
         </p>
       )}
     </div>
@@ -818,6 +814,7 @@ export function LoginWaiting({
   /** Called after a paste-import verified the session for `accountId`. */
   onImported?: () => void
 }) {
+  useDesktopLocale()
   const platform = getPlatform(platformId)
   const actionRef = useRef<HTMLButtonElement>(null)
   const importInstructionsId = useId()
@@ -875,7 +872,7 @@ export function LoginWaiting({
         refreshToken: refreshInput.trim() || undefined
       })
       if (!st.signedIn) {
-        setErr('凭据无效，请检查粘贴的内容')
+        setErr(desktopCopy("凭据无效，请检查粘贴的内容", "Invalid credentials. Check what you pasted and try again."))
       }
     } catch (e) {
       setErr(errorMessage(e))
@@ -932,7 +929,7 @@ export function LoginWaiting({
         verifyApiKey: true
       })
       if (!st.signedIn) {
-        setErr('未检测到有效 Cue 会话，请检查 Cookie（cue_session_id）/ Bearer Token')
+        setErr(desktopCopy("未检测到有效 Cue 会话，请检查 Cookie（cue_session_id）/ Bearer Token", "No valid Cue session found. Check the session cookie or bearer token."))
         return
       }
       await window.electron.cue.cancelLogin?.(accountId).catch(() => undefined)
@@ -1017,9 +1014,7 @@ export function LoginWaiting({
 
         {platformId === 'grok' && accountId && (
           <Button variant="secondary" disabled={busy} onClick={() => void openGrokInSystemBrowser()}>
-            <ExternalLink className="size-3.5" />
-            默认浏览器授权
-          </Button>
+            <ExternalLink className="size-3.5" />{desktopCopy("默认浏览器授权", "Sign in with your browser")}</Button>
         )}
 
         {systemLoginUrl && (
@@ -1041,7 +1036,7 @@ export function LoginWaiting({
           <textarea
             value={rawInput}
             onChange={(e) => setRawInput(e.target.value)}
-            placeholder="粘贴 Access Token (eyJ...)、WorkosCursorSessionToken Cookie、JSON 或 API Key…"
+            placeholder={desktopCopy("粘贴 Access Token (eyJ...)、WorkosCursorSessionToken Cookie、JSON 或 API Key…", "Paste credentials…")}
             rows={3}
             spellCheck={false}
             className="w-full rounded-lg border border-line bg-surface p-2 font-mono text-[11.5px] text-ink outline-none focus:border-accent-600"
@@ -1049,7 +1044,7 @@ export function LoginWaiting({
           <input
             value={refreshInput}
             onChange={(e) => setRefreshInput(e.target.value)}
-            placeholder="可选：Refresh Token（用于自动续期）"
+            placeholder={desktopCopy("可选：Refresh Token（用于自动续期）", "Optional refresh token")}
             className="h-8 w-full rounded-lg border border-line bg-surface px-2.5 font-mono text-[11.5px] text-ink outline-none focus:border-accent-600"
           />
           <Button
@@ -1058,7 +1053,7 @@ export function LoginWaiting({
             disabled={busy || !rawInput.trim()}
             onClick={() => void quickImportGrokRaw()}
           >
-            {busy ? '正在验证并同步 Bot…' : '导入并同步全部 Bot'}
+            {busy ? desktopCopy("正在验证并同步 Bot…", "Verifying and syncing bots…") : desktopCopy("导入并同步全部 Bot", "Import and sync all bots")}
           </Button>
         </div>
       )}
@@ -1068,7 +1063,7 @@ export function LoginWaiting({
           <textarea
             value={rawInput}
             onChange={(e) => setRawInput(e.target.value)}
-            placeholder="粘贴 ChatGPT access_token (eyJ...)、refresh_token (rt_...) 或 JSON…"
+            placeholder={desktopCopy("粘贴 ChatGPT access_token (eyJ...)、refresh_token (rt_...) 或 JSON…", "Paste a ChatGPT access token, refresh token, or JSON…")}
             rows={3}
             spellCheck={false}
             className="w-full rounded-lg border border-line bg-surface p-2 font-mono text-[11.5px] text-ink outline-none"
@@ -1076,7 +1071,7 @@ export function LoginWaiting({
           <input
             value={refreshInput}
             onChange={(e) => setRefreshInput(e.target.value)}
-            placeholder="可选：refresh_token (rt_...)"
+            placeholder={desktopCopy("可选：refresh_token (rt_...)", "Optional refresh token")}
             className="h-8 w-full rounded-lg border border-line bg-surface px-2.5 font-mono text-[11.5px] text-ink outline-none"
           />
           <Button
@@ -1085,7 +1080,7 @@ export function LoginWaiting({
             disabled={busy || (!rawInput.trim() && !refreshInput.trim())}
             onClick={() => void quickImportDotRaw()}
           >
-            {busy ? '正在验证凭据…' : '导入凭据并继续'}
+            {busy ? desktopCopy("正在验证凭据…", "Verifying credentials…") : desktopCopy("导入凭据并继续", "Import credentials and continue")}
           </Button>
         </div>
       )}
@@ -1095,7 +1090,7 @@ export function LoginWaiting({
           <textarea
             value={rawInput}
             onChange={(e) => setRawInput(e.target.value)}
-            placeholder="粘贴 Hark Cookie（含 __Secure-hark.session_token=...）或 Session Token…"
+            placeholder={desktopCopy("粘贴 Hark Cookie（含 __Secure-hark.session_token=...）或 Session Token…", "Paste a Hark session cookie or token…")}
             rows={3}
             spellCheck={false}
             className="w-full rounded-lg border border-line bg-surface p-2 font-mono text-[11.5px] text-ink outline-none"
@@ -1106,7 +1101,7 @@ export function LoginWaiting({
             disabled={busy || !rawInput.trim()}
             onClick={() => void quickImportHarkRaw()}
           >
-            {busy ? '正在验证会话…' : '导入凭据并继续'}
+            {busy ? desktopCopy("正在验证会话…", "Verifying session…") : desktopCopy("导入凭据并继续", "Import credentials and continue")}
           </Button>
         </div>
       )}
@@ -1116,7 +1111,7 @@ export function LoginWaiting({
           <textarea
             value={rawInput}
             onChange={(e) => setRawInput(e.target.value)}
-            placeholder="粘贴 Manus API Key（sk-...）、Cue Cookie（cue_session_id=...）、Bearer Token (eyJ...) 或 JSON…"
+            placeholder={desktopCopy("粘贴 Manus API Key（sk-...）、Cue Cookie（cue_session_id=...）、Bearer Token (eyJ...) 或 JSON…", "Paste a Manus API key, Cue session cookie, bearer token, or JSON…")}
             rows={3}
             spellCheck={false}
             className="w-full rounded-lg border border-line bg-surface p-2 font-mono text-[11.5px] text-ink outline-none"
@@ -1127,7 +1122,7 @@ export function LoginWaiting({
             disabled={busy || !rawInput.trim()}
             onClick={() => void quickImportCueRaw()}
           >
-            {busy ? '正在验证会话…' : '导入凭据并继续'}
+            {busy ? desktopCopy("正在验证会话…", "Verifying session…") : desktopCopy("导入凭据并继续", "Import credentials and continue")}
           </Button>
         </div>
       )}
@@ -1161,7 +1156,7 @@ export function LoginWaiting({
         </div>
       )}
 
-      {err && <p role="alert" className="text-[12px] text-status-error">{err}</p>}
+      {err && <p role="alert" className="text-[12px] text-status-error">{desktopNotice(err)}</p>}
     </div>
   )
 }
@@ -1183,6 +1178,7 @@ function NameStep({
   takenNames: readonly string[]
   onDone: (name: string, avatar: string | undefined, typed: boolean) => void
 }) {
+  useDesktopLocale()
   const [name, setName] = useState('')
   const [avatar, setAvatar] = useState<string | undefined>()
   const [decoding, setDecoding] = useState(false)
@@ -1281,7 +1277,7 @@ function NameStep({
         <TemplateStep selected={template.id} onPick={onTemplate} />
         {error && (
           <p className="text-center text-[12px] text-status-error" role="alert">
-            {error}
+            {desktopNotice(error)}
           </p>
         )}
       </div>
@@ -1366,6 +1362,7 @@ function HermesConnectStep({
   isCurrentWizard: () => boolean
   onConnected: (info: { handle: string; displayName: string }) => void
 }) {
+  useDesktopLocale()
   const platform = getPlatform('hermes')
   const t = useT()
   const [baseUrl, setBaseUrl] = useState('http://127.0.0.1:8642')
@@ -1425,7 +1422,7 @@ function HermesConnectStep({
     if (busy) return
     const hermes = getBridge()?.hermes
     if (!hermes?.configure) {
-      setError('需要在 Electron 桌面端中连接 Hermes')
+      setError(desktopCopy("需要在 Electron 桌面端中连接 Hermes", "Connect Hermes using the desktop app."))
       return
     }
     const connection = ++connectionId.current
@@ -1448,7 +1445,7 @@ function HermesConnectStep({
         return
       }
       if (!st.signedIn) {
-        setError(st.error || '无法连接 Hermes API Server，请检查地址与 API_SERVER_KEY')
+        setError(st.error || desktopCopy("无法连接 Hermes API Server，请检查地址与 API_SERVER_KEY", "Couldn’t connect to Hermes. Check the server address and API key."))
         return
       }
       onConnected({
@@ -1470,7 +1467,7 @@ function HermesConnectStep({
           <p className="text-[13.5px] font-medium text-ink">Hermes Agent · Nous Research</p>
           <p className="text-[11.5px] text-ink-secondary">
             {detected?.reachable
-              ? `已检测到本机服务在线${detected.version ? ` (v${detected.version})` : ''}`
+              ? desktopCopy("已检测到本机服务在线{0}", "Local service detected{0}", [(detected.version ? ` (v${detected.version})` : '')])
               : t('Connect local or remote Hermes API Server')}
           </p>
         </div>
@@ -1519,8 +1516,8 @@ function HermesConnectStep({
             }}
             placeholder={
               useLocalKey
-                ? '将自动从本机 ~/.hermes/.env 读取（可留空）'
-                : '粘贴 API_SERVER_KEY（无鉴权本地服务可留空）'
+                ? desktopCopy("将自动从本机 ~/.hermes/.env 读取（可留空）", "Automatically read the key from ~/.hermes/.env (optional)")
+                : desktopCopy("粘贴 API_SERVER_KEY（无鉴权本地服务可留空）", "Paste the API key (optional for an unauthenticated local service)")
             }
             spellCheck={false}
             className="h-9 w-full rounded-lg border border-line bg-surface px-3 font-mono text-[12.5px] text-ink outline-none focus:border-accent-600 focus:ring-3 focus:ring-accent-100"
@@ -1529,7 +1526,7 @@ function HermesConnectStep({
 
         {localUrl && detected?.hasLocalEnvKey && !apiKey.trim() && (
           <div className="flex items-center justify-between gap-3 rounded-xl bg-sunken/50 px-3 py-2">
-            <span className="text-[12px] text-ink-secondary">自动读取 ~/.hermes/.env 密钥</span>
+            <span className="text-[12px] text-ink-secondary">{desktopCopy("自动读取 ~/.hermes/.env 密钥", "Read the key from ~/.hermes/.env automatically")}</span>
             <SwitchPill checked={useLocalKey} onCheckedChange={setUseLocalKey} />
           </div>
         )}
@@ -1550,7 +1547,7 @@ function HermesConnectStep({
 
       {!detected?.reachable && (
         <div className="rounded-lg border border-line bg-hover/50 px-3 py-2 text-[11.5px] leading-[17px] text-ink-secondary">
-          <p className="font-medium text-ink">如何启动 Hermes API Server：</p>
+          <p className="font-medium text-ink">{desktopCopy("如何启动 Hermes API Server：", "How to start the Hermes API server")}</p>
           <pre className="mt-1 overflow-x-auto font-mono text-[11px] text-ink-secondary">
             {`hermes config set API_SERVER_ENABLED true\nhermes gateway`}
           </pre>
@@ -1559,7 +1556,7 @@ function HermesConnectStep({
 
       {error && (
         <p className="text-[12px] text-status-error" role="alert">
-          {error}
+          {desktopNotice(error)}
         </p>
       )}
 

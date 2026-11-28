@@ -1,3 +1,4 @@
+import { desktopCopy, desktopNotice, useDesktopLocale } from '@/lib/desktopCopy'
 import { HarkProjects } from './HarkProjects'
 import { HARK_CONNECT_RETURN_URL, waitForHarkProvider } from '@/lib/harkConnect'
 import { HarkScreenshot } from './HarkScreenshot'
@@ -163,6 +164,7 @@ function QuotaMeter(props: {
  * 1. Hark Billing & Token Meters (`/billing/summary`, `/profile`)
  */
 export function HarkBillingSection({ accountId }: { accountId: string }) {
+  useDesktopLocale()
   const connected = useHarkConnected(accountId)
   const [summary, setSummary] = useState<Record<string, unknown> | null>(null)
   const [profile, setProfile] = useState<Record<string, unknown> | null>(null)
@@ -236,7 +238,7 @@ export function HarkBillingSection({ accountId }: { accountId: string }) {
 
   return (
     <Section
-      title="套餐与额度"
+      title={desktopCopy("套餐与额度", "Plan and quotas")}
       action={
         <>
           <SegmentedControl<QuotaMode>
@@ -255,9 +257,9 @@ export function HarkBillingSection({ accountId }: { accountId: string }) {
       }
     >
       <div className="flex flex-col gap-2 text-[12px]">
-        {error && <p className="text-status-error">{error}</p>}
+        {error && <p className="text-status-error">{desktopNotice(error)}</p>}
         {!summary && !profile ? (
-          <EmptyLine>{loading ? '正在加载用量…' : '登录后展示套餐与额度'}</EmptyLine>
+          <EmptyLine>{loading ? desktopCopy("正在加载用量…", "Loading Usage…") : desktopCopy("登录后展示套餐与额度", "Sign in to see your plan and quotas.")}</EmptyLine>
         ) : (
           <div className="flex flex-col gap-2">
             <div className="flex items-center justify-between gap-2">
@@ -323,6 +325,7 @@ export function HarkBillingSection({ accountId }: { accountId: string }) {
  * 2. Hark Home Cards & Proactive Actions (`/home/cards`, `/act`, `/dismiss`, `/refresh`)
  */
 export function HarkHomeCardsSection({ accountId, botId }: { accountId: string; botId: string }) {
+  useDesktopLocale()
   const connected = useHarkConnected(accountId)
   const sendMessage = useBotStore((s) => s.sendMessage)
   const [cards, setCards] = useState<
@@ -400,7 +403,7 @@ export function HarkHomeCardsSection({ accountId, botId }: { accountId: string; 
 
   return (
     <Section
-      title="智能建议"
+      title={desktopCopy("智能建议", "Smart advice")}
       defaultOpen={false}
       count={cards.length || undefined}
       action={<RefreshButton loading={loading} onClick={() => void refresh()} />}
@@ -417,18 +420,14 @@ export function HarkHomeCardsSection({ accountId, botId }: { accountId: string; 
                   variant="primary"
                   disabled={busyId === c.id}
                   onClick={() => void sendMessage(botId, c.taskPrompt!)}
-                >
-                  执行
-                </Button>
+                >{desktopCopy("执行", "Run")}</Button>
               )}
               <Button
                 size="sm"
                 variant="ghost"
                 disabled={busyId === c.id}
                 onClick={() => void dismissCard(c.id)}
-              >
-                忽略
-              </Button>
+              >{desktopCopy("忽略", "Ignore")}</Button>
             </div>
           </div>
         ))}
@@ -442,6 +441,7 @@ export function HarkHomeCardsSection({ accountId, botId }: { accountId: string; 
  * (`/conversations`, `/conversations/clear`, `/search/messages`)
  */
 export function HarkConversationsSection({ accountId, botId }: { accountId: string; botId: string }) {
+  useDesktopLocale()
   const [query, setQuery] = useState('')
   const [hits, setHits] = useState<Array<{ id: string; text: string }> | null>(null)
   const [busy, setBusy] = useState(false)
@@ -485,7 +485,7 @@ export function HarkConversationsSection({ accountId, botId }: { accountId: stri
 
   return (
     <Section
-      title="项目"
+      title={desktopCopy("项目", "Projects")}
       action={
         <RefreshButton
           loading={projectsLoading}
@@ -507,7 +507,7 @@ export function HarkConversationsSection({ accountId, botId }: { accountId: stri
             onKeyDown={(e) => {
               if (e.key === 'Enter') void runSearch()
             }}
-            placeholder="搜索历史消息…"
+            placeholder={desktopCopy("搜索历史消息…", "Search for historical messages…")}
             aria-label="Search Hark messages"
             className="h-7 flex-1 text-[12px]"
           />
@@ -536,17 +536,15 @@ export function HarkConversationsSection({ accountId, botId }: { accountId: stri
                 }
               }}
               className="px-2 text-[11.5px]"
-            >
-              清空
-            </Button>
+            >{desktopCopy("清空", "Clear")}</Button>
           )}
         </div>
 
         {hits && (
           <div className="rounded-lg border border-line bg-surface p-2">
-            <p className="mb-1 text-[11px] font-medium text-ink-secondary">搜索结果 ({hits.length})</p>
+            <p className="mb-1 text-[11px] font-medium text-ink-secondary">{desktopCopy("搜索结果 (", "Search results (")}{hits.length})</p>
             {hits.length === 0 ? (
-              <p className="text-ink-muted">无匹配消息</p>
+              <p className="text-ink-muted">{desktopCopy("无匹配消息", "No matching messages")}</p>
             ) : (
               <ul className="flex flex-col gap-1">
                 {hits.map((h) => (
@@ -568,6 +566,7 @@ export function HarkConversationsSection({ accountId, botId }: { accountId: stri
  * (`/scheduled-tasks`, `/scheduled-tasks/:id/pause`, `/resume`, `DELETE /scheduled-tasks/:id`)
  */
 export function HarkScheduledTasksSection({ accountId }: { accountId: string }) {
+  useDesktopLocale()
   const connected = useHarkConnected(accountId)
   const [tasks, setTasks] = useState<
     Array<{ id: string; title: string; schedule: string; paused: boolean }>
@@ -641,14 +640,14 @@ export function HarkScheduledTasksSection({ accountId }: { accountId: string }) 
 
   return (
     <Section
-      title="定时任务"
+      title={desktopCopy("定时任务", "Scheduled tasks")}
       count={tasks.length || undefined}
       action={<RefreshButton loading={loading} onClick={() => void refresh()} />}
     >
       <div className="flex flex-col gap-2 text-[12px]">
-        {error && <p className="text-status-error">{error}</p>}
+        {error && <p className="text-status-error">{desktopNotice(error)}</p>}
         {tasks.length === 0 ? (
-          <EmptyLine>暂无定时任务</EmptyLine>
+          <EmptyLine>{desktopCopy("暂无定时任务", "No scheduled tasks")}</EmptyLine>
         ) : (
           <ul className="flex flex-col gap-1.5">
             {tasks.map((task) => (
@@ -667,7 +666,7 @@ export function HarkScheduledTasksSection({ accountId }: { accountId: string }) 
                     disabled={busyId === task.id}
                     onClick={() => void togglePause(task.id, task.paused)}
                   >
-                    {task.paused ? '恢复' : '暂停'}
+                    {task.paused ? desktopCopy("恢复", "Restore") : desktopCopy("暂停", "Pause")}
                   </Button>
                   <Button
                     size="sm"
@@ -692,6 +691,7 @@ export function HarkScheduledTasksSection({ accountId }: { accountId: string }) 
  * (`/connectors`, `POST /connectors/link-sessions`, `/channel-bindings/list`, `/managed-credentials`)
  */
 export function HarkConnectorsSection({ accountId }: { accountId: string }) {
+  useDesktopLocale()
   const connected = useHarkConnected(accountId)
   const [connectors, setConnectors] = useState<
     Array<{
@@ -810,16 +810,16 @@ export function HarkConnectorsSection({ accountId }: { accountId: string }) {
         } else setHint(undefined)
       } else if (startUrl && /^https?:\/\//i.test(startUrl)) {
         await getBridge()?.muse?.openHttps?.(startUrl)
-        setHint(`已在浏览器打开 ${c.displayName} 授权页，授权完成后点击刷新`)
+        setHint(desktopCopy("已在浏览器打开 {0} 授权页，授权完成后点击刷新", "Opened {0} authorization in your browser. Finish there, then refresh.", [(c.displayName)]))
       } else if (c.setupUrl) {
         await getBridge()?.muse?.openHttps?.(c.setupUrl)
-        setHint(`已在浏览器打开 ${c.displayName} 安装页`)
+        setHint(desktopCopy("已在浏览器打开 {0} 安装页", "Opened the {0} setup page in your browser.", [(c.displayName)]))
       }
       await refresh()
     } catch (err) {
       if (c.setupUrl) {
         await getBridge()?.muse?.openHttps?.(c.setupUrl)
-        setHint(`已打开 ${c.displayName} 安装页`)
+        setHint(desktopCopy("已打开 {0} 安装页", "Opened the {0} setup page.", [(c.displayName)]))
       } else {
         setError(err instanceof Error ? err.message : String(err))
       }
@@ -837,7 +837,7 @@ export function HarkConnectorsSection({ accountId }: { accountId: string }) {
         `/connectors/${encodeURIComponent(provider)}/accounts/${encodeURIComponent(subAccountId)}`,
         { method: 'DELETE' }
       )
-      setHint('已断开连接器')
+      setHint(desktopCopy("已断开连接器", "Disconnected connector"))
       await refresh()
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
@@ -858,7 +858,7 @@ export function HarkConnectorsSection({ accountId }: { accountId: string }) {
       const url = str(o['url'] ?? o['startUrl'] ?? o['linkUrl'] ?? o['deepLink'])
       if (url && /^https?:\/\//i.test(url)) {
         await getBridge()?.muse?.openHttps?.(url)
-        setHint(`已打开 ${channel === 'slack' ? 'Slack' : 'Telegram'} 绑定链接`)
+        setHint(desktopCopy("已打开 {0} 绑定链接", "Opened the {0} link.", [(channel === 'slack' ? 'Slack' : 'Telegram')]))
       } else {
         setHint(JSON.stringify(res).slice(0, 120))
       }
@@ -887,7 +887,7 @@ export function HarkConnectorsSection({ accountId }: { accountId: string }) {
       setNewEmail('')
       setNewPassword('')
       setShowAddCred(false)
-      setHint('已保存站点托管凭据')
+      setHint(desktopCopy("已保存站点托管凭据", "Saved site hosting credentials."))
       await refresh()
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
@@ -915,16 +915,16 @@ export function HarkConnectorsSection({ accountId }: { accountId: string }) {
 
   return (
     <Section
-      title="连接器与频道"
+      title={desktopCopy("连接器与频道", "Connector & Channel")}
       count={connectedCount || undefined}
       flush={connectors.length > 0}
       action={<RefreshButton loading={loading} onClick={() => void refresh()} />}
     >
-      {error && <p className="px-3 pt-2 text-[12px] text-status-error">{error}</p>}
-      {hint && <p className="px-3 pt-2 text-[12px] text-ink-secondary">{hint}</p>}
+      {error && <p className="px-3 pt-2 text-[12px] text-status-error">{desktopNotice(error)}</p>}
+      {hint && <p className="px-3 pt-2 text-[12px] text-ink-secondary">{desktopNotice(hint)}</p>}
 
       {connectors.length === 0 ? (
-        <EmptyLine>暂无连接器</EmptyLine>
+        <EmptyLine>{desktopCopy("暂无连接器", "No connectors yet")}</EmptyLine>
       ) : (
         <ul className="divide-y divide-line">
           {connectors.map((c) => {
@@ -937,9 +937,7 @@ export function HarkConnectorsSection({ accountId }: { accountId: string }) {
                     <div className="flex items-center gap-1.5">
                       <span className="truncate text-[13px] font-medium text-ink">{c.displayName}</span>
                       {c.connected && (
-                        <span className="rounded bg-status-online/12 px-1.5 text-[10px] leading-4 font-medium text-status-online-ink">
-                          已连接
-                        </span>
+                        <span className="rounded bg-status-online/12 px-1.5 text-[10px] leading-4 font-medium text-status-online-ink">{desktopCopy("已连接", "Connected")}</span>
                       )}
                     </div>
                     {firstAcc?.email && (
@@ -953,18 +951,14 @@ export function HarkConnectorsSection({ accountId }: { accountId: string }) {
                     variant="ghost"
                     disabled={busyId === c.id}
                     onClick={() => void disconnectProvider(c.id, firstAcc.accountId)}
-                  >
-                    断开
-                  </Button>
+                  >{desktopCopy("断开", "Disconnect")}</Button>
                 ) : (
                   <Button
                     size="sm"
                     variant="secondary"
                     disabled={busyId === c.id}
                     onClick={() => void connectProvider(c)}
-                  >
-                    连接
-                  </Button>
+                  >{desktopCopy("连接", "Connect")}</Button>
                 )}
               </li>
             )
@@ -996,8 +990,7 @@ export function HarkConnectorsSection({ accountId }: { accountId: string }) {
             Telegram
           </Button>
           <Button size="sm" variant="ghost" onClick={() => setShowAddCred((v) => !v)}>
-            <KeyRound className="size-3.5" /> 站点凭据
-          </Button>
+            <KeyRound className="size-3.5" />{desktopCopy(" 站点凭据", " Site credentials")}</Button>
         </div>
 
         {showAddCred && (
@@ -1005,14 +998,14 @@ export function HarkConnectorsSection({ accountId }: { accountId: string }) {
             <TextInput
               value={newDomain}
               onChange={(e) => setNewDomain(e.target.value)}
-              placeholder="网站域名 (如 github.com)"
+              placeholder={desktopCopy("网站域名 (如 github.com)", "Site domain name (e. g. github.com)")}
               aria-label="Website domain"
               className="h-7 text-[12px]"
             />
             <TextInput
               value={newEmail}
               onChange={(e) => setNewEmail(e.target.value)}
-              placeholder="登录邮箱或账号"
+              placeholder={desktopCopy("登录邮箱或账号", "Email or username")}
               aria-label="Login email"
               className="h-7 text-[12px]"
             />
@@ -1020,7 +1013,7 @@ export function HarkConnectorsSection({ accountId }: { accountId: string }) {
               type="password"
               value={newPassword}
               onChange={(e) => setNewPassword(e.target.value)}
-              placeholder="登录密码"
+              placeholder={desktopCopy("登录密码", "Password")}
               aria-label="Login password"
               className="h-7 text-[12px]"
             />
@@ -1029,9 +1022,7 @@ export function HarkConnectorsSection({ accountId }: { accountId: string }) {
               variant="primary"
               disabled={busyId === 'add_cred' || !newDomain.trim() || !newEmail.trim() || !newPassword}
               onClick={() => void saveManagedCredential()}
-            >
-              保存凭据
-            </Button>
+            >{desktopCopy("保存凭据", "Save credentials")}</Button>
           </div>
         )}
 
@@ -1052,9 +1043,7 @@ export function HarkConnectorsSection({ accountId }: { accountId: string }) {
                   type="button"
                   onClick={() => void removeManagedCredential(cred.domain)}
                   className="shrink-0 text-status-error hover:underline"
-                >
-                  移除
-                </button>
+                >{desktopCopy("移除", "Remove")}</button>
               </li>
             ))}
           </ul>
@@ -1075,6 +1064,7 @@ export function HarkComputerSection({ accountId, botId }: { accountId: string; b
 }
 
 function HarkComputerInspector({ accountId, sessionId, connected }: { accountId: string; sessionId?: string; connected: boolean }) {
+  useDesktopLocale()
   const toggleWebSession = useBotStore((s) => s.toggleWebSession)
   const webSessionOpen = useBotStore((s) => s.webSessionOpen)
 
@@ -1165,7 +1155,7 @@ function HarkComputerInspector({ accountId, sessionId, connected }: { accountId:
   }
 
   const stopTool = (dispatchId: string) =>
-    runToolAction(dispatchId, '/messages/stop-tool', { dispatchId }, '已停止该电脑/工具任务')
+    runToolAction(dispatchId, '/messages/stop-tool', { dispatchId }, desktopCopy("已停止该电脑/工具任务", "Stopped the computer/tool task"))
 
   const activeBrowserPanel = currentHarkBrowser(panels)
   const screenshotGeneration = JSON.stringify([sessionId, conversationId, snapshotGeneration])
@@ -1199,8 +1189,8 @@ function HarkComputerInspector({ accountId, sessionId, connected }: { accountId:
                   <Monitor className="size-4" aria-hidden />
                 </span>
                 <div>
-                  <p className="text-[12.5px] font-medium text-ink">云端浏览器与终端</p>
-                  <p className="text-[11px] text-status-online-ink">就绪</p>
+                  <p className="text-[12.5px] font-medium text-ink">{desktopCopy("云端浏览器与终端", "Cloud Browser and Terminal")}</p>
+                  <p className="text-[11px] text-status-online-ink">{desktopCopy("就绪", "Ready")}</p>
                 </div>
               </div>
               <Button size="sm" variant="secondary" onClick={toggleWebSession}>
@@ -1210,8 +1200,8 @@ function HarkComputerInspector({ accountId, sessionId, connected }: { accountId:
           )}
         </div>
 
-        {error && <p className="text-status-error">{error}</p>}
-        {hint && <p className="text-ink-secondary">{hint}</p>}
+        {error && <p className="text-status-error">{desktopNotice(error)}</p>}
+        {hint && <p className="text-ink-secondary">{desktopNotice(hint)}</p>}
 
         {asks.length > 0 && <HarkAskCards accountId={accountId} sessionId={sessionId} asks={pendingHarkAsks(asks)} />}
 
@@ -1253,9 +1243,7 @@ function HarkComputerInspector({ accountId, sessionId, connected }: { accountId:
                         variant="ghost"
                         disabled={busyId === p.dispatchId}
                         onClick={() => void stopTool(p.dispatchId)}
-                      >
-                        停止任务
-                      </Button>
+                      >{desktopCopy("停止任务", "Stop the task")}</Button>
                     </div>
                   ) : null}
                 </li>
@@ -1279,6 +1267,7 @@ export function HarkLibrarySection({ accountId, botId }: { accountId: string; bo
 }
 
 function HarkLibraryInspector({ accountId, sessionId, connected }: { accountId: string; sessionId?: string; connected: boolean }) {
+  useDesktopLocale()
   const setActiveDocument = useBotStore((s) => s.setActiveDocument)
   const [artifacts, setArtifacts] = useState<
     Array<{
@@ -1379,7 +1368,7 @@ function HarkLibraryInspector({ accountId, sessionId, connected }: { accountId: 
       action={<RefreshButton loading={loading} onClick={() => void refresh()} />}
     >
       <div className="flex flex-col gap-1.5 text-[12px]">
-        {error && <p className="text-status-error">{error}</p>}
+        {error && <p className="text-status-error">{desktopNotice(error)}</p>}
         {artifacts.length === 0 ? (
           <EmptyLine>{t('Files the bot creates show up here')}</EmptyLine>
         ) : (
@@ -1398,12 +1387,9 @@ function HarkLibraryInspector({ accountId, sessionId, connected }: { accountId: 
                 </button>
                 {(a.downloadUrl || a.s3Key) && (
                   <div className="flex shrink-0 items-center gap-1">
-                    <Button size="sm" variant="ghost" onClick={() => previewArtifact(a)}>
-                      预览
-                    </Button>
+                    <Button size="sm" variant="ghost" onClick={() => previewArtifact(a)}>{desktopCopy("预览", "Preview")}</Button>
                     <Button size="sm" variant="secondary" onClick={() => void openOrDownload(a)}>
-                      <Download className="size-3.5" /> 下载
-                    </Button>
+                      <Download className="size-3.5" />{desktopCopy(" 下载", " Download")}</Button>
                   </div>
                 )}
               </li>
@@ -1419,6 +1405,7 @@ function HarkLibraryInspector({ accountId, sessionId, connected }: { accountId: 
  * 8. Hark Invite & Device Sessions (`/invite`, `/invite/claim`, `/sessions`)
  */
 export function HarkInviteAndSessionsSection({ accountId }: { accountId: string }) {
+  useDesktopLocale()
   const connected = useHarkConnected(accountId)
   const [inviteInfo, setInviteInfo] = useState<Record<string, unknown> | null>(null)
   const [claimCode, setClaimCode] = useState('')
@@ -1477,7 +1464,7 @@ export function HarkInviteAndSessionsSection({ accountId }: { accountId: string 
         body: { code: claimCode.trim() }
       })
       setClaimCode('')
-      setHint('邀请码兑换成功')
+      setHint(desktopCopy("邀请码兑换成功", "Invitation code redeemed."))
       await refresh()
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
@@ -1506,13 +1493,13 @@ export function HarkInviteAndSessionsSection({ accountId }: { accountId: string 
 
   return (
     <Section
-      title="邀请与登录设备"
+      title={desktopCopy("邀请与登录设备", "Invitation and Login Devices")}
       count={sessions.length || undefined}
       action={<RefreshButton loading={loading} onClick={() => void refresh()} />}
     >
       <div className="flex flex-col gap-2 text-[12px]">
-        {error && <p className="text-status-error">{error}</p>}
-        {hint && <p className="text-ink-secondary">{hint}</p>}
+        {error && <p className="text-status-error">{desktopNotice(error)}</p>}
+        {hint && <p className="text-ink-secondary">{desktopNotice(hint)}</p>}
 
         {code && (
           <div className="flex flex-col gap-2 rounded-lg bg-hover/60 px-2.5 py-1.5">
@@ -1559,13 +1546,11 @@ export function HarkInviteAndSessionsSection({ accountId }: { accountId: string 
           <TextInput
             value={claimCode}
             onChange={(e) => setClaimCode(e.target.value)}
-            placeholder="输入邀请码…"
+            placeholder={desktopCopy("输入邀请码…", "Enter invitation code…")}
             aria-label="Hark invite code"
             className="h-7 flex-1 text-[12px]"
           />
-          <Button size="sm" variant="primary" disabled={busy || !claimCode.trim()} onClick={() => void claim()}>
-            兑换
-          </Button>
+          <Button size="sm" variant="primary" disabled={busy || !claimCode.trim()} onClick={() => void claim()}>{desktopCopy("兑换", "Redeem")}</Button>
         </div>
 
         {sessions.length > 0 && (
@@ -1577,14 +1562,12 @@ export function HarkInviteAndSessionsSection({ accountId }: { accountId: string 
               >
                 <div className="min-w-0">
                   <p className="truncate font-medium text-ink">
-                    {s.label} {s.isCurrent ? '· 当前设备' : ''}
+                    {s.label} {s.isCurrent ? desktopCopy("· 当前设备", "· This device") : ''}
                   </p>
                   {s.location && <p className="truncate text-[11px] text-ink-muted">{s.location}</p>}
                 </div>
                 {!s.isCurrent && (
-                  <Button size="sm" variant="ghost" disabled={busy} onClick={() => void revokeSession(s.id)}>
-                    移除
-                  </Button>
+                  <Button size="sm" variant="ghost" disabled={busy} onClick={() => void revokeSession(s.id)}>{desktopCopy("移除", "Remove")}</Button>
                 )}
               </li>
             ))}

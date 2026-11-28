@@ -48,10 +48,10 @@ struct ChatView: View {
                 studioCanvas(for: bot)
             } else {
                 VStack(spacing: 12) {
-                    Text("智能体已移除")
+                    Text(String(localized: "Agent Removed"))
                         .font(ArkFont.medium(14))
                         .foregroundStyle(.secondary)
-                    Button("返回", action: onBack)
+                    Button(String(localized: "Back"), action: onBack)
                         .font(ArkFont.semibold(13))
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -84,11 +84,11 @@ struct ChatView: View {
             NavigationStack {
                 VideoPlayer(player: AVPlayer(url: item.url))
                     .ignoresSafeArea()
-                    .navigationTitle("视频预览")
+                    .navigationTitle(String(localized: "Video Preview"))
                     .navigationBarTitleDisplayMode(.inline)
                     .toolbar {
                         ToolbarItem(placement: .topBarTrailing) {
-                            Button("完成") { previewVideoItem = nil }
+                            Button(String(localized: "Done")) { previewVideoItem = nil }
                         }
                     }
             }
@@ -112,7 +112,7 @@ struct ChatView: View {
                         .overlay(Circle().strokeBorder(ArkTheme.hairline, lineWidth: 0.8))
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel("返回")
+                .accessibilityLabel(String(localized: "Back"))
 
                 PlatformIconView(platform: bot.platformId, size: 22)
 
@@ -148,7 +148,7 @@ struct ChatView: View {
                     }
                     .buttonStyle(.plain)
                     .disabled(!canSend)
-                    .accessibilityLabel("新对话")
+                    .accessibilityLabel(String(localized: "New Chat"))
                 }
             }
             .padding(.horizontal, 14)
@@ -193,7 +193,7 @@ struct ChatView: View {
                                         if let url = materializeTempVideo(part) {
                                             previewVideoItem = PreviewableVideoItem(url: url)
                                         } else {
-                                            attachError = "视频正在同步，请稍候重试"
+                                            attachError = String(localized: "The video is still syncing. Try again in a moment.")
                                         }
                                     }
                                 )
@@ -272,7 +272,7 @@ struct ChatView: View {
                     .buttonStyle(.plain)
                     .padding(.leading, 5)
                     .padding(.vertical, 4)
-                    .accessibilityLabel("添加图片或视频")
+                    .accessibilityLabel(String(localized: "Add Photo or Video"))
                     .onChange(of: selectedPickerItems) { _, items in
                         guard !items.isEmpty else { return }
                         attachError = nil
@@ -283,7 +283,7 @@ struct ChatView: View {
                     }
                 } else {
                     Button {
-                        attachError = "发送图片或视频请先连接电脑端"
+                        attachError = String(localized: "Connect to the desktop app before sending photos or videos.")
                     } label: {
                         Image(systemName: "plus")
                             .font(.system(size: 14, weight: .semibold))
@@ -298,7 +298,7 @@ struct ChatView: View {
                 }
 
                 TextField(
-                    canSend ? "给 \(bot.name) 发消息..." : "离线只读",
+                    canSend ? String.localizedStringWithFormat(String(localized: "Message %@…"), bot.name) : String(localized: "Offline · Read Only"),
                     text: $draft,
                     axis: .vertical
                 )
@@ -371,7 +371,7 @@ struct ChatView: View {
                 guard let rawData = try await item.loadTransferable(type: Data.self) else { continue }
                 if isMovie {
                     if rawData.count > maxVideoAttachmentBytes {
-                        errMsg = "视频超过 8MB 限制，请裁剪后再发"
+                        errMsg = String(localized: "Trim the video to under 8 MB and try again.")
                         continue
                     }
                     let preferredExt = contentTypes.first?.preferredFilenameExtension ?? "mp4"
@@ -387,7 +387,7 @@ struct ChatView: View {
                     )
                 } else {
                     guard let uiImage = UIImage(data: rawData) else {
-                        errMsg = "不支持的图片格式"
+                        errMsg = String(localized: "Unsupported Image Format")
                         continue
                     }
                     let downscaled = downscaleImage(uiImage, maxDimension: 1600)
@@ -403,7 +403,7 @@ struct ChatView: View {
                     )
                 }
             } catch {
-                errMsg = "读取媒体失败：\(error.localizedDescription)"
+                errMsg = String.localizedStringWithFormat(String(localized: "Could not read media: %@"), error.localizedDescription)
             }
         }
         if !loaded.isEmpty {
@@ -450,12 +450,12 @@ struct ChatView: View {
 
     private func shortTransportLabel(for bot: SyncedBot) -> String {
         if case .connected(let host, _) = store.connectionState {
-            return "\(host) · 桥接"
+            return String.localizedStringWithFormat(String(localized: "%@ · Desktop Bridge"), host)
         }
         if store.directCredential(for: bot) != nil {
-            return "Hermes 直连"
+            return String(localized: "Direct Hermes Connection")
         }
-        return "离线"
+        return String(localized: "Offline")
     }
 
     private func scrollToBottom(proxy: ScrollViewProxy, isTyping: Bool) {
@@ -563,9 +563,10 @@ private struct MessageBubbleRow: View {
                                 let syncing = !part.path.hasPrefix("data:")
                                 MediaAttachmentPill(
                                     title: part.name ?? (part.path as NSString).lastPathComponent,
-                                    subtitle: syncing ? "正在从工作区同步图片..." : "图片附件",
+                                    subtitle: syncing ? String(localized: "Syncing image from workspace…") : String(localized: "Image Attachment"),
                                     isSyncing: syncing,
                                     isVideo: false,
+                                    isImage: true,
                                     action: nil
                                 )
                             }
@@ -573,17 +574,19 @@ private struct MessageBubbleRow: View {
                             let ready = part.path.hasPrefix("data:video/")
                             MediaAttachmentPill(
                                 title: part.name ?? (part.path as NSString).lastPathComponent,
-                                subtitle: ready ? "点击播放视频" : "正在同步视频...",
+                                subtitle: ready ? String(localized: "Tap to Play Video") : String(localized: "Syncing video…"),
                                 isSyncing: !ready,
                                 isVideo: true,
+                                isImage: false,
                                 action: ready ? { onOpenVideo(part) } : nil
                             )
                         } else {
                             MediaAttachmentPill(
                                 title: part.name ?? (part.path as NSString).lastPathComponent,
-                                subtitle: part.mimeType ?? "文件附件",
+                                subtitle: part.mimeType ?? String(localized: "File Attachment"),
                                 isSyncing: false,
                                 isVideo: false,
+                                isImage: false,
                                 action: nil
                             )
                         }
@@ -617,7 +620,7 @@ private struct MessageBubbleRow: View {
                         .font(ArkFont.medium(11))
                         .foregroundStyle(ArkTheme.rose)
                 } else if message.isUser && message.delivery == "sending" {
-                    Text("发送中")
+                    Text(String(localized: "Sending"))
                         .font(ArkFont.mono(10))
                         .foregroundStyle(.tertiary)
                 }
@@ -643,6 +646,7 @@ private struct MediaAttachmentPill: View {
     let subtitle: String
     let isSyncing: Bool
     let isVideo: Bool
+    let isImage: Bool
     let action: (() -> Void)?
 
     var body: some View {
@@ -657,7 +661,7 @@ private struct MediaAttachmentPill: View {
                     Image(systemName: "play.fill")
                         .font(.system(size: 11, weight: .bold))
                         .foregroundStyle(ArkTheme.onInk)
-                } else if subtitle.contains("图片") {
+                } else if isImage {
                     Image(systemName: "photo")
                         .font(.system(size: 12, weight: .medium))
                         .foregroundStyle(.secondary)
@@ -668,7 +672,7 @@ private struct MediaAttachmentPill: View {
                 }
             }
             VStack(alignment: .leading, spacing: 1.5) {
-                Text(title.isEmpty ? "媒体附件" : title)
+                Text(title.isEmpty ? String(localized: "Media Attachment") : title)
                     .font(ArkFont.medium(12))
                     .foregroundStyle(.primary)
                     .lineLimit(1)
@@ -788,10 +792,10 @@ struct InlineApprovalCard: View {
             }
 
             HStack(spacing: 7) {
-                actionPill(title: "允许", style: .primary) { onDecide("allow_once") }
-                actionPill(title: "本次会话", style: .secondary) { onDecide("allow_session") }
+                actionPill(title: String(localized: "Allow"), style: .primary) { onDecide("allow_once") }
+                actionPill(title: String(localized: "This Session"), style: .secondary) { onDecide("allow_session") }
                 Spacer()
-                actionPill(title: "拒绝", style: .destructive) { onDecide("deny") }
+                actionPill(title: String(localized: "Deny"), style: .destructive) { onDecide("deny") }
             }
         }
         .padding(12)

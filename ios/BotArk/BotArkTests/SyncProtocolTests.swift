@@ -2,6 +2,37 @@ import XCTest
 @testable import BotArk
 
 final class SyncProtocolTests: XCTestCase {
+    func testEnglishAndSimplifiedChineseAreBundled() throws {
+        func localization(_ language: String) throws -> Bundle {
+            let path = try XCTUnwrap(Bundle.main.path(forResource: language, ofType: "lproj"))
+            return try XCTUnwrap(Bundle(path: path))
+        }
+
+        let english = try localization("en")
+        let chinese = try localization("zh-Hans")
+        XCTAssertEqual(english.localizedString(forKey: "Scan to Pair", value: nil, table: nil), "Scan to Pair")
+        XCTAssertEqual(chinese.localizedString(forKey: "Scan to Pair", value: nil, table: nil), "扫码配对")
+
+        let format = chinese.localizedString(forKey: "Agents Imported: %lld", value: nil, table: nil)
+        XCTAssertEqual(String.localizedStringWithFormat(format, 4), "已导入 4 个智能体")
+        XCTAssertEqual(
+            chinese.localizedString(forKey: "NSCameraUsageDescription", value: nil, table: "InfoPlist"),
+            "扫描 BotArk 电脑端二维码以配对设备。"
+        )
+    }
+
+    func testStandaloneGroupFollowsLanguageWithoutRenamingUserGroups() throws {
+        let en = try XCTUnwrap(Bundle(path: XCTUnwrap(Bundle.main.path(forResource: "en", ofType: "lproj"))))
+        let zh = try XCTUnwrap(Bundle(path: XCTUnwrap(Bundle.main.path(forResource: "zh-Hans", ofType: "lproj"))))
+        for savedName in ["Personal Agents", "个人智能体"] {
+            let saved = SyncedGroup(id: SyncedGroup.standaloneDefault.id, name: savedName)
+            XCTAssertEqual(saved.displayName(in: en), "Personal Agents")
+            XCTAssertEqual(saved.displayName(in: zh), "个人智能体")
+        }
+        XCTAssertEqual(SyncedGroup(id: "desktop-group", name: "Personal Agents").displayName(in: zh), "Personal Agents")
+        XCTAssertEqual(SyncedGroup(id: SyncedGroup.standaloneDefault.id, name: "My team").displayName(in: zh), "My team")
+    }
+
     func testDesktopSnapshotReconcilesOptimisticSendByID() {
         let bot = SyncedBot(id: "bot", platformId: .hermes, name: "Fixture", groupId: "group",
                             activeAccountId: "account", activeSessionId: "session")

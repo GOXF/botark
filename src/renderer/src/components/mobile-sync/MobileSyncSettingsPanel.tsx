@@ -1,3 +1,4 @@
+import { desktopCopy, desktopNotice, useDesktopLocale } from '@/lib/desktopCopy'
 import { useCallback, useEffect, useState } from 'react'
 import QRCode from 'qrcode'
 import type { MobileSyncStateView } from '@shared/mobileSync'
@@ -22,6 +23,7 @@ function formatTime(ms: number): string {
 }
 
 export function MobileSyncSettingsPanel() {
+  useDesktopLocale()
   const [state, setState] = useState<MobileSyncStateView | null>(null)
   const [qrDataUrl, setQrDataUrl] = useState<string>('')
   const [busy, setBusy] = useState(false)
@@ -144,10 +146,8 @@ export function MobileSyncSettingsPanel() {
     <div className="flex flex-col gap-5 animate-veil-in">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h2 className="text-[18px] font-semibold tracking-tight text-ink">移动端局域网同步</h2>
-          <p className="mt-0.5 text-[13px] text-ink-secondary">
-            iOS / Android 同网扫码即端到端加密同步全部 6 大平台会话，支持离线包导入
-          </p>
+          <h2 className="text-[18px] font-semibold tracking-tight text-ink">{desktopCopy("移动端局域网同步", "Mobile sync over the local network")}</h2>
+          <p className="mt-0.5 text-[13px] text-ink-secondary">{desktopCopy("仅在可信网络中配对 iOS 或 Android：实时同步桥使用 HTTP，不提供端到端加密。也可导入离线同步包。", "Pair an iOS or Android device only on a trusted network: the live sync bridge uses HTTP and is not end-to-end encrypted. You can also import an offline sync package.")}</p>
         </div>
         {state?.running && (
           <Button
@@ -156,15 +156,13 @@ export function MobileSyncSettingsPanel() {
             disabled={busy}
             onClick={() => void handleStartOrStop()}
           >
-            <Power className="size-3.5" />
-            停止同步桥
-          </Button>
+            <Power className="size-3.5" />{desktopCopy("停止同步桥", "Stop sync bridge")}</Button>
         )}
       </div>
 
       {error && (
         <div className="rounded-xl border border-status-error/30 bg-status-error/8 px-3.5 py-2.5 text-[12.5px] text-status-error">
-          {error}
+          {desktopNotice(error)}
         </div>
       )}
 
@@ -175,7 +173,7 @@ export function MobileSyncSettingsPanel() {
             <>
               <img
                 src={qrDataUrl}
-                alt="BotArk 移动端配对二维码"
+                alt={desktopCopy("BotArk 移动端配对二维码", "BotArk mobile pairing QR code")}
                 className="size-[208px] rounded-xl bg-white p-1.5 shadow-sm"
               />
               <div className="mt-2.5 flex items-center gap-1.5 rounded-full bg-surface px-2.5 py-1 font-mono text-[11px] text-ink">
@@ -188,12 +186,8 @@ export function MobileSyncSettingsPanel() {
               <div className="grid size-13 place-items-center rounded-2xl bg-hover text-ink-secondary">
                 <ArkQrPairingSvg className="size-6" />
               </div>
-              <p className="max-w-[176px] text-[12.5px] leading-[18px] text-ink-secondary">
-                生成局域网一次性加密配对码
-              </p>
-              <Button size="sm" variant="primary" disabled={busy} onClick={() => void handleStartOrStop()}>
-                开启扫码配对
-              </Button>
+              <p className="max-w-[176px] text-[12.5px] leading-[18px] text-ink-secondary">{desktopCopy("生成局域网一次性加密配对码", "Generate a one-time LAN pairing code")}</p>
+              <Button size="sm" variant="primary" disabled={busy} onClick={() => void handleStartOrStop()}>{desktopCopy("开启扫码配对", "Start QR code pairing")}</Button>
             </div>
           )}
         </div>
@@ -210,20 +204,18 @@ export function MobileSyncSettingsPanel() {
                 )}
               >
                 <ArkMobileLinkSvg className="size-3.5" />
-                {state?.running ? `运行中 · :${state.port}` : '未启动'}
+                {state?.running ? desktopCopy("运行中 · :{0}", "Running · Port {0}", [(state.port)]) : desktopCopy("未启动", "Not started")}
               </span>
               <span className="inline-flex items-center gap-1.5 rounded-full bg-hover px-2.5 py-1 text-[11.5px] text-ink-secondary">
-                <ArkShieldVaultSvg className="size-3.5" />
-                AES-256-GCM 零云端中转
-              </span>
+                <ArkShieldVaultSvg className="size-3.5" />{desktopCopy("AES-256-GCM 零云端中转", "Local network sync")}</span>
             </div>
 
             {/* Concise 3-step capsule strip */}
             <div className="grid grid-cols-3 gap-2">
               {[
-                ['01', '打开 iOS / Android 端'],
-                ['02', '扫描一次性配对码'],
-                ['03', '实时同步会话与审批']
+                ['01', desktopCopy("打开 iOS / Android 端", "Open BotArk on iOS or Android")],
+                ['02', desktopCopy("扫描一次性配对码", "Scan the one-time pairing code")],
+                ['03', desktopCopy("实时同步会话与审批", "Sync conversations and approvals in real time")]
               ].map(([step, label]) => (
                 <div key={step} className="rounded-xl bg-main px-3 py-2.5 ring-1 ring-line/50">
                   <span className="font-mono text-[10.5px] text-ink-muted">{step}</span>
@@ -234,7 +226,7 @@ export function MobileSyncSettingsPanel() {
 
             {state?.running && state.hosts.length > 0 && (
               <div className="flex flex-wrap items-center gap-1.5 rounded-xl bg-main px-3 py-2 ring-1 ring-line/50">
-                <span className="mr-1 text-[11px] text-ink-muted">局域网地址</span>
+                <span className="mr-1 text-[11px] text-ink-muted">{desktopCopy("局域网地址", "Local network address")}</span>
                 {state.hosts.map((ip) => (
                   <span
                     key={ip}
@@ -248,10 +240,8 @@ export function MobileSyncSettingsPanel() {
 
             <div className="flex items-center justify-between gap-3 rounded-xl bg-main px-3.5 py-2.5 ring-1 ring-line/50">
               <div className="min-w-0">
-                <p className="text-[12.5px] font-medium text-ink">同步 Hermes 脱机直连凭据</p>
-                <p className="truncate text-[11.5px] text-ink-muted">
-                  电脑休眠时手机仍可直连远程 Hermes Gateway
-                </p>
+                <p className="text-[12.5px] font-medium text-ink">{desktopCopy("同步 Hermes 脱机直连凭据", "Include credentials for direct Hermes access")}</p>
+                <p className="truncate text-[11.5px] text-ink-muted">{desktopCopy("电脑休眠时手机仍可直连远程 Hermes Gateway", "Connect directly to a remote Hermes gateway while your computer is asleep.")}</p>
               </div>
               <SwitchPill
                 checked={state?.includeDirectCredentials ?? true}
@@ -264,9 +254,7 @@ export function MobileSyncSettingsPanel() {
             {state?.running && (
               <>
                 <Button size="sm" variant="secondary" disabled={busy} onClick={() => void handleRotate()}>
-                  <RefreshCw className="size-3.5" />
-                  轮换二维码
-                </Button>
+                  <RefreshCw className="size-3.5" />{desktopCopy("轮换二维码", "Refresh QR code")}</Button>
                 {state.pairUri && (
                   <Button
                     size="sm"
@@ -274,7 +262,7 @@ export function MobileSyncSettingsPanel() {
                     onClick={() => copyText(state.pairUri!, 'uri')}
                   >
                     {copiedKey === 'uri' ? <Check className="size-3.5 text-status-online" /> : <Copy className="size-3.5" />}
-                    {copiedKey === 'uri' ? '已复制链接' : '复制配对链接'}
+                    {copiedKey === 'uri' ? desktopCopy("已复制链接", "Link copied") : desktopCopy("复制配对链接", "Copy pairing link")}
                   </Button>
                 )}
               </>
@@ -285,9 +273,7 @@ export function MobileSyncSettingsPanel() {
               disabled={busy}
               onClick={() => void handleExportOfflineBundle()}
             >
-              <ArkExportDocSvg className="size-3.5" />
-              导出离线同步包 (.botark-sync)
-            </Button>
+              <ArkExportDocSvg className="size-3.5" />{desktopCopy("导出离线同步包 (.botark-sync)", "Export offline sync package (.botark-sync)")}</Button>
           </div>
         </div>
       </div>
@@ -296,8 +282,7 @@ export function MobileSyncSettingsPanel() {
       {exportedBundle && (
         <div className="rounded-2xl border border-status-online/30 bg-status-online/8 p-4 text-[12.5px]">
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <p className="font-semibold text-status-online-ink">
-              同步包已生成 · 指纹 {exportedBundle.fingerprint}
+            <p className="font-semibold text-status-online-ink">{desktopCopy("同步包已生成 · 指纹 ", "Sync package created · Fingerprint: ")}{exportedBundle.fingerprint}
             </p>
             <Button
               size="sm"
@@ -305,7 +290,7 @@ export function MobileSyncSettingsPanel() {
               onClick={() => copyText(exportedBundle.transferKey, 'bundle')}
             >
               {copiedKey === 'bundle' ? <Check className="size-3.5 text-status-online" /> : <Copy className="size-3.5" />}
-              {copiedKey === 'bundle' ? '已复制密钥' : '复制一次性密钥'}
+              {copiedKey === 'bundle' ? desktopCopy("已复制密钥", "Key copied") : desktopCopy("复制一次性密钥", "Copy one-time key")}
             </Button>
           </div>
           <p className="mt-1 break-all font-mono text-[11px] text-ink-secondary">{exportedBundle.filePath}</p>
@@ -315,20 +300,15 @@ export function MobileSyncSettingsPanel() {
       {/* Paired Mobile Devices */}
       <div className="flex flex-col gap-2">
         <div className="flex items-center justify-between">
-          <h3 className="text-[13.5px] font-semibold text-ink">
-            已授权设备 ({state?.devices.length ?? 0})
+          <h3 className="text-[13.5px] font-semibold text-ink">{desktopCopy("已授权设备 (", "Authorized devices (")}{state?.devices.length ?? 0})
           </h3>
           {(state?.devices.length ?? 0) > 0 && (
-            <Button size="sm" variant="ghost" onClick={() => void handleRevoke('*')}>
-              全部移除
-            </Button>
+            <Button size="sm" variant="ghost" onClick={() => void handleRevoke('*')}>{desktopCopy("全部移除", "Remove all devices")}</Button>
           )}
         </div>
 
         {!state || state.devices.length === 0 ? (
-          <div className="rounded-2xl border border-dashed border-line/70 bg-surface/40 px-6 py-7 text-center text-[12.5px] text-ink-muted">
-            暂无已配对移动设备
-          </div>
+          <div className="rounded-2xl border border-dashed border-line/70 bg-surface/40 px-6 py-7 text-center text-[12.5px] text-ink-muted">{desktopCopy("暂无已配对移动设备", "No paired mobile devices")}</div>
         ) : (
           <div className="overflow-hidden rounded-2xl border border-line/70 bg-surface shadow-soft">
             <ul className="divide-y divide-line/60">
@@ -354,7 +334,7 @@ export function MobileSyncSettingsPanel() {
                               : 'bg-hover text-ink-muted'
                           )}
                         >
-                          {dev.connected ? '在线' : '离线'}
+                          {dev.connected ? desktopCopy("在线", "Online") : desktopCopy("离线", "Offline")}
                         </span>
                       </p>
                       <p className="mt-0.5 truncate text-[11.5px] text-ink-muted">
@@ -366,7 +346,7 @@ export function MobileSyncSettingsPanel() {
                     size="sm"
                     variant="ghost"
                     onClick={() => void handleRevoke(dev.deviceId)}
-                    title="移除授权"
+                    title={desktopCopy("移除授权", "Revoke access")}
                   >
                     <Trash2 className="size-3.5 text-status-error" />
                   </Button>

@@ -18,7 +18,7 @@ struct SyncSettingsView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
-                Text("同步")
+                Text(String(localized: "Sync"))
                     .font(ArkFont.bold(19))
                     .tracking(-0.4)
                 Spacer()
@@ -53,21 +53,21 @@ struct SyncSettingsView: View {
         ) { result in
             handleFileImport(result)
         }
-        .alert("输入传输密钥", isPresented: $showTransferKeyPrompt) {
-            TextField("粘贴电脑端密钥", text: $bundleTransferKey)
+        .alert(String(localized: "Enter Transfer Key"), isPresented: $showTransferKeyPrompt) {
+            TextField(String(localized: "Paste the Key from Desktop"), text: $bundleTransferKey)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
-            Button("取消", role: .cancel) {
+            Button(String(localized: "Cancel"), role: .cancel) {
                 pendingBundleData = nil
                 bundleTransferKey = ""
             }
-            Button("解密导入") { decryptPendingBundle() }
+            Button(String(localized: "Decrypt and Import")) { decryptPendingBundle() }
         } message: {
             Text(pendingBundleName)
         }
-        .confirmationDialog("清空本机同步缓存与密钥？", isPresented: $showWipeConfirm, titleVisibility: .visible) {
-            Button("清空全部数据", role: .destructive) { store.wipeAllLocalData() }
-            Button("取消", role: .cancel) {}
+        .confirmationDialog(String(localized: "Clear Local Sync Cache and Keys?"), isPresented: $showWipeConfirm, titleVisibility: .visible) {
+            Button(String(localized: "Clear All Data"), role: .destructive) { store.wipeAllLocalData() }
+            Button(String(localized: "Cancel"), role: .cancel) {}
         }
     }
 
@@ -127,7 +127,7 @@ struct SyncSettingsView: View {
                         Button {
                             Task { await store.reconnectDesktop() }
                         } label: {
-                            Label("重连", systemImage: "arrow.clockwise")
+                            Label(String(localized: "Reconnect"), systemImage: "arrow.clockwise")
                                 .font(ArkFont.semibold(12.5))
                                 .foregroundStyle(.white)
                                 .frame(maxWidth: .infinity)
@@ -139,7 +139,7 @@ struct SyncSettingsView: View {
                         Button {
                             showQRScanner = true
                         } label: {
-                            Label("重新扫码", systemImage: "qrcode.viewfinder")
+                            Label(String(localized: "Scan Again"), systemImage: "qrcode.viewfinder")
                                 .font(ArkFont.semibold(12.5))
                                 .foregroundStyle(ArkTheme.obsidian)
                                 .frame(maxWidth: .infinity)
@@ -158,12 +158,12 @@ struct SyncSettingsView: View {
                                 .background(Color.red.opacity(0.18), in: Circle())
                         }
                         .buttonStyle(.plain)
-                        .accessibilityLabel("解绑")
+                        .accessibilityLabel(String(localized: "Unpair"))
                     }
                 } else {
                     HStack(spacing: 12) {
                         VStack(alignment: .leading, spacing: 3) {
-                            Text("未配对电脑端")
+                            Text(String(localized: "No Desktop Paired"))
                                 .font(ArkFont.bold(16))
                                 .foregroundStyle(.white)
                             Text("LAN · Hotspot · Tailscale")
@@ -177,7 +177,7 @@ struct SyncSettingsView: View {
                             HStack(spacing: 5) {
                                 Image(systemName: "qrcode.viewfinder")
                                     .font(.system(size: 12.5, weight: .semibold))
-                                Text("扫码")
+                                Text(String(localized: "Scan"))
                                     .font(ArkFont.semibold(12.5))
                             }
                             .foregroundStyle(ArkTheme.obsidian)
@@ -202,7 +202,7 @@ struct SyncSettingsView: View {
 
     private var offlineBundleCard: some View {
         VStack(alignment: .leading, spacing: 7) {
-            sectionLabel("离线同步包")
+            sectionLabel(String(localized: "Offline Sync Bundle"))
 
             VStack(spacing: 0) {
                 Button {
@@ -214,7 +214,7 @@ struct SyncSettingsView: View {
                             .foregroundStyle(.primary)
                             .frame(width: 30, height: 30)
                             .background(ArkTheme.subtleFill, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-                        Text("导入 .botark-sync 加密包")
+                        Text(String(localized: "Import Encrypted .botark-sync Bundle"))
                             .font(ArkFont.medium(13.5))
                             .foregroundStyle(.primary)
                         Spacer()
@@ -257,7 +257,7 @@ struct SyncSettingsView: View {
 
     private var directHermesCard: some View {
         VStack(alignment: .leading, spacing: 7) {
-            sectionLabel("Hermes 脱机直连")
+            sectionLabel(String(localized: "Standalone Hermes"))
 
             VStack(spacing: 0) {
                 ForEach(store.directHermesCredentials) { cred in
@@ -294,7 +294,7 @@ struct SyncSettingsView: View {
                             .foregroundStyle(ArkTheme.onInk)
                             .frame(width: 24, height: 24)
                             .background(ArkTheme.ink, in: Circle())
-                        Text("添加独立 Hermes 服务器")
+                        Text(String(localized: "Add Standalone Hermes Server"))
                             .font(ArkFont.medium(13.5))
                             .foregroundStyle(.primary)
                         Spacer()
@@ -315,7 +315,7 @@ struct SyncSettingsView: View {
             Button {
                 showWipeConfirm = true
             } label: {
-                Text("清空本机缓存与密钥")
+                Text(String(localized: "Clear Local Cache and Keys"))
                     .font(ArkFont.medium(12.5))
                     .foregroundStyle(ArkTheme.rose)
                     .frame(maxWidth: .infinity)
@@ -358,10 +358,10 @@ struct SyncSettingsView: View {
         guard let data = pendingBundleData else { return }
         do {
             try store.importOfflineBundle(fileData: data, transferKey: bundleTransferKey)
-            importNotice = "已导入 \(store.snapshot.bots.count) 个智能体"
+            importNotice = String.localizedStringWithFormat(String(localized: "Agents Imported: %lld"), store.snapshot.bots.count)
             importError = nil
         } catch {
-            importError = "密钥错误或文件已损坏"
+            importError = String(localized: "Incorrect Key or Damaged File")
         }
         pendingBundleData = nil
         bundleTransferKey = ""
@@ -382,19 +382,19 @@ struct AddStandaloneHermesSheet: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("连接信息") {
-                    TextField("名称", text: $name)
+                Section(String(localized: "Connection Details")) {
+                    TextField(String(localized: "Name"), text: $name)
                         .font(ArkFont.regular(14))
                     TextField("Base URL", text: $baseUrl)
                         .font(ArkFont.mono(13))
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .keyboardType(.URL)
-                    SecureField("API Key（可选）", text: $apiKey)
+                    SecureField(String(localized: "API Key (Optional)"), text: $apiKey)
                         .font(ArkFont.regular(14))
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
-                    TextField("模型（留空自动探测）", text: $model)
+                    TextField(String(localized: "Model (Blank to Auto-Detect)"), text: $model)
                         .font(ArkFont.regular(14))
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
@@ -408,17 +408,17 @@ struct AddStandaloneHermesSheet: View {
                     }
                 }
             }
-            .navigationTitle("接入 Hermes")
+            .navigationTitle(String(localized: "Connect to Hermes"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("取消") { dismiss() }
+                    Button(String(localized: "Cancel")) { dismiss() }
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button {
                         Task { await connect() }
                     } label: {
-                        if busy { ProgressView() } else { Text("添加").fontWeight(.semibold) }
+                        if busy { ProgressView() } else { Text(String(localized: "Add")).fontWeight(.semibold) }
                     }
                     .disabled(busy || baseUrl.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }

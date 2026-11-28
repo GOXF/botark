@@ -1,3 +1,4 @@
+import { nativeDisplayCopy } from '../nativeDisplayCopy'
 import { BrowserWindow, Notification, session as electronSession, shell, type WebContents } from 'electron'
 import { randomUUID } from 'node:crypto'
 import { setTimeout as delay } from 'node:timers/promises'
@@ -316,7 +317,7 @@ export class MuseSessionManager {
             overrideBrowserWindowOptions: {
               width: 540,
               height: 700,
-              title: 'Muse 安全登录',
+              title: nativeDisplayCopy("Muse 安全登录", "Muse secure sign-in"),
               autoHideMenuBar: true,
               ...(windowIcon ? { icon: windowIcon } : {}),
               parent: this.window.isDestroyed() ? undefined : this.window,
@@ -600,7 +601,7 @@ export class MuseSessionManager {
       const { pending, approvalVersion } = await this.loadApprovals(session)
       if (pending.length > prevCount && this.sessions.get(accountId) === session && session.approvalVersion === approvalVersion) {
         const first = pending[0]
-        this.maybeNotify('Muse 需要确认', String(first?.['detail'] || first?.['host'] || first?.['title'] || '权限请求'))
+        this.maybeNotify(nativeDisplayCopy("Muse 需要确认", "Muse needs confirmation"), String(first?.['detail'] || first?.['host'] || first?.['title'] || nativeDisplayCopy("权限请求", "Permission request")))
       }
     } catch (error) {
       console.warn('[muse] refreshApprovals', error instanceof Error ? error.message : error)
@@ -1799,7 +1800,7 @@ export class MuseSessionManager {
       height: 780,
       minWidth: 720,
       minHeight: 560,
-      title: '使用 Muse 登录',
+      title: nativeDisplayCopy("使用 Muse 登录", "Sign in to Muse"),
       show: !opts?.hidden,
       backgroundColor: '#f7f7f8',
       autoHideMenuBar: true,
@@ -1847,13 +1848,13 @@ export class MuseSessionManager {
         if (!isGoogleBlockedOrPasskeyText(bodyText, currentUrl)) return
         await wc.executeJavaScript(
           buildGoogleFallbackBannerScript({
-            title: 'Google 登录受限或需要通行密钥',
-            detail: '可尝试兼容模式重试，或在 Muse 登录页改用邮箱验证码（Email OTP）登录。',
-            buttonLabel: '在系统浏览器打开',
+            title: nativeDisplayCopy("Google 登录受限或需要通行密钥", "Google sign-in is restricted or requires a passkey."),
+            detail: nativeDisplayCopy("可尝试兼容模式重试，或在 Muse 登录页改用邮箱验证码（Email OTP）登录。", "Retry sign-in or use an email code on the Muse sign-in page."),
+            buttonLabel: nativeDisplayCopy("在系统浏览器打开", "Open in browser"),
             actionUrl: 'botark-external://open',
             secondaryActions: [
-              { label: '尝试兼容模式重试', actionUrl: 'botark-action://retry-firefox-ua' },
-              { label: '改用邮箱登录', actionUrl: 'botark-action://back-to-login' }
+              { label: nativeDisplayCopy("尝试兼容模式重试", "Retry in compatibility mode"), actionUrl: 'botark-action://retry-firefox-ua' },
+              { label: nativeDisplayCopy("改用邮箱登录", "Sign in with email"), actionUrl: 'botark-action://back-to-login' }
             ]
           }),
           true
@@ -1905,7 +1906,7 @@ export class MuseSessionManager {
           overrideBrowserWindowOptions: {
             width: 540,
             height: 700,
-            title: 'Muse 安全登录',
+            title: nativeDisplayCopy("Muse 安全登录", "Muse secure sign-in"),
             autoHideMenuBar: true,
             ...(windowIcon ? { icon: windowIcon } : {}),
             parent: parentForChild.isDestroyed() ? undefined : parentForChild,

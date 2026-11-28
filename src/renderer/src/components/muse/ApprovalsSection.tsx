@@ -1,3 +1,4 @@
+import { desktopNotice, useDesktopLocale } from '@/lib/desktopCopy'
 import { useCallback, useEffect, useState } from 'react'
 import { adapterRegistry } from '@adapters/registry'
 import type { MuseApproval, MuseApprovalOption } from '@adapters/types'
@@ -68,6 +69,7 @@ export function ApprovalsSection({
   accountId: string
   platformId?: 'meta-muse' | 'grok' | 'hermes' | 'ds-bot'
 }) {
+  useDesktopLocale()
   const [pending, setPending] = useState<MuseApproval[]>([])
   const [history, setHistory] = useState<HistoryItem[]>([])
   const [showHistory, setShowHistory] = useState(false)
@@ -177,7 +179,7 @@ export function ApprovalsSection({
       count={pending.length}
       action={<RefreshButton loading={loading} onClick={() => void refresh()} />}
     >
-      {error && <p className="pb-1 text-[12px] text-status-error">{error}</p>}
+      {error && <p className="pb-1 text-[12px] text-status-error">{desktopNotice(error)}</p>}
       <div className="mb-1.5 flex items-center justify-end">
         <Button size="sm" variant="ghost" onClick={() => setShowHistory((v) => !v)}>
           {showHistory ? t('Hide history') : t('History')}

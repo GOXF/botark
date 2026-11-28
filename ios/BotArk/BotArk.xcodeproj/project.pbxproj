@@ -7,6 +7,8 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		5A946DAD022645259F6F5301 /* InfoPlist.strings in Resources */ = {isa = PBXBuildFile; fileRef = 5A946DAD022645259F6F5302 /* InfoPlist.strings */; };
+		5A946DAD022645259F6F5311 /* Localizable.strings in Resources */ = {isa = PBXBuildFile; fileRef = 5A946DAD022645259F6F5312 /* Localizable.strings */; };
 		0DB9B3C5B66B7B8C7493110C /* SyncProtocolTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 063FAFCB0FC48429332792E7 /* SyncProtocolTests.swift */; };
 		19A641BF12E3005FD8CC3291 /* SyncCrypto.swift in Sources */ = {isa = PBXBuildFile; fileRef = F3FA2D59707EA72BF86B1743 /* SyncCrypto.swift */; };
 		31836BB72159C6351E402046 /* SyncProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9BED8010708C71AD4DDBD184 /* SyncProtocol.swift */; };
@@ -43,6 +45,10 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		5A946DAD022645259F6F5303 /* en */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = en; path = en.lproj/InfoPlist.strings; sourceTree = "<group>"; };
+		5A946DAD022645259F6F5304 /* zh-Hans */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = zh-Hans; path = zh-Hans.lproj/InfoPlist.strings; sourceTree = "<group>"; };
+		5A946DAD022645259F6F5313 /* en */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = en; path = en.lproj/Localizable.strings; sourceTree = "<group>"; };
+		5A946DAD022645259F6F5314 /* zh-Hans */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = zh-Hans; path = zh-Hans.lproj/Localizable.strings; sourceTree = "<group>"; };
 		063FAFCB0FC48429332792E7 /* SyncProtocolTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncProtocolTests.swift; sourceTree = "<group>"; };
 		0D421E4D33505238D2C84C35 /* ChatView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatView.swift; sourceTree = "<group>"; };
 		11B3C531B4746FC539D17EC1 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
@@ -138,6 +144,8 @@
 			children = (
 				7FAC39B77E6E821846094A99 /* Assets.xcassets */,
 				11B3C531B4746FC539D17EC1 /* Info.plist */,
+				5A946DAD022645259F6F5302 /* InfoPlist.strings */,
+				5A946DAD022645259F6F5312 /* Localizable.strings */,
 				D5A80BDC0C341CF853AB25BF /* Fonts */,
 			);
 			path = Resources;
@@ -224,6 +232,7 @@
 			knownRegions = (
 				Base,
 				en,
+				"zh-Hans",
 			);
 			mainGroup = 3D22DBBEE742E79C76B7206A;
 			minimizedProjectReferenceProxies = 1;
@@ -244,6 +253,8 @@
 			buildActionMask = 2147483647;
 			files = (
 				84082B8424F641D2DB2EDAF2 /* Assets.xcassets in Resources */,
+				5A946DAD022645259F6F5301 /* InfoPlist.strings in Resources */,
+				5A946DAD022645259F6F5311 /* Localizable.strings in Resources */,
 				5F1CBEDCF035F059B10926E9 /* JetBrainsMono-Medium.ttf in Resources */,
 				B7BC15E33A735EB76595849E /* PlusJakartaSans-Bold.ttf in Resources */,
 				73BC6352995A317FB2376AB8 /* PlusJakartaSans-Medium.ttf in Resources */,
@@ -295,6 +306,27 @@
 			targetProxy = 695F323D230CCD8BEB87C7B8 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
+
+/* Begin PBXVariantGroup section */
+		5A946DAD022645259F6F5302 /* InfoPlist.strings */ = {
+			isa = PBXVariantGroup;
+			children = (
+				5A946DAD022645259F6F5303 /* en */,
+				5A946DAD022645259F6F5304 /* zh-Hans */,
+			);
+			name = InfoPlist.strings;
+			sourceTree = "<group>";
+		};
+		5A946DAD022645259F6F5312 /* Localizable.strings */ = {
+			isa = PBXVariantGroup;
+			children = (
+				5A946DAD022645259F6F5313 /* en */,
+				5A946DAD022645259F6F5314 /* zh-Hans */,
+			);
+			name = Localizable.strings;
+			sourceTree = "<group>";
+		};
+/* End PBXVariantGroup section */
 
 /* Begin XCBuildConfiguration section */
 		881D1530E3AFEFCD7AC30B96 /* Release */ = {
@@ -348,7 +380,7 @@
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 12;
+				CURRENT_PROJECT_VERSION = 13;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_TESTABILITY = YES;
@@ -367,7 +399,7 @@
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
-				MARKETING_VERSION = 0.17.0;
+				MARKETING_VERSION = 0.17.1;
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = YES;
@@ -415,7 +447,7 @@
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 12;
+				CURRENT_PROJECT_VERSION = 13;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				ENABLE_NS_ASSERTIONS = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
@@ -428,7 +460,7 @@
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
-				MARKETING_VERSION = 0.17.0;
+				MARKETING_VERSION = 0.17.1;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -450,8 +482,8 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Resources/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = BotArk;
-				INFOPLIST_KEY_NSCameraUsageDescription = "扫描 BotArk 电脑端配对二维码，在局域网或 Tailscale 下零服务器直接同步全部 AI 助手。";
-				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "BotArk 需要访问本地网络以直连同一局域网或 Tailscale 中的电脑端 BotArk，无需任何云端服务器。";
+				INFOPLIST_KEY_NSCameraUsageDescription = "Scan a QR code from BotArk on your computer to pair this device.";
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "BotArk uses your local network to connect to your paired computer.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
@@ -475,8 +507,8 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Resources/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = BotArk;
-				INFOPLIST_KEY_NSCameraUsageDescription = "扫描 BotArk 电脑端配对二维码，在局域网或 Tailscale 下零服务器直接同步全部 AI 助手。";
-				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "BotArk 需要访问本地网络以直连同一局域网或 Tailscale 中的电脑端 BotArk，无需任何云端服务器。";
+				INFOPLIST_KEY_NSCameraUsageDescription = "Scan a QR code from BotArk on your computer to pair this device.";
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "BotArk uses your local network to connect to your paired computer.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
