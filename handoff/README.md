@@ -4,8 +4,8 @@
 
 ## 1. 先接通
 - GitHub：保存登录 + PAT（覆盖 GOXF/botark、GOXF/hark-hub-go），只推 goxf/portable，不推上游、不开 PR。
-- 服务器（root）：zovps.com、156.225.19.244、70.39.201.51
-- MCP 桥：bridge-prod / bridge-dev.haisiku.com.cn 各一个 token
+- 服务器（root）：156.233.225.8，经 ssh.zovps.com WebSSH 登录
+- MCP 桥：只用 bridge-dev.haisiku.com（密钥在服务器上取，存保险库）；生产机的桥不用
 - 密码和令牌一律走安全表单，不进仓库、不进聊天。
 
 ## 2. 拉代码
