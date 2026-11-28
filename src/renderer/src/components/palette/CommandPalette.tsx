@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
+import { isGlobalAdmin } from '@/rooms/model'
 import * as RadixDialog from '@radix-ui/react-dialog'
 import { Globe, PanelRight, Pin, Plus, RefreshCw, Search, ShieldCheck, Sparkles, Users, X } from 'lucide-react'
 import { focusChatMessage } from '@/components/chat/MessageList'
@@ -104,7 +105,7 @@ function PaletteBody({ onClose }: { onClose: () => void }) {
     const roomRows: Row[] = []
     for (const room of rooms) {
       const pinned = room.pinned === true
-      const admin = Boolean(room.coordinatorId)
+      const admin = isGlobalAdmin(room)
       const names = room.members.map((member) => member.name)
       const searchTerms = [
         room.title,

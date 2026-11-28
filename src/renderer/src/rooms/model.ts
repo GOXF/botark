@@ -66,6 +66,9 @@ export interface CollabRoom {
   brief: string
   /** Present on a native coordination room owned by this administrator. */
   coordinatorId?: string
+  /** GOXF: 'room' = a group chat's own administrator (only this room's members, editable);
+   *  absent = the global 管理员调度 room that mirrors every bot. */
+  adminScope?: 'room'
   slackParent?: string
   slackChannel?: string
   slackThread?: string
@@ -75,6 +78,11 @@ export interface CollabRoom {
   handoffChain?: string[]
   /** A handed-over requirement arrived and has not been opened yet. */
   handoffUnread?: boolean
+}
+
+/** GOXF: the global 管理员调度 room (mirrors every bot); a group chat's own administrator is not. */
+export function isGlobalAdmin(room: Pick<CollabRoom, 'coordinatorId' | 'adminScope'>): boolean {
+  return Boolean(room.coordinatorId) && room.adminScope !== 'room'
 }
 
 export function normalizeMentionName(name: string): string {

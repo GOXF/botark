@@ -1,4 +1,5 @@
 import { useState, type ReactNode } from 'react'
+import { isGlobalAdmin } from '@/rooms/model'
 import { Check, ChevronLeft, ChevronRight, Circle, HelpCircle, Loader2, Plus, Trash2 } from 'lucide-react'
 import { useShallow } from 'zustand/react/shallow'
 import { BotAvatar } from '@/components/ui/Avatar'
@@ -140,7 +141,7 @@ function Card({ task, onRelease }: { task: PipelineTask; onRelease: (t: Pipeline
   const back = task.stage === 'dev' ? lastReject(task) : undefined
   const gate = task.stage === 'assign' || task.stage === 'review' || task.stage === 'confirm'
   const sug = task.suggestion
-  const hasAdmin = useRooms((s) => s.rooms.some((r) => r.coordinatorId))
+  const hasAdmin = useRooms((s) => s.rooms.some(isGlobalAdmin))
   return (
     <li
       className={cn(
@@ -274,7 +275,7 @@ function NewTaskDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (o
   const [title, setTitle] = useState('')
   const [detail, setDetail] = useState('')
   const [review, setReview] = useState('')
-  const rooms = useRooms(useShallow((s) => s.rooms.filter((r) => !r.coordinatorId)))
+  const rooms = useRooms(useShallow((s) => s.rooms.filter((r) => !isGlobalAdmin(r))))
   const submit = () => {
     if (!createTask(title, detail, review)) return
     setTitle('')

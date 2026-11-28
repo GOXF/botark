@@ -19,7 +19,7 @@ import {
 import { cn } from '@/lib/cn'
 import { useT } from '@/lib/i18n'
 import { useBotStore } from '@/store/botStore'
-import { stripFinalPrefix, type CollabRoom } from './model'
+import { isGlobalAdmin, stripFinalPrefix, type CollabRoom } from './model'
 import { exportRoomMarkdownFile, NEW_ROOM_ID } from './roomExport'
 import { applyDropOnRoom, isRoomDropDrag, showRoomDndNotice, useRoomDndNotice } from './roomDnd'
 import { deleteRoom, renameRoom, togglePinRoom, useRooms } from './roomStore'
@@ -246,8 +246,8 @@ const RoomSidebarItem = memo(function RoomSidebarItem({
               <MoreHorizontal className="size-3.5" />
             </MenuTrigger>
             <MenuContent align="start" side="bottom" className="min-w-40">
-              <MenuItem disabled={Boolean(room.coordinatorId) || room.members.length >= 6} onSelect={() => setAdding(true)}>
-                <Plus aria-hidden /> {room.coordinatorId ? '添加成员（管理员自动同步）' : '添加成员…'}
+              <MenuItem disabled={isGlobalAdmin(room) || room.members.length >= 6} onSelect={() => setAdding(true)}>
+                <Plus aria-hidden /> {isGlobalAdmin(room) ? '添加成员（管理员自动同步）' : '添加成员…'}
               </MenuItem>
               <MenuItem onSelect={() => togglePinRoom(room.id)}>
                 {room.pinned ? <PinOff aria-hidden /> : <Pin aria-hidden />}

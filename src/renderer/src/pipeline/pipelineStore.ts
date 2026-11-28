@@ -1,7 +1,7 @@
 import { create } from 'zustand'
 import { createJSONStorage, persist } from 'zustand/middleware'
 import { createId } from '@shared/id'
-import { stripFinalPrefix } from '@/rooms/model'
+import { isGlobalAdmin, stripFinalPrefix } from '@/rooms/model'
 import { submitBrief, useRooms } from '@/rooms/roomStore'
 import { createSafeStorage } from '@/store/delivery'
 import { useBotStore } from '@/store/botStore'
@@ -77,14 +77,14 @@ function setBusy(id: string, label?: string) {
 
 /** The administrator's coordination room (管理员调度), if one is switched on. */
 export function adminRoom() {
-  return useRooms.getState().rooms.find((r) => r.coordinatorId)
+  return useRooms.getState().rooms.find(isGlobalAdmin)
 }
 
 /** Every bot, and every group chat that is not the administrator's. */
 export function executorCandidates(): Executor[] {
   return [
     ...useBotStore.getState().bots.map((b) => ({ kind: 'bot' as const, id: b.id, name: b.name.trim() || b.id })),
-    ...useRooms.getState().rooms.filter((r) => !r.coordinatorId).map((r) => ({ kind: 'room' as const, id: r.id, name: r.title }))
+    ...useRooms.getState().rooms.filter((r) => !isGlobalAdmin(r)).map((r) => ({ kind: 'room' as const, id: r.id, name: r.title }))
   ]
 }
 
