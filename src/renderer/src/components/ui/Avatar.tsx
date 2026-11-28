@@ -1,3 +1,4 @@
+import { memo } from 'react'
 import type { ConnectionStatus, PlatformId } from '@adapters/types'
 import { cn } from '@/lib/cn'
 import { initials } from '@/lib/format'
@@ -39,6 +40,8 @@ interface BotAvatarProps {
   size?: keyof typeof BOT_SIZES
   status?: ConnectionStatus
   isWorking?: boolean
+  /** Hold the animated character still (older avatars in a long transcript). */
+  isPaused?: boolean
   gaze?: [number, number] | null
   followPointer?: boolean
   pokeSignal?: number
@@ -47,7 +50,8 @@ interface BotAvatarProps {
   className?: string
 }
 
-export function BotAvatar({
+// Memoized: the transcript re-renders on every streamed delta; avatars with unchanged props skip it.
+export const BotAvatar = memo(function BotAvatar({
   seed,
   avatar,
   avatarShape,
@@ -55,6 +59,7 @@ export function BotAvatar({
   size = 'md',
   status,
   isWorking,
+  isPaused,
   gaze,
   followPointer,
   pokeSignal,
@@ -78,6 +83,7 @@ export function BotAvatar({
           color={avatarColor}
           status={status}
           isWorking={isWorking}
+          isPaused={isPaused}
           gaze={gaze}
           followPointer={followPointer}
           pokeSignal={pokeSignal}
@@ -97,7 +103,7 @@ export function BotAvatar({
       )}
     </span>
   )
-}
+})
 
 const ACCOUNT_SIZES = {
   xs: 'size-5 text-[9px]',

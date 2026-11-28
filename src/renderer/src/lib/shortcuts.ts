@@ -31,10 +31,12 @@ function isEditable(target: EventTarget | null): boolean {
 export function useGlobalShortcuts(): void {
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
+      const mod = isMac ? event.metaKey : event.ctrlKey
+      // Every shortcut needs ⌘/Ctrl or ⌥; plain typing must not scan the DOM below.
+      if (!mod && !event.altKey) return
       if (event.defaultPrevented || event.isComposing || document.querySelector('[data-onboarding-dialog]')) return
       const store = useBotStore.getState()
       if (store.onboardingOpen) return
-      const mod = isMac ? event.metaKey : event.ctrlKey
       const plainMod = mod && !event.shiftKey && !event.altKey
       const key = event.key.toLowerCase()
 

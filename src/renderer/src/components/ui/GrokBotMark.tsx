@@ -185,7 +185,8 @@ export function GrokBotMark({
       isPlaying: playing,
       isEmphasized,
       isFollowingPointer: followPointer,
-      isStatic: false
+      // Mounted paused (old transcript avatars, picker cells): draw one still frame, no frame loop or observers.
+      isStatic: isPaused
     })
   }
 

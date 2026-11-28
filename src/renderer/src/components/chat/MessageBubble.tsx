@@ -1019,7 +1019,7 @@ const MessageBubbleBody = memo(function MessageBubbleBody({
    * Keep cloud browser, cloud computer, and credential vault links inside BotArk's
    * isolated account partition (#34) instead of bouncing out to external Chrome.
    */
-  const handleMarkdownLinkClick = (href: string, label: string): boolean => {
+  const handleMarkdownLinkClick = useCallback((href: string, label: string): boolean => {
     if (!supportsInAppWeb) return false
     const isPlatformDomain = /^https?:\/\/([^/]+\.)?(muse\.ai|hark\.com|chatgpt\.com|antigravity\.google\.com)(\/|$)/i.test(href)
     const isRelativeAction = !/^https?:\/\//i.test(href)
@@ -1044,7 +1044,7 @@ const MessageBubbleBody = memo(function MessageBubbleBody({
       return true
     }
     return false
-  }
+  }, [supportsInAppWeb, openWebSessionAt, message.text, message.accountId])
 
   const needsInlineSessionShortcut =
     !mine &&
@@ -1059,6 +1059,11 @@ const MessageBubbleBody = memo(function MessageBubbleBody({
       agentId: target.agentId ?? botMeta?.selectedAgentId
     })
   }, [setActiveDocument, botMeta?.platformId, botMeta?.selectedAgentId])
+  const openFileLink = useCallback(
+    (path: string, label: string) =>
+      openDocument({ accountId: message.accountId, title: label || path.split('/').pop() || 'Document', path }),
+    [openDocument, message.accountId]
+  )
 
   const reactGrokMessage = (emoji: string) => {
     if (botMeta?.platformId !== 'grok' || !botMeta.selectedAgentId) return
@@ -1337,13 +1342,7 @@ const MessageBubbleBody = memo(function MessageBubbleBody({
                 text={message.text}
                 suppressWorkspaceImages={media.length > 0}
                 onLinkClick={handleMarkdownLinkClick}
-                onFileLinkClick={(path, label) =>
-                  openDocument({
-                    accountId: message.accountId,
-                    title: label || path.split('/').pop() || 'Document',
-                    path
-                  })
-                }
+                onFileLinkClick={openFileLink}
               />
               {!articleExpanded && message.text.length > 720 && (
                 <div className="pointer-events-none absolute inset-x-0 bottom-0 h-16 bg-gradient-to-t from-surface via-surface/85 to-transparent" />
@@ -1392,13 +1391,7 @@ const MessageBubbleBody = memo(function MessageBubbleBody({
                 text={message.text}
                 suppressWorkspaceImages={media.length > 0}
                 onLinkClick={handleMarkdownLinkClick}
-                onFileLinkClick={(path, label) =>
-                  openDocument({
-                    accountId: message.accountId,
-                    title: label || path.split('/').pop() || 'Document',
-                    path
-                  })
-                }
+                onFileLinkClick={openFileLink}
               />
             )}
           </div>

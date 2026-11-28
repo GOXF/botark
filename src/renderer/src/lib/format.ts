@@ -1,7 +1,7 @@
 import { t } from "@/lib/i18n"
 const DAY = 24 * 60 * 60 * 1000
 
-function startOfDay(ts: number): number {
+export function startOfDay(ts: number): number {
   const d = new Date(ts)
   d.setHours(0, 0, 0, 0)
   return d.getTime()
@@ -40,10 +40,6 @@ export function formatDayLabel(ts: number, now = Date.now()): string {
 
 export function formatDate(ts: number): string {
   return fullDateFmt.format(ts)
-}
-
-export function isSameDay(a: number, b: number): boolean {
-  return startOfDay(a) === startOfDay(b)
 }
 
 export function formatBytes(bytes: number): string {

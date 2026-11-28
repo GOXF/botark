@@ -381,9 +381,12 @@ export function Composer({ bot, account, typing = false, onSend, onCancel, onCon
               value={text}
               rows={1}
               onChange={(event) => {
-                prompts.sync(event.currentTarget)
-                setText(event.target.value)
-                resize()
+                const el = event.currentTarget
+                prompts.sync(el)
+                // Growing text that still fits can't change the height; skip the forced full-page re-measure.
+                const fits = el.value.length > text.length && el.scrollHeight <= el.clientHeight
+                setText(el.value)
+                if (!fits) resize()
               }}
               onKeyDown={onKeyDown}
               onPaste={(event) => {

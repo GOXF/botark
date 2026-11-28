@@ -3,7 +3,7 @@ import { ArrowDown, ChevronUp } from 'lucide-react'
 import { BotAvatar } from '@/components/ui/Avatar'
 import { revealTranscriptRow } from '@/lib/transcriptFocus'
 import { cn } from '@/lib/cn'
-import { formatDayLabel, isSameDay } from '@/lib/format'
+import { formatDayLabel, startOfDay } from '@/lib/format'
 import type { Bot, BotAccount, ChatMessage } from '@/types'
 import { MessageBubble } from './MessageBubble'
 import { useBotStore } from '@/store/botStore'
@@ -37,15 +37,35 @@ export function focusChatMessage(botId: string, messageId: string): void {
   window.dispatchEvent(new Event(FOCUS_MESSAGE_EVENT))
 }
 
-function sameRun(a: ChatMessage | undefined, b: ChatMessage | undefined): boolean {
-  return (
-    !!a &&
-    !!b &&
-    a.role === b.role &&
-    a.accountId === b.accountId &&
-    Math.abs(b.createdAt - a.createdAt) < RUN_GAP_MS &&
-    isSameDay(a.createdAt, b.createdAt)
-  )
+/** Day separators and run edges for the whole transcript, computed once per messages change. */
+function layoutRows(messages: ChatMessage[]) {
+  const days = messages.map((m) => startOfDay(m.createdAt))
+  const sameRun = (i: number, j: number) => {
+    const a = messages[i]
+    const b = messages[j]
+    return (
+      !!a &&
+      !!b &&
+      a.role === b.role &&
+      a.accountId === b.accountId &&
+      Math.abs(b.createdAt - a.createdAt) < RUN_GAP_MS &&
+      days[i] === days[j]
+    )
+  }
+  const rows = messages.map((_, i) => ({
+    newDay: i === 0 || days[i - 1] !== days[i],
+    isFirstInRun: !sameRun(i - 1, i),
+    isLastInRun: !sameRun(i, i + 1)
+  }))
+  // Only the newest bot run keeps its avatar animated; older ones are paused.
+  let liveAvatar = -1
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].role === 'bot' && rows[i].isFirstInRun) {
+      liveAvatar = i
+      break
+    }
+  }
+  return { rows, liveAvatar }
 }
 
 export const MessageList = memo(function MessageList(props: MessageListProps) {
@@ -79,6 +99,7 @@ function Transcript({ bot, messages, accounts, typing, onRetry }: MessageListPro
   const focusCount = focusIndex < 0 ? 0 : messages.length - focusIndex
   const hiddenCount = Math.max(0, messages.length - Math.max(visibleCount, focusCount))
   const visibleMessages = useMemo(() => messages.slice(hiddenCount), [messages, hiddenCount])
+  const layout = useMemo(() => layoutRows(visibleMessages), [visibleMessages])
   const previous = useRef({ lastMessage, count: messages.length })
   const unseenLabel = plural(t, unseen, 'New message', '{n} new messages')
 
@@ -252,11 +273,7 @@ function Transcript({ bot, messages, accounts, typing, onRetry }: MessageListPro
             </li>
           )}
           {visibleMessages.map((message, index) => {
-            const prev = visibleMessages[index - 1]
-            const next = visibleMessages[index + 1]
-            const newDay = !prev || !isSameDay(prev.createdAt, message.createdAt)
-            const isFirstInRun = !sameRun(prev, message)
-            const isLastInRun = !sameRun(message, next)
+            const { newDay, isFirstInRun, isLastInRun } = layout.rows[index]
             const isBot = message.role === 'bot'
 
             return (
@@ -269,7 +286,7 @@ function Transcript({ bot, messages, accounts, typing, onRetry }: MessageListPro
                 <li
                   data-message-id={message.id}
                   tabIndex={-1}
-                  className={cn('group/msg rounded-xl focus-visible:outline-2 focus-visible:outline-accent-600', isFirstInRun && !newDay ? 'mt-3' : 'mt-1')}
+                  className={cn('group/msg rounded-xl [contain-intrinsic-size:auto_120px] [content-visibility:auto] focus-visible:outline-2 focus-visible:outline-accent-600', isFirstInRun && !newDay ? 'mt-3' : 'mt-1')}
                 >
                   <div className="flex items-start gap-2.5">
                     {isBot && (
@@ -283,6 +300,7 @@ function Transcript({ bot, messages, accounts, typing, onRetry }: MessageListPro
                             avatarColor={bot.avatarColor}
                             platformId={bot.platformId}
                             size="sm"
+                            isPaused={index !== layout.liveAvatar}
                           />
                         )}
                       </span>
