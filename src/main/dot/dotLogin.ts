@@ -153,7 +153,7 @@ export async function openDotLoginWindow(
       await wc.executeJavaScript(
         buildGoogleFallbackBannerScript({
           title: nativeDisplayCopy("Google 登录受限或需要通行密钥", "Google sign-in is restricted or requires a passkey."),
-          detail: nativeDisplayCopy("可尝试兼容模式重试，或在系统浏览器打开 chatgpt.com/dots 登录后粘贴 AT/RT 凭据导入。", "Retry sign-in or sign in to ChatGPT Dot in your browser."),
+          detail: nativeDisplayCopy("可尝试兼容模式重试，或在系统浏览器打开 chatgpt.com/dots 登录后粘贴 AT/RT 凭据导入。", "Retry here, or sign in to ChatGPT Dot in your browser. Browser sign-in alone does not connect BotArk; return to Add Bot to complete the account import."),
           buttonLabel: nativeDisplayCopy("在系统浏览器打开", "Open in browser"),
           actionUrl: 'botark-external://open',
           secondaryActions: [

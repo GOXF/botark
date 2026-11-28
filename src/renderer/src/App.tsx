@@ -8,7 +8,7 @@ import { hasSeenOnboarding } from '@/components/onboarding/onboardingState'
 import { Sidebar } from '@/components/sidebar/Sidebar'
 import { ErrorBoundary } from '@/components/ui/ErrorBoundary'
 import { UpdateBanner } from '@/components/update/UpdateBanner'
-import { useGlobalShortcuts } from '@/lib/shortcuts'
+import { openSettingsFromMenu, useGlobalShortcuts } from '@/lib/shortcuts'
 import { useRooms } from '@/rooms/roomStore'
 import { applySlackConnection } from '@/rooms/slackRooms'
 import { startAdapterBridge } from '@/services/adapterBridge'
@@ -201,14 +201,7 @@ export default function App() {
   }, [])
 
   useEffect(() => startPrefsSync(), [])
-  useEffect(
-    () => window.electron?.onOpenSettings?.(() => {
-      const state = useBotStore.getState()
-      if (state.onboardingOpen) state.setOnboardingOpen(false)
-      state.setSettingsOpen(true)
-    }),
-    []
-  )
+  useEffect(() => window.electron?.onOpenSettings?.(openSettingsFromMenu), [])
   useEffect(() => {
     // Only resume an explicitly connected bridge after a renderer reload.
     if (sessionStorage.getItem('botark.slack.connected') !== '1') return

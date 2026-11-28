@@ -476,7 +476,7 @@ const RoomMessageRow = memo(function RoomMessageRow({
   const [copied, setCopied] = useState(false)
 
   if (message.notice) {
-    return <p className="mx-auto text-xs text-ink-muted">{message.text}</p>
+    return <p className="mx-auto text-xs text-ink-muted">{desktopNotice(message.text)}</p>
   }
   if (!message.authorBotId && message.author === 'Tool') {
     return <ToolExecutionCard message={message} />

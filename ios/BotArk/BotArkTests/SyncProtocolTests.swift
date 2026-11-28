@@ -21,6 +21,18 @@ final class SyncProtocolTests: XCTestCase {
         )
     }
 
+    func testStandaloneGroupFollowsLanguageWithoutRenamingUserGroups() throws {
+        let en = try XCTUnwrap(Bundle(path: XCTUnwrap(Bundle.main.path(forResource: "en", ofType: "lproj"))))
+        let zh = try XCTUnwrap(Bundle(path: XCTUnwrap(Bundle.main.path(forResource: "zh-Hans", ofType: "lproj"))))
+        for savedName in ["Personal Agents", "个人智能体"] {
+            let saved = SyncedGroup(id: SyncedGroup.standaloneDefault.id, name: savedName)
+            XCTAssertEqual(saved.displayName(in: en), "Personal Agents")
+            XCTAssertEqual(saved.displayName(in: zh), "个人智能体")
+        }
+        XCTAssertEqual(SyncedGroup(id: "desktop-group", name: "Personal Agents").displayName(in: zh), "Personal Agents")
+        XCTAssertEqual(SyncedGroup(id: SyncedGroup.standaloneDefault.id, name: "My team").displayName(in: zh), "My team")
+    }
+
     func testDesktopSnapshotReconcilesOptimisticSendByID() {
         let bot = SyncedBot(id: "bot", platformId: .hermes, name: "Fixture", groupId: "group",
                             activeAccountId: "account", activeSessionId: "session")

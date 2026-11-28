@@ -235,8 +235,8 @@ public final class BotArkStore {
         if let firstGroup = snapshot.groups.first {
             groupId = firstGroup.id
         } else {
-            groupId = "grp_standalone"
-            snapshot.groups.append(SyncedGroup(id: groupId, name: String(localized: "Personal Agents"), collapsed: false))
+            groupId = SyncedGroup.standaloneDefault.id
+            snapshot.groups.append(.standaloneDefault)
         }
         snapshot.accounts[accountId] = SyncedAccount(
             id: accountId,
@@ -281,8 +281,8 @@ public final class BotArkStore {
         if let firstGroup = snapshot.groups.first {
             groupId = firstGroup.id
         } else {
-            groupId = "grp_standalone"
-            snapshot.groups.append(SyncedGroup(id: groupId, name: String(localized: "Personal Agents"), collapsed: false))
+            groupId = SyncedGroup.standaloneDefault.id
+            snapshot.groups.append(.standaloneDefault)
         }
 
         snapshot.accounts[accountId] = SyncedAccount(
@@ -593,9 +593,9 @@ public final class BotArkStore {
         var merged = incoming
         merged.carryLocalRelayMessages(from: snapshot)
         if !localOnlyBots.isEmpty {
-            let fallbackGroupId = merged.groups.first?.id ?? "grp_standalone"
+            let fallbackGroupId = merged.groups.first?.id ?? SyncedGroup.standaloneDefault.id
             if merged.groups.isEmpty {
-                merged.groups.append(SyncedGroup(id: fallbackGroupId, name: String(localized: "Personal Agents"), collapsed: false))
+                merged.groups.append(.standaloneDefault)
             }
             for var bot in localOnlyBots {
                 if !merged.groups.contains(where: { $0.id == bot.groupId }) {

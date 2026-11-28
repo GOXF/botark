@@ -200,7 +200,7 @@ export async function openHarkLoginWindow(accountId: string, parent?: BrowserWin
       await wc.executeJavaScript(
         buildGoogleFallbackBannerScript({
           title: nativeDisplayCopy("Google 登录受限或需要通行密钥", "Google sign-in is restricted or requires a passkey."),
-          detail: nativeDisplayCopy("可尝试兼容模式重试，或在系统浏览器打开 Hark 登录后使用「粘贴凭据导入」。", "Retry sign-in or finish signing in to Hark in your browser."),
+          detail: nativeDisplayCopy("可尝试兼容模式重试，或在系统浏览器打开 Hark 登录后使用「粘贴凭据导入」。", "Retry here, or sign in to Hark in your browser. Browser sign-in alone does not connect BotArk; return to Add Bot to complete the account import."),
           buttonLabel: nativeDisplayCopy("在系统浏览器打开", "Open in browser"),
           actionUrl: 'botark-external://open',
           secondaryActions: [

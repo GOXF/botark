@@ -19,10 +19,12 @@ export function useDesktopLocale(): void {
 const numericSlot = /\{(\d+)\}/g
 const noticePatterns = Object.entries(desktopNotices).flatMap(([zh, en]) => {
   const slots = [...zh.matchAll(numericSlot)].map((match) => Number(match[1]))
-  if (!slots.length || !/^[^{}]*\p{Script=Han}[^{}]*\{/u.test(zh)) return []
   const parts = zh.split(/\{\d+\}/g)
-  if (parts[0]!.length < 4) return []
-  return [{ fixedLength: parts.join('').length, regex: new RegExp('^'+parts.map(escapeRe).join('([\\s\\S]*?)')+'$'), slots, en }]
+  const literal = parts.join('')
+  // Judge the whole diagnostic, not just its prefix: e.g. «已达 {0} 轮上限…».
+  // Keep generic labels like «目录：{0}» out of free-form error matching.
+  if (!slots.length || literal.trim().length < 5 || !/\p{Script=Han}/u.test(literal)) return []
+  return [{ fixedLength: literal.length, regex: new RegExp('^'+parts.map(escapeRe).join('([\\s\\S]*?)')+'$'), slots, en }]
 }).sort((a, b) => b.fixedLength - a.fixedLength)
 
 /** At a diagnostic display boundary, localize only known app copy, never arbitrary text. */
@@ -31,7 +33,7 @@ export function desktopNotice(value: string | undefined): string | undefined
 export function desktopNotice(value: string | null | undefined): string | null | undefined
 export function desktopNotice(value: string | null | undefined): string | null | undefined {
   if (!value || usePrefsStore.getState().locale === 'zh' || !/\p{Script=Han}/u.test(value)) return value
-  const diagnostic = value.replace(/^Error invoking remote method ['"]botark:[^'"]+['"]:\s*(?:Error:\s*)?/, '')
+  const diagnostic = value.replace(/^Error invoking remote method ['"](?:botark|bothub):[^'"]+['"]:\s*(?:Error:\s*)?/, '')
   const exact = Object.hasOwn(desktopNotices, diagnostic) ? desktopNotices[diagnostic] : undefined
   if (exact) return exact
   if (diagnostic.length > 1800) return value

@@ -116,6 +116,16 @@ public struct SyncedGroup: Codable, Identifiable, Equatable, Sendable {
         self.name = name
         self.collapsed = collapsed
     }
+
+    static let standaloneDefault = SyncedGroup(id: "grp_standalone", name: "Personal Agents")
+
+    func displayName(in bundle: Bundle = .main) -> String {
+        // Older snapshots stored the default in the language active at creation.
+        // User-named groups, including names received from a desktop, are data.
+        guard id == Self.standaloneDefault.id,
+              name == Self.standaloneDefault.name || name == "个人智能体" else { return name }
+        return bundle.localizedString(forKey: Self.standaloneDefault.name, value: nil, table: nil)
+    }
 }
 
 public struct SyncedAccount: Codable, Identifiable, Equatable, Sendable {

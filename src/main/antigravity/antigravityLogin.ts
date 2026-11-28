@@ -322,7 +322,7 @@ export async function openAntigravityLoginWindow(accountId: string, parent?: Bro
       await wc.executeJavaScript(
         buildGoogleFallbackBannerScript({
           title: nativeDisplayCopy("Google 登录受限或需要通行密钥", "Google sign-in is restricted or requires a passkey."),
-          detail: nativeDisplayCopy("可点击「兼容模式重试」，也可在系统浏览器完成登录，再将 Antigravity 请求的 Cookie 或「Copy as cURL」粘贴到 BotArk 的「添加 Bot」窗口。", "Retry sign-in, or finish signing in in your browser and return to BotArk."),
+          detail: nativeDisplayCopy("可点击「兼容模式重试」，也可在系统浏览器完成登录，再将 Antigravity 请求的 Cookie 或「Copy as cURL」粘贴到 BotArk 的「添加 Bot」窗口。", "Retry here, or sign in to Antigravity in your browser. Browser sign-in alone does not connect BotArk; return to Add Bot to complete the account import."),
           buttonLabel: nativeDisplayCopy("在系统浏览器打开", "Open in browser"),
           actionUrl: 'botark-external://open',
           secondaryActions: [{ label: nativeDisplayCopy("兼容模式重试", "Retry in compatibility mode"), actionUrl: 'botark-action://retry-firefox-ua' }]

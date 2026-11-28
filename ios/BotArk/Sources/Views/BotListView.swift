@@ -298,7 +298,7 @@ struct BotListView: View {
                     ForEach(store.snapshot.groups) { group in
                         let members = unpinnedBots.filter { $0.groupId == group.id }
                         if !members.isEmpty {
-                            botGroupCard(title: group.name, bots: members)
+                            botGroupCard(title: group.displayName(), bots: members)
                         }
                     }
                     let knownIds = Set(store.snapshot.groups.map(\.id))
