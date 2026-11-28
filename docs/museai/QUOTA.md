@@ -22,7 +22,7 @@
 
 ### 1.1 调用方式
 
-- 前端：`createServerReference("409b972cbb33d3e372f4ca9d3c8332677217064f62", …, "fetchSubscriptionAction")`
+- 前端：`createServerReference("406cd44441421b58cea8309747129141947de9f499", …, "fetchSubscriptionAction")`（2026-11-28；之前为 `409b972c…`），在 `/_next/static/immutable/chunks/<hash>.js` 里，按 action 名找，id 每次部署可能变
 - 传输：Next App Router **Server Action**（`Next-Action: <hash>`，body 为 RSC/action 编码；响应为 `text/x-component` 风格多行 JSON，见样本 `44_POST__`）
 - 参数：`{ includeAgreement?: boolean }`（默认 `true`）
 - 鉴权：**`hatch_sess` / `hatch_gw` / `hatch_vml`（及登录态）**；需要 muse.ai 已登录 viewer，**不是** Noise VM token，也**不是** meta.ai `ecto_1_sess`
@@ -94,7 +94,7 @@
 
 | Action 名 | Action id（前端 hash，**会随部署变**） | 用途 |
 |---|---|---|
-| `fetchSubscriptionAction` | `409b972cbb33d3e372f4ca9d3c8332677217064f62` | 读额度 + 套餐状态 |
+| `fetchSubscriptionAction` | `406cd44441421b58cea8309747129141947de9f499`（2026-11-28） | 读额度 + 套餐状态 |
 | `fetchSubscriptionPlansAction` | `4050a605b2be5001e57cf64bba3121a9639546bc74` | 套餐列表 / 升级页 |
 | `cancelSubscriptionAction` | `00d40e030ba25d549267489f072508c01e018b4692` | 取消订阅 |
 | `reactivateSubscriptionAction` | `0052f080adfe12d799d5339c7f13bf42bc2faa526a` | 恢复订阅 |

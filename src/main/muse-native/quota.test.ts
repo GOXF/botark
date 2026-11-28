@@ -99,3 +99,35 @@ it('extracts subscription JSON directly from escaped Next.js RSC flight HTML whe
   expect(snap.success).toBe(true)
   expect(snap.subscription?.usage.percentUsed).toBe(12)
 })
+
+it('2026-11-28 deploy: tries the new known id first and parses its RSC reply', async () => {
+  const reply = '0:{"a":"$@1","f":"","b":"x"}\n1:{"success":true,"subscription":{"subscriptionType":"FREE","tier":{"tierId":"hatch_free","name":"Muse 免费版","tierCode":"HATCH_FREE","isPaid":false,"rank":0},"usage":{"state":"METERED","percentUsed":0,"resetsAt":1796459438,"quotaStatus":"SUFFICIENT"},"statusSubtitle":"周限额重置时间：12月5日"}}\n'
+  const seen: string[] = []
+  const fetch = vi.fn(async (_url: string, init?: RequestInit) => {
+    const action = new Headers(init?.headers).get('Next-Action') ?? ''
+    seen.push(action)
+    return action === '406cd44441421b58cea8309747129141947de9f499'
+      ? new Response(reply, { headers: { 'Content-Type': 'text/x-component' } })
+      : new Response('', { status: 404 })
+  })
+  const snap = await fetchSubscription(fetch, { accountId: 'deploy-2026-11-28', rediscover: false })
+  expect(seen[0]).toBe('406cd44441421b58cea8309747129141947de9f499')
+  expect(snap.subscription).toMatchObject({ tier: { tierId: 'hatch_free' }, usage: { percentUsed: 0, resetsAt: 1796459438 } })
+})
+
+it('follows chunks a loader names by file only', async () => {
+  const liveId = 'f'.repeat(42)
+  const fetch = vi.fn(async (url: string, init?: RequestInit) => {
+    if (init?.method === 'POST') {
+      return new Headers(init.headers).get('Next-Action') === liveId ? new Response(subscription) : new Response('', { status: 409 })
+    }
+    if (url === 'https://muse.ai/') return new Response('<script src="/_next/static/immutable/chunks/main0001.js"></script>')
+    if (url.endsWith('/main0001.js')) return new Response('e.l(["3c93p469092sl.js"])')
+    if (url.endsWith('/3c93p469092sl.js')) {
+      return new Response(`(0,a.createServerReference)("${liveId}",a.callServer,void 0,a.findSourceMapURL,"fetchSubscriptionAction")`)
+    }
+    return new Response('', { status: 404 })
+  })
+  const snap = await fetchSubscription(fetch, { accountId: 'bare-chunk' })
+  expect(snap.success).toBe(true)
+})
