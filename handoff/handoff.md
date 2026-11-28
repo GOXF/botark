@@ -402,3 +402,11 @@ git clone <GOXF/botark> && cd botark && git checkout fix/hark-login-sync && npm 
 - #11：Muse 额度 action id 换 `406cd444…9499`（旧 id 留第二候选）；探测跟进只写文件名的懒加载 chunk。
 - #12：Hark 额度重置时间按 `(UTC+08:00)` 解析（`lib/harkTime.ts`）。
 - 遗留：合并后经用户同意，在开发机单独目录验 Muse 额度；quota.ts 457 行待拆。
+
+## 2026-11-28 17:40 北京 v22 拖动调整分组顺序（e6ac4ec）
+- 用户 17:28「开工」。测试包 v0.17.0-goxf.dev.e6ac4ec（https://github.com/GOXF/botark/releases/tag/v0.17.0-goxf.dev.e6ac4ec），待用户试。
+- store `reorderGroup(groupId, beforeGroupId|null)`（botStore.ts，测试 store/reorderGroup.test.ts）；顺序就是 `groups` 数组，跟原来一样经 `bothub-workspace-v1` 持久化。
+- SectionHeader 拆到 sidebar/SectionHeader.tsx：整行可拖（重命名时不可拖），悬停左侧出 GripVertical（滚动区 `-ml-2 pl-2` 腾位置，标题不挪）；拖影 = 克隆标题（opacity-90 + shadow-float）；原位 opacity-40；插入线 bg-accent-600。MIME `application/x-botark-group`，与 bot 行拖动（BOT_DRAG_MIME）互不干扰。⋯ 菜单加「上移/下移」（两端置灰）。
+- 管理分组弹窗：只有左侧抓手可拖（输入框照常选字），描述改为「按住左侧抓手拖动调整顺序。」。
+- playwright 在 web 构建上实测：拖动排序、拖到末尾、菜单上移/下移、bot 行跨分组拖 + 拖到标题、刷新后顺序保留、弹窗拖动。截图 work/mock/v22-real-light/dark.png。
+- 未验证：Electron/Windows 真实拖影样子（headless 不画拖影）；折叠的图标侧栏没改；弹窗拖动时其余行不让位（只有插入线），与效果图有差。
