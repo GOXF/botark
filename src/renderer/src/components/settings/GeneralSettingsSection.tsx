@@ -350,11 +350,7 @@ export function GeneralSettingsSection({
           <SegmentedControl<Locale>
             size="sm"
             value={locale}
-            onValueChange={(id) => {
-              if (id === locale) return
-              setLocale(id)
-              window.location.reload()
-            }}
+            onValueChange={setLocale}
             options={[
               { value: 'zh', label: '简体中文' },
               { value: 'en', label: 'English' }

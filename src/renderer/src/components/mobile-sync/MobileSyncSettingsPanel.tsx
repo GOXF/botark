@@ -147,7 +147,7 @@ export function MobileSyncSettingsPanel() {
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h2 className="text-[18px] font-semibold tracking-tight text-ink">{desktopCopy("移动端局域网同步", "Mobile sync over the local network")}</h2>
-          <p className="mt-0.5 text-[13px] text-ink-secondary">{desktopCopy("iOS / Android 同网扫码即端到端加密同步全部 6 大平台会话，支持离线包导入", "Pair an iOS or Android device on the same network, or import an offline sync package.")}</p>
+          <p className="mt-0.5 text-[13px] text-ink-secondary">{desktopCopy("仅在可信网络中配对 iOS 或 Android：实时同步桥使用 HTTP，不提供端到端加密。也可导入离线同步包。", "Pair an iOS or Android device only on a trusted network: the live sync bridge uses HTTP and is not end-to-end encrypted. You can also import an offline sync package.")}</p>
         </div>
         {state?.running && (
           <Button
