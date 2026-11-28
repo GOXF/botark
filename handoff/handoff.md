@@ -397,3 +397,8 @@ git clone <GOXF/botark> && cd botark && git checkout fix/hark-login-sync && npm 
 - #10：概览「协作调度」固定第一栏（Section `pinned`）；Muse 额度 `action_not_found` 时提示「Muse 改版了，暂时读不到额度」。
 - #9：普通群「调度」新增「群管理员」（`CollabRoom.adminScope='room'`，`isGlobalAdmin()` 区分全局管理员调度）；管理员每轮提示词附成员状态（`rooms/adminContext.ts`）。
 - 遗留：Muse 额度根因（muse.ai 改版，`fetchSubscriptionAction` 409）待用户给新 Next-Action id 后改 `src/main/muse-native/quota.ts`；群管理员在成员列表暂无标记；`roomStore.ts` 待拆。
+
+## 2026-11-28 16:46 北京 合并 #11、#12（goxf/portable c4fb495，测试版 v0.17.0-goxf.dev.c4fb495）
+- #11：Muse 额度 action id 换 `406cd444…9499`（旧 id 留第二候选）；探测跟进只写文件名的懒加载 chunk。
+- #12：Hark 额度重置时间按 `(UTC+08:00)` 解析（`lib/harkTime.ts`）。
+- 遗留：合并后经用户同意，在开发机单独目录验 Muse 额度；quota.ts 457 行待拆。
